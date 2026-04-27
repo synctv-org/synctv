@@ -3381,10 +3381,10 @@ pub struct PlayingChanged {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCOffer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcOffer {
-    /// Target: "user_id" or "user_id:conn_id"
+    /// Target: "public_user_id:conn_id"
     #[prost(string, tag = "1")]
     pub to: ::prost::alloc::string::String,
-    /// Sender: Set by server, format: "user_id:conn_id"
+    /// Sender: Set by server, format: "public_user_id|conn_id"
     #[prost(string, tag = "2")]
     pub from: ::prost::alloc::string::String,
     /// SDP offer (JSON string, opaque to server)
@@ -3402,10 +3402,10 @@ pub struct WebRtcOffer {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCAnswer))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcAnswer {
-    /// Target: "user_id" or "user_id:conn_id"
+    /// Target: "public_user_id:conn_id"
     #[prost(string, tag = "1")]
     pub to: ::prost::alloc::string::String,
-    /// Sender: Set by server, format: "user_id:conn_id"
+    /// Sender: Set by server, format: "public_user_id|conn_id"
     #[prost(string, tag = "2")]
     pub from: ::prost::alloc::string::String,
     /// SDP answer (JSON string, opaque to server)
@@ -3423,10 +3423,10 @@ pub struct WebRtcAnswer {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_WebRTCIceCandidate))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WebRtcIceCandidate {
-    /// Target: "user_id" or "user_id:conn_id"
+    /// Target: "public_user_id:conn_id"
     #[prost(string, tag = "1")]
     pub to: ::prost::alloc::string::String,
-    /// Sender: Set by server, format: "user_id:conn_id"
+    /// Sender: Set by server, format: "public_user_id|conn_id"
     #[prost(string, tag = "2")]
     pub from: ::prost::alloc::string::String,
     /// ICE candidate (JSON string, opaque to server)

@@ -9,8 +9,9 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::RequireApproval, MemberStatus, PermissionBits, ReviewStatus, RoomRole,
-        RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        room_settings::RequireApproval, MemberStatus, PermissionBits, ReviewRequestId,
+        ReviewStatus, RoomRole, RoomSettings, RoomStatus, SignupMethod, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository, SettingsRepository,
@@ -23,6 +24,16 @@ use synctv_core::{
     },
     Config,
 };
+
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::default_for_tests()
+}
+
+fn review_request_public_id(id: i64) -> String {
+    public_id_codec()
+        .encode_review_request_id(ReviewRequestId::from(id))
+        .unwrap()
+}
 
 fn make_user(username: &str, role: UserRole, status: UserStatus) -> User {
     let now = Utc::now();
@@ -82,6 +93,7 @@ fn make_client_api(
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
 }
 
@@ -121,6 +133,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         Some(publish_key_service),
         Arc::new(Config::default()),
         Arc::new(AuditService::new_unbuffered(pool)),
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
 }
 
@@ -163,19 +176,22 @@ async fn test_add_member_rejects_banned_user_status() {
         .create_room(
             "User Status Matrix Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
         .await
         .unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let banned_user_public_id = codec.encode_user_id(banned_user.id).unwrap();
 
     let error = client_api
         .add_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::AddMemberRequest {
-                user_id: banned_user.id.as_str().to_string(),
+                user_id: banned_user_public_id,
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
             },
@@ -240,7 +256,7 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .create_room(
             "Moderation Permission Matrix Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -248,42 +264,35 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            moderator.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, moderator.id, RoomRole::Member, false)
         .await
         .unwrap();
     room_service
-        .join_room(room.id.clone(), pending_target.id.clone(), None)
+        .join_room(room.id, pending_target.id, None)
         .await
         .unwrap();
-    let pending_request_id: String = sqlx::query_scalar(
+    let pending_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(pending_target.id.as_str())
+    .bind(room.id)
+    .bind(pending_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            ban_target.id.clone(),
-            RoomRole::Guest,
-            false,
-        )
+        .add_member(room.id, owner.id, ban_target.id, RoomRole::Guest, false)
         .await
         .unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let moderator_public_id = codec.encode_user_id(moderator.id).unwrap();
+    let pending_target_public_id = codec.encode_user_id(pending_target.id).unwrap();
+    let ban_target_public_id = codec.encode_user_id(ban_target.id).unwrap();
 
     let pending_list_error = client_api
         .list_room_join_reviews(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 20,
@@ -300,10 +309,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     let approve_error = client_api
         .approve_room_join_review(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::ApproveRoomJoinReviewRequest {
-                request_id: pending_request_id.clone(),
+                request_id: review_request_public_id(pending_request_id),
             },
         )
         .await
@@ -315,10 +324,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     client_api
         .update_member_permissions(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
-                user_id: moderator.id.as_str().to_string(),
+                user_id: moderator_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
                 added_permissions: PermissionBits::APPROVE_MEMBER | PermissionBits::BAN_MEMBER,
                 removed_permissions: 0,
@@ -331,8 +340,8 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     let pending_response = client_api
         .list_room_join_reviews(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 20,
@@ -346,7 +355,7 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
     assert_eq!(pending_response.reviews.len(), 1);
     assert_eq!(
         pending_response.reviews[0].user_id,
-        pending_target.id.as_str()
+        pending_target_public_id
     );
     assert_eq!(
         pending_response.reviews[0].status,
@@ -355,10 +364,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     let approved = client_api
         .approve_room_join_review(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::ApproveRoomJoinReviewRequest {
-                request_id: pending_request_id,
+                request_id: review_request_public_id(pending_request_id),
             },
         )
         .await
@@ -372,10 +381,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     client_api
         .ban_member(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::BanMemberRequest {
-                user_id: ban_target.id.as_str().to_string(),
+                user_id: ban_target_public_id.clone(),
                 reason: "matrix coverage".to_string(),
             },
         )
@@ -384,10 +393,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     client_api
         .unban_member(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::UnbanMemberRequest {
-                user_id: ban_target.id.as_str().to_string(),
+                user_id: ban_target_public_id.clone(),
             },
         )
         .await
@@ -395,10 +404,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     client_api
         .update_member_permissions(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
-                user_id: moderator.id.as_str().to_string(),
+                user_id: moderator_public_id,
                 role: synctv_proto::common::RoomMemberRole::Unspecified as i32,
                 added_permissions: 0,
                 removed_permissions: 0,
@@ -411,10 +420,10 @@ async fn test_member_permission_matrix_controls_moderation_apis() {
 
     let ban_error = client_api
         .ban_member(
-            moderator.id.as_str(),
-            room.id.as_str(),
+            &moderator.id,
+            &room_public_id,
             synctv_proto::client::BanMemberRequest {
-                user_id: ban_target.id.as_str().to_string(),
+                user_id: ban_target_public_id,
                 reason: "should fail after reset".to_string(),
             },
         )
@@ -457,7 +466,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
         .create_room(
             "Admin Override Matrix Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -465,22 +474,19 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            target.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, target.id, RoomRole::Member, false)
         .await
         .unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let target_public_id = codec.encode_user_id(target.id).unwrap();
 
     let wrong_columns_error = client_api
         .update_member_permissions(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
                 added_permissions: 0,
                 removed_permissions: PermissionBits::BAN_MEMBER,
@@ -497,10 +503,10 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
 
     let updated = client_api
         .update_member_permissions(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::UpdateMemberPermissionsRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: target_public_id,
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
                 added_permissions: 0,
                 removed_permissions: 0,
@@ -568,7 +574,7 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
         .create_room(
             "Ownership Matrix Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -576,26 +582,24 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            room_admin.id.clone(),
-            RoomRole::Admin,
-            false,
-        )
+        .add_member(room.id, owner.id, room_admin.id, RoomRole::Admin, false)
         .await
         .unwrap();
     room_service
-        .join_room(room.id.clone(), pending_target.id.clone(), None)
+        .join_room(room.id, pending_target.id, None)
         .await
         .unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let room_admin_public_id = codec.encode_user_id(room_admin.id).unwrap();
+    let pending_target_public_id = codec.encode_user_id(pending_target.id).unwrap();
 
     let non_owner_error = client_api
         .transfer_room_ownership(
-            room_admin.id.as_str(),
-            room.id.as_str(),
+            &room_admin.id,
+            &room_public_id,
             synctv_proto::client::TransferRoomOwnershipRequest {
-                new_owner_user_id: room_admin.id.as_str().to_string(),
+                new_owner_user_id: room_admin_public_id.clone(),
             },
         )
         .await
@@ -607,10 +611,10 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
 
     let pending_target_error = client_api
         .transfer_room_ownership(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::TransferRoomOwnershipRequest {
-                new_owner_user_id: pending_target.id.as_str().to_string(),
+                new_owner_user_id: pending_target_public_id,
             },
         )
         .await
@@ -622,17 +626,17 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
 
     let response = client_api
         .transfer_room_ownership(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::TransferRoomOwnershipRequest {
-                new_owner_user_id: room_admin.id.as_str().to_string(),
+                new_owner_user_id: room_admin_public_id.clone(),
             },
         )
         .await
         .unwrap();
 
     let updated_room = response.room.expect("updated room");
-    assert_eq!(updated_room.created_by, room_admin.id.as_str());
+    assert_eq!(updated_room.created_by, room_admin_public_id);
 
     let new_owner_member = room_service
         .get_member(&room.id, &room_admin.id)
@@ -715,7 +719,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Public Room".to_string(),
             "public room".to_string(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -725,7 +729,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Pending Room".to_string(),
             "pending room".to_string(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -735,7 +739,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Rejected Room".to_string(),
             "rejected room".to_string(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -745,7 +749,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Closed Room".to_string(),
             "closed room".to_string(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -755,7 +759,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Banned Room".to_string(),
             "banned room".to_string(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -769,7 +773,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .create_room(
             "Matrix Joined Count Room".to_string(),
             "joined room".to_string(),
-            external_owner.id.clone(),
+            external_owner.id,
             None,
             Some(approval_settings),
         )
@@ -794,10 +798,10 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .unwrap();
 
     room_service
-        .join_room(joined_room.id.clone(), actor.id.clone(), None)
+        .join_room(joined_room.id, actor.id, None)
         .await
         .unwrap();
-    let actor_join_request_id = sqlx::query_scalar::<_, String>(
+    let actor_join_request_id = sqlx::query_scalar::<_, i64>(
         r"
         SELECT id
         FROM room_join_requests
@@ -806,38 +810,38 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
           AND reviewed_at IS NULL
         ",
     )
-    .bind(joined_room.id.as_str())
-    .bind(actor.id.as_str())
+    .bind(joined_room.id)
+    .bind(actor.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     room_service
         .approve_join_request(
-            joined_room.id.clone(),
-            external_owner.id.clone(),
-            actor_join_request_id.as_str(),
+            joined_room.id,
+            external_owner.id,
+            ReviewRequestId::from(actor_join_request_id),
         )
         .await
         .unwrap();
     room_service
         .add_member(
-            joined_room.id.clone(),
-            external_owner.id.clone(),
-            active_peer.id.clone(),
+            joined_room.id,
+            external_owner.id,
+            active_peer.id,
             RoomRole::Member,
             false,
         )
         .await
         .unwrap();
     room_service
-        .join_room(joined_room.id.clone(), pending_peer.id.clone(), None)
+        .join_room(joined_room.id, pending_peer.id, None)
         .await
         .unwrap();
     room_service
         .add_member(
-            joined_room.id.clone(),
-            external_owner.id.clone(),
-            banned_peer.id.clone(),
+            joined_room.id,
+            external_owner.id,
+            banned_peer.id,
             RoomRole::Member,
             false,
         )
@@ -846,9 +850,9 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
     room_service
         .member_service()
         .ban_member(
-            joined_room.id.clone(),
-            external_owner.id.clone(),
-            banned_peer.id.clone(),
+            joined_room.id,
+            external_owner.id,
+            banned_peer.id,
             Some("coverage".to_string()),
         )
         .await
@@ -881,7 +885,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
 
     let pending_only = client_api
         .list_my_rooms(
-            actor.id.as_str(),
+            &actor.id,
             synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
@@ -896,18 +900,19 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .await
         .unwrap();
     assert_eq!(pending_only.total, 3);
-    let closed_room_ids: Vec<&str> = pending_only
+    let codec = public_id_codec();
+    let closed_room_ids: Vec<_> = pending_only
         .rooms
         .iter()
-        .map(|room| room.room.as_ref().unwrap().id.as_str())
+        .map(|room| room.room.as_ref().unwrap().id.clone())
         .collect();
-    assert!(closed_room_ids.contains(&pending_room.id.as_str()));
-    assert!(closed_room_ids.contains(&rejected_room.id.as_str()));
-    assert!(closed_room_ids.contains(&closed_room.id.as_str()));
+    assert!(closed_room_ids.contains(&codec.encode_room_id(pending_room.id).unwrap()));
+    assert!(closed_room_ids.contains(&codec.encode_room_id(rejected_room.id).unwrap()));
+    assert!(closed_room_ids.contains(&codec.encode_room_id(closed_room.id).unwrap()));
 
     let banned_only = client_api
         .list_my_rooms(
-            actor.id.as_str(),
+            &actor.id,
             synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
@@ -924,12 +929,12 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
     assert_eq!(banned_only.total, 1);
     assert_eq!(
         banned_only.rooms[0].room.as_ref().unwrap().id,
-        banned_room.id.as_str()
+        codec.encode_room_id(banned_room.id).unwrap()
     );
 
     let participating_room = client_api
         .list_my_rooms(
-            actor.id.as_str(),
+            &actor.id,
             synctv_proto::client::ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
@@ -956,7 +961,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
 
     let admin_user_rooms = admin_api
         .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
-            user_id: actor.id.as_str().to_string(),
+            user_id: codec.encode_user_id(actor.id).unwrap(),
             page: 1,
             page_size: 20,
             status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -968,7 +973,10 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .await
         .unwrap();
     assert_eq!(admin_user_rooms.total, 1);
-    assert_eq!(admin_user_rooms.rooms[0].id, joined_room.id.as_str());
+    assert_eq!(
+        admin_user_rooms.rooms[0].id,
+        codec.encode_room_id(joined_room.id).unwrap()
+    );
     assert_eq!(
         admin_user_rooms.rooms[0].member_count, 3,
         "admin related-room listing must use the same active-member count semantics"
@@ -1030,12 +1038,12 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
         VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
-    .bind(pending_registration_id.as_str())
+    .bind(pending_registration_id)
     .bind("user_matrix_pending")
     .bind("user_matrix_pending@test.com")
     .bind("hash")
     .bind(SignupMethod::Email)
-    .bind(ReviewStatus::Pending.as_i16())
+    .bind(i16::from(ReviewStatus::Pending))
     .execute(&pool)
     .await
     .unwrap();
@@ -1043,7 +1051,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let admin_ban_error = admin_api
         .ban_user(
             synctv_proto::admin::BanUserRequest {
-                user_id: platform_admin.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(platform_admin.id).unwrap(),
                 reason: "role hierarchy".to_string(),
             },
             &platform_admin.id,
@@ -1060,7 +1068,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let banned_regular = admin_api
         .ban_user(
             synctv_proto::admin::BanUserRequest {
-                user_id: regular_user.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(regular_user.id).unwrap(),
                 reason: "coverage".to_string(),
             },
             &platform_admin.id,
@@ -1080,7 +1088,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let unbanned_regular = admin_api
         .unban_user(
             synctv_proto::admin::UnbanUserRequest {
-                user_id: regular_user.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(regular_user.id).unwrap(),
             },
             &platform_admin.id,
             &RequestContext::default(),
@@ -1098,7 +1106,9 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let approved_pending = admin_api
         .approve_user_registration_review(
             synctv_proto::admin::ApproveUserRegistrationReviewRequest {
-                request_id: pending_registration_id.as_str().to_string(),
+                request_id: public_id_codec()
+                    .encode_user_id(pending_registration_id)
+                    .unwrap(),
             },
             &root.id,
             &RequestContext::default(),
@@ -1115,7 +1125,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let approve_active_error = admin_api
         .approve_user_registration_review(
             synctv_proto::admin::ApproveUserRegistrationReviewRequest {
-                request_id: regular_user.id.as_str().to_string(),
+                request_id: public_id_codec().encode_user_id(regular_user.id).unwrap(),
             },
             &root.id,
             &RequestContext::default(),
@@ -1160,7 +1170,7 @@ async fn test_join_room_rejects_banned_rooms() {
         .create_room(
             "Join Banned Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1170,10 +1180,10 @@ async fn test_join_room_rejects_banned_rooms() {
 
     let error = client_api
         .join_room(
-            joiner.id.as_str(),
-            room.id.as_str(),
+            &joiner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_proto::client::JoinRoomRequest {
-                room_id: room.id.as_str().to_string(),
+                room_id: public_id_codec().encode_room_id(room.id).unwrap(),
                 password: String::new(),
             },
             None,

@@ -44,7 +44,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -182,7 +182,7 @@ async fn test_get_batch_drops_invalid_json() {
     sqlx::query(
         r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)"
     )
-    .bind(room2.id.as_str())
+    .bind(room2.id)
     .execute(&pool)
     .await
     .unwrap();
@@ -194,7 +194,7 @@ async fn test_get_batch_drops_invalid_json() {
         .unwrap();
 
     // get_batch should return room1 and room3, silently dropping room2
-    let room_ids: Vec<&str> = vec![room1.id.as_str(), room2.id.as_str(), room3.id.as_str()];
+    let room_ids = vec![room1.id, room2.id, room3.id];
     let result = settings_repo.get_batch(&room_ids).await.unwrap();
 
     assert_eq!(
@@ -202,12 +202,12 @@ async fn test_get_batch_drops_invalid_json() {
         2,
         "Should have 2 valid entries, room2 silently dropped"
     );
-    assert!(result.contains_key(room1.id.as_str().trim()));
+    assert!(result.contains_key(&room1.id));
     assert!(
-        !result.contains_key(room2.id.as_str().trim()),
+        !result.contains_key(&room2.id),
         "Invalid JSON room should be absent"
     );
-    assert!(result.contains_key(room3.id.as_str().trim()));
+    assert!(result.contains_key(&room3.id));
 }
 
 #[tokio::test]

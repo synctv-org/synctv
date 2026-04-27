@@ -74,7 +74,7 @@ message DeregisterNodeResponse {
 
 // User connection tracking
 message GetUserOnlineStatusRequest {
-    repeated string user_ids = 1;
+    repeated int64 user_ids = 1;
 }
 
 message GetUserOnlineStatusResponse {
@@ -82,14 +82,14 @@ message GetUserOnlineStatusResponse {
 }
 
 message UserOnlineStatus {
-    string user_id = 1;
+    int64 user_id = 1;
     bool is_online = 2;
-    repeated string room_ids = 3; // Rooms user is currently in
+    repeated int64 room_ids = 3; // Rooms user is currently in
     string node_id = 4; // Node where user is connected
 }
 
 message GetRoomConnectionsRequest {
-    string room_id = 1;
+    int64 room_id = 1;
 }
 
 message GetRoomConnectionsResponse {
@@ -97,7 +97,7 @@ message GetRoomConnectionsResponse {
 }
 
 message RoomConnection {
-    string user_id = 1;
+    int64 user_id = 1;
     string node_id = 2;
     int64 connected_at = 3;
     int64 last_activity = 4;

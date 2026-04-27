@@ -94,7 +94,7 @@ async fn test_repo_update_with_matching_version_succeeds() {
         .create_room(
             "OL Repo Match Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -135,7 +135,7 @@ async fn test_repo_update_with_stale_version_fails() {
         .create_room(
             "OL Repo Stale Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -187,7 +187,7 @@ async fn test_repo_version_increments_sequentially() {
         .create_room(
             "OL Repo Seq Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -231,7 +231,7 @@ async fn test_concurrent_seek_with_retry() {
         .create_room(
             "OL Seek Retry Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -244,8 +244,8 @@ async fn test_concurrent_seek_with_retry() {
 
     for i in 0..5 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let position = f64::from(i).mul_add(100.0, 50.0);
 
@@ -303,7 +303,7 @@ async fn test_retry_handles_version_conflicts() {
         .create_room(
             "OL Retry Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -314,7 +314,7 @@ async fn test_retry_handles_version_conflicts() {
 
     // First operation
     let _state1 = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .seek(room.id, owner.id, 50.0)
         .await
         .unwrap();
 
@@ -326,7 +326,7 @@ async fn test_retry_handles_version_conflicts() {
 
     // Second operation should still succeed via retry
     let state2 = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 100.0)
+        .seek(room.id, owner.id, 100.0)
         .await
         .unwrap();
 
@@ -353,7 +353,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
         .create_room(
             "OL Exhaust Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -366,8 +366,8 @@ async fn test_retry_exhaustion_returns_degraded_response() {
 
     for i in 0..30 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let position = f64::from(i) * 10.0;
 
@@ -430,7 +430,7 @@ async fn test_concurrent_mixed_operations() {
         .create_room(
             "OL Mixed Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -446,8 +446,8 @@ async fn test_concurrent_mixed_operations() {
     // 3 seeks
     for i in 0..3 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let pos = f64::from(i) * 50.0;
 
@@ -460,8 +460,8 @@ async fn test_concurrent_mixed_operations() {
     // 3 play/pause toggles
     for i in 0..3 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let playing = i % 2 == 0;
 
@@ -474,8 +474,8 @@ async fn test_concurrent_mixed_operations() {
     // 3 speed changes
     for i in 0..3 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let speed = [0.5, 1.0, 1.5][i];
 
@@ -574,7 +574,7 @@ async fn test_high_contention_operations_remain_consistent() {
         .create_room(
             "OL Stress Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -587,8 +587,8 @@ async fn test_high_contention_operations_remain_consistent() {
 
     for i in 0..50 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
 
         handles.push(tokio::spawn(async move {
@@ -661,7 +661,7 @@ async fn test_version_handles_large_values() {
         .create_room(
             "OL Large Ver Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -672,7 +672,7 @@ async fn test_version_handles_large_values() {
 
     // Manually set version to a large value
     sqlx::query("UPDATE room_playback_state SET version = 999998 WHERE room_id = $1")
-        .bind(room.id.as_str())
+        .bind(room.id)
         .execute(&pool)
         .await
         .unwrap();

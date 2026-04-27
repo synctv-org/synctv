@@ -1166,7 +1166,7 @@ mod tests {
     fn validate_join_room_request_requires_room_id_length() {
         let request = crate::client::JoinRoomRequest {
             password: String::new(),
-            room_id: "short".into(),
+            room_id: String::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());

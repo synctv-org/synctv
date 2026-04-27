@@ -7,12 +7,12 @@
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager};
 
+fn system_user_id() -> synctv_core::models::UserId {
+    synctv_core::models::UserId::from(i64::MAX)
+}
+
 fn bridge_user_id(user_id: Option<&synctv_core::models::UserId>) -> synctv_core::models::UserId {
-    user_id.cloned().unwrap_or_else(|| {
-        synctv_core::models::UserId::from_string(
-            synctv_common::reserved::SYSTEM_USER_ID.to_string(),
-        )
-    })
+    user_id.copied().unwrap_or_else(system_user_id)
 }
 
 fn playlist_created_event(
@@ -23,8 +23,8 @@ fn playlist_created_event(
 ) -> ClusterEvent {
     ClusterEvent::PlaylistCreated {
         event_id: synctv_common::snanoid!(16),
-        room_id: room_id.clone(),
-        user_id: user_id.clone(),
+        room_id: *room_id,
+        user_id: *user_id,
         username: username.to_string(),
         playlist: playlist.clone(),
         timestamp: chrono::Utc::now(),
@@ -39,8 +39,8 @@ fn playlist_updated_event(
 ) -> ClusterEvent {
     ClusterEvent::PlaylistUpdated {
         event_id: synctv_common::snanoid!(16),
-        room_id: room_id.clone(),
-        user_id: user_id.clone(),
+        room_id: *room_id,
+        user_id: *user_id,
         username: username.to_string(),
         playlist: playlist.clone(),
         timestamp: chrono::Utc::now(),
@@ -55,10 +55,10 @@ fn playlist_deleted_event(
 ) -> ClusterEvent {
     ClusterEvent::PlaylistDeleted {
         event_id: synctv_common::snanoid!(16),
-        room_id: room_id.clone(),
-        user_id: user_id.clone(),
+        room_id: *room_id,
+        user_id: *user_id,
         username: username.to_string(),
-        playlist_id: playlist_id.clone(),
+        playlist_id: *playlist_id,
         timestamp: chrono::Utc::now(),
     }
 }
@@ -78,10 +78,10 @@ pub fn room_event_to_cluster_event(
             ..
         } => Some(ClusterEvent::MediaAdded {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.clone(),
-            media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+            media_id: *media_id,
             media_title: title.clone(),
             timestamp,
         }),
@@ -91,10 +91,10 @@ pub fn room_event_to_cluster_event(
             media_id,
         } => Some(ClusterEvent::MediaRemoved {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
+            room_id: *room_id,
             user_id: bridge_user_id(user_id.as_ref()),
             username: username.clone(),
-            media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+            media_id: *media_id,
             timestamp,
         }),
         synctv_core::service::RoomEvent::MediaUpdated {
@@ -105,10 +105,10 @@ pub fn room_event_to_cluster_event(
             ..
         } => Some(ClusterEvent::MediaUpdated {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.clone(),
-            media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
+            media_id: *media_id,
             media_title: title.clone(),
             timestamp,
         }),
@@ -118,14 +118,10 @@ pub fn room_event_to_cluster_event(
             media_ids,
         } => Some(ClusterEvent::PlaylistReordered {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
+            room_id: *room_id,
             user_id: bridge_user_id(user_id.as_ref()),
             username: username.clone(),
-            media_ids: media_ids
-                .iter()
-                .cloned()
-                .map(synctv_core::models::MediaId::from_string)
-                .collect(),
+            media_ids: media_ids.clone(),
             timestamp,
         }),
         synctv_core::service::RoomEvent::PlaylistDeleted {
@@ -134,17 +130,17 @@ pub fn room_event_to_cluster_event(
             playlist_id,
         } => Some(ClusterEvent::PlaylistDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
+            room_id: *room_id,
             user_id: bridge_user_id(user_id.as_ref()),
             username: username.clone(),
-            playlist_id: synctv_core::models::PlaylistId::from_string(playlist_id.clone()),
+            playlist_id: *playlist_id,
             timestamp,
         }),
         synctv_core::service::RoomEvent::UserLeft { user_id, username } => {
             Some(ClusterEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: user_id.clone(),
+                room_id: *room_id,
+                user_id: *user_id,
                 username: username.clone(),
                 timestamp,
             })
@@ -161,10 +157,10 @@ pub fn room_event_to_cluster_event(
             updated_by_username,
         } => Some(ClusterEvent::PermissionChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            target_user_id: user_id.clone(),
+            room_id: *room_id,
+            target_user_id: *user_id,
             target_username: String::new(),
-            changed_by: updated_by_user_id.clone(),
+            changed_by: *updated_by_user_id,
             changed_by_username: updated_by_username.clone(),
             new_permissions: synctv_core::models::PermissionBits(*effective_permissions),
             role: *role,
@@ -183,7 +179,7 @@ pub fn room_event_to_cluster_event(
             username,
         } => Some(ClusterEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
+            room_id: *room_id,
             user_id: bridge_user_id(user_id.as_ref()),
             username: username.clone(),
             settings_json: serde_json::to_vec(settings).unwrap_or_default(),
@@ -192,10 +188,8 @@ pub fn room_event_to_cluster_event(
         }),
         synctv_core::service::RoomEvent::RoomDeleted => Some(ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            deleted_by: synctv_core::models::UserId::from_string(
-                synctv_common::reserved::SYSTEM_USER_ID.to_string(),
-            ),
+            room_id: *room_id,
+            deleted_by: system_user_id(),
             timestamp,
         }),
         _ => None,
@@ -214,13 +208,11 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
     ) -> synctv_core::service::BroadcastResult {
         let event = ClusterEvent::PlaybackStateChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: state.room_id.clone(),
+            room_id: state.room_id,
             // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id
             // with a clearly-invalid prefix that cannot collide with real user IDs.
             // The consumer in messaging.rs only reads the state payload, not the user fields.
-            user_id: synctv_core::models::UserId::from_string(
-                synctv_common::reserved::SYSTEM_USER_ID.to_string(),
-            ),
+            user_id: system_user_id(),
             username: synctv_common::reserved::SYSTEM_USERNAME.to_string(),
             state: state.clone(),
             timestamp: chrono::Utc::now(),
@@ -254,8 +246,8 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
             .cluster_manager
             .broadcast(ClusterEvent::KickUserFromRoom {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: user_id.clone(),
+                room_id: *room_id,
+                user_id: *user_id,
                 reason: reason.to_string(),
                 timestamp: chrono::Utc::now(),
             });
@@ -264,7 +256,7 @@ impl synctv_core::service::MemberEventBroadcaster for ClusterMemberEventBroadcas
     fn broadcast_kick_user(&self, user_id: &synctv_core::models::UserId, reason: &str) {
         let _ = self.cluster_manager.broadcast(ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: user_id.clone(),
+            user_id: *user_id,
             reason: reason.to_string(),
             timestamp: chrono::Utc::now(),
         });
@@ -419,9 +411,9 @@ mod tests {
 
     fn sample_state() -> RoomPlaybackState {
         RoomPlaybackState {
-            room_id: RoomId::from_string("room-1".to_string()),
-            playing_media_id: Some(MediaId::from_string("media-1".to_string())),
-            playing_playlist_id: Some(PlaylistId::from_string("playlist-1".to_string())),
+            room_id: RoomId::from(120_001),
+            playing_media_id: Some(MediaId::from(120_002)),
+            playing_playlist_id: Some(PlaylistId::from(120_003)),
             target: Vec::new(),
             is_playing: true,
             current_time: 42.0,
@@ -433,9 +425,9 @@ mod tests {
 
     fn sample_playlist(room_id: &RoomId) -> Playlist {
         Playlist {
-            id: PlaylistId::from_string("playlist-1".to_string()),
-            room_id: room_id.clone(),
-            creator_id: Some(UserId::from_string("user-1".to_string())),
+            id: PlaylistId::from(120_003),
+            room_id: *room_id,
+            creator_id: Some(UserId::from(120_004)),
             name: "playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -490,8 +482,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_playlist_broadcaster_keeps_origin_delivery_without_redis_publish() {
-        let room_id = RoomId::from_string("room-playlist".to_string());
-        let user_id = UserId::from_string("user-playlist".to_string());
+        let room_id = RoomId::from(120_005);
+        let user_id = UserId::from(120_006);
         let playlist = sample_playlist(&room_id);
         let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
         let cluster_manager = Arc::new(
@@ -519,11 +511,7 @@ mod tests {
         );
         let mut room_rx = cluster_manager
             .message_hub()
-            .subscribe(
-                room_id.clone(),
-                user_id.clone(),
-                "conn-playlist".to_string(),
-            )
+            .subscribe(room_id, user_id, "conn-playlist".to_string())
             .await
             .expect("room subscription should succeed");
         let broadcaster = LocalPlaylistBroadcaster {
@@ -546,8 +534,8 @@ mod tests {
             ClusterEvent::PlaylistCreated {
                 room_id, playlist, ..
             } => {
-                assert_eq!(room_id.as_str(), "room-playlist");
-                assert_eq!(playlist.id.as_str(), "playlist-1");
+                assert_eq!(room_id, RoomId::from(120_005));
+                assert_eq!(playlist.id, PlaylistId::from(120_003));
             }
             other => panic!("expected PlaylistCreated, got {other:?}"),
         }
@@ -563,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_room_deleted() {
-        let room_id = RoomId::from_string("room-deleted".to_string());
+        let room_id = RoomId::from(120_007);
 
         let event =
             room_event_to_cluster_event(&room_id, &synctv_core::service::RoomEvent::RoomDeleted)
@@ -571,7 +559,7 @@ mod tests {
 
         match event {
             ClusterEvent::RoomDeleted { room_id, .. } => {
-                assert_eq!(room_id.as_str(), "room-deleted");
+                assert_eq!(room_id, RoomId::from(120_007));
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
         }
@@ -579,13 +567,13 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_user_left() {
-        let room_id = RoomId::from_string("room-user-left".to_string());
-        let user_id = UserId::from_string("user-left".to_string());
+        let room_id = RoomId::from(120_008);
+        let user_id = UserId::from(120_009);
 
         let event = room_event_to_cluster_event(
             &room_id,
             &synctv_core::service::RoomEvent::UserLeft {
-                user_id: user_id.clone(),
+                user_id,
                 username: "left-user".to_string(),
             },
         )
@@ -598,8 +586,8 @@ mod tests {
                 username,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-user-left");
-                assert_eq!(user_id.as_str(), "user-left");
+                assert_eq!(room_id, RoomId::from(120_008));
+                assert_eq!(user_id, UserId::from(120_009));
                 assert_eq!(username, "left-user");
             }
             other => panic!("expected UserLeft, got {other:?}"),
@@ -608,15 +596,15 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_playlist_deleted() {
-        let room_id = RoomId::from_string("room-playlist-deleted".to_string());
-        let user_id = UserId::from_string("user-playlist-deleted".to_string());
+        let room_id = RoomId::from(120_010);
+        let user_id = UserId::from(120_011);
 
         let event = room_event_to_cluster_event(
             &room_id,
             &synctv_core::service::RoomEvent::PlaylistDeleted {
-                user_id: Some(user_id.clone()),
+                user_id: Some(user_id),
                 username: "tester".to_string(),
-                playlist_id: "playlist-123".to_string(),
+                playlist_id: PlaylistId::from(120_012),
             },
         )
         .expect("PlaylistDeleted should bridge to ClusterEvent");
@@ -629,10 +617,10 @@ mod tests {
                 playlist_id,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-playlist-deleted");
-                assert_eq!(user_id.as_str(), "user-playlist-deleted");
+                assert_eq!(room_id, RoomId::from(120_010));
+                assert_eq!(user_id, UserId::from(120_011));
                 assert_eq!(username, "tester");
-                assert_eq!(playlist_id.as_str(), "playlist-123");
+                assert_eq!(playlist_id, PlaylistId::from(120_012));
             }
             other => panic!("expected PlaylistDeleted, got {other:?}"),
         }

@@ -33,12 +33,18 @@ async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager, String) {
     (redis, conn, key_prefix)
 }
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 fn distributed_manager(
@@ -85,11 +91,8 @@ async fn test_ttl_refresh_moderate_connections() {
         let user_id = uid(&format!("user_{user_idx}"));
         let room_id = rid(&format!("room_{room_idx}"));
 
-        manager
-            .register(conn_id.clone(), user_id.clone())
-            .await
-            .unwrap();
-        manager.join_room(&conn_id, room_id.clone()).await.unwrap();
+        manager.register(conn_id.clone(), user_id).await.unwrap();
+        manager.join_room(&conn_id, room_id).await.unwrap();
     }
 
     assert_eq!(manager.connection_count(), num_connections);
@@ -102,7 +105,7 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few user counter keys
     for i in 0..num_users {
-        let key = format!("{prefix}connections:user:user_{i}");
+        let key = format!("{prefix}connections:user:{}", uid(&format!("user_{i}")));
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
@@ -113,7 +116,7 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few room counter keys
     for i in 0..num_rooms {
-        let key = format!("{prefix}connections:room:room_{i}");
+        let key = format!("{prefix}connections:room:{}", rid(&format!("room_{i}")));
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
@@ -341,7 +344,7 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
     // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
     manager
-        .register("disconnect_conn".to_string(), user_id.clone())
+        .register("disconnect_conn".to_string(), user_id)
         .await
         .unwrap();
 
@@ -372,13 +375,10 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     let room_id = rid("room_zero");
 
     manager
-        .register("conn_zero".to_string(), user_id.clone())
+        .register("conn_zero".to_string(), user_id)
         .await
         .unwrap();
-    manager
-        .join_room("conn_zero", room_id.clone())
-        .await
-        .unwrap();
+    manager.join_room("conn_zero", room_id).await.unwrap();
     manager.unregister("conn_zero").await;
 
     assert_eq!(manager.connection_count(), 0);
@@ -390,14 +390,10 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
         .set(format!("{prefix}connections:total"), 1i64)
         .await
         .unwrap();
-    let _: () = redis_conn
-        .set(format!("{prefix}connections:user:user_zero"), 1i64)
-        .await
-        .unwrap();
-    let _: () = redis_conn
-        .set(format!("{prefix}connections:room:room_zero"), 1i64)
-        .await
-        .unwrap();
+    let user_key = format!("{prefix}connections:user:{user_id}");
+    let room_key = format!("{prefix}connections:room:{room_id}");
+    let _: () = redis_conn.set(&user_key, 1i64).await.unwrap();
+    let _: () = redis_conn.set(&room_key, 1i64).await.unwrap();
 
     manager.reconcile_with_redis().await;
 
@@ -405,14 +401,8 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
         .get(format!("{prefix}connections:total"))
         .await
         .unwrap();
-    let user: Option<i64> = redis_conn
-        .get(format!("{prefix}connections:user:user_zero"))
-        .await
-        .unwrap();
-    let room: Option<i64> = redis_conn
-        .get(format!("{prefix}connections:room:room_zero"))
-        .await
-        .unwrap();
+    let user: Option<i64> = redis_conn.get(&user_key).await.unwrap();
+    let room: Option<i64> = redis_conn.get(&room_key).await.unwrap();
 
     assert_eq!(total.unwrap_or_default(), 1);
     assert_eq!(user.unwrap_or_default(), 1);
@@ -439,7 +429,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 
     // Verify the TTL on the user counter key
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:user_ttl_test");
+    let key = format!("{prefix}connections:user:{user_id}");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)
@@ -474,7 +464,7 @@ async fn test_distributed_counter_expires_after_ttl() {
 
     // Verify counter exists and has value
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:user_expire_test");
+    let key = format!("{prefix}connections:user:{user_id}");
     let count: Option<i64> = test_conn.get(&key).await.unwrap();
     assert_eq!(count, Some(1), "Counter should be 1 after registration");
 
@@ -527,7 +517,7 @@ async fn test_ttl_multiplier_provides_safety_margin() {
 
     // Get initial TTL
     let mut test_conn = conn.clone();
-    let key = format!("{prefix}connections:user:user_margin_test");
+    let key = format!("{prefix}connections:user:{user_id}");
     let ttl: i64 = redis::cmd("TTL")
         .arg(key)
         .query_async(&mut test_conn)

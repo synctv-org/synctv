@@ -72,6 +72,7 @@ struct DynamicPlaylistPlaybackRequest<'a> {
 
 pub(crate) fn build_start_playback_request(
     req: crate::proto::client::StartPlaybackRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<StartPlaybackTarget, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::StartPlaybackRequest {
@@ -81,14 +82,18 @@ pub(crate) fn build_start_playback_request(
     } = req;
 
     Ok(StartPlaybackTarget {
-        media_id: crate::impls::proto_validated_optional_media_id(media_id),
-        playlist_id: crate::impls::proto_validated_optional_playlist_id(playlist_id),
+        media_id: crate::impls::proto_validated_optional_media_id(media_id, public_id_codec),
+        playlist_id: crate::impls::proto_validated_optional_playlist_id(
+            playlist_id,
+            public_id_codec,
+        ),
         target,
     })
 }
 
 pub(crate) fn build_update_playback_request(
     req: crate::proto::client::UpdatePlaybackRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<PlaybackUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::UpdatePlaybackRequest {
@@ -118,8 +123,9 @@ pub(crate) fn build_update_playback_request(
             .map_err(|err| ApiError::InvalidInput(err.to_string()))?;
     }
 
-    let media_id = crate::impls::proto_validated_optional_media_id(media_id);
-    let playlist_id = crate::impls::proto_validated_optional_playlist_id(playlist_id);
+    let media_id = crate::impls::proto_validated_optional_media_id(media_id, public_id_codec);
+    let playlist_id =
+        crate::impls::proto_validated_optional_playlist_id(playlist_id, public_id_codec);
     let target_requested = media_id.is_some() || playlist_id.is_some() || !target.is_empty();
 
     if playing.is_none() && position.is_none() && speed.is_none() && !target_requested {
@@ -155,20 +161,30 @@ pub(crate) fn build_update_playback_request(
 impl ClientApiImpl {
     pub(super) fn build_provider_context<'a>(
         &'a self,
-        user_id: &'a str,
-        credential_owner_id: Option<&'a str>,
-        room_id: &'a str,
+        user_id: &UserId,
+        credential_owner_id: Option<&UserId>,
+        room_id: &synctv_core::models::RoomId,
         provider_instance_name: Option<&'a str>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> ProviderContext<'a> {
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id)
+            .expect("positive user id must encode as public sqid");
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id)
+            .expect("positive room id must encode as public sqid");
         let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id)
-            .with_room_id(room_id)
+            .with_user_id(*user_id)
+            .with_public_user_id(public_user_id)
+            .with_room_id(*room_id)
+            .with_public_room_id(public_room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
         if let Some(credential_owner_id) = credential_owner_id {
-            ctx = ctx.with_credential_owner_id(credential_owner_id);
+            ctx = ctx.with_credential_owner_id(*credential_owner_id);
         }
         if let Some(provider_instance_name) = provider_instance_name
             .map(str::trim)
@@ -244,21 +260,25 @@ impl ClientApiImpl {
 
     async fn build_static_media_playback_result(
         &self,
-        user_id: &str,
-        room_id: &str,
+        user_id: &UserId,
+        room_id: &synctv_core::models::RoomId,
         media: synctv_core::models::Media,
         state: Option<&RoomPlaybackState>,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id)
+            .expect("positive user id must encode as public sqid");
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
             sign_local_bilibili_danmaku_urls(
                 &mut embedded_result,
-                user_id,
+                &public_user_id,
                 self.signing_key.as_deref(),
                 None,
             );
-            let mut snapshot = playback_snapshot_to_proto(&embedded_result);
+            let mut snapshot = playback_snapshot_to_proto(&embedded_result, &self.public_id_codec);
             snapshot.version = static_playback_snapshot_version(&media);
             snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
             return Ok(snapshot);
@@ -280,16 +300,13 @@ impl ClientApiImpl {
         let ctx = self.attach_provider_store(
             self.build_provider_context(
                 user_id,
-                media
-                    .creator_id
-                    .as_ref()
-                    .map(synctv_core::models::UserId::as_str),
+                media.creator_id.as_ref(),
                 room_id,
                 media.provider_instance_name.as_deref(),
                 playback_client_profile,
                 request_control,
             )
-            .with_media_id(media.id.as_str()),
+            .with_media_id(media.id),
             provider.as_ref(),
         );
         let provider_result = provider
@@ -303,10 +320,7 @@ impl ClientApiImpl {
                     provider: provider.as_ref(),
                     provider_name: media.source_provider.as_str(),
                     provider_instance_name: media.provider_instance_name.as_deref(),
-                    credential_owner_id: media
-                        .creator_id
-                        .as_ref()
-                        .map(synctv_core::models::UserId::as_str),
+                    credential_owner_id: media.creator_id.as_ref(),
                     source_config: &media.source_config,
                     result: &provider_result,
                 },
@@ -319,18 +333,19 @@ impl ClientApiImpl {
             .and_then(|info| info.expires_at);
         let live_danmaku = bilibili_live_danmaku_for_static_media(
             &media,
-            user_id,
+            &public_user_id,
+            &self.public_id_codec,
             self.signing_key.as_deref(),
             default_mode_expires_at,
         );
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            media.playlist_id.clone(),
-            media.room_id.clone(),
+            media.playlist_id,
+            media.room_id,
             media.name.clone(),
             media.position,
         )
-        .id(media.id.clone())
+        .id(media.id)
         .default_mode(provider_result.default_mode.clone());
 
         for (mode_name, provider_info) in provider_result.playback_infos {
@@ -349,11 +364,11 @@ impl ClientApiImpl {
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
         sign_local_bilibili_danmaku_urls(
             &mut full_result,
-            user_id,
+            &public_user_id,
             self.signing_key.as_deref(),
             default_mode_expires_at,
         );
-        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         snapshot.version = static_playback_snapshot_version(&media);
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
@@ -387,7 +402,7 @@ impl ClientApiImpl {
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(room_id.clone(), user_id.clone(), playlist_id, target)
+            .resolve_dynamic_playlist_item(*room_id, *user_id, playlist_id, target)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -415,12 +430,9 @@ impl ClientApiImpl {
 
         let ctx = self.attach_provider_store(
             self.build_provider_context(
-                user_id.as_str(),
-                playlist
-                    .creator_id
-                    .as_ref()
-                    .map(synctv_core::models::UserId::as_str),
-                room_id.as_str(),
+                user_id,
+                playlist.creator_id.as_ref(),
+                room_id,
                 playlist.provider_instance_name.as_deref(),
                 playback_client_profile,
                 request_control,
@@ -438,10 +450,7 @@ impl ClientApiImpl {
                     provider: provider.as_ref(),
                     provider_name,
                     provider_instance_name: playlist.provider_instance_name.as_deref(),
-                    credential_owner_id: playlist
-                        .creator_id
-                        .as_ref()
-                        .map(synctv_core::models::UserId::as_str),
+                    credential_owner_id: playlist.creator_id.as_ref(),
                     source_config: &item.source_config,
                     result: &provider_result,
                 },
@@ -450,8 +459,8 @@ impl ClientApiImpl {
         }
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            Some(playlist_id.clone()),
-            room_id.clone(),
+            Some(*playlist_id),
+            *room_id,
             item.name.clone(),
             0.0,
         )
@@ -472,7 +481,7 @@ impl ClientApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         snapshot.version = dynamic_playback_snapshot_version(&playlist);
         snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
         Ok(snapshot)
@@ -496,8 +505,8 @@ impl ClientApiImpl {
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
             return self
                 .build_static_media_playback_result(
-                    user_id.as_str(),
-                    room_id.as_str(),
+                    user_id,
+                    room_id,
                     media,
                     Some(state),
                     playback_client_profile,
@@ -523,7 +532,10 @@ impl ClientApiImpl {
         Ok(crate::proto::client::PlaybackSnapshot {
             media_id: String::new(),
             playlist_id: String::new(),
-            room_id: room_id.as_str().to_string(),
+            room_id: self
+                .public_id_codec
+                .encode_room_id(*room_id)
+                .expect("positive room id must encode as public sqid"),
             name: String::new(),
             position: 0.0,
             playback_infos: std::collections::HashMap::new(),
@@ -565,12 +577,9 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(
-                user_id.as_str(),
-                media
-                    .creator_id
-                    .as_ref()
-                    .map(synctv_core::models::UserId::as_str),
-                room_id.as_str(),
+                user_id,
+                media.creator_id.as_ref(),
+                room_id,
                 media.provider_instance_name.as_deref(),
                 None,
                 None,
@@ -609,12 +618,9 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(
-                user_id.as_str(),
-                playlist
-                    .creator_id
-                    .as_ref()
-                    .map(synctv_core::models::UserId::as_str),
-                room_id.as_str(),
+                user_id,
+                playlist.creator_id.as_ref(),
+                room_id,
                 playlist.provider_instance_name.as_deref(),
                 None,
                 None,
@@ -632,25 +638,19 @@ impl ClientApiImpl {
     /// HTTP API: POST /`api/rooms/{room_id}/playback/start`
     pub async fn start_playback(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::StartPlaybackRequest,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target = build_start_playback_request(req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target = build_start_playback_request(req, &self.public_id_codec)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         let state = self
             .room_service
             .playback_service()
-            .switch(
-                rid.clone(),
-                uid.clone(),
-                target.media_id,
-                target.playlist_id,
-                target.target,
-            )
+            .switch(rid, uid, target.media_id, target.playlist_id, target.target)
             .await
             .map_err(ApiError::from)?;
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -666,19 +666,19 @@ impl ClientApiImpl {
     /// HTTP API: POST /`api/rooms/{room_id}/playback/stop`
     pub async fn stop_playback(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         _req: crate::proto::client::StopPlaybackRequest,
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::reset()
         let state = self
             .room_service
             .playback_service()
-            .reset(rid.clone(), uid.clone())
+            .reset(rid, uid)
             .await
             .map_err(ApiError::from)?;
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -694,7 +694,7 @@ impl ClientApiImpl {
     /// HTTP API: GET /`api/rooms/{room_id}/playback`
     pub async fn get_playback(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::GetPlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
@@ -704,7 +704,7 @@ impl ClientApiImpl {
 
     pub async fn get_playback_with_context(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::GetPlaybackRequest,
         request_control: &ExecutionControl,
@@ -715,13 +715,13 @@ impl ClientApiImpl {
 
     async fn get_playback_internal(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::GetPlaybackRequest,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -751,8 +751,8 @@ impl ClientApiImpl {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::warn!(
-                    room_id = %rid.as_str(),
-                    user_id = %uid.as_str(),
+                    room_id = %rid,
+                    user_id = %uid,
                     error = %error,
                     "Playback snapshot generation failed; returning playback state only"
                 );
@@ -761,7 +761,7 @@ impl ClientApiImpl {
         };
 
         Ok(crate::proto::client::GetPlaybackResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
+            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
             playback_snapshot,
         })
     }
@@ -769,13 +769,13 @@ impl ClientApiImpl {
     /// Apply a playback update patch or target switch, then return the final playback state.
     pub async fn update_playback(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::UpdatePlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let command = build_update_playback_request(req)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let command = build_update_playback_request(req, &self.public_id_codec)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         let state = match command {
@@ -786,7 +786,7 @@ impl ClientApiImpl {
             } => self
                 .room_service
                 .playback_service()
-                .switch(rid.clone(), uid.clone(), media_id, playlist_id, target)
+                .switch(rid, uid, media_id, playlist_id, target)
                 .await
                 .map_err(ApiError::from)?,
             PlaybackUpdateCommand::Patch {
@@ -797,14 +797,7 @@ impl ClientApiImpl {
             } => self
                 .room_service
                 .playback_service()
-                .update_multiple_with_version(
-                    rid.clone(),
-                    uid.clone(),
-                    playing,
-                    position,
-                    speed,
-                    version,
-                )
+                .update_multiple_with_version(rid, uid, playing, position, speed, version)
                 .await
                 .map_err(ApiError::from)?,
         };
@@ -824,16 +817,20 @@ impl ClientApiImpl {
     // These methods are called from WebSocket message handler
 
     /// Handle Play command from WebSocket
-    pub async fn handle_play_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+    pub async fn handle_play_command(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+    ) -> Result<(), ApiError> {
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         let state = self
             .room_service
             .playback_service()
-            .set_playing(rid.clone(), uid, true)
+            .set_playing(rid, uid, true)
             .await
             .map_err(ApiError::from)?;
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -844,16 +841,20 @@ impl ClientApiImpl {
     }
 
     /// Handle Pause command from WebSocket
-    pub async fn handle_pause_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+    pub async fn handle_pause_command(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+    ) -> Result<(), ApiError> {
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
         let state = self
             .room_service
             .playback_service()
-            .set_playing(rid.clone(), uid, false)
+            .set_playing(rid, uid, false)
             .await
             .map_err(ApiError::from)?;
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -866,12 +867,12 @@ impl ClientApiImpl {
     /// Handle Seek command from WebSocket
     pub async fn handle_seek_command(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         current_time: f64,
     ) -> Result<(), ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
         let response = self
@@ -907,19 +908,19 @@ impl ClientApiImpl {
     /// Handle `SetPlaybackSpeed` command from WebSocket
     pub async fn handle_set_speed_command(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         speed: f64,
     ) -> Result<(), ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let previous_state = self.state_before_playback_update(&rid).await;
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
         let state = self
             .room_service
             .playback_service()
-            .change_speed(rid.clone(), uid, speed)
+            .change_speed(rid, uid, speed)
             .await
             .map_err(ApiError::from)?;
         self.handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
@@ -1000,14 +1001,19 @@ mod start_playback_builder_tests {
     use super::{
         build_start_playback_request, build_update_playback_request, PlaybackUpdateCommand,
     };
+    use synctv_core::models::{MediaId, PlaylistId};
 
     #[test]
     fn test_build_start_playback_request_rejects_proto_contract_violation() {
-        let err = build_start_playback_request(crate::proto::client::StartPlaybackRequest {
-            media_id: "media-1".into(),
-            playlist_id: "playlist-1".into(),
-            target: Vec::new(),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_start_playback_request(
+            crate::proto::client::StartPlaybackRequest {
+                media_id: codec.encode_media_id(MediaId::from(1)).unwrap(),
+                playlist_id: codec.encode_playlist_id(PlaylistId::from(2)).unwrap(),
+                target: Vec::new(),
+            },
+            &codec,
+        )
         .unwrap_err();
 
         assert!(err.to_string().contains("start_playback"));
@@ -1015,37 +1021,40 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_start_playback_request_parses_dynamic_target() {
-        let playlist_id = synctv_common::snanoid!(12);
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let playlist_id = PlaylistId::from(123);
+        let playlist_public_id = codec.encode_playlist_id(playlist_id).unwrap();
         let target = br#"{"path":"/tv/ep1.mp4"}"#.to_vec();
-        let parsed = build_start_playback_request(crate::proto::client::StartPlaybackRequest {
-            media_id: String::new(),
-            playlist_id: playlist_id.clone(),
-            target: target.clone(),
-        })
+        let parsed = build_start_playback_request(
+            crate::proto::client::StartPlaybackRequest {
+                media_id: String::new(),
+                playlist_id: playlist_public_id,
+                target: target.clone(),
+            },
+            &codec,
+        )
         .unwrap();
 
         assert!(parsed.media_id.is_none());
-        assert_eq!(
-            parsed
-                .playlist_id
-                .as_ref()
-                .map(synctv_core::models::PlaylistId::as_str),
-            Some(playlist_id.as_str())
-        );
+        assert_eq!(parsed.playlist_id, Some(playlist_id));
         assert_eq!(parsed.target, target);
     }
 
     #[test]
     fn test_build_update_playback_request_rejects_empty_patch() {
-        let err = build_update_playback_request(crate::proto::client::UpdatePlaybackRequest {
-            state: crate::proto::client::PlaybackPatchState::Unspecified as i32,
-            position: None,
-            speed: None,
-            media_id: String::new(),
-            playlist_id: String::new(),
-            target: Vec::new(),
-            version: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let err = build_update_playback_request(
+            crate::proto::client::UpdatePlaybackRequest {
+                state: crate::proto::client::PlaybackPatchState::Unspecified as i32,
+                position: None,
+                speed: None,
+                media_id: String::new(),
+                playlist_id: String::new(),
+                target: Vec::new(),
+                version: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         assert!(err
@@ -1055,16 +1064,20 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_request_rejects_mixed_switch_and_patch_fields() {
-        let playlist_id = synctv_common::snanoid!(12);
-        let err = build_update_playback_request(crate::proto::client::UpdatePlaybackRequest {
-            state: crate::proto::client::PlaybackPatchState::Playing as i32,
-            position: None,
-            speed: None,
-            media_id: String::new(),
-            playlist_id,
-            target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
-            version: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let playlist_id = codec.encode_playlist_id(PlaylistId::from(123)).unwrap();
+        let err = build_update_playback_request(
+            crate::proto::client::UpdatePlaybackRequest {
+                state: crate::proto::client::PlaybackPatchState::Playing as i32,
+                position: None,
+                speed: None,
+                media_id: String::new(),
+                playlist_id,
+                target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
+                version: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         let message = err.to_string();
@@ -1077,17 +1090,22 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_request_parses_switch_request() {
-        let playlist_id = synctv_common::snanoid!(12);
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let playlist_id = PlaylistId::from(123);
+        let playlist_public_id = codec.encode_playlist_id(playlist_id).unwrap();
         let target = br#"{"item_id":"provider-item-1"}"#.to_vec();
-        let parsed = build_update_playback_request(crate::proto::client::UpdatePlaybackRequest {
-            state: crate::proto::client::PlaybackPatchState::Unspecified as i32,
-            position: None,
-            speed: None,
-            media_id: String::new(),
-            playlist_id: playlist_id.clone(),
-            target: target.clone(),
-            version: None,
-        })
+        let parsed = build_update_playback_request(
+            crate::proto::client::UpdatePlaybackRequest {
+                state: crate::proto::client::PlaybackPatchState::Unspecified as i32,
+                position: None,
+                speed: None,
+                media_id: String::new(),
+                playlist_id: playlist_public_id,
+                target: target.clone(),
+                version: None,
+            },
+            &codec,
+        )
         .unwrap();
 
         match parsed {
@@ -1097,12 +1115,7 @@ mod start_playback_builder_tests {
                 target: parsed_target,
             } => {
                 assert!(media_id.is_none());
-                assert_eq!(
-                    parsed_playlist_id
-                        .as_ref()
-                        .map(synctv_core::models::PlaylistId::as_str),
-                    Some(playlist_id.as_str())
-                );
+                assert_eq!(parsed_playlist_id, Some(playlist_id));
                 assert_eq!(parsed_target, target);
             }
             other => panic!("expected switch command, got {other:?}"),
@@ -1111,15 +1124,19 @@ mod start_playback_builder_tests {
 
     #[test]
     fn test_build_update_playback_request_parses_patch_request() {
-        let parsed = build_update_playback_request(crate::proto::client::UpdatePlaybackRequest {
-            state: crate::proto::client::PlaybackPatchState::Paused as i32,
-            position: Some(42.5),
-            speed: Some(1.5),
-            media_id: String::new(),
-            playlist_id: String::new(),
-            target: Vec::new(),
-            version: Some(9),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let parsed = build_update_playback_request(
+            crate::proto::client::UpdatePlaybackRequest {
+                state: crate::proto::client::PlaybackPatchState::Paused as i32,
+                position: Some(42.5),
+                speed: Some(1.5),
+                media_id: String::new(),
+                playlist_id: String::new(),
+                target: Vec::new(),
+                version: Some(9),
+            },
+            &codec,
+        )
         .unwrap();
 
         match parsed {
@@ -1147,13 +1164,13 @@ mod tests {
     };
     use crate::impls::ErrorKind;
     use chrono::Utc;
-    use synctv_core::models::{Media, MediaId, RoomId};
+    use synctv_core::models::{Media, MediaId, PlaylistId, RoomId};
 
     fn make_media(provider_instance_name: &str) -> Media {
         Media {
-            id: MediaId::from_string("media_static".to_string()),
+            id: MediaId::new(),
             playlist_id: None,
-            room_id: RoomId::from_string("room_static".to_string()),
+            room_id: RoomId::new(),
             creator_id: None,
             name: "Static Media".to_string(),
             position: 0.0,
@@ -1190,26 +1207,36 @@ mod tests {
 
     #[test]
     fn test_build_start_playback_request_converts_proto_validated_ids_without_reparsing() {
-        let target = build_start_playback_request(crate::proto::client::StartPlaybackRequest {
-            media_id: "AbC123xYz890".to_string(),
-            playlist_id: String::new(),
-            target: Vec::new(),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let media_id = MediaId::from(123);
+        let target = build_start_playback_request(
+            crate::proto::client::StartPlaybackRequest {
+                media_id: codec.encode_media_id(media_id).unwrap(),
+                playlist_id: String::new(),
+                target: Vec::new(),
+            },
+            &codec,
+        )
         .expect("valid playback request");
 
-        assert_eq!(target.media_id.unwrap().as_str(), "AbC123xYz890");
+        assert_eq!(target.media_id, Some(media_id));
         assert!(target.playlist_id.is_none());
         assert!(target.target.is_empty());
     }
 
     #[test]
     fn test_build_update_playback_request_converts_proto_validated_switch_ids_without_reparsing() {
-        let command = build_update_playback_request(crate::proto::client::UpdatePlaybackRequest {
-            media_id: String::new(),
-            playlist_id: "ZyX098wVu765".to_string(),
-            target: vec![9, 8, 7],
-            ..Default::default()
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let expected_playlist_id = PlaylistId::from(456);
+        let command = build_update_playback_request(
+            crate::proto::client::UpdatePlaybackRequest {
+                media_id: String::new(),
+                playlist_id: codec.encode_playlist_id(expected_playlist_id).unwrap(),
+                target: vec![9, 8, 7],
+                ..Default::default()
+            },
+            &codec,
+        )
         .expect("valid switch request");
 
         match command {
@@ -1219,7 +1246,7 @@ mod tests {
                 target,
             } => {
                 assert!(media_id.is_none());
-                assert_eq!(playlist_id.unwrap().as_str(), "ZyX098wVu765");
+                assert_eq!(playlist_id, Some(expected_playlist_id));
                 assert_eq!(target, vec![9, 8, 7]);
             }
             other => panic!("expected switch command, got {other:?}"),

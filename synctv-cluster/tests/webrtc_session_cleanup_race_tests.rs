@@ -17,12 +17,18 @@ use synctv_core::models::id::{RoomId, UserId};
 const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
 const WEBRTC_TIMEOUT_BUFFER: Duration = Duration::from_millis(25);
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 // Test 1: Timeout clears RTC state to prevent race with cleanup
@@ -46,10 +52,8 @@ async fn test_timeout_clears_rtc_state() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -119,8 +123,8 @@ async fn test_multiple_concurrent_timeouts() {
     // Register multiple connections and join WebRTC
     for i in 0..5 {
         let conn_id = format!("conn{i}");
-        mgr.register(conn_id.clone(), user.clone()).await.unwrap();
-        mgr.join_room(&conn_id, room.clone()).await.unwrap();
+        mgr.register(conn_id.clone(), user).await.unwrap();
+        mgr.join_room(&conn_id, room).await.unwrap();
         mgr.mark_rtc_joined(&room, &user, &conn_id, true);
     }
 
@@ -181,10 +185,8 @@ async fn test_timeout_does_not_affect_active_sessions() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -236,10 +238,8 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -300,10 +300,8 @@ async fn test_connection_info_accurate_after_timeout() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);

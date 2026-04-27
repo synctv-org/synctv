@@ -15,7 +15,7 @@ async fn test_stream_key_format_parsing() {
     let media_id = MediaId::new();
     let token = "dummy_jwt_token";
 
-    let stream_key = format!("{}/{}?token={}", room_id.as_str(), media_id.as_str(), token);
+    let stream_key = format!("{room_id}/{media_id}?token={token}");
 
     // Parse stream key
     let parts: Vec<&str> = stream_key.split('?').collect();
@@ -26,8 +26,8 @@ async fn test_stream_key_format_parsing() {
 
     let path_parts: Vec<&str> = path.split('/').collect();
     assert_eq!(path_parts.len(), 2);
-    assert_eq!(path_parts[0], room_id.as_str());
-    assert_eq!(path_parts[1], media_id.as_str());
+    assert_eq!(path_parts[0], room_id.to_string());
+    assert_eq!(path_parts[1], media_id.to_string());
 
     assert!(query.contains("token="));
     assert!(query.contains(token));
@@ -93,18 +93,12 @@ async fn test_rtmp_url_construction() {
     let media_id = MediaId::new();
     let token = "jwt_token_here";
 
-    let rtmp_url = format!(
-        "{}/{}/{}?token={}",
-        server_addr,
-        app_name,
-        room_id.as_str(),
-        media_id.as_str()
-    );
+    let rtmp_url = format!("{server_addr}/{app_name}/{room_id}?token={media_id}");
 
-    let stream_key = format!("{}?token={}", media_id.as_str(), token);
+    let stream_key = format!("{media_id}?token={token}");
 
     assert!(rtmp_url.starts_with("rtmp://"));
-    assert!(rtmp_url.contains(room_id.as_str()));
+    assert!(rtmp_url.contains(&room_id.to_string()));
     assert!(stream_key.contains("token="));
 }
 
@@ -114,24 +108,16 @@ async fn test_hls_playlist_path_generation() {
     let media_id = MediaId::new();
 
     // HLS master playlist path
-    let master_playlist = format!(
-        "/hls/{}/{}/master.m3u8",
-        room_id.as_str(),
-        media_id.as_str()
-    );
+    let master_playlist = format!("/hls/{room_id}/{media_id}/master.m3u8");
     assert!(master_playlist.ends_with(".m3u8"));
-    assert!(master_playlist.contains(room_id.as_str()));
+    assert!(master_playlist.contains(&room_id.to_string()));
 
     // HLS media playlist path
-    let media_playlist = format!("/hls/{}/{}/index.m3u8", room_id.as_str(), media_id.as_str());
+    let media_playlist = format!("/hls/{room_id}/{media_id}/index.m3u8");
     assert!(media_playlist.ends_with(".m3u8"));
 
     // HLS segment path
-    let segment_path = format!(
-        "/hls/{}/{}/segment_00001.ts",
-        room_id.as_str(),
-        media_id.as_str()
-    );
+    let segment_path = format!("/hls/{room_id}/{media_id}/segment_00001.ts");
     assert!(segment_path.ends_with(".ts"));
 }
 

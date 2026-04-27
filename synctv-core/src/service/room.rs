@@ -74,9 +74,9 @@ use crate::{
     cache::CacheInvalidationRuntime,
     models::{
         ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
-        PlaylistId, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState,
-        RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole,
-        UserStatus,
+        PlaylistId, ReviewRequestId, ReviewStatus, Room, RoomId, RoomListQuery, RoomMember,
+        RoomPlaybackState, RoomRole, RoomSettings, RoomStatus, RoomWithCount, UserId,
+        UserListQuery, UserRole, UserStatus,
     },
     repository::{
         media::MediaListItem, playlist::PlaylistListItem, ChatRepository, MediaRepository,
@@ -116,9 +116,9 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
 }
 
 const MAX_DELETE_TARGETS: usize = 100;
-const ROOM_JOIN_REQUEST_PENDING: i16 = ReviewStatus::Pending.as_i16();
-const ROOM_JOIN_REQUEST_APPROVED: i16 = ReviewStatus::Approved.as_i16();
-const ROOM_JOIN_REQUEST_REJECTED: i16 = ReviewStatus::Rejected.as_i16();
+const ROOM_JOIN_REQUEST_PENDING: ReviewStatus = ReviewStatus::Pending;
+const ROOM_JOIN_REQUEST_APPROVED: ReviewStatus = ReviewStatus::Approved;
+const ROOM_JOIN_REQUEST_REJECTED: ReviewStatus = ReviewStatus::Rejected;
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedAdminActor {
@@ -289,7 +289,7 @@ impl RoomService {
         admin_user_id: &UserId,
     ) -> Result<AuthorizedAdminActor> {
         let admin_user = self.user_service.get_user(admin_user_id).await?;
-        AuthorizedAdminActor::new(admin_user_id.clone(), admin_user.username, admin_user.role)
+        AuthorizedAdminActor::new(*admin_user_id, admin_user.username, admin_user.role)
     }
 
     async fn create_room_creation_request(
@@ -300,34 +300,30 @@ impl RoomService {
         password_hash: Option<&str>,
         settings: &RoomSettings,
     ) -> Result<Room> {
-        let request_id = RoomId::new();
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        sqlx::query(
+        let request_id = sqlx::query_scalar::<_, i64>(
             r"
             INSERT INTO room_creation_requests (
-                id, requested_by, name, description, password_hash, settings_payload, status, requested_at
+                requested_by, name, description, password_hash, settings_payload, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+            RETURNING id
             ",
         )
-        .bind(request_id.as_str())
-        .bind(requested_by.as_str())
+        .bind(requested_by)
         .bind(name)
         .bind(description)
         .bind(password_hash)
         .bind(settings_payload)
-        .bind(ReviewStatus::Pending.as_i16())
-        .execute(&self.pool)
+        .bind(ReviewStatus::Pending)
+        .fetch_one(&self.pool)
         .await?;
 
-        let mut room = Room::new_with_description(
-            name.to_string(),
-            description.to_string(),
-            requested_by.clone(),
-        );
-        room.id = request_id;
+        let mut room =
+            Room::new_with_description(name.to_string(), description.to_string(), *requested_by);
+        room.id = RoomId::from(request_id);
         Ok(room)
     }
 
@@ -343,8 +339,8 @@ impl RoomService {
             FOR UPDATE
             ",
         )
-        .bind(request_id.as_str())
-        .bind(ReviewStatus::Pending.as_i16())
+        .bind(request_id)
+        .bind(ReviewStatus::Pending)
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -451,7 +447,7 @@ impl RoomService {
     {
         let unique_ids: Vec<UserId> = creator_ids
             .into_iter()
-            .cloned()
+            .copied()
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -571,7 +567,7 @@ impl RoomService {
             .iter()
             .map(|room| {
                 (
-                    room.id.clone(),
+                    room.id,
                     Self::room_client_availability(room, &active_creators),
                 )
             })
@@ -594,7 +590,7 @@ impl RoomService {
             .iter()
             .map(|playlist| {
                 (
-                    playlist.id.clone(),
+                    playlist.id,
                     Self::playlist_client_availability(playlist, &active_creators),
                 )
             })
@@ -642,7 +638,7 @@ impl RoomService {
             .iter()
             .map(|item| {
                 (
-                    item.id.clone(),
+                    item.id,
                     Self::media_client_availability(item, &active_creators),
                 )
             })
@@ -1003,7 +999,7 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             if let Err(e) = audit
                 .log(
-                    actor_id.as_str().to_string(),
+                    actor_id.to_string(),
                     actor_username.to_string(),
                     action,
                     target_type,
@@ -1039,7 +1035,7 @@ impl RoomService {
     ) -> Result<(Room, RoomMember)> {
         // Acquire distributed lock to prevent duplicate creation by the same user
         if let Some(ref lock) = self.distributed_lock {
-            let lock_key = format!("create_room:{}", created_by.as_str());
+            let lock_key = format!("create_room:{created_by}");
             return crate::service::distributed_lock::with_coordination_lock(
                 lock.as_ref(),
                 &lock_key,
@@ -1047,7 +1043,6 @@ impl RoomService {
                 || {
                     let name = name.clone();
                     let description = description.clone();
-                    let created_by = created_by.clone();
                     let password = password.clone();
                     let settings = settings.clone();
                     async move {
@@ -1184,11 +1179,7 @@ impl RoomService {
                     &room_settings,
                 )
                 .await?;
-            let pending_member = RoomMember::new(
-                pending_room.id.clone(),
-                created_by.clone(),
-                RoomRole::Creator,
-            );
+            let pending_member = RoomMember::new(pending_room.id, created_by, RoomRole::Creator);
 
             if let Some(ref notif_service) = self.user_notification_service {
                 let mut all_admins = Vec::new();
@@ -1210,16 +1201,15 @@ impl RoomService {
                 for admin in all_admins {
                     if let Err(e) = notif_service
                         .create_system_announcement(
-                            admin.id.clone(),
+                            admin.id,
                             format!("Room Pending Review: {name}"),
                             format!(
-                                "User {} requested room \"{name}\" which requires admin review.",
-                                created_by.as_str()
+                                "User {created_by} requested room \"{name}\" which requires admin review."
                             ),
                             Some(serde_json::json!({
-                                "room_request_id": pending_room.id.as_str(),
+                                "room_request_id": pending_room.id,
                                 "room_name": &name,
-                                "creator_id": created_by.as_str(),
+                                "creator_id": created_by,
                             })),
                         )
                         .await
@@ -1241,7 +1231,7 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
 
         // 1. Create room
-        let room = Room::new_with_description(name, description, created_by.clone());
+        let room = Room::new_with_description(name, description, created_by);
         let created_room = self.room_repo.create_with_executor(&room, &mut *tx).await?;
 
         // 2. Set password if provided
@@ -1258,11 +1248,7 @@ impl RoomService {
             .await?;
 
         // 4. Add creator as member with full permissions
-        let member = RoomMember::new(
-            created_room.id.clone(),
-            created_by.clone(),
-            RoomRole::Creator,
-        );
+        let member = RoomMember::new(created_room.id, created_by, RoomRole::Creator);
         let created_member = self.member_repo.add_with_executor(&member, &mut tx).await?;
 
         // 5. Initialize playback state
@@ -1378,11 +1364,11 @@ impl RoomService {
             "",
             AuditAction::RoomOwnershipTransferred,
             AuditTargetType::Room,
-            Some(room_id.as_str().to_string()),
+            Some(room_id.to_string()),
             serde_json::json!({
                 "operation": "transfer_ownership",
-                "previous_owner_id": current_owner_id.as_str(),
-                "new_owner_id": new_owner_id.as_str(),
+                "previous_owner_id": current_owner_id,
+                "new_owner_id": new_owner_id,
                 "previous_owner_role": format!("{:?}", current_owner_member.role),
                 "new_owner_previous_role": format!("{:?}", new_owner_member.role),
             }),
@@ -1503,14 +1489,12 @@ impl RoomService {
         // add the member, or where the room state changes between validation
         // and the add_member call.
         if let Some(ref lock) = self.distributed_lock {
-            let lock_key = format!("join_room:{}:{}", room_id.as_str(), user_id.as_str());
+            let lock_key = format!("join_room:{room_id}:{user_id}");
             return crate::service::distributed_lock::with_coordination_lock(
                 lock.as_ref(),
                 &lock_key,
                 10,
                 || {
-                    let room_id = room_id.clone();
-                    let user_id = user_id.clone();
                     let password = password.clone();
                     async move {
  // Re-validate state under lock to catch changes that occurred
@@ -1600,7 +1584,7 @@ impl RoomService {
                 "User is already an active member of the room"
             );
             let members = self.member_service.list_members(&room_id).await?;
-            self.touch_room_activity(room_id.clone()).await;
+            self.touch_room_activity(room_id).await;
             return Ok((room, existing_member, members));
         }
 
@@ -1632,7 +1616,7 @@ impl RoomService {
             .with_initial_status(MemberStatus::Active); // 0 = read from RoomSettings
         let created_member = match self
             .member_service
-            .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
+            .add_member_with_options(room_id, user_id, RoomRole::Member, options)
             .await
         {
             Ok(member) => member,
@@ -1688,7 +1672,7 @@ impl RoomService {
         user_id: &UserId,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let existing_request_id = sqlx::query_scalar::<_, String>(
+        let existing_request_id = sqlx::query_scalar::<_, i64>(
             r"
             SELECT id
             FROM room_join_requests
@@ -1698,8 +1682,8 @@ impl RoomService {
             LIMIT 1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1707,14 +1691,13 @@ impl RoomService {
             let insert_result = sqlx::query(
                 r"
                 INSERT INTO room_join_requests (
-                    id, room_id, user_id, requested_role, status, requested_at
+                    room_id, user_id, requested_role, status, requested_at
                 )
-                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
                 ",
             )
-            .bind(crate::models::generate_id())
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(role)
             .bind(ROOM_JOIN_REQUEST_PENDING)
             .execute(&self.pool)
@@ -1732,14 +1715,14 @@ impl RoomService {
             }
         }
 
-        let pending = RoomMember::new(room_id.clone(), user_id.clone(), role);
+        let pending = RoomMember::new(*room_id, *user_id, role);
         Ok(pending)
     }
 
     async fn load_pending_join_request_by_id_for_update(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         room_id: &RoomId,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<(UserId, RoomRole)> {
         let row = sqlx::query(
             r"
@@ -1753,22 +1736,22 @@ impl RoomService {
             ",
         )
         .bind(request_id)
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(RoomRole::Member)
         .bind(ROOM_JOIN_REQUEST_PENDING)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
 
-        let user_id: String = row.try_get("user_id")?;
+        let user_id: UserId = row.try_get("user_id")?;
         let requested_role: RoomRole = row.try_get("requested_role")?;
-        Ok((UserId::from_string(user_id), requested_role))
+        Ok((user_id, requested_role))
     }
 
     async fn load_pending_join_request_by_id(
         &self,
         room_id: &RoomId,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<(UserId, RoomRole)> {
         let row = sqlx::query(
             r"
@@ -1781,16 +1764,16 @@ impl RoomService {
             ",
         )
         .bind(request_id)
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(RoomRole::Member)
         .bind(ROOM_JOIN_REQUEST_PENDING)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
 
-        let user_id: String = row.try_get("user_id")?;
+        let user_id: UserId = row.try_get("user_id")?;
         let requested_role: RoomRole = row.try_get("requested_role")?;
-        Ok((UserId::from_string(user_id), requested_role))
+        Ok((user_id, requested_role))
     }
 
     async fn resolve_pending_join_request_as_approved_tx(
@@ -1811,10 +1794,10 @@ impl RoomService {
               AND status = $5
             ",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .bind(ROOM_JOIN_REQUEST_APPROVED)
-        .bind(reviewed_by.map(UserId::as_str))
+        .bind(reviewed_by.map(UserId::as_i64))
         .bind(ROOM_JOIN_REQUEST_PENDING)
         .execute(&mut **tx)
         .await?;
@@ -1837,7 +1820,7 @@ impl RoomService {
         reviewed_by: Option<&UserId>,
         require_pending_review: bool,
     ) -> Result<RoomMember> {
-        let mut member = RoomMember::new(room_id.clone(), target_user_id.clone(), role);
+        let mut member = RoomMember::new(*room_id, *target_user_id, role);
         member.status = MemberStatus::Active;
         let options = self.active_member_add_options(room_id).await?;
         let created = self
@@ -1896,16 +1879,16 @@ impl RoomService {
 
         if let Err(error) = notif_service
             .create_room_event(
-                target_user_id.clone(),
-                room.id.as_str().to_string(),
+                *target_user_id,
+                room.id.to_string(),
                 room.name.clone(),
                 event,
             )
             .await
         {
             tracing::warn!(
-                room_id = %room.id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room.id,
+                user_id = %target_user_id,
                 error = %error,
                 "Failed to create room membership notification"
             );
@@ -1924,16 +1907,16 @@ impl RoomService {
 
         if let Err(error) = notif_service
             .create_room_invitation(
-                target_user_id.clone(),
-                room.id.as_str().to_string(),
+                *target_user_id,
+                room.id.to_string(),
                 room.name.clone(),
                 actor_username.to_string(),
             )
             .await
         {
             tracing::warn!(
-                room_id = %room.id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room.id,
+                user_id = %target_user_id,
                 error = %error,
                 "Failed to create room invitation notification"
             );
@@ -1985,16 +1968,16 @@ impl RoomService {
             .user_service
             .get_username(&actor_id)
             .await?
-            .unwrap_or_else(|| actor_id.as_str().to_string());
+            .unwrap_or_else(|| actor_id.to_string());
 
         self.audit_log(
             &actor_id,
             &actor_username,
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "new_status": "active",
                 "role": role.to_string(),
                 "source": "explicit_add_member",
@@ -2015,7 +1998,7 @@ impl RoomService {
         &self,
         room_id: RoomId,
         actor_id: UserId,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<RoomMember> {
         let room = self
             .room_repo
@@ -2067,7 +2050,7 @@ impl RoomService {
         &self,
         room_id: RoomId,
         actor_id: UserId,
-        request_id: &str,
+        request_id: ReviewRequestId,
         reason: Option<&str>,
     ) -> Result<UserId> {
         let room = self
@@ -2097,7 +2080,7 @@ impl RoomService {
         )
         .bind(request_id)
         .bind(ROOM_JOIN_REQUEST_REJECTED)
-        .bind(actor_id.as_str())
+        .bind(actor_id)
         .bind(reason)
         .execute(&mut *tx)
         .await?;
@@ -2111,16 +2094,16 @@ impl RoomService {
             .user_service
             .get_username(&actor_id)
             .await?
-            .unwrap_or_else(|| actor_id.as_str().to_string());
+            .unwrap_or_else(|| actor_id.to_string());
 
         self.audit_log(
             &actor_id,
             &actor_username,
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "request_id": request_id,
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
@@ -2180,9 +2163,9 @@ impl RoomService {
             actor_username,
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "new_status": "active",
                 "role": role.to_string(),
                 "source": "admin_add_member",
@@ -2205,7 +2188,7 @@ impl RoomService {
         actor_id: UserId,
         reviewed_by: Option<&UserId>,
         actor_username: &str,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<RoomMember> {
         let room = self
             .room_repo
@@ -2240,9 +2223,9 @@ impl RoomService {
             actor_username,
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "request_id": request_id,
                 "previous_review_status": "pending",
                 "new_review_status": "approved",
@@ -2268,7 +2251,7 @@ impl RoomService {
         actor_id: UserId,
         reviewed_by: Option<&UserId>,
         actor_username: &str,
-        request_id: &str,
+        request_id: ReviewRequestId,
         reason: Option<&str>,
     ) -> Result<UserId> {
         let room = self
@@ -2292,7 +2275,7 @@ impl RoomService {
         )
         .bind(request_id)
         .bind(ROOM_JOIN_REQUEST_REJECTED)
-        .bind(reviewed_by.map(UserId::as_str))
+        .bind(reviewed_by.map(UserId::as_i64))
         .bind(reason)
         .execute(&mut *tx)
         .await?;
@@ -2307,9 +2290,9 @@ impl RoomService {
             actor_username,
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "request_id": request_id,
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
@@ -2368,9 +2351,7 @@ impl RoomService {
             ));
         }
 
-        self.member_service
-            .remove_member(room_id.clone(), user_id.clone())
-            .await?;
+        self.member_service.remove_member(room_id, user_id).await?;
 
         // Notify room members with username
         let username = self
@@ -2528,7 +2509,7 @@ impl RoomService {
             "",
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
-            Some(room_id.as_str().to_string()),
+            Some(room_id.to_string()),
             serde_json::json!({
                 "reason": "Room deleted by user",
                 "playlists_deleted": impact.deleted_playlist_ids.len(),
@@ -2572,20 +2553,18 @@ impl RoomService {
             .await?
             .ok_or_else(|| {
                 Error::NotFound(format!(
-                    "Pending room creation request {} not found",
-                    request_id.as_str()
+                    "Pending room creation request {request_id} not found"
                 ))
             })?;
 
         self.enforce_room_ownership_limit(&request.requested_by, None)
             .await?;
 
-        let mut room = Room::new_with_description(
+        let room = Room::new_with_description(
             request.name.clone(),
             request.description.clone(),
-            request.requested_by.clone(),
+            request.requested_by,
         );
-        room.id = request.id.clone();
         let updated = self.room_repo.create_with_executor(&room, &mut *tx).await?;
 
         if let Some(password_hash) = request.password_hash.as_deref() {
@@ -2597,11 +2576,7 @@ impl RoomService {
             .set_settings_with_executor(&updated.id, &request.settings, &mut *tx)
             .await?;
 
-        let member = RoomMember::new(
-            updated.id.clone(),
-            request.requested_by.clone(),
-            RoomRole::Creator,
-        );
+        let member = RoomMember::new(updated.id, request.requested_by, RoomRole::Creator);
         self.member_repo.add_with_executor(&member, &mut tx).await?;
         self.playback_repo
             .create_or_get_with_executor(&updated.id, &mut tx)
@@ -2614,9 +2589,9 @@ impl RoomService {
             WHERE id = $1
             ",
         )
-        .bind(request_id.as_str())
-        .bind(ReviewStatus::Approved.as_i16())
-        .bind(admin_id.map(UserId::as_str))
+        .bind(request_id)
+        .bind(ReviewStatus::Approved)
+        .bind(admin_id.map(UserId::as_i64))
         .execute(&mut *tx)
         .await?;
 
@@ -2635,9 +2610,9 @@ impl RoomService {
             "",
             AuditAction::RoomApproved,
             AuditTargetType::Room,
-            Some(updated.id.as_str().to_string()),
+            Some(updated.id.to_string()),
             serde_json::json!({
-                "request_id": request_id.as_str(),
+                "request_id": request_id.to_string(),
                 "previous_review_status": "pending",
                 "new_review_status": "approved",
             }),
@@ -2679,10 +2654,7 @@ impl RoomService {
         let request = Self::load_pending_room_creation_request_for_update(&room_id, &mut tx)
             .await?
             .ok_or_else(|| {
-                Error::NotFound(format!(
-                    "Pending room creation request {} not found",
-                    room_id.as_str()
-                ))
+                Error::NotFound(format!("Pending room creation request {room_id} not found"))
             })?;
 
         sqlx::query(
@@ -2692,9 +2664,9 @@ impl RoomService {
             WHERE id = $1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(ReviewStatus::Rejected.as_i16())
-        .bind(admin_id.map(UserId::as_str))
+        .bind(room_id)
+        .bind(ReviewStatus::Rejected)
+        .bind(admin_id.map(UserId::as_i64))
         .bind(reason.as_deref())
         .execute(&mut *tx)
         .await?;
@@ -2710,7 +2682,7 @@ impl RoomService {
             "",
             AuditAction::RoomRejected,
             AuditTargetType::Room,
-            Some(room_id.as_str().to_string()),
+            Some(room_id.to_string()),
             serde_json::json!({
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
@@ -2750,7 +2722,7 @@ impl RoomService {
             WHERE reviewed_at IS NULL AND status = $1
             ",
         )
-        .bind(ReviewStatus::Pending.as_i16())
+        .bind(ReviewStatus::Pending)
         .fetch_one(&self.pool)
         .await?;
 
@@ -2763,7 +2735,7 @@ impl RoomService {
             LIMIT $2 OFFSET $3
             ",
         )
-        .bind(ReviewStatus::Pending.as_i16())
+        .bind(ReviewStatus::Pending)
         .bind(i64::try_from(pagination.limit()).unwrap_or(i64::MAX))
         .bind(i64::try_from(pagination.offset()).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
@@ -2818,7 +2790,7 @@ impl RoomService {
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
         // CAS write with retry and total timeout
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
         let settings_clone = settings.clone();
         let room_settings_repo = self.room_settings_repo.clone();
         let audit_service = self.audit_service.clone();
@@ -2830,7 +2802,7 @@ impl RoomService {
                 std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
                 "Settings update failed after maximum retry attempts",
                 || {
-                    let room_id = room_id_clone.clone();
+                    let room_id = room_id_clone;
                     let settings = settings_clone.clone();
                     let room_settings_repo = room_settings_repo.clone();
                     async move {
@@ -2861,11 +2833,11 @@ impl RoomService {
                 .internal_with_err("Failed to serialize settings")?;
             let _ = audit
                 .log(
-                    user_id.as_str().to_string(),
-                    user_id.as_str().to_string(),
+                    user_id.to_string(),
+                    user_id.to_string(),
                     AuditAction::RoomSettingsUpdated,
                     AuditTargetType::Room,
-                    Some(room_id.as_str().to_string()),
+                    Some(room_id.to_string()),
                     settings_json,
                     None,
                     None,
@@ -2922,7 +2894,7 @@ impl RoomService {
         let key = self
             .user_service
             .key_builder()
-            .room_guest_version(room_id.as_str());
+            .room_guest_version(&room_id.to_string());
         Ok(self
             .user_service
             .token_blacklist_store()
@@ -2942,8 +2914,8 @@ impl RoomService {
     /// Get settings for multiple rooms in a single query (avoids N+1)
     pub async fn get_room_settings_batch(
         &self,
-        room_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, RoomSettings>> {
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, RoomSettings>> {
         self.room_settings_repo.get_batch(room_ids).await
     }
 
@@ -3227,8 +3199,8 @@ impl RoomService {
     ) -> Result<bool> {
         // Build the rate limit key: room_id + client_ip (or just room_id if no IP)
         let rate_limit_key = match client_ip {
-            Some(ip) => format!("{}:{}", room_id.as_str(), ip),
-            None => room_id.as_str().to_string(),
+            Some(ip) => format!("{room_id}:{ip}"),
+            None => room_id.to_string(),
         };
 
         // Check rate limit if brute-force service is configured
@@ -3273,7 +3245,7 @@ impl RoomService {
                         if let Err(audit_err) = audit
                             .log_rate_limit_reset_failed(
                                 crate::service::audit::AuditTargetType::Room,
-                                room_id.as_str().to_string(),
+                                room_id.to_string(),
                                 e.to_string(),
                                 ip_str,
                             )
@@ -3308,7 +3280,7 @@ impl RoomService {
         client_ip: IpAddr,
     ) -> Result<()> {
         if let Some(ref brute_force) = self.brute_force_service {
-            let rate_limit_key = format!("{}:{}", room_id.as_str(), client_ip);
+            let rate_limit_key = format!("{room_id}:{client_ip}");
             brute_force.reset(&rate_limit_key).await?;
         }
         Ok(())
@@ -3404,7 +3376,7 @@ impl RoomService {
                     RETURNING version
                     ",
                 )
-                .bind(room_id.as_str())
+                .bind(room_id)
                 .bind(&json_value)
                 .fetch_optional(&mut *tx)
                 .await?
@@ -3417,7 +3389,7 @@ impl RoomService {
                     RETURNING version
                     ",
                 )
-                .bind(room_id.as_str())
+                .bind(room_id)
                 .bind(&json_value)
                 .bind(version)
                 .fetch_optional(&mut *tx)
@@ -3632,7 +3604,7 @@ impl RoomService {
     /// cleanup.
     pub async fn touch_room_activity(&self, room_id: RoomId) {
         if let Err(e) = self.room_repo.touch_activity(&room_id).await {
-            tracing::debug!(error = %e, room_id = %room_id.as_str(), "Failed to touch room activity");
+            tracing::debug!(error = %e, room_id = %room_id, "Failed to touch room activity");
         }
     }
 
@@ -3680,7 +3652,7 @@ impl RoomService {
     pub async fn get_member_count_batch(
         &self,
         room_ids: &[&RoomId],
-    ) -> Result<std::collections::HashMap<String, i32>> {
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
         self.member_service.count_members_batch(room_ids).await
     }
 
@@ -3907,12 +3879,12 @@ impl RoomService {
                     &room_id,
                     Some(&user_id),
                     &actor_username,
-                    media_id.as_str(),
+                    *media_id,
                 ) {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
-                        media_id = %media_id.as_str(),
+                        room_id = %room_id,
+                        media_id = %media_id,
                         "Failed to broadcast media removed event"
                     );
                 }
@@ -3922,12 +3894,12 @@ impl RoomService {
                     &room_id,
                     Some(&user_id),
                     &actor_username,
-                    playlist_id.as_str(),
+                    *playlist_id,
                 ) {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
-                        playlist_id = %playlist_id.as_str(),
+                        room_id = %room_id,
+                        playlist_id = %playlist_id,
                         "Failed to broadcast playlist deleted event"
                     );
                 }
@@ -3935,8 +3907,8 @@ impl RoomService {
         }
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            user_id = %user_id.as_str(),
+            room_id = %room_id,
+            user_id = %user_id,
             deleted_playlists = impact.deleted_playlist_ids.len(),
             deleted_media = impact.deleted_media_ids.len(),
             "Entries deleted"
@@ -3967,7 +3939,7 @@ impl RoomService {
         F: FnOnce(DeleteEntriesPlan) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let admin_user_id = actor.user_id().clone();
+        let admin_user_id = *actor.user_id();
 
         let playlist_ids = dedup_ids(request.playlist_ids);
         let media_ids = dedup_ids(request.media_ids);
@@ -4051,12 +4023,12 @@ impl RoomService {
                     &room_id,
                     Some(&admin_user_id),
                     actor.username(),
-                    media_id.as_str(),
+                    *media_id,
                 ) {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
-                        media_id = %media_id.as_str(),
+                        room_id = %room_id,
+                        media_id = %media_id,
                         "Failed to broadcast media removed event"
                     );
                 }
@@ -4066,12 +4038,12 @@ impl RoomService {
                     &room_id,
                     Some(&admin_user_id),
                     actor.username(),
-                    playlist_id.as_str(),
+                    *playlist_id,
                 ) {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
-                        playlist_id = %playlist_id.as_str(),
+                        room_id = %room_id,
+                        playlist_id = %playlist_id,
                         "Failed to broadcast playlist deleted event"
                     );
                 }
@@ -4079,8 +4051,8 @@ impl RoomService {
         }
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
+            room_id = %room_id,
+            admin_user_id = %admin_user_id,
             deleted_playlists = impact.deleted_playlist_ids.len(),
             deleted_media = impact.deleted_media_ids.len(),
             "Entries deleted by admin"
@@ -4169,11 +4141,10 @@ impl RoomService {
                AND playlist_id IS NULL
              ORDER BY position ASC",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&mut *tx)
         .await?
         .into_iter()
-        .map(MediaId::from_string)
         .collect();
 
         // Lock the playback state row to prevent concurrent playback switches
@@ -4182,7 +4153,7 @@ impl RoomService {
              WHERE room_id = $1
              FOR UPDATE",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -4190,7 +4161,7 @@ impl RoomService {
         let mut playback_reset = false;
         if let Some(row) = row {
             use sqlx::Row;
-            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
+            let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
             if let Some(ref mid) = playing_media_id {
                 // Check if the playing media belongs to the room root.
                 let in_playlist: bool = sqlx::query_scalar(
@@ -4202,8 +4173,8 @@ impl RoomService {
                           AND playlist_id IS NULL
                     )",
                 )
-                .bind(mid.as_str())
-                .bind(room_id.as_str())
+                .bind(mid)
+                .bind(room_id)
                 .fetch_one(&mut *tx)
                 .await?;
 
@@ -4216,7 +4187,7 @@ impl RoomService {
                              version = version + 1, updated_at = NOW()
                          WHERE room_id = $1",
                     )
-                    .bind(room_id.as_str())
+                    .bind(room_id)
                     .execute(&mut *tx)
                     .await?;
                     playback_reset = true;
@@ -4226,7 +4197,7 @@ impl RoomService {
 
         // Delete all media at the room root within the transaction
         let result = sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id IS NULL")
-            .bind(room_id.as_str())
+            .bind(room_id)
             .execute(&mut *tx)
             .await?;
 
@@ -4234,16 +4205,14 @@ impl RoomService {
         tx.commit().await?;
 
         for media_id in &deleted_media_ids {
-            if let Err(error) = self.notification_service.notify_media_removed(
-                &room_id,
-                None,
-                "",
-                media_id.as_str(),
-            ) {
+            if let Err(error) = self
+                .notification_service
+                .notify_media_removed(&room_id, None, "", *media_id)
+            {
                 tracing::warn!(
                     error = %error,
-                    room_id = %room_id.as_str(),
-                    media_id = %media_id.as_str(),
+                    room_id = %room_id,
+                    media_id = %media_id,
                     "Failed to broadcast media removed event after clear_playlist"
                 );
             }
@@ -4261,14 +4230,11 @@ impl RoomService {
                         state.is_playing,
                         state.current_time,
                         state.speed,
-                        state
-                            .playing_media_id
-                            .as_ref()
-                            .map(|id| id.as_str().to_string()),
+                        state.playing_media_id,
                     ) {
                         tracing::warn!(
                             error = %error,
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             "Failed to broadcast playback reset after clear_playlist"
                         );
                     }
@@ -4277,7 +4243,7 @@ impl RoomService {
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "Failed to reload playback state after clear_playlist reset"
                     );
                     None
@@ -4346,9 +4312,9 @@ impl RoomService {
     pub async fn get_chat_history_cursor(
         &self,
         room_id: &RoomId,
-        cursor: Option<(DateTime<Utc>, &str)>,
+        cursor: Option<(DateTime<Utc>, i64)>,
         limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, String)>)> {
+    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, i64)>)> {
         self.chat_repo
             .list_by_room_cursor(room_id, cursor, limit)
             .await
@@ -4373,7 +4339,7 @@ impl RoomService {
         }
 
         let message = ChatMessage {
-            id: synctv_common::snanoid!(12),
+            id: 0,
             room_id,
             user_id: Some(user_id),
             content,
@@ -4486,11 +4452,11 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    actor.user_id().as_str().to_string(),
-                    actor.user_id().as_str().to_string(),
+                    actor.user_id().to_string(),
+                    actor.user_id().to_string(),
                     AuditAction::RoomDeleted,
                     AuditTargetType::Room,
-                    Some(room_id.as_str().to_string()),
+                    Some(room_id.to_string()),
                     serde_json::json!({
                         "reason": "Room deleted by admin",
                         "playlists_deleted": impact.deleted_playlist_ids.len(),
@@ -4577,7 +4543,7 @@ impl RoomService {
                   )
             )",
         )
-        .bind(room.created_by.as_str())
+        .bind(room.created_by)
         .fetch_one(&self.pool)
         .await?;
 
@@ -4609,14 +4575,14 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    actor.user_id().as_str().to_string(),
-                    actor.user_id().as_str().to_string(),
+                    actor.user_id().to_string(),
+                    actor.user_id().to_string(),
                     AuditAction::RoomDeleted,
                     AuditTargetType::Room,
-                    Some(room_id.as_str().to_string()),
+                    Some(room_id.to_string()),
                     serde_json::json!({
                         "reason": "Orphaned room deleted by admin (creator deleted/banned)",
-                        "creator_id": room.created_by.as_str(),
+                        "creator_id": room.created_by.to_string(),
                         "playlists_deleted": impact.deleted_playlist_ids.len(),
                         "media_deleted": impact.deleted_media_ids.len(),
                         "members_deleted": impact.members_deleted,
@@ -4659,13 +4625,7 @@ impl RoomService {
         target: Vec<u8>,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_switch(
-                room_id,
-                actor.user_id().clone(),
-                media_id,
-                playlist_id,
-                target,
-            )
+            .admin_switch(room_id, *actor.user_id(), media_id, playlist_id, target)
             .await
     }
 
@@ -4687,7 +4647,7 @@ impl RoomService {
         actor: &AuthorizedAdminActor,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
-            .admin_reset(room_id, actor.user_id().clone())
+            .admin_reset(room_id, *actor.user_id())
             .await
     }
 
@@ -4706,7 +4666,7 @@ impl RoomService {
         self.playback_service
             .admin_update_multiple_with_version(
                 room_id,
-                actor.user_id().clone(),
+                *actor.user_id(),
                 playing,
                 current_time,
                 speed,
@@ -4812,7 +4772,7 @@ impl RoomService {
         for member in members {
             if member.role == RoomRole::Guest {
                 self.member_service
-                    .remove_member(room_id.clone(), member.user_id.clone())
+                    .remove_member(*room_id, member.user_id)
                     .await?;
             }
         }
@@ -4845,7 +4805,7 @@ impl RoomService {
         let key = self
             .user_service
             .key_builder()
-            .room_guest_version(room_id.as_str());
+            .room_guest_version(&room_id.to_string());
         self.user_service
             .token_blacklist_store()
             .set_family_revoked(&key, next, Self::room_guest_version_ttl_secs())
@@ -4886,11 +4846,11 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    admin_user_id.as_str().to_string(),
-                    admin_user_id.as_str().to_string(),
+                    admin_user_id.to_string(),
+                    admin_user_id.to_string(),
                     AuditAction::RoomBanned,
                     AuditTargetType::Room,
-                    Some(room_id.as_str().to_string()),
+                    Some(room_id.to_string()),
                     serde_json::json!({"reason": "Room banned by admin"}),
                     None,
                     None,
@@ -4923,11 +4883,11 @@ impl RoomService {
         if let Some(ref audit) = self.audit_service {
             let _ = audit
                 .log(
-                    admin_user_id.as_str().to_string(),
-                    admin_user_id.as_str().to_string(),
+                    admin_user_id.to_string(),
+                    admin_user_id.to_string(),
                     AuditAction::RoomUnbanned,
                     AuditTargetType::Room,
-                    Some(room_id.as_str().to_string()),
+                    Some(room_id.to_string()),
                     serde_json::json!({"reason": "Room unbanned by admin"}),
                     None,
                     None,
@@ -4969,7 +4929,7 @@ impl RoomService {
             if let Err(e) = service.invalidate_and_broadcast_room(room_id).await {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to broadcast room cache invalidation"
                 );
             }
@@ -4985,7 +4945,7 @@ impl RoomService {
             {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to broadcast room settings cache invalidation"
                 );
             }
@@ -5063,7 +5023,7 @@ impl RoomService {
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "Failed to reload playback state after user cleanup reset"
                     );
                 }
@@ -5071,14 +5031,14 @@ impl RoomService {
         }
 
         for media_id in deleted_media_ids {
-            if let Err(error) =
-                self.notification_service
-                    .notify_media_removed(room_id, None, "", media_id.as_str())
+            if let Err(error) = self
+                .notification_service
+                .notify_media_removed(room_id, None, "", *media_id)
             {
                 tracing::warn!(
                     error = %error,
-                    room_id = %room_id.as_str(),
-                    media_id = %media_id.as_str(),
+                    room_id = %room_id,
+                    media_id = %media_id,
                     "Failed to broadcast media removed event after user cleanup"
                 );
             }
@@ -5099,9 +5059,9 @@ impl RoomService {
     /// - `InvalidInput` if `room_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_ban_rooms(
         &self,
-        room_ids: &[String],
+        room_ids: &[RoomId],
         admin_user_id: &UserId,
-    ) -> crate::Result<Vec<(String, crate::Result<()>)>> {
+    ) -> crate::Result<Vec<(RoomId, crate::Result<()>)>> {
         if room_ids.is_empty() {
             return Err(Error::InvalidInput("room_ids cannot be empty".to_string()));
         }
@@ -5115,11 +5075,9 @@ impl RoomService {
 
         let mut results = Vec::with_capacity(room_ids.len());
 
-        for room_id_str in room_ids {
-            let room_id = RoomId::from_string(room_id_str.clone());
-
-            let result = self.ban_room(&room_id, admin_user_id).await.map(|_| ());
-            results.push((room_id_str.clone(), result));
+        for room_id in room_ids {
+            let result = self.ban_room(room_id, admin_user_id).await.map(|_| ());
+            results.push((*room_id, result));
         }
 
         Ok(results)
@@ -5134,9 +5092,9 @@ impl RoomService {
     /// - `InvalidInput` if `room_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_delete_rooms(
         &self,
-        room_ids: &[String],
+        room_ids: &[RoomId],
         admin_user_id: &UserId,
-    ) -> crate::Result<Vec<(String, crate::Result<()>)>> {
+    ) -> crate::Result<Vec<(RoomId, crate::Result<()>)>> {
         if room_ids.is_empty() {
             return Err(Error::InvalidInput("room_ids cannot be empty".to_string()));
         }
@@ -5150,11 +5108,9 @@ impl RoomService {
 
         let mut results = Vec::with_capacity(room_ids.len());
 
-        for room_id_str in room_ids {
-            let room_id = RoomId::from_string(room_id_str.clone());
-
-            let result = self.admin_delete_room(&room_id, admin_user_id).await;
-            results.push((room_id_str.clone(), result));
+        for room_id in room_ids {
+            let result = self.admin_delete_room(room_id, admin_user_id).await;
+            results.push((*room_id, result));
         }
 
         Ok(results)
@@ -5214,8 +5170,8 @@ async fn has_room_permission_in_tx(
               )
         )",
     )
-    .bind(room_id.as_str())
-    .bind(user_id.as_str())
+    .bind(room_id)
+    .bind(user_id)
     .bind(required_permission)
     .bind(admin_default)
     .bind(member_default)
@@ -5236,7 +5192,7 @@ async fn collect_target_playlist_nodes_in_tx(
         return Ok(Vec::new());
     }
 
-    let playlist_id_strs: Vec<&str> = root_playlist_ids.iter().map(PlaylistId::as_str).collect();
+    let playlist_ids: Vec<i64> = root_playlist_ids.iter().map(PlaylistId::as_i64).collect();
 
     let rows = sqlx::query(
         "WITH RECURSIVE target_playlists AS (
@@ -5255,16 +5211,16 @@ async fn collect_target_playlist_nodes_in_tx(
         GROUP BY id
         ORDER BY MAX(depth) DESC, id",
     )
-    .bind(room_id.as_str())
-    .bind(&playlist_id_strs)
+    .bind(room_id)
+    .bind(&playlist_ids)
     .fetch_all(&mut **tx)
     .await?;
 
     rows.into_iter()
         .map(|row| {
-            let playlist_id = row.try_get::<String, _>("id")?;
+            let playlist_id = row.try_get::<i64, _>("id")?;
             let depth = row.try_get::<i32, _>("depth")?;
-            Ok((PlaylistId::from_string(playlist_id), depth))
+            Ok((PlaylistId::from(playlist_id), depth))
         })
         .collect()
 }
@@ -5290,15 +5246,15 @@ async fn collect_all_room_playlist_nodes_in_tx(
         GROUP BY id
         ORDER BY MAX(depth) DESC, id",
     )
-    .bind(room_id.as_str())
+    .bind(room_id)
     .fetch_all(&mut **tx)
     .await?;
 
     rows.into_iter()
         .map(|row| {
-            let playlist_id = row.try_get::<String, _>("id")?;
+            let playlist_id = row.try_get::<i64, _>("id")?;
             let depth = row.try_get::<i32, _>("depth")?;
-            Ok((PlaylistId::from_string(playlist_id), depth))
+            Ok((PlaylistId::from(playlist_id), depth))
         })
         .collect()
 }
@@ -5314,7 +5270,7 @@ async fn collect_room_root_media_ids_in_tx(
            AND playlist_id IS NULL
          ORDER BY id",
     )
-    .bind(room_id.as_str())
+    .bind(room_id)
     .fetch_all(&mut **tx)
     .await?;
 
@@ -5331,9 +5287,8 @@ async fn collect_deleted_media_ids_in_tx(
         return Ok(Vec::new());
     }
 
-    let playlist_id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
-    let explicit_media_id_strs: Vec<&str> =
-        explicit_media_ids.iter().map(MediaId::as_str).collect();
+    let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
+    let explicit_media_id_strs: Vec<i64> = explicit_media_ids.iter().map(MediaId::as_i64).collect();
 
     let rows = sqlx::query(
         "WITH RECURSIVE target_playlists AS (
@@ -5355,15 +5310,15 @@ async fn collect_deleted_media_ids_in_tx(
         ORDER BY m.id",
     )
     .bind(&playlist_id_strs)
-    .bind(room_id.as_str())
+    .bind(room_id)
     .bind(&explicit_media_id_strs)
     .fetch_all(&mut **tx)
     .await?;
 
     rows.into_iter()
         .map(|row| {
-            let media_id: String = row.try_get("id")?;
-            Ok(MediaId::from_string(media_id))
+            let media_id: MediaId = row.try_get("id")?;
+            Ok(media_id)
         })
         .collect()
 }
@@ -5381,7 +5336,7 @@ async fn plan_playback_reset_for_deleted_entries_in_tx(
          WHERE room_id = $1
          FOR UPDATE",
     )
-    .bind(room_id.as_str())
+    .bind(room_id)
     .fetch_optional(&mut **tx)
     .await?;
 
@@ -5389,19 +5344,19 @@ async fn plan_playback_reset_for_deleted_entries_in_tx(
         return Ok(false);
     };
 
-    let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
-    let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
+    let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
+    let playing_playlist_id: Option<PlaylistId> = row.try_get("playing_playlist_id")?;
 
     let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
         deleted_media_ids
             .iter()
-            .any(|media_id| media_id.as_str() == current_id.as_str())
+            .any(|media_id| media_id == current_id)
     });
 
     let deletes_playing_playlist = playing_playlist_id.as_ref().is_some_and(|current_id| {
         deleted_playlist_ids
             .iter()
-            .any(|playlist_id| playlist_id.as_str() == current_id.as_str())
+            .any(|playlist_id| playlist_id == current_id)
     });
 
     if !(deletes_playing_media || deletes_playing_playlist) {
@@ -5425,12 +5380,12 @@ async fn delete_playlist_ids_in_depth_order_in_tx(
         return Ok(());
     }
 
-    let mut ids_by_depth = BTreeMap::<i32, Vec<&str>>::new();
+    let mut ids_by_depth = BTreeMap::<i32, Vec<i64>>::new();
     for (playlist_id, depth) in playlist_nodes {
         ids_by_depth
             .entry(*depth)
             .or_default()
-            .push(playlist_id.as_str());
+            .push(playlist_id.as_i64());
     }
 
     for (_depth, ids) in ids_by_depth.into_iter().rev() {
@@ -5470,16 +5425,16 @@ async fn apply_delete_entries_impact_in_tx(
                  updated_at = NOW()
              WHERE room_id = $1",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
     }
 
     if !impact.deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<&str> = impact
+        let media_id_strs: Vec<i64> = impact
             .deleted_media_ids
             .iter()
-            .map(MediaId::as_str)
+            .map(MediaId::as_i64)
             .collect();
         sqlx::query("DELETE FROM media WHERE id = ANY($1)")
             .bind(&media_id_strs)
@@ -5503,7 +5458,7 @@ async fn plan_delete_entries_in_room_in_tx(
         collect_target_playlist_nodes_in_tx(tx, room_id, root_playlist_ids).await?;
     let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
         .iter()
-        .map(|(playlist_id, _)| playlist_id.clone())
+        .map(|(playlist_id, _)| *playlist_id)
         .collect();
     let deleted_media_ids =
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, explicit_media_ids)
@@ -5534,7 +5489,7 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
          SET deleted_at = $2, updated_at = $2, version = version + 1
          WHERE id = $1 AND deleted_at IS NULL",
     )
-    .bind(room_id.as_str())
+    .bind(room_id)
     .bind(chrono::Utc::now())
     .execute(&mut **tx)
     .await?;
@@ -5548,7 +5503,7 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
     let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
         .iter()
-        .map(|(playlist_id, _)| playlist_id.clone())
+        .map(|(playlist_id, _)| *playlist_id)
         .collect();
     let root_media_ids = collect_room_root_media_ids_in_tx(tx, room_id).await?;
     let deleted_media_ids =
@@ -5556,13 +5511,13 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
             .await?;
 
     let playback_rows_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?
         .rows_affected();
 
     if !deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
+        let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
         sqlx::query("DELETE FROM media WHERE id = ANY($1)")
             .bind(&media_id_strs)
             .execute(&mut **tx)
@@ -5572,19 +5527,19 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
 
     let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?
         .rows_affected();
 
     let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?
         .rows_affected();
 
     let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?
         .rows_affected();
@@ -5604,7 +5559,7 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
     room_id: &RoomId,
 ) -> Result<bool> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&mut **tx)
         .await?;
     if !exists {
@@ -5614,7 +5569,7 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
     let playlist_nodes = collect_all_room_playlist_nodes_in_tx(tx, room_id).await?;
     let deleted_playlist_ids: Vec<PlaylistId> = playlist_nodes
         .iter()
-        .map(|(playlist_id, _)| playlist_id.clone())
+        .map(|(playlist_id, _)| *playlist_id)
         .collect();
     let root_media_ids = collect_room_root_media_ids_in_tx(tx, room_id).await?;
     let deleted_media_ids =
@@ -5622,12 +5577,12 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
             .await?;
 
     sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
 
     if !deleted_media_ids.is_empty() {
-        let media_id_strs: Vec<&str> = deleted_media_ids.iter().map(MediaId::as_str).collect();
+        let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
         sqlx::query("DELETE FROM media WHERE id = ANY($1)")
             .bind(&media_id_strs)
             .execute(&mut **tx)
@@ -5637,20 +5592,20 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
 
     sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
 
     let deleted = sqlx::query("DELETE FROM rooms WHERE id = $1")
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&mut **tx)
         .await?;
 
@@ -6039,15 +5994,11 @@ mod tests {
     fn test_room_member_ban_sets_status_and_metadata() {
         use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            RoomRole::Member,
-        );
+        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
         assert!(member.is_active());
 
-        let banner = UserId("admin1".to_string());
-        member.ban(banner.clone(), Some("spamming".to_string()));
+        let banner = UserId::from(2);
+        member.ban(banner, Some("spamming".to_string()));
 
         assert_eq!(member.status, MemberStatus::Left);
         assert!(member.banned_at.is_some());
@@ -6060,12 +6011,8 @@ mod tests {
     fn test_room_member_unban_clears_metadata() {
         use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            RoomRole::Member,
-        );
-        member.ban(UserId("admin1".to_string()), Some("reason".to_string()));
+        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
+        member.ban(UserId::from(2), Some("reason".to_string()));
 
         member.unban();
         assert_eq!(member.status, MemberStatus::Left);
@@ -6079,17 +6026,13 @@ mod tests {
     fn test_room_member_banned_has_no_permissions() {
         use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            RoomRole::Admin,
-        );
+        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Admin);
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
 
         // Before ban: has permissions
         assert!(member.has_permission(PermissionBits::SEND_CHAT, role_default));
 
-        member.ban(UserId("admin1".to_string()), None);
+        member.ban(UserId::from(2), None);
 
         // After ban: zero permissions
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
@@ -6100,11 +6043,7 @@ mod tests {
     fn test_room_member_add_and_remove_permissions() {
         use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            RoomRole::Member,
-        );
+        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
         assert_eq!(member.added_permissions, 0);
         assert_eq!(member.removed_permissions, 0);
 

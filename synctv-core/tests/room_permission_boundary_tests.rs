@@ -87,7 +87,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -115,7 +115,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -156,7 +156,7 @@ async fn test_admin_cannot_delete_room() {
         .create(&make_user("admin_delete"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin_user.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -199,7 +199,7 @@ async fn test_admin_cannot_transfer_ownership() {
         .create(&make_user("admin_transfer"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin_user.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -209,7 +209,7 @@ async fn test_admin_cannot_transfer_ownership() {
         .create(&make_user("transfer_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target_user.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -218,12 +218,7 @@ async fn test_admin_cannot_transfer_ownership() {
     // Admin tries to set Creator role (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin_user.id.clone(),
-            target_user.id.clone(),
-            RoomRole::Creator,
-        )
+        .set_member_role(room.id, admin_user.id, target_user.id, RoomRole::Creator)
         .await;
 
     assert!(result.is_err(), "Admin cannot transfer ownership");
@@ -244,7 +239,7 @@ async fn test_admin_cannot_demote_creator() {
         .create(&make_user("admin_demote"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin_user.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -253,12 +248,7 @@ async fn test_admin_cannot_demote_creator() {
     // Admin tries to demote Creator to Admin (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin_user.id.clone(),
-            owner.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, admin_user.id, owner.id, RoomRole::Admin)
         .await;
 
     assert!(result.is_err(), "Admin cannot demote Creator");
@@ -280,7 +270,7 @@ async fn test_member_cannot_kick() {
         .create(&make_user("member_kicker"))
         .await
         .expect("Failed to create kicker");
-    let kicker_member = RoomMember::new(room.id.clone(), kicker.id.clone(), RoomRole::Member);
+    let kicker_member = RoomMember::new(room.id, kicker.id, RoomRole::Member);
     member_repo
         .add(&kicker_member)
         .await
@@ -290,7 +280,7 @@ async fn test_member_cannot_kick() {
         .create(&make_user("kick_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -299,7 +289,7 @@ async fn test_member_cannot_kick() {
     // Member tries to kick another member (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .kick_member(room.id.clone(), kicker.id.clone(), target.id.clone())
+        .kick_member(room.id, kicker.id, target.id)
         .await;
 
     assert!(result.is_err(), "Member cannot kick other members");
@@ -332,7 +322,7 @@ async fn test_member_cannot_ban() {
         .create(&make_user("member_banner"))
         .await
         .expect("Failed to create banner");
-    let banner_member = RoomMember::new(room.id.clone(), banner.id.clone(), RoomRole::Member);
+    let banner_member = RoomMember::new(room.id, banner.id, RoomRole::Member);
     member_repo
         .add(&banner_member)
         .await
@@ -342,7 +332,7 @@ async fn test_member_cannot_ban() {
         .create(&make_user("ban_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -351,12 +341,7 @@ async fn test_member_cannot_ban() {
     // Member tries to ban another member (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .ban_member(
-            room.id.clone(),
-            banner.id.clone(),
-            target.id.clone(),
-            Some("Test ban".to_string()),
-        )
+        .ban_member(room.id, banner.id, target.id, Some("Test ban".to_string()))
         .await;
 
     assert!(result.is_err(), "Member cannot ban other members");
@@ -378,7 +363,7 @@ async fn test_member_cannot_change_settings() {
         .create(&make_user("settings_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -420,7 +405,7 @@ async fn test_member_cannot_promote() {
         .create(&make_user("member_promoter"))
         .await
         .expect("Failed to create promoter");
-    let promoter_member = RoomMember::new(room.id.clone(), promoter.id.clone(), RoomRole::Member);
+    let promoter_member = RoomMember::new(room.id, promoter.id, RoomRole::Member);
     member_repo
         .add(&promoter_member)
         .await
@@ -430,7 +415,7 @@ async fn test_member_cannot_promote() {
         .create(&make_user("promote_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -439,12 +424,7 @@ async fn test_member_cannot_promote() {
     // Member tries to promote another member to Admin (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            promoter.id.clone(),
-            target.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, promoter.id, target.id, RoomRole::Admin)
         .await;
 
     assert!(result.is_err(), "Member cannot promote other members");
@@ -470,14 +450,14 @@ async fn test_cross_room_permission_isolation() {
         .create(&make_user("cross_room_user"))
         .await
         .expect("Failed to create user");
-    let admin_member_a = RoomMember::new(room_a.id.clone(), cross_user.id.clone(), RoomRole::Admin);
+    let admin_member_a = RoomMember::new(room_a.id, cross_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member_a)
         .await
         .expect("Failed to add to Room A");
 
     let (_owner_b, room_b) = setup_test_room(pool, "Room B").await;
-    let member_b = RoomMember::new(room_b.id.clone(), cross_user.id.clone(), RoomRole::Member);
+    let member_b = RoomMember::new(room_b.id, cross_user.id, RoomRole::Member);
     member_repo
         .add(&member_b)
         .await
@@ -487,7 +467,7 @@ async fn test_cross_room_permission_isolation() {
         .create(&make_user("room_b_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room_b.id.clone(), target.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room_b.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -496,7 +476,7 @@ async fn test_cross_room_permission_isolation() {
     // User (Admin in Room A) tries to kick member in Room B (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .kick_member(room_b.id.clone(), cross_user.id.clone(), target.id.clone())
+        .kick_member(room_b.id, cross_user.id, target.id)
         .await;
 
     assert!(result.is_err(), "Admin in Room A cannot kick in Room B");
@@ -517,7 +497,7 @@ async fn test_ban_isolated_to_single_room() {
         .create(&make_user("banned_user"))
         .await
         .expect("Failed to create user");
-    let member_a = RoomMember::new(room_a.id.clone(), banned_user.id.clone(), RoomRole::Member);
+    let member_a = RoomMember::new(room_a.id, banned_user.id, RoomRole::Member);
     member_repo
         .add(&member_a)
         .await
@@ -527,9 +507,9 @@ async fn test_ban_isolated_to_single_room() {
     let member_service = make_member_service(pool.clone());
     member_service
         .ban_member(
-            room_a.id.clone(),
-            owner_a.id.clone(),
-            banned_user.id.clone(),
+            room_a.id,
+            owner_a.id,
+            banned_user.id,
             Some("Test ban".to_string()),
         )
         .await
@@ -540,8 +520,8 @@ async fn test_ban_isolated_to_single_room() {
     // User should be able to join Room B (ban is only in Room A)
     let result = member_service
         .add_member_with_options(
-            room_b.id.clone(),
-            banned_user.id.clone(),
+            room_b.id,
+            banned_user.id,
             RoomRole::Member,
             AddMemberOptions::new(),
         )
@@ -574,7 +554,7 @@ async fn test_creator_role_not_global() {
             ))
             .await
             .expect("Failed to create room");
-        let member = RoomMember::new(room.id.clone(), creator_user.id.clone(), RoomRole::Creator);
+        let member = RoomMember::new(room.id, creator_user.id, RoomRole::Creator);
         member_repo
             .add(&member)
             .await
@@ -583,7 +563,7 @@ async fn test_creator_role_not_global() {
     };
 
     let (_owner_b, room_b) = setup_test_room(pool, "Other Room").await;
-    let member_b = RoomMember::new(room_b.id.clone(), creator_user.id.clone(), RoomRole::Member);
+    let member_b = RoomMember::new(room_b.id, creator_user.id, RoomRole::Member);
     member_repo
         .add(&member_b)
         .await
@@ -635,7 +615,7 @@ async fn test_member_cannot_grant_self_permissions() {
         .create(&make_user("self_granter"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -645,9 +625,9 @@ async fn test_member_cannot_grant_self_permissions() {
     let member_service = make_member_service(pool.clone());
     let result = member_service
         .grant_permission(
-            room.id.clone(),
-            member_user.id.clone(),
-            member_user.id.clone(),
+            room.id,
+            member_user.id,
+            member_user.id,
             PermissionBits::BAN_MEMBER,
         )
         .await;
@@ -674,7 +654,7 @@ async fn test_admin_cannot_create_admin() {
         .create(&make_user("admin_creator"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin_user.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin_user.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -684,7 +664,7 @@ async fn test_admin_cannot_create_admin() {
         .create(&make_user("admin_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target_user.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -693,12 +673,7 @@ async fn test_admin_cannot_create_admin() {
     // Admin tries to promote Member to Admin (should fail)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin_user.id.clone(),
-            target_user.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, admin_user.id, target_user.id, RoomRole::Admin)
         .await;
 
     assert!(result.is_err(), "Admin cannot create new Admin");
@@ -720,7 +695,7 @@ async fn test_grant_permission_requires_permission() {
         .create(&make_user("grantor"))
         .await
         .expect("Failed to create grantor");
-    let grantor_member = RoomMember::new(room.id.clone(), grantor.id.clone(), RoomRole::Member);
+    let grantor_member = RoomMember::new(room.id, grantor.id, RoomRole::Member);
     member_repo
         .add(&grantor_member)
         .await
@@ -730,7 +705,7 @@ async fn test_grant_permission_requires_permission() {
         .create(&make_user("grantee"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -739,12 +714,7 @@ async fn test_grant_permission_requires_permission() {
     // Member tries to grant permission (should fail - no GRANT_PERMISSION)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .grant_permission(
-            room.id.clone(),
-            grantor.id.clone(),
-            target.id.clone(),
-            PermissionBits::SEND_CHAT,
-        )
+        .grant_permission(room.id, grantor.id, target.id, PermissionBits::SEND_CHAT)
         .await;
 
     assert!(
@@ -769,7 +739,7 @@ async fn test_cannot_downgrade_equal_role() {
         .create(&make_user("admin1_downgrade"))
         .await
         .expect("Failed to create admin1");
-    let admin1_member = RoomMember::new(room.id.clone(), admin1.id.clone(), RoomRole::Admin);
+    let admin1_member = RoomMember::new(room.id, admin1.id, RoomRole::Admin);
     member_repo
         .add(&admin1_member)
         .await
@@ -779,7 +749,7 @@ async fn test_cannot_downgrade_equal_role() {
         .create(&make_user("admin2_downgrade"))
         .await
         .expect("Failed to create admin2");
-    let admin2_member = RoomMember::new(room.id.clone(), admin2.id.clone(), RoomRole::Admin);
+    let admin2_member = RoomMember::new(room.id, admin2.id, RoomRole::Admin);
     member_repo
         .add(&admin2_member)
         .await
@@ -788,12 +758,7 @@ async fn test_cannot_downgrade_equal_role() {
     // Admin1 tries to downgrade Admin2 (should fail - equal role)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin1.id.clone(),
-            admin2.id.clone(),
-            RoomRole::Member,
-        )
+        .set_member_role(room.id, admin1.id, admin2.id, RoomRole::Member)
         .await;
 
     assert!(result.is_err(), "Admin cannot downgrade Admin (equal role)");
@@ -815,7 +780,7 @@ async fn test_kick_respects_role_hierarchy() {
         .create(&make_user("kick_admin"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -825,7 +790,7 @@ async fn test_kick_respects_role_hierarchy() {
         .create(&make_user("kick_member"))
         .await
         .expect("Failed to create member");
-    let member_member = RoomMember::new(room.id.clone(), member.id.clone(), RoomRole::Member);
+    let member_member = RoomMember::new(room.id, member.id, RoomRole::Member);
     member_repo
         .add(&member_member)
         .await
@@ -834,7 +799,7 @@ async fn test_kick_respects_role_hierarchy() {
     // Member tries to kick Admin (should fail - lower role)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .kick_member(room.id.clone(), member.id.clone(), admin.id.clone())
+        .kick_member(room.id, member.id, admin.id)
         .await;
 
     assert!(result.is_err(), "Member cannot kick Admin (role hierarchy)");
@@ -868,7 +833,7 @@ async fn test_ban_respects_role_hierarchy() {
         .create(&make_user("ban_admin"))
         .await
         .expect("Failed to create admin");
-    let admin_member = RoomMember::new(room.id.clone(), admin.id.clone(), RoomRole::Admin);
+    let admin_member = RoomMember::new(room.id, admin.id, RoomRole::Admin);
     member_repo
         .add(&admin_member)
         .await
@@ -877,12 +842,7 @@ async fn test_ban_respects_role_hierarchy() {
     // Admin tries to ban Creator (should fail - Creator has higher role)
     let member_service = make_member_service(pool.clone());
     let result = member_service
-        .ban_member(
-            room.id.clone(),
-            admin.id.clone(),
-            owner.id.clone(),
-            Some("Test ban".to_string()),
-        )
+        .ban_member(room.id, admin.id, owner.id, Some("Test ban".to_string()))
         .await;
 
     assert!(result.is_err(), "Admin cannot ban Creator (role hierarchy)");
@@ -904,7 +864,7 @@ async fn test_revoked_permission_denied() {
         .create(&make_user("revoke_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -919,16 +879,15 @@ async fn test_revoked_permission_denied() {
         .iter()
         .find(|m| m.role == RoomRole::Creator)
         .expect("Creator should exist")
-        .user_id
-        .clone();
+        .user_id;
 
     // Revoke SEND_CHAT from member
     let member_service = make_member_service(pool.clone());
     member_service
         .revoke_permission(
-            room.id.clone(),
-            owner_user_id.clone(),
-            member_user.id.clone(),
+            room.id,
+            owner_user_id,
+            member_user.id,
             PermissionBits::SEND_CHAT,
         )
         .await
@@ -970,8 +929,7 @@ async fn test_member_without_send_chat_cannot_send() {
         .create(&make_user("muted_user"))
         .await
         .expect("Failed to create muted user");
-    let mut muted_member =
-        RoomMember::new(room.id.clone(), muted_user.id.clone(), RoomRole::Member);
+    let mut muted_member = RoomMember::new(room.id, muted_user.id, RoomRole::Member);
     // Revoke SEND_CHAT
     muted_member.removed_permissions = PermissionBits::SEND_CHAT;
     member_repo

@@ -80,7 +80,9 @@ impl NotificationService for NotificationServiceImpl {
             notifications: result
                 .notifications
                 .into_iter()
-                .map(notification_to_proto)
+                .map(|notification| {
+                    notification_to_proto(notification, self.notification_api.public_id_codec())
+                })
                 .collect(),
             total,
             unread_count,
@@ -116,7 +118,10 @@ impl NotificationService for NotificationServiceImpl {
             .map_err(map_api_error)?;
 
         Ok(Response::new(GetNotificationResponse {
-            notification: Some(notification_to_proto(notification)),
+            notification: Some(notification_to_proto(
+                notification,
+                self.notification_api.public_id_codec(),
+            )),
         }))
     }
 

@@ -78,13 +78,8 @@ pub(crate) async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
-                api.login_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.login_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -133,13 +128,8 @@ pub(crate) async fn list(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.list_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.list_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -187,13 +177,8 @@ pub(crate) async fn search(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.search_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.search_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -241,13 +226,8 @@ pub(crate) async fn me(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.get_me_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.get_me_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -286,21 +266,18 @@ pub(crate) async fn logout(
 
     let api = state.alist_api.clone();
     let request_meta = request_metadata(request_meta);
-    let resp =
-        state
-            .client_api
-            .execute_user_endpoint(
-                &request_meta,
-                EndpointRateLimitCategory::Auth,
-                move |authenticated| async move {
-                    api.logout(authenticated.user_id.as_str(), req).await
-                },
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Alist logout failed: {}", e);
-                e
-            })?;
+    let resp = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |authenticated| async move { api.logout(&authenticated.user_id, req).await },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Alist logout failed: {}", e);
+            e
+        })?;
     Ok(Json(resp))
 }
 
@@ -336,8 +313,7 @@ pub(crate) async fn binds(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 tracing::info!("Alist binds request for user: {}", authenticated.user_id);
-                api.get_binds(authenticated.user_id.as_str(), instance_name)
-                    .await
+                api.get_binds(&authenticated.user_id, instance_name).await
             },
         )
         .await

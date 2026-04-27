@@ -27,7 +27,7 @@ async fn test_audit_log_integrity_all_fields() {
     // Log a complete audit event
     service
         .log(
-            "user_001".to_string(),
+            "100101".to_string(),
             "test_admin".to_string(),
             AuditAction::UserBanned,
             AuditTargetType::User,
@@ -46,7 +46,7 @@ async fn test_audit_log_integrity_all_fields() {
     #[allow(clippy::type_complexity)]
     let row: (
         i64,
-        String,
+        i64,
         String,
         String,
         Option<String>,
@@ -57,7 +57,7 @@ async fn test_audit_log_integrity_all_fields() {
         r"
         SELECT id, actor_id, actor_username, action, target_type, target_id, ip_address, user_agent
         FROM audit_logs
-        WHERE actor_id = 'user_001'
+        WHERE actor_id = 100101
         ",
     )
     .fetch_one(&pool)
@@ -65,7 +65,7 @@ async fn test_audit_log_integrity_all_fields() {
     .expect("Query should succeed");
 
     assert!(row.0 > 0, "ID should be generated");
-    assert_eq!(row.1.trim(), "user_001", "Actor ID should match");
+    assert_eq!(row.1, 100_101, "Actor ID should match");
     assert_eq!(row.2, "test_admin", "Actor username should match");
     assert_eq!(row.3, "user_banned", "Action should match");
     assert_eq!(row.4, Some("user".to_string()), "Target type should match");
@@ -108,7 +108,7 @@ async fn test_audit_log_details_json_integrity() {
 
     service
         .log(
-            "actor_json".to_string(),
+            "100102".to_string(),
             "json_tester".to_string(),
             AuditAction::SettingsUpdated,
             AuditTargetType::Settings,
@@ -122,7 +122,7 @@ async fn test_audit_log_details_json_integrity() {
 
     // Verify JSON is stored and retrieved correctly
     let row: (serde_json::Value,) =
-        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = 'actor_json'")
+        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100102'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -145,7 +145,7 @@ async fn test_audit_log_created_at_timestamp() {
 
     service
         .log(
-            "actor_time".to_string(),
+            "100103".to_string(),
             "time_tester".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -161,7 +161,7 @@ async fn test_audit_log_created_at_timestamp() {
 
     // Verify timestamp is within expected range
     let row: (chrono::DateTime<chrono::Utc>,) =
-        sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = 'actor_time'")
+        sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = '100103'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -189,9 +189,9 @@ async fn test_audit_log_multiple_actions_same_actor() {
     for action in &actions {
         service
             .log(
-                "multi_actor".to_string(),
+                "100104".to_string(),
                 "multi_tester".to_string(),
-                action.clone(),
+                *action,
                 match action {
                     AuditAction::UserCreated | AuditAction::UserBanned => AuditTargetType::User,
                     AuditAction::RoomCreated | AuditAction::RoomBanned => AuditTargetType::Room,
@@ -208,7 +208,7 @@ async fn test_audit_log_multiple_actions_same_actor() {
 
     // Verify all actions are logged
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'multi_actor'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100104'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -220,12 +220,11 @@ async fn test_audit_log_multiple_actions_same_actor() {
     );
 
     // Verify unique IDs for each log
-    let ids: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM audit_logs WHERE actor_id = 'multi_actor' ORDER BY created_at",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Query should succeed");
+    let ids: Vec<(i64,)> =
+        sqlx::query_as("SELECT id FROM audit_logs WHERE actor_id = '100104' ORDER BY created_at")
+            .fetch_all(&pool)
+            .await
+            .expect("Query should succeed");
 
     let unique_ids: std::collections::HashSet<_> = ids.into_iter().collect();
     assert_eq!(
@@ -335,7 +334,7 @@ async fn test_buffered_write_eventually_visible() {
     // Log an event
     service
         .log(
-            "buf_wr_actr".to_string(),
+            "100105".to_string(),
             "buffered_writer".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -351,7 +350,7 @@ async fn test_buffered_write_eventually_visible() {
 
     // Event should be visible in database
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'buf_wr_actr'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100105'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -376,7 +375,7 @@ async fn test_concurrent_audit_logging() {
         let handle = tokio::spawn(async move {
             b.wait().await;
             s.log(
-                format!("conc_act_{i}"),
+                format!("1002{i}"),
                 format!("concurrent_tester_{i}"),
                 AuditAction::UserCreated,
                 AuditTargetType::User,
@@ -401,7 +400,7 @@ async fn test_concurrent_audit_logging() {
 
     // Verify all are in database
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id LIKE 'conc_act_%'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id::text LIKE '1002%'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -434,7 +433,7 @@ async fn test_all_audit_actions_are_logged() {
             .log(
                 format!("act_actr_{i}"),
                 "action_tester".to_string(),
-                action.clone(),
+                *action,
                 match action {
                     AuditAction::UserCreated
                     | AuditAction::UserBanned
@@ -505,7 +504,7 @@ async fn test_all_target_types_are_logged() {
                 format!("tgt_actr_{i}"),
                 "target_tester".to_string(),
                 AuditAction::UserCreated,
-                target_type.clone(),
+                *target_type,
                 Some(format!("target_{i}")),
                 serde_json::json!({}),
                 None,
@@ -543,7 +542,7 @@ async fn test_audit_log_with_all_null_optionals() {
 
     service
         .log(
-            "nulls_actor".to_string(),
+            "100106".to_string(),
             "null_tester".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -556,7 +555,7 @@ async fn test_audit_log_with_all_null_optionals() {
         .expect("Log should succeed");
 
     let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = 'nulls_actor'",
+        "SELECT target_id, ip_address, user_agent FROM audit_logs WHERE actor_id = '100106'",
     )
     .fetch_one(&pool)
     .await
@@ -576,7 +575,7 @@ async fn test_audit_log_with_all_optionals() {
 
     service
         .log(
-            "allopt_actr".to_string(),
+            "100107".to_string(),
             "all_optionals_tester".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -589,7 +588,7 @@ async fn test_audit_log_with_all_optionals() {
         .expect("Log should succeed");
 
     let row: (Option<String>, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
-        "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = 'allopt_actr'",
+        "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = '100107'",
     )
     .fetch_one(&pool)
     .await
@@ -610,7 +609,7 @@ async fn test_log_stream_kicked_helper() {
 
     service
         .log_stream_kicked(
-            "stream_actor".to_string(),
+            "100108".to_string(),
             "stream_kicker".to_string(),
             "room_123".to_string(),
             "media_456".to_string(),
@@ -625,7 +624,7 @@ async fn test_log_stream_kicked_helper() {
         r"
         SELECT action, target_type, target_id, actor_username, details
         FROM audit_logs
-        WHERE actor_id = 'stream_actor'
+        WHERE actor_id = '100108'
         ",
     )
     .fetch_one(&pool)
@@ -650,7 +649,7 @@ async fn test_log_stream_kicked_without_reason() {
 
     service
         .log_stream_kicked(
-            "strm_norson".to_string(),
+            "100109".to_string(),
             "stream_admin".to_string(),
             "room_abc".to_string(),
             "media_xyz".to_string(),
@@ -662,7 +661,7 @@ async fn test_log_stream_kicked_without_reason() {
         .expect("Stream kick log should succeed");
 
     let row: (serde_json::Value,) =
-        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = 'strm_norson'")
+        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = '100109'")
             .fetch_one(&pool)
             .await
             .expect("Query should succeed");
@@ -682,7 +681,7 @@ async fn test_settings_viewed_audit_log() {
     // Log a settings view event
     service
         .log(
-            "set_viewer".to_string(),
+            "100110".to_string(),
             "admin_user".to_string(),
             AuditAction::SettingsViewed,
             AuditTargetType::Settings,
@@ -707,7 +706,7 @@ async fn test_settings_viewed_audit_log() {
         r"
         SELECT action, target_type, ip_address, user_agent, details
         FROM audit_logs
-        WHERE actor_id = 'set_viewer'
+        WHERE actor_id = '100110'
         ",
     )
     .fetch_one(&pool)
@@ -732,7 +731,7 @@ async fn test_settings_group_viewed_audit_log() {
     // Log a settings group view event
     service
         .log(
-            "group_viewer".to_string(),
+            "100111".to_string(),
             "admin_user".to_string(),
             AuditAction::SettingsGroupViewed,
             AuditTargetType::Settings,
@@ -750,7 +749,7 @@ async fn test_settings_group_viewed_audit_log() {
         r"
         SELECT action, target_type, details
         FROM audit_logs
-        WHERE actor_id = 'group_viewer'
+        WHERE actor_id = '100111'
         ",
     )
     .fetch_one(&pool)

@@ -21,7 +21,7 @@ async fn test_audit_unbuffered_writes_immediately() {
     // Write an audit event
     service
         .log(
-            "actor_1".to_string(),
+            "100001".to_string(),
             "admin".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -34,7 +34,7 @@ async fn test_audit_unbuffered_writes_immediately() {
         .expect("Unbuffered write should succeed");
 
     // Query immediately -- should be visible since unbuffered writes go directly to DB
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'actor_1'")
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100001'")
         .fetch_one(&pool)
         .await
         .expect("Query should succeed");
@@ -52,7 +52,7 @@ async fn test_audit_query_filter_by_action() {
     // Write events with different actions
     service
         .log(
-            "actor_filter".to_string(),
+            "100002".to_string(),
             "admin".to_string(),
             AuditAction::UserBanned,
             AuditTargetType::User,
@@ -66,7 +66,7 @@ async fn test_audit_query_filter_by_action() {
 
     service
         .log(
-            "actor_filter".to_string(),
+            "100002".to_string(),
             "admin".to_string(),
             AuditAction::RoomCreated,
             AuditTargetType::Room,
@@ -80,7 +80,7 @@ async fn test_audit_query_filter_by_action() {
 
     service
         .log(
-            "actor_filter".to_string(),
+            "100002".to_string(),
             "admin".to_string(),
             AuditAction::UserBanned,
             AuditTargetType::User,
@@ -94,7 +94,7 @@ async fn test_audit_query_filter_by_action() {
 
     // Query filtered by action
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT target_id FROM audit_logs WHERE actor_id = 'actor_filter' AND action = 'user_banned' ORDER BY created_at",
+        "SELECT target_id FROM audit_logs WHERE actor_id = '100002' AND action = 'user_banned' ORDER BY created_at",
     )
     .fetch_all(&pool)
     .await
@@ -115,7 +115,7 @@ async fn test_audit_query_date_range() {
     // Write an event
     service
         .log(
-            "actor_date".to_string(),
+            "100003".to_string(),
             "admin".to_string(),
             AuditAction::SettingsUpdated,
             AuditTargetType::Settings,
@@ -133,7 +133,7 @@ async fn test_audit_query_date_range() {
     let one_hour_later = now + chrono::Duration::hours(1);
 
     let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'actor_date' AND created_at >= $1 AND created_at <= $2",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100003' AND created_at >= $1 AND created_at <= $2",
     )
     .bind(one_hour_ago)
     .bind(one_hour_later)
@@ -148,7 +148,7 @@ async fn test_audit_query_date_range() {
     let one_and_half_hours_ago = now - chrono::Duration::minutes(90);
 
     let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'actor_date' AND created_at >= $1 AND created_at <= $2",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100003' AND created_at >= $1 AND created_at <= $2",
     )
     .bind(two_hours_ago)
     .bind(one_and_half_hours_ago)
@@ -203,7 +203,7 @@ async fn test_log_stream_kicked_writes_audit_log() {
     // Log a stream kick event
     service
         .log_stream_kicked(
-            "admin_001".to_string(),
+            "100004".to_string(),
             "superadmin".to_string(),
             "room_abc123".to_string(),
             "media_xyz789".to_string(),
@@ -227,7 +227,7 @@ async fn test_log_stream_kicked_writes_audit_log() {
         r"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text
         FROM audit_logs
-        WHERE actor_id = 'admin_001' AND action = 'stream_kicked'
+        WHERE actor_id = '100004' AND action = 'stream_kicked'
         ",
     )
     .fetch_one(&pool)
@@ -273,7 +273,7 @@ async fn test_log_stream_kicked_without_reason() {
     // Log a stream kick event without a reason
     service
         .log_stream_kicked(
-            "admin_002".to_string(),
+            "100005".to_string(),
             "moderator".to_string(),
             "room_def456".to_string(),
             "media_uvw321".to_string(),
@@ -289,7 +289,7 @@ async fn test_log_stream_kicked_without_reason() {
         r"
         SELECT action, details::text
         FROM audit_logs
-        WHERE actor_id = 'admin_002' AND action = 'stream_kicked'
+        WHERE actor_id = '100005' AND action = 'stream_kicked'
         ",
     )
     .fetch_one(&pool)
@@ -318,7 +318,7 @@ async fn test_log_stream_kicked_records_actor_username() {
     // Log a stream kick event
     service
         .log_stream_kicked(
-            "admin_003".to_string(),
+            "100006".to_string(),
             "test_admin_user".to_string(),
             "room_test".to_string(),
             "media_test".to_string(),
@@ -331,7 +331,7 @@ async fn test_log_stream_kicked_records_actor_username() {
 
     // Verify actor_username was recorded
     let row: (String,) = sqlx::query_as(
-        "SELECT actor_username FROM audit_logs WHERE actor_id = 'admin_003' AND action = 'stream_kicked'",
+        "SELECT actor_username FROM audit_logs WHERE actor_id = '100006' AND action = 'stream_kicked'",
     )
     .fetch_one(&pool)
     .await
@@ -353,7 +353,7 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
     // Log multiple stream kick events
     service
         .log_stream_kicked(
-            "admin_004".to_string(),
+            "100007".to_string(),
             "admin".to_string(),
             "room_1".to_string(),
             "media_1".to_string(),
@@ -366,7 +366,7 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
 
     service
         .log_stream_kicked(
-            "admin_004".to_string(),
+            "100007".to_string(),
             "admin".to_string(),
             "room_2".to_string(),
             "media_2".to_string(),
@@ -379,7 +379,7 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
 
     // Verify both events were logged
     let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'admin_004' AND action = 'stream_kicked'",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = '100007' AND action = 'stream_kicked'",
     )
     .fetch_one(&pool)
     .await
@@ -389,7 +389,7 @@ async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
 
     // Verify they have different target_ids
     let targets: Vec<(String,)> = sqlx::query_as(
-        "SELECT target_id FROM audit_logs WHERE actor_id = 'admin_004' AND action = 'stream_kicked' ORDER BY target_id",
+        "SELECT target_id FROM audit_logs WHERE actor_id = '100007' AND action = 'stream_kicked' ORDER BY target_id",
     )
     .fetch_all(&pool)
     .await

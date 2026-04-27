@@ -85,7 +85,7 @@ fn make_room(name: &str, owner_id: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner_id.clone(),
+        created_by: *owner_id,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -101,8 +101,8 @@ fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i3
     let now = Utc::now();
     Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*creator_id),
         name: name.to_string(),
         parent_id: None,
         position: f64::from(position),
@@ -125,9 +125,9 @@ fn make_media(
     let now = Utc::now();
     Media {
         id: MediaId::new(),
-        playlist_id: playlist_id.cloned(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        playlist_id: playlist_id.copied(),
+        room_id: *room_id,
+        creator_id: Some(*creator_id),
         name: name.to_string(),
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
@@ -252,7 +252,7 @@ async fn assert_delete_user_already_deleted_returns_error(service: &UserService)
         .await
         .expect("Registration should succeed");
 
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // First delete should succeed
     let result = service.delete_user(&user_id).await;
@@ -288,14 +288,14 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
         .await
         .expect("Registration should succeed");
 
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // Use a barrier to synchronize both delete attempts
     let barrier = Arc::new(Barrier::new(2));
     let service1 = service.clone();
     let service2 = service.clone();
-    let user_id1 = user_id.clone();
-    let user_id2 = user_id.clone();
+    let user_id1 = user_id;
+    let user_id2 = user_id;
     let barrier1 = barrier.clone();
     let barrier2 = barrier.clone();
 
@@ -366,8 +366,8 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     room_member_repo
         .add(&RoomMember {
-            room_id: foreign_room.id.clone(),
-            user_id: doomed_user.id.clone(),
+            room_id: foreign_room.id,
+            user_id: doomed_user.id,
             role: synctv_core::models::RoomRole::Member,
             status: MemberStatus::Active,
             added_permissions: 0,
@@ -449,20 +449,19 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
              (room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version)
          VALUES ($1, $2, NULL, ''::bytea, 12.5, 1.0, TRUE, NOW(), 0)",
     )
-    .bind(foreign_room.id.as_str())
-    .bind(foreign_media.id.as_str())
+    .bind(foreign_room.id)
+    .bind(foreign_media.id)
     .execute(&pool)
     .await
     .expect("create playback state");
 
     sqlx::query(
-        "INSERT INTO oauth2_clients (id, provider, provider_user_id, user_id, username, email)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO oauth2_clients (provider, provider_user_id, user_id, username, email)
+         VALUES ($1, $2, $3, $4, $5)",
     )
-    .bind(synctv_common::snanoid!(12))
     .bind("github")
     .bind("delete-owner-gh")
-    .bind(doomed_user.id.as_str())
+    .bind(doomed_user.id)
     .bind("delete_owner")
     .bind("delete_owner@example.com")
     .execute(&pool)
@@ -473,7 +472,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
         "INSERT INTO notifications (user_id, title, content, type, is_read, created_at, updated_at)
          VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())",
     )
-    .bind(doomed_user.id.as_str())
+    .bind(doomed_user.id)
     .bind("title")
     .bind("body")
     .bind("system")
@@ -482,12 +481,11 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .expect("create notification");
 
     sqlx::query(
-        "INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-         VALUES ($1, $2, $3, $4, 1, NOW())",
+        "INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
+         VALUES ($1, $2, $3, 1, NOW())",
     )
-    .bind(synctv_common::snanoid!(12))
-    .bind(foreign_room.id.as_str())
-    .bind(doomed_user.id.as_str())
+    .bind(foreign_room.id)
+    .bind(doomed_user.id)
     .bind("hello")
     .execute(&pool)
     .await
@@ -500,13 +498,13 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     assert_eq!(summary.user_id, doomed_user.id);
     assert_eq!(summary.username, doomed_user.username);
-    assert_eq!(summary.deleted_room_ids, vec![owned_room.id.clone()]);
-    assert_eq!(summary.membership_room_ids, vec![foreign_room.id.clone()]);
+    assert_eq!(summary.deleted_room_ids, vec![owned_room.id]);
+    assert_eq!(summary.membership_room_ids, vec![foreign_room.id]);
     assert_eq!(summary.modified_rooms.len(), 1);
     assert_eq!(summary.modified_rooms[0].room_id, foreign_room.id);
     assert_eq!(
         summary.modified_rooms[0].deleted_media_ids,
-        vec![foreign_media.id.clone()]
+        vec![foreign_media.id]
     );
     assert!(
         summary.modified_rooms[0].playback_reset,
@@ -601,7 +599,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
          FROM room_playback_state
          WHERE room_id = $1",
     )
-    .bind(foreign_room.id.as_str())
+    .bind(foreign_room.id)
     .fetch_one(&pool)
     .await
     .expect("query playback");
@@ -611,7 +609,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     let oauth2_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM oauth2_clients WHERE user_id = $1")
-            .bind(doomed_user.id.as_str())
+            .bind(doomed_user.id)
             .fetch_one(&pool)
             .await
             .expect("count oauth2 mappings");
@@ -619,7 +617,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     let notification_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE user_id = $1")
-            .bind(doomed_user.id.as_str())
+            .bind(doomed_user.id)
             .fetch_one(&pool)
             .await
             .expect("count notifications");
@@ -627,7 +625,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
 
     let chat_user_ids: Vec<Option<String>> =
         sqlx::query_scalar("SELECT user_id FROM chat_messages WHERE room_id = $1")
-            .bind(foreign_room.id.as_str())
+            .bind(foreign_room.id)
             .fetch_all(&pool)
             .await
             .expect("query chat messages");
@@ -720,16 +718,16 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
 
     room_member_repo
         .add(&RoomMember::new(
-            owned_room.id.clone(),
-            owner.id.clone(),
+            owned_room.id,
+            owner.id,
             synctv_core::models::RoomRole::Creator,
         ))
         .await
         .unwrap();
     room_member_repo
         .add(&RoomMember::new(
-            owned_room.id.clone(),
-            member.id.clone(),
+            owned_room.id,
+            member.id,
             synctv_core::models::RoomRole::Member,
         ))
         .await

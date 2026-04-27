@@ -312,7 +312,7 @@ impl CleanupService {
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.soft_delete_retention_days);
-        let user_ids: Vec<String> = sqlx::query_scalar(
+        let user_ids: Vec<crate::models::UserId> = sqlx::query_scalar(
             r"
             SELECT id
             FROM users
@@ -334,7 +334,7 @@ impl CleanupService {
             // `left`. Those rows still carry `ON DELETE RESTRICT` FKs, so they
             // must be removed before the hard delete can succeed.
             sqlx::query("DELETE FROM room_members WHERE user_id = $1")
-                .bind(&user_id)
+                .bind(user_id)
                 .execute(&mut *tx)
                 .await
                 .internal_with_err("Failed to delete room memberships during user purge")?;
@@ -347,7 +347,7 @@ impl CleanupService {
                   AND deleted_at < CURRENT_TIMESTAMP - ($2 || ' days')::INTERVAL
                 ",
             )
-            .bind(&user_id)
+            .bind(user_id)
             .bind(days)
             .execute(&mut *tx)
             .await

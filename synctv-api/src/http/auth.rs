@@ -145,7 +145,10 @@ pub async fn login(
                         )
                         .await?;
                     return Ok(LoginResponse {
-                        user: Some(crate::impls::client::user_to_proto(&result.user)),
+                        user: Some(crate::impls::client::user_to_proto(
+                            &result.user,
+                            &state_for_login.public_id_codec,
+                        )),
                         access_token: result.access_token,
                         refresh_token: result.refresh_token,
                     });

@@ -22,6 +22,10 @@ use synctv_core::{
 };
 use synctv_core_testing::{create_test_pool, TestContainer};
 
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::default_for_tests()
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -67,8 +71,8 @@ fn make_playlist(room_id: &RoomId, creator_id: &UserId, name: &str, position: i3
     let now = Utc::now();
     Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*creator_id),
         name: name.to_string(),
         parent_id: None,
         position: f64::from(position),
@@ -86,8 +90,8 @@ fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) 
     Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*creator_id),
         name: name.to_string(),
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
@@ -161,7 +165,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
         .create_room(
             "Availability Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -178,6 +182,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     ClientApiFixture {
@@ -230,11 +235,17 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .await
         .unwrap();
     user_repo.ban(&creator.id, None, None).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let available_playlist_id = codec.encode_playlist_id(available_playlist.id).unwrap();
+    let unavailable_playlist_id = codec.encode_playlist_id(unavailable_playlist.id).unwrap();
+    let available_media_id = codec.encode_media_id(available_media.id).unwrap();
+    let unavailable_media_id = codec.encode_media_id(unavailable_media.id).unwrap();
 
     let response = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
@@ -261,7 +272,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
     let available_folder = response
         .playlists
         .iter()
-        .find(|item| item.id == available_playlist.id.as_str())
+        .find(|item| item.id == available_playlist_id)
         .unwrap();
     assert_eq!(
         available_folder.availability,
@@ -271,7 +282,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
     let unavailable_folder = response
         .playlists
         .iter()
-        .find(|item| item.id == unavailable_playlist.id.as_str())
+        .find(|item| item.id == unavailable_playlist_id)
         .unwrap();
     assert_eq!(
         unavailable_folder.availability,
@@ -281,7 +292,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
     let available_file = response
         .media
         .iter()
-        .find(|item| item.id == available_media.id.as_str())
+        .find(|item| item.id == available_media_id)
         .unwrap();
     assert_eq!(
         available_file.availability,
@@ -291,7 +302,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
     let unavailable_file = response
         .media
         .iter()
-        .find(|item| item.id == unavailable_media.id.as_str())
+        .find(|item| item.id == unavailable_media_id)
         .unwrap();
     assert_eq!(
         unavailable_file.availability,
@@ -338,11 +349,15 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .await
         .unwrap();
     user_repo.ban(&creator.id, None, None).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let unavailable_playlist_id = codec.encode_playlist_id(unavailable_playlist.id).unwrap();
+    let unavailable_media_id = codec.encode_media_id(unavailable_media.id).unwrap();
 
     let page_one = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
@@ -366,12 +381,12 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
     assert_eq!(page_one.file_count, 1);
     assert_eq!(page_one.playlists.len(), 1);
     assert!(page_one.media.is_empty());
-    assert_eq!(page_one.playlists[0].id, unavailable_playlist.id.as_str());
+    assert_eq!(page_one.playlists[0].id, unavailable_playlist_id);
 
     let page_two = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),
@@ -395,7 +410,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
     assert_eq!(page_two.file_count, 1);
     assert!(page_two.playlists.is_empty());
     assert_eq!(page_two.media.len(), 1);
-    assert_eq!(page_two.media[0].id, unavailable_media.id.as_str());
+    assert_eq!(page_two.media[0].id, unavailable_media_id);
 
     fixture.cleanup().await;
 }
@@ -430,13 +445,14 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         availability: synctv_api::proto::client::ResourceAvailabilityFilter::All as i32,
         refresh: false,
     };
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
 
     let first = client_api
-        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request.clone())
+        .list_playlist_items(&owner.id, &room_public_id, request.clone())
         .await
         .unwrap();
     let second = client_api
-        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request.clone())
+        .list_playlist_items(&owner.id, &room_public_id, request.clone())
         .await
         .unwrap();
 
@@ -449,7 +465,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         .unwrap();
 
     let third = client_api
-        .list_playlist_items(owner.id.as_str(), room.id.as_str(), request)
+        .list_playlist_items(&owner.id, &room_public_id, request)
         .await
         .unwrap();
 
@@ -486,11 +502,14 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
         .await
         .unwrap();
     user_repo.ban(&creator.id, None, None).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let unavailable_playlist_id = codec.encode_playlist_id(unavailable_playlist.id).unwrap();
 
     let response = client_api
         .list_playlists(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistsRequest {
                 parent_id: String::new(),
                 page: 1,
@@ -510,7 +529,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
 
     assert_eq!(response.total, 1);
     assert_eq!(response.playlists.len(), 1);
-    assert_eq!(response.playlists[0].id, unavailable_playlist.id.as_str());
+    assert_eq!(response.playlists[0].id, unavailable_playlist_id);
     assert_eq!(
         response.playlists[0].availability,
         synctv_api::proto::client::ResourceAvailability::CreatorInactive as i32
@@ -544,10 +563,11 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .await
         .unwrap();
 
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
     let listed_room = list_response
         .rooms
         .iter()
-        .find(|candidate| candidate.id == room.id.as_str())
+        .find(|candidate| candidate.id == room_public_id)
         .expect("public list should still surface the room");
     assert_eq!(
         listed_room.availability,
@@ -556,7 +576,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
 
     let check_response = client_api
         .check_room(synctv_api::proto::client::CheckRoomRequest {
-            room_id: room.id.as_str().to_string(),
+            room_id: room_public_id.clone(),
         })
         .await
         .unwrap();
@@ -583,7 +603,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
             entry
                 .room
                 .as_ref()
-                .filter(|candidate| candidate.id == room.id.as_str())
+                .filter(|candidate| candidate.id == room_public_id)
         })
         .expect("hot rooms should still surface the room");
     assert_eq!(

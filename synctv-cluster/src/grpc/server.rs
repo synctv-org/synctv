@@ -14,6 +14,7 @@ use super::synctv::cluster::{
 use super::ClusterAuthInterceptor;
 use crate::discovery::{ClusterNodeDirectory, NodeInfo as DiscoveryNodeInfo};
 use crate::sync::ConnectionRuntime;
+use synctv_core::models::{RoomId, UserId};
 
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -277,16 +278,16 @@ impl ClusterService for ClusterServer {
             .user_ids
             .iter()
             .map(|uid| {
-                let user_id = synctv_core::models::UserId::from_string(uid.clone());
+                let user_id = UserId::from(*uid);
                 let connections = cm.get_user_connections(&user_id);
                 let is_online = !connections.is_empty();
-                let room_ids: Vec<String> = connections
+                let room_ids: Vec<i64> = connections
                     .iter()
-                    .filter_map(|c| c.room_id.as_ref().map(|r| r.as_str().to_string()))
+                    .filter_map(|c| c.room_id.as_ref().map(RoomId::as_i64))
                     .collect();
 
                 UserOnlineStatus {
-                    user_id: uid.clone(),
+                    user_id: *uid,
                     is_online,
                     room_ids,
                     node_id: self.node_id.clone(),
@@ -324,7 +325,7 @@ impl ClusterService for ClusterServer {
             }));
         };
 
-        let room_id = synctv_core::models::RoomId::from_string(req.room_id);
+        let room_id = RoomId::from(req.room_id);
         let room_conns = cm.get_room_connections(&room_id);
 
         let connections: Vec<RoomConnection> = room_conns
@@ -340,7 +341,7 @@ impl ClusterService for ClusterServer {
                 let last_activity_secs_ago = u64_to_i64(conn.last_activity.elapsed().as_secs());
 
                 RoomConnection {
-                    user_id: conn.user_id.as_str().to_string(),
+                    user_id: conn.user_id.as_i64(),
                     node_id: self.node_id.clone(),
                     connected_at: now_unix - connected_secs_ago,
                     last_activity: now_unix - last_activity_secs_ago,

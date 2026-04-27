@@ -9,56 +9,19 @@ use serde_json::Value;
 use sha1::Sha1;
 use std::collections::HashMap;
 
-use super::{pagination::PageParams, query::SortDirection};
+use super::{pagination::PageParams, query::SortDirection, UserId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderInstanceListSortBy {
-    Name,
-    Endpoint,
-    UpdatedAt,
-    #[default]
-    CreatedAt,
-}
-
-impl ProviderInstanceListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::Endpoint => "endpoint",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ProviderInstanceListSortBy {
+        Name => { display: "name", sql: "name" },
+        Endpoint => { display: "endpoint", sql: "endpoint" },
+        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
     }
-}
-
-impl std::str::FromStr for ProviderInstanceListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "name" => Ok(Self::Name),
-            "endpoint" => Ok(Self::Endpoint),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            other => Err(format!(
-                "Unknown provider instance list sort field: {other}"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for ProviderInstanceListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Name => "name",
-            Self::Endpoint => "endpoint",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        };
-        f.write_str(value)
-    }
+    default = CreatedAt;
+    error = "Unknown provider instance list sort field";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,11 +115,11 @@ impl ProviderInstance {
 /// Stores user-specific credentials for media providers (Bilibili cookies, Alist passwords, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct UserProviderCredential {
-    /// Credential ID (shared base62 ID)
-    pub id: String,
+    /// Credential row ID.
+    pub id: i64,
 
-    /// User ID (shared base62 ID, foreign key to users table)
-    pub user_id: String,
+    /// User ID (foreign key to users table).
+    pub user_id: UserId,
 
     /// Media provider type ("bilibili", "alist", "emby")
     pub provider: String,
@@ -184,13 +147,6 @@ pub struct UserProviderCredential {
 
 impl UserProviderCredential {
     const BILIBILI_SCOPE: &'static str = "bilibili";
-
-    /// Generate a shared 12-character credential ID for
-    /// `user_media_provider_credentials.id`.
-    #[must_use]
-    pub fn new_id() -> String {
-        crate::models::id::generate_id()
-    }
 
     fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
         provider_instance_name.and_then(|name| {
@@ -461,16 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn test_user_credential_new_id_uses_shared_12_char_format() {
-        let id = UserProviderCredential::new_id();
-        assert_eq!(id.len(), crate::models::ID_LENGTH);
-        assert!(synctv_common::id::is_valid_with_len(
-            &id,
-            crate::models::ID_LENGTH
-        ));
-    }
-
-    #[test]
     fn test_user_credential_generate_server_id_for_instance_changes_with_instance_name() {
         let unscoped = UserProviderCredential::generate_server_id_for_instance(
             "https://alist.example.com",
@@ -511,8 +457,8 @@ mod tests {
 
         // Expired credential
         let expired = UserProviderCredential {
-            id: "test_id".to_string(),
-            user_id: "user_id".to_string(),
+            id: 0,
+            user_id: UserId::new(),
             provider: "bilibili".to_string(),
             server_id: UserProviderCredential::bilibili_server_id(),
             provider_instance_name: None,

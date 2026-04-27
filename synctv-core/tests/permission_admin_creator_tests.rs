@@ -25,7 +25,7 @@ async fn test_is_admin_or_creator_for_creator() {
         .create_room(
             "Is Admin Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -61,7 +61,7 @@ async fn test_is_admin_or_creator_for_regular_member() {
         .create_room(
             "Is Admin 2 Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -69,7 +69,7 @@ async fn test_is_admin_or_creator_for_regular_member() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -102,7 +102,7 @@ async fn test_is_admin_or_creator_for_non_member() {
         .create_room(
             "Is Admin 3 Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )

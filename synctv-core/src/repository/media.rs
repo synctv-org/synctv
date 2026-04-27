@@ -54,10 +54,7 @@ impl MediaRepository {
     }
 
     fn scope_lock_key(room_id: &RoomId, playlist_id: Option<&PlaylistId>) -> i64 {
-        super::stable_scope_lock_key(
-            room_id.as_str(),
-            playlist_id.map(crate::models::PlaylistId::as_str),
-        )
+        super::stable_scope_lock_key(room_id.as_i64(), playlist_id.map(PlaylistId::as_i64))
     }
 
     fn build_media_list_order_by(query: &MediaListQuery) -> String {
@@ -100,11 +97,11 @@ impl MediaRepository {
         query: &MediaListQuery,
     ) {
         builder.push(" FROM media m LEFT JOIN users u ON m.creator_id = u.id AND u.deleted_at IS NULL WHERE m.room_id = ");
-        builder.push_bind(room_id.as_str().to_owned());
+        builder.push_bind(room_id.as_i64());
         match playlist_id {
             Some(playlist_id) => {
                 builder.push(" AND m.playlist_id = ");
-                builder.push_bind(playlist_id.as_str().to_owned());
+                builder.push_bind(playlist_id.as_i64());
             }
             None => {
                 builder.push(" AND m.playlist_id IS NULL");
@@ -225,18 +222,17 @@ impl MediaRepository {
 
         let row = sqlx::query(
             r"
-            INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
+            INSERT INTO media (playlist_id, room_id, creator_id, name, position,
                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 0)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        added_at, updated_at, version
             "
         )
-        .bind(media.id.as_str())
-        .bind(media.playlist_id.as_ref().map(PlaylistId::as_str))
-        .bind(media.room_id.as_str())
-        .bind(media.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+        .bind(media.playlist_id)
+        .bind(media.room_id)
+        .bind(media.creator_id)
         .bind(&media.name)
         .bind(media.position)
         .bind(media.source_provider.as_str())
@@ -254,8 +250,7 @@ impl MediaRepository {
     /// Batch insert media items.
     ///
     /// Automatically chunks large batches to stay within `PostgreSQL`'s 65535
-    /// bind-parameter limit (each row uses 10 parameters, so we chunk at 1000
-    /// rows = 10000 parameters per statement).
+    /// bind-parameter limit.
     pub async fn create_batch(&self, items: &[Media]) -> Result<Vec<Media>> {
         let mut tx = self.pool.begin().await?;
         let results = self.create_batch_chunked(items, &mut tx).await?;
@@ -284,7 +279,7 @@ impl MediaRepository {
 
     /// Internal: insert a single chunk of media items (max 1000).
     ///
-    /// Each row occupies 10 bind parameters. `PostgreSQL`'s hard limit is 65535
+    /// Each row occupies 9 bind parameters. `PostgreSQL`'s hard limit is 65535
     /// parameters per statement, giving a safe ceiling of 6553 rows. We enforce
     /// a tighter 1000-row limit so callers of `create_batch_with_executor`
     /// receive a clear error rather than a cryptic protocol failure in production.
@@ -293,7 +288,7 @@ impl MediaRepository {
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
         /// Number of bind parameters per row.
-        const PARAMS_PER_ROW: usize = 10;
+        const PARAMS_PER_ROW: usize = 9;
         /// Maximum rows per INSERT statement (well within the 65535 parameter limit).
         const MAX_ROWS_PER_CHUNK: usize = 1000;
 
@@ -313,7 +308,7 @@ impl MediaRepository {
         let mut results = Vec::with_capacity(items.len());
 
         let mut query_builder = String::from(
-            "INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
+            "INSERT INTO media (playlist_id, room_id, creator_id, name, position,
                                source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES "
         );
@@ -322,10 +317,10 @@ impl MediaRepository {
             if i > 0 {
                 query_builder.push_str(", ");
             }
-            let base = i * 10;
+            let base = i * PARAMS_PER_ROW;
             write!(
                 query_builder,
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
                 base + 1,
                 base + 2,
                 base + 3,
@@ -335,8 +330,7 @@ impl MediaRepository {
                 base + 7,
                 base + 8,
                 base + 9,
-                base + 10,
-                base + 10
+                base + 9
             )
             .expect("writing SQL into String should not fail");
             binds.push(serde_json::to_value(&item.source_config)?);
@@ -350,13 +344,12 @@ impl MediaRepository {
         let mut query = sqlx::query(&query_builder);
         for (i, item) in items.iter().enumerate() {
             query = query
-                .bind(item.id.as_str())
-                .bind(item.playlist_id.as_ref().map(PlaylistId::as_str))
-                .bind(item.room_id.as_str())
+                .bind(item.playlist_id.as_ref().map(PlaylistId::as_i64))
+                .bind(item.room_id)
                 .bind(
                     item.creator_id
                         .as_ref()
-                        .map(super::super::models::id::UserId::as_str),
+                        .map(super::super::models::id::UserId::as_i64),
                 )
                 .bind(&item.name)
                 .bind(item.position)
@@ -411,7 +404,7 @@ impl MediaRepository {
                        added_at, updated_at, version
             "
         )
-        .bind(media.id.as_str())
+        .bind(media.id)
         .bind(&media.name)
         .bind(media.position)
         .bind(&source_config_json)
@@ -457,7 +450,7 @@ impl MediaRepository {
                        added_at, updated_at, version
             ",
         )
-        .bind(media.id.as_str())
+        .bind(media.id)
         .bind(&media.name)
         .bind(media.position)
         .bind(&source_config_json)
@@ -484,7 +477,7 @@ impl MediaRepository {
              FROM media
              WHERE id = $1            ",
         )
-        .bind(media_id.as_str())
+        .bind(media_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -512,7 +505,7 @@ impl MediaRepository {
             return Ok(Vec::new());
         }
 
-        let id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+        let id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
         let rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
@@ -551,8 +544,8 @@ impl MediaRepository {
             ORDER BY position ASC, id ASC
             ",
         )
-        .bind(room_id.as_str())
-        .bind(playlist_id.map(PlaylistId::as_str))
+        .bind(room_id)
+        .bind(playlist_id.map(PlaylistId::as_i64))
         .fetch_all(executor)
         .await?;
 
@@ -574,7 +567,7 @@ impl MediaRepository {
              ORDER BY position ASC
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -595,7 +588,7 @@ impl MediaRepository {
              ORDER BY position ASC
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -618,7 +611,7 @@ impl MediaRepository {
             r"
             SELECT COUNT(*) FROM media WHERE playlist_id = $1",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -634,7 +627,7 @@ impl MediaRepository {
              LIMIT $2 OFFSET $3
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -665,7 +658,7 @@ impl MediaRepository {
               AND playlist_id IS NULL
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -681,7 +674,7 @@ impl MediaRepository {
              LIMIT $2 OFFSET $3
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -716,7 +709,7 @@ impl MediaRepository {
              LIMIT $2 OFFSET $3
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -746,7 +739,7 @@ impl MediaRepository {
              LIMIT $2 OFFSET $3
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -765,7 +758,7 @@ impl MediaRepository {
              WHERE id = $1
             ",
         )
-        .bind(media_id.as_str())
+        .bind(media_id)
         .execute(&self.pool)
         .await?;
 
@@ -780,7 +773,7 @@ impl MediaRepository {
              WHERE playlist_id = $1
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .execute(&self.pool)
         .await?;
 
@@ -796,7 +789,7 @@ impl MediaRepository {
                AND playlist_id IS NULL
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&self.pool)
         .await?;
 
@@ -821,7 +814,7 @@ impl MediaRepository {
             return Ok(0);
         }
 
-        let id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+        let id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
 
         let result = sqlx::query(
             r"
@@ -854,21 +847,12 @@ impl MediaRepository {
         scopes: &[(RoomId, Option<PlaylistId>)],
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        let unique_scopes: BTreeSet<(String, Option<String>)> = scopes
+        let unique_scopes: BTreeSet<(RoomId, Option<PlaylistId>)> = scopes
             .iter()
-            .map(|(room_id, playlist_id)| {
-                (
-                    room_id.as_str().to_owned(),
-                    playlist_id
-                        .as_ref()
-                        .map(|playlist_id| playlist_id.as_str().to_owned()),
-                )
-            })
+            .map(|(room_id, playlist_id)| (*room_id, *playlist_id))
             .collect();
 
         for (room_id, playlist_id) in unique_scopes {
-            let room_id = RoomId::from_string(room_id);
-            let playlist_id = playlist_id.map(PlaylistId::from_string);
             self.lock_scope_with_tx(&room_id, playlist_id.as_ref(), tx)
                 .await?;
         }
@@ -966,7 +950,7 @@ impl MediaRepository {
             ));
         }
 
-        let media_id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+        let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
         let moved_rows = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
@@ -993,7 +977,7 @@ impl MediaRepository {
                     "Media does not belong to this room".to_string(),
                 ));
             }
-            moved_map.insert(media.id.clone(), media);
+            moved_map.insert(media.id, media);
         }
 
         let moved_media: Vec<Media> = media_ids
@@ -1034,7 +1018,7 @@ impl MediaRepository {
                 FOR UPDATE
                 ",
             )
-            .bind(anchor_id.as_str())
+            .bind(anchor_id)
             .fetch_optional(&mut **tx)
             .await?
             .map(|row| Media::from_row(&row))
@@ -1058,12 +1042,12 @@ impl MediaRepository {
                         "Anchor media must belong to the target playlist scope".to_string(),
                     ));
                 }
-                Some(target_playlist_id.clone())
+                Some(*target_playlist_id)
             }
-            (None, Some(anchor_media)) => anchor_media.playlist_id.clone(),
-            (Some(target_playlist_id), None) => Some(target_playlist_id.clone()),
+            (None, Some(anchor_media)) => anchor_media.playlist_id,
+            (Some(target_playlist_id), None) => Some(*target_playlist_id),
             (None, None) => {
-                let first_scope = moved_media[0].playlist_id.clone();
+                let first_scope = moved_media[0].playlist_id;
                 if moved_media
                     .iter()
                     .any(|media| media.playlist_id != first_scope)
@@ -1079,9 +1063,9 @@ impl MediaRepository {
 
         let mut affected_scopes: Vec<(RoomId, Option<PlaylistId>)> = moved_media
             .iter()
-            .map(|media| (media.room_id.clone(), media.playlist_id.clone()))
+            .map(|media| (media.room_id, media.playlist_id))
             .collect();
-        affected_scopes.push((room_id.clone(), effective_target_playlist_id.clone()));
+        affected_scopes.push((*room_id, effective_target_playlist_id));
         self.lock_scopes_with_tx(&affected_scopes, tx).await?;
 
         for _ in 0..2 {
@@ -1096,11 +1080,11 @@ impl MediaRepository {
                 FOR UPDATE
                 ",
             )
-            .bind(room_id.as_str())
+            .bind(room_id)
             .bind(
                 effective_target_playlist_id
                     .as_ref()
-                    .map(PlaylistId::as_str),
+                    .map(PlaylistId::as_i64),
             )
             .bind(&media_id_strs)
             .fetch_all(&mut **tx)
@@ -1110,7 +1094,7 @@ impl MediaRepository {
                 .into_iter()
                 .map(|row| {
                     Ok((
-                        MediaId::from_string(row.try_get::<String, _>("id")?),
+                        MediaId::from(row.try_get::<i64, _>("id")?),
                         row.try_get::<f64, _>("position")?,
                     ))
                 })
@@ -1161,11 +1145,11 @@ impl MediaRepository {
                               added_at, updated_at, version
                     ",
                 )
-                .bind(media.id.as_str())
+                .bind(media.id)
                 .bind(
                     effective_target_playlist_id
                         .as_ref()
-                        .map(PlaylistId::as_str),
+                        .map(PlaylistId::as_i64),
                 )
                 .bind(position)
                 .fetch_one(&mut **tx)
@@ -1205,11 +1189,11 @@ impl MediaRepository {
             LIMIT 1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(playlist_id.map(PlaylistId::as_str))
-        .bind(exclude_media_id.as_str())
+        .bind(room_id)
+        .bind(playlist_id.map(PlaylistId::as_i64))
+        .bind(exclude_media_id)
         .bind(anchor_position)
-        .bind(anchor_media_id.as_str())
+        .bind(anchor_media_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -1239,11 +1223,11 @@ impl MediaRepository {
             LIMIT 1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(playlist_id.map(PlaylistId::as_str))
-        .bind(exclude_media_id.as_str())
+        .bind(room_id)
+        .bind(playlist_id.map(PlaylistId::as_i64))
+        .bind(exclude_media_id)
         .bind(anchor_position)
-        .bind(anchor_media_id.as_str())
+        .bind(anchor_media_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -1265,13 +1249,13 @@ impl MediaRepository {
             FOR UPDATE
             ",
         )
-        .bind(room_id.as_str())
-        .bind(playlist_id.map(PlaylistId::as_str))
+        .bind(room_id)
+        .bind(playlist_id.map(PlaylistId::as_i64))
         .fetch_all(&mut **tx)
         .await?;
 
         for (index, row) in rows.into_iter().enumerate() {
-            let media_id: String = row.try_get("id")?;
+            let media_id: MediaId = row.try_get("id")?;
             let position = Self::ORDER_STEP * usize_to_f64(index + 1);
             sqlx::query("UPDATE media SET position = $2, version = version + 1 WHERE id = $1")
                 .bind(media_id)
@@ -1311,8 +1295,8 @@ impl MediaRepository {
               AND playlist_id IS NOT DISTINCT FROM $2
             ",
         )
-        .bind(room_id.as_str())
-        .bind(playlist_id.map(PlaylistId::as_str))
+        .bind(room_id)
+        .bind(playlist_id.map(PlaylistId::as_i64))
         .fetch_one(&mut **tx)
         .await?;
 
@@ -1352,7 +1336,7 @@ impl MediaRepository {
             FOR UPDATE
             ",
         )
-        .bind(media_id.as_str())
+        .bind(media_id)
         .fetch_optional(&mut **tx)
         .await?
         .map(|row| Media::from_row(&row))
@@ -1369,7 +1353,7 @@ impl MediaRepository {
             FOR UPDATE
             ",
         )
-        .bind(anchor_id.as_str())
+        .bind(anchor_id)
         .fetch_optional(&mut **tx)
         .await?
         .map(|row| Media::from_row(&row))
@@ -1389,7 +1373,7 @@ impl MediaRepository {
         for _ in 0..2 {
             let anchor_position: f64 =
                 sqlx::query_scalar("SELECT position FROM media WHERE id = $1 FOR UPDATE")
-                    .bind(anchor.id.as_str())
+                    .bind(anchor.id)
                     .fetch_one(&mut **tx)
                     .await?;
 
@@ -1436,7 +1420,7 @@ impl MediaRepository {
                               added_at, updated_at, version
                     ",
                 )
-                .bind(moved.id.as_str())
+                .bind(moved.id)
                 .bind(position)
                 .fetch_one(&mut **tx)
                 .await?;
@@ -1459,7 +1443,7 @@ impl MediaRepository {
             r"
             SELECT COUNT(*) FROM media WHERE playlist_id = $1            ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1486,7 +1470,7 @@ impl MediaRepository {
               ))
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1503,7 +1487,7 @@ impl MediaRepository {
               AND playlist_id IS NULL
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1513,23 +1497,25 @@ impl MediaRepository {
     /// Batch count media items across multiple playlists
     pub async fn count_by_playlists_batch(
         &self,
-        playlist_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+        playlist_ids: &[PlaylistId],
+    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
         use sqlx::Row;
+        let ids: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let rows = sqlx::query(
             r"
             SELECT playlist_id, COUNT(*) as cnt
             FROM media
-            WHERE playlist_id = ANY($1)            GROUP BY playlist_id
+            WHERE playlist_id = ANY($1)
+            GROUP BY playlist_id
             ",
         )
-        .bind(playlist_ids)
+        .bind(&ids)
         .fetch_all(&self.pool)
         .await?;
 
         let mut result = std::collections::HashMap::new();
         for row in rows {
-            let pid: String = row.try_get("playlist_id")?;
+            let pid: PlaylistId = row.try_get("playlist_id")?;
             let cnt: i64 = row.try_get("cnt")?;
             result.insert(pid, cnt);
         }
@@ -1539,13 +1525,14 @@ impl MediaRepository {
     /// Batch count only media whose creator is still active (or media without a creator).
     pub async fn count_by_playlists_batch_accessible(
         &self,
-        playlist_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+        playlist_ids: &[PlaylistId],
+    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
         use sqlx::Row;
 
         if playlist_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+        let ids: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
 
         let rows = sqlx::query(
             r"
@@ -1566,13 +1553,13 @@ impl MediaRepository {
             GROUP BY m.playlist_id
             ",
         )
-        .bind(playlist_ids)
+        .bind(&ids)
         .fetch_all(&self.pool)
         .await?;
 
         let mut result = std::collections::HashMap::new();
         for row in rows {
-            let pid: String = row.try_get("playlist_id")?;
+            let pid: PlaylistId = row.try_get("playlist_id")?;
             let cnt: i64 = row.try_get("cnt")?;
             result.insert(pid, cnt);
         }
@@ -1617,7 +1604,7 @@ mod tests {
             provider_instance_name: Some("   ".to_string()),
             ..MediaListQuery::default()
         };
-        let room_id = RoomId::from_string("room12345678".to_string());
+        let room_id = RoomId::from(123_456_678);
 
         MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query);
 
@@ -1728,23 +1715,23 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Media Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Test Playlist",
         )
         .await;
 
         // Create media
         let media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
@@ -1786,22 +1773,22 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Media Update Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Test Playlist",
         )
         .await;
 
         let media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Original Name".to_string(),
             serde_json::json!({}),
             "direct_url",
@@ -1843,22 +1830,22 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Media Delete Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Test Playlist",
         )
         .await;
 
         let media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "To Delete".to_string(),
             serde_json::json!({}),
             "direct_url",
@@ -1910,7 +1897,7 @@ mod tests {
             .create(
                 &RoomFixture::new()
                     .with_name("Media Default Instance Room")
-                    .with_owner(owner.id.clone())
+                    .with_owner(owner.id)
                     .build(),
             )
             .await
@@ -1918,15 +1905,15 @@ mod tests {
 
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Default Instance Playlist",
         )
         .await;
 
         let default_media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Default Backend".to_string(),
             serde_json::json!({"url": "https://example.com/default.mp4"}),
             "direct_url",
@@ -1934,9 +1921,9 @@ mod tests {
             0.0,
         );
         let explicit_media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Explicit Backend".to_string(),
             serde_json::json!({"url": "https://example.com/explicit.mp4"}),
             "direct_url",
@@ -1989,14 +1976,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Batch Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Batch Playlist",
         )
         .await;
@@ -2005,9 +1992,9 @@ mod tests {
         let items: Vec<Media> = (0..5)
             .map(|i| {
                 Media::from_provider(
-                    Some(playlist.id.clone()),
-                    room.id.clone(),
-                    Some(owner.id.clone()),
+                    Some(playlist.id),
+                    room.id,
+                    Some(owner.id),
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
@@ -2036,9 +2023,9 @@ mod tests {
         let items: Vec<Media> = (0..1001)
             .map(|i| {
                 Media::from_provider(
-                    Some(playlist_id.clone()),
-                    room_id.clone(),
-                    Some(owner_id.clone()),
+                    Some(playlist_id),
+                    room_id,
+                    Some(owner_id),
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
@@ -2059,7 +2046,7 @@ mod tests {
                     "unexpected message: {message}"
                 );
                 assert!(
-                    message.contains("10010 bind parameters"),
+                    message.contains("9009 bind parameters"),
                     "unexpected message: {message}"
                 );
             }
@@ -2088,23 +2075,23 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Swap Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Swap Playlist",
         )
         .await;
 
         // Create two media items
         let media1 = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Video 1".to_string(),
             serde_json::json!({}),
             "direct_url",
@@ -2112,9 +2099,9 @@ mod tests {
             1024.0,
         );
         let media2 = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Video 2".to_string(),
             serde_json::json!({}),
             "direct_url",
@@ -2163,14 +2150,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Count Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Count Playlist",
         )
         .await;
@@ -2182,9 +2169,9 @@ mod tests {
         // Add 3 items
         for i in 0..3 {
             let media = Media::from_provider(
-                Some(playlist.id.clone()),
-                room.id.clone(),
-                Some(owner.id.clone()),
+                Some(playlist.id),
+                room.id,
+                Some(owner.id),
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
@@ -2219,14 +2206,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Paginate Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Paginate Playlist",
         )
         .await;
@@ -2234,9 +2221,9 @@ mod tests {
         // Create 15 items
         for i in 0..15 {
             let media = Media::from_provider(
-                Some(playlist.id.clone()),
-                room.id.clone(),
-                Some(owner.id.clone()),
+                Some(playlist.id),
+                room.id,
+                Some(owner.id),
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
@@ -2288,14 +2275,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Batch Delete Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Batch Delete Playlist",
         )
         .await;
@@ -2304,9 +2291,9 @@ mod tests {
         let mut ids: Vec<MediaId> = Vec::new();
         for i in 0..5 {
             let media = Media::from_provider(
-                Some(playlist.id.clone()),
-                room.id.clone(),
-                Some(owner.id.clone()),
+                Some(playlist.id),
+                room.id,
+                Some(owner.id),
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
@@ -2347,14 +2334,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Get IDs Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Get IDs Playlist",
         )
         .await;
@@ -2363,9 +2350,9 @@ mod tests {
         let mut ids: Vec<MediaId> = Vec::new();
         for i in 0..3 {
             let media = Media::from_provider(
-                Some(playlist.id.clone()),
-                room.id.clone(),
-                Some(owner.id.clone()),
+                Some(playlist.id),
+                room.id,
+                Some(owner.id),
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",

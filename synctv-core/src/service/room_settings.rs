@@ -191,10 +191,13 @@ impl RoomSettingsService {
                         result = receiver.recv() => {
                             match result {
                                 Ok(InvalidationMessage::RoomSettings { ref room_id }) => {
-                                    let room_id = RoomId::from_string(room_id.clone());
+                                    let Ok(room_id) = room_id.parse::<RoomId>() else {
+                                        tracing::warn!(room_id = %room_id, "Invalid room settings invalidation room id");
+                                        continue;
+                                    };
                                     cache_clone.invalidate(&room_id).await;
                                     tracing::debug!(
-                                        room_id = %room_id.as_str(),
+                                        room_id = %room_id,
                                         "Room settings cache invalidated (cross-replica)"
                                     );
                                 }
@@ -299,10 +302,10 @@ impl RoomSettingsService {
 
         // Use SingleFlight to prevent thundering herd:
         // Only one task loads from DB for a given room_id; others wait for the result.
-        let sf_key = room_id.as_str().to_string();
+        let sf_key = room_id.to_string();
         let repo = self.repo.clone();
         let cache = self.cache.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = *room_id;
 
         let snapshot = self
             .single_flight
@@ -350,7 +353,7 @@ impl RoomSettingsService {
         let snapshot = RoomSettingsSnapshot { settings, version };
 
         // Store in cache
-        let () = self.cache.insert(room_id.clone(), snapshot.clone()).await;
+        let () = self.cache.insert(*room_id, snapshot.clone()).await;
 
         Ok(snapshot)
     }
@@ -389,7 +392,7 @@ impl RoomSettingsService {
                     // Update local cache
                     self.cache
                         .insert(
-                            room_id.clone(),
+                            *room_id,
                             RoomSettingsSnapshot {
                                 settings: settings.clone(),
                                 version: new_version,
@@ -439,7 +442,7 @@ impl RoomSettingsService {
                     // Update local cache after successful write
                     self.cache
                         .insert(
-                            room_id.clone(),
+                            *room_id,
                             RoomSettingsSnapshot {
                                 settings: settings.clone(),
                                 version: new_version,
@@ -531,26 +534,23 @@ impl RoomSettingsService {
             return Ok(());
         }
 
-        let id_strs: Vec<&str> = room_ids
-            .iter()
-            .map(super::super::models::id::RoomId::as_str)
-            .collect();
-        let batch = self.repo.get_batch(&id_strs).await?;
-        let versioned_batch = self.repo.get_batch_with_version(&id_strs).await?;
+        let ids: Vec<RoomId> = room_ids.to_vec();
+        let batch = self.repo.get_batch(&ids).await?;
+        let versioned_batch = self.repo.get_batch_with_version(&ids).await?;
 
         // Bulk insert into cache
         for room_id in room_ids {
             let snapshot = versioned_batch
-                .get(room_id.as_str())
+                .get(room_id)
                 .map(|(settings, version)| RoomSettingsSnapshot {
                     settings: settings.clone(),
                     version: *version,
                 })
                 .unwrap_or(RoomSettingsSnapshot {
-                    settings: batch.get(room_id.as_str()).cloned().unwrap_or_default(),
+                    settings: batch.get(room_id).cloned().unwrap_or_default(),
                     version: 0,
                 });
-            self.cache.insert(room_id.clone(), snapshot).await;
+            self.cache.insert(*room_id, snapshot).await;
         }
 
         Ok(())
@@ -598,7 +598,7 @@ mod tests {
     ) -> (RoomSettingsService, Arc<CacheInvalidationService>, RoomId) {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
-        let room_id = RoomId::from_string("room-settings-stop".to_string());
+        let room_id = RoomId::from(20_001);
         let invalidation_service = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),
             "synctv:test:room-settings".to_string(),
@@ -695,7 +695,7 @@ mod tests {
         service
             .cache
             .insert(
-                room_id.clone(),
+                room_id,
                 RoomSettingsSnapshot {
                     settings: RoomSettings::default(),
                     version: 0,
@@ -707,7 +707,7 @@ mod tests {
 
         invalidation_service
             .broadcast_all(InvalidationMessage::RoomSettings {
-                room_id: room_id.as_str().to_string(),
+                room_id: room_id.to_string(),
             })
             .await
             .expect("local invalidation broadcast should succeed");
@@ -733,7 +733,7 @@ mod tests {
         service
             .cache
             .insert(
-                room_id.clone(),
+                room_id,
                 RoomSettingsSnapshot {
                     settings: RoomSettings::default(),
                     version: 0,
@@ -748,7 +748,7 @@ mod tests {
 
         invalidation_service
             .broadcast_all(InvalidationMessage::RoomSettings {
-                room_id: room_id.as_str().to_string(),
+                room_id: room_id.to_string(),
             })
             .await
             .expect("local invalidation broadcast should succeed after restart");

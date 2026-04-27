@@ -125,10 +125,10 @@ impl MediaService {
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str());
+            .with_user_id(*user_id)
+            .with_room_id(*room_id);
         if let Some(credential_owner_id) = credential_owner_id {
-            ctx = ctx.with_credential_owner_id(credential_owner_id.as_str());
+            ctx = ctx.with_credential_owner_id(*credential_owner_id);
         }
         if let Some(provider_instance_name) =
             normalize_provider_instance_name(provider_instance_name)
@@ -178,7 +178,7 @@ impl MediaService {
         let mut seen = std::collections::HashSet::new();
         let mut deduped = Vec::with_capacity(media_ids.len());
         for media_id in media_ids {
-            if seen.insert(media_id.clone()) {
+            if seen.insert(media_id) {
                 deduped.push(media_id);
             }
         }
@@ -369,9 +369,9 @@ impl MediaService {
         // Source config remains provider-owned and must not carry instance
         // routing metadata.
         let media = Media::from_provider(
-            request.playlist_id.clone(),
-            room_id.clone(),
-            Some(user_id.clone()),
+            request.playlist_id,
+            room_id,
+            Some(user_id),
             request.name.clone(),
             prepared_source_config,
             provider.name(), // Provider type name (e.g., "bilibili")
@@ -387,8 +387,8 @@ impl MediaService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            media_id = %created_media.id.as_str(),
+            room_id = %room_id,
+            media_id = %created_media.id,
             name = %created_media.name,
             source_provider = provider.name(),
             provider_instance_name = bound_provider_instance.unwrap_or(""),
@@ -398,10 +398,10 @@ impl MediaService {
 
         if let Err(e) = self.notification_service.notify_media_added(
             &room_id,
-            MediaAddedNotification {
+            &MediaAddedNotification {
                 user_id: &user_id,
                 username: &actor_username,
-                media_id: created_media.id.as_str(),
+                media_id: created_media.id,
                 title: &created_media.name,
                 url: "", // URL is generated dynamically at playback time
                 position: created_media.position,
@@ -409,7 +409,7 @@ impl MediaService {
         ) {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 "Failed to broadcast media added event"
             );
         }
@@ -481,9 +481,9 @@ impl MediaService {
             .await?;
 
         let media = Media::from_provider(
-            request.playlist_id.clone(),
-            room_id.clone(),
-            Some(admin_user_id.clone()),
+            request.playlist_id,
+            room_id,
+            Some(admin_user_id),
             request.name.clone(),
             prepared_source_config,
             provider.name(),
@@ -499,9 +499,9 @@ impl MediaService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
-            media_id = %created_media.id.as_str(),
+            room_id = %room_id,
+            admin_user_id = %admin_user_id,
+            media_id = %created_media.id,
             name = %created_media.name,
             source_provider = provider.name(),
             provider_instance_name = bound_provider_instance.unwrap_or(""),
@@ -509,10 +509,10 @@ impl MediaService {
         );
         if let Err(e) = self.notification_service.notify_media_added(
             &room_id,
-            MediaAddedNotification {
+            &MediaAddedNotification {
                 user_id: &admin_user_id,
                 username: actor_username,
-                media_id: created_media.id.as_str(),
+                media_id: created_media.id,
                 title: &created_media.name,
                 url: "",
                 position: created_media.position,
@@ -520,7 +520,7 @@ impl MediaService {
         ) {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 "Failed to broadcast media added event"
             );
         }
@@ -632,8 +632,8 @@ impl MediaService {
         {
             let media = Media::from_provider(
                 item.playlist_id,
-                room_id.clone(),
-                Some(user_id.clone()),
+                room_id,
+                Some(user_id),
                 item.name,
                 prepared_source_config,
                 provider.name(), // Provider type name
@@ -652,7 +652,7 @@ impl MediaService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             count = created_items.len(),
             "Batch added media to playlist"
         );
@@ -661,10 +661,10 @@ impl MediaService {
         for item in &created_items {
             if let Err(e) = self.notification_service.notify_media_added(
                 &room_id,
-                MediaAddedNotification {
+                &MediaAddedNotification {
                     user_id: &user_id,
                     username: &actor_username,
-                    media_id: item.id.as_str(),
+                    media_id: item.id,
                     title: &item.name,
                     url: "",
                     position: item.position,
@@ -672,8 +672,8 @@ impl MediaService {
             ) {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
-                    media_id = %item.id.as_str(),
+                    room_id = %room_id,
+                    media_id = %item.id,
                     "Failed to broadcast media added event"
                 );
             }
@@ -743,8 +743,8 @@ impl MediaService {
             {
                 Ok(Some(updated_media)) => {
                     tracing::info!(
-                        room_id = %room_id.as_str(),
-                        media_id = %request.media_id.as_str(),
+                        room_id = %room_id,
+                        media_id = %request.media_id,
                         "Media edited"
                     );
                     let actor_username = self.resolve_actor_username(&user_id).await;
@@ -753,13 +753,13 @@ impl MediaService {
                         &room_id,
                         &user_id,
                         &actor_username,
-                        updated_media.id.as_str(),
+                        updated_media.id,
                         &updated_media.name,
                         updated_media.position,
                     ) {
                         tracing::warn!(
                             error = %e,
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             "Failed to broadcast media updated event"
                         );
                     }
@@ -769,7 +769,7 @@ impl MediaService {
                 Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
                     // Concurrent modification detected, retry with fresh data
                     tracing::debug!(
-                        media_id = %request.media_id.as_str(),
+                        media_id = %request.media_id,
                         attempt = attempt + 1,
                         "Concurrent media edit detected, retrying"
                     );
@@ -779,7 +779,7 @@ impl MediaService {
                         format!(
                             "Media edit failed: concurrent modification after {} retries for media_id={}",
                             attempt + 1,
-                            request.media_id.as_str()
+                            request.media_id
                         ),
                     ));
                 }
@@ -790,7 +790,7 @@ impl MediaService {
         Err(Error::Internal(format!(
             "Media edit failed after {} attempts for media_id={}",
             Self::EDIT_MAX_RETRIES,
-            request.media_id.as_str()
+            request.media_id
         )))
     }
 
@@ -827,22 +827,22 @@ impl MediaService {
             {
                 Ok(Some(updated_media)) => {
                     tracing::info!(
-                        room_id = %room_id.as_str(),
-                        admin_user_id = %admin_user_id.as_str(),
-                        media_id = %request.media_id.as_str(),
+                        room_id = %room_id,
+                        admin_user_id = %admin_user_id,
+                        media_id = %request.media_id,
                         "Media edited by admin"
                     );
                     if let Err(e) = self.notification_service.notify_media_updated(
                         &room_id,
                         &admin_user_id,
                         actor_username,
-                        updated_media.id.as_str(),
+                        updated_media.id,
                         &updated_media.name,
                         updated_media.position,
                     ) {
                         tracing::warn!(
                             error = %e,
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             "Failed to broadcast media updated event"
                         );
                     }
@@ -854,7 +854,7 @@ impl MediaService {
                     return Err(Error::Internal(format!(
                         "Media edit failed: concurrent modification after {} retries for media_id={}",
                         attempt + 1,
-                        request.media_id.as_str()
+                        request.media_id
                     )));
                 }
                 Err(e) => return Err(e),
@@ -864,7 +864,7 @@ impl MediaService {
         Err(Error::Internal(format!(
             "Media edit failed after {} attempts for media_id={}",
             Self::EDIT_MAX_RETRIES,
-            request.media_id.as_str()
+            request.media_id
         )))
     }
 
@@ -907,17 +907,17 @@ impl MediaService {
         let mut tx = self.media_repo.pool().begin().await?;
 
         // Lock room_playback_state FOR UPDATE and reject if target media is playing
-        let playing_media_id: Option<String> = sqlx::query_scalar(
+        let playing_media_id: Option<MediaId> = sqlx::query_scalar(
             "SELECT playing_media_id FROM room_playback_state \
              WHERE room_id = $1 \
              FOR UPDATE",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?
         .flatten();
 
-        if playing_media_id.as_deref() == Some(media_id.as_str()) {
+        if playing_media_id.as_ref() == Some(&media_id) {
             return Err(Error::InvalidInput(
                 "Cannot remove media that is currently playing".to_string(),
             ));
@@ -925,15 +925,15 @@ impl MediaService {
 
         // Delete within the transaction
         sqlx::query("DELETE FROM media WHERE id = $1")
-            .bind(media_id.as_str())
+            .bind(media_id)
             .execute(&mut *tx)
             .await?;
 
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            media_id = %media_id.as_str(),
+            room_id = %room_id,
+            media_id = %media_id,
             "Media removed from playlist"
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
@@ -942,11 +942,11 @@ impl MediaService {
             &room_id,
             Some(&user_id),
             &actor_username,
-            media_id.as_str(),
+            media_id,
         ) {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 "Failed to broadcast media removed event"
             );
         }
@@ -1092,21 +1092,18 @@ impl MediaService {
         }
 
         // Lock room_playback_state FOR UPDATE and reject if any target media is playing
-        let playing_media_id: Option<String> = sqlx::query_scalar(
+        let playing_media_id: Option<MediaId> = sqlx::query_scalar(
             "SELECT playing_media_id FROM room_playback_state \
              WHERE room_id = $1 \
              FOR UPDATE",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?
         .flatten();
 
         if let Some(ref playing_id) = playing_media_id {
-            if media_ids
-                .iter()
-                .any(|mid| mid.as_str() == playing_id.as_str())
-            {
+            if media_ids.iter().any(|mid| mid == playing_id) {
                 return Err(Error::InvalidInput(
                     "Cannot remove media that is currently playing".to_string(),
                 ));
@@ -1122,7 +1119,7 @@ impl MediaService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             count = deleted_count,
             "Bulk removed media from playlist"
         );
@@ -1133,12 +1130,12 @@ impl MediaService {
                 &room_id,
                 Some(&user_id),
                 &actor_username,
-                mid.as_str(),
+                *mid,
             ) {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
-                    media_id = %mid.as_str(),
+                    room_id = %room_id,
+                    media_id = %mid,
                     "Failed to broadcast media removed event"
                 );
             }
@@ -1273,7 +1270,7 @@ impl MediaService {
             }
             let mut fetched_map = HashMap::with_capacity(fetched.len());
             for media in fetched {
-                fetched_map.insert(media.id.clone(), media);
+                fetched_map.insert(media.id, media);
             }
             explicit_media_ids
                 .iter()
@@ -1298,12 +1295,9 @@ impl MediaService {
 
         let original_scope_by_id: HashMap<MediaId, Option<PlaylistId>> = original_media
             .iter()
-            .map(|media| (media.id.clone(), media.playlist_id.clone()))
+            .map(|media| (media.id, media.playlist_id))
             .collect();
-        let media_ids: Vec<MediaId> = original_media
-            .iter()
-            .map(|media| media.id.clone())
-            .collect();
+        let media_ids: Vec<MediaId> = original_media.iter().map(|media| media.id).collect();
 
         let moved = self
             .media_repo
@@ -1320,7 +1314,7 @@ impl MediaService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             moved_count = moved.len(),
             "Media moved"
         );
@@ -1343,22 +1337,19 @@ impl MediaService {
                     &room_id,
                     &user_id,
                     &actor_username,
-                    media.id.as_str(),
+                    media.id,
                     &media.name,
                     media.position,
                 ) {
                     tracing::warn!(
                         error = %e,
-                        room_id = %room_id.as_str(),
-                        media_id = %media.id.as_str(),
+                        room_id = %room_id,
+                        media_id = %media.id,
                         "Failed to broadcast media moved event"
                     );
                 }
             } else {
-                let moved_ids: Vec<String> = moved
-                    .iter()
-                    .map(|media| media.id.as_str().to_string())
-                    .collect();
+                let moved_ids: Vec<MediaId> = moved.iter().map(|media| media.id).collect();
                 if let Err(e) = self.notification_service.notify_playlist_reordered(
                     &room_id,
                     Some(&user_id),
@@ -1367,7 +1358,7 @@ impl MediaService {
                 ) {
                     tracing::warn!(
                         error = %e,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "Failed to broadcast playlist reordered event"
                     );
                 }
@@ -1380,21 +1371,21 @@ impl MediaService {
                             &room_id,
                             Some(&user_id),
                             &actor_username,
-                            media.id.as_str(),
+                            media.id,
                         ) {
                             tracing::warn!(
                                 error = %e,
-                                room_id = %room_id.as_str(),
-                                media_id = %media.id.as_str(),
+                                room_id = %room_id,
+                                media_id = %media.id,
                                 "Failed to broadcast moved media removal event"
                             );
                         }
                         if let Err(e) = self.notification_service.notify_media_added(
                             &room_id,
-                            MediaAddedNotification {
+                            &MediaAddedNotification {
                                 user_id: &user_id,
                                 username: &actor_username,
-                                media_id: media.id.as_str(),
+                                media_id: media.id,
                                 title: &media.name,
                                 url: "",
                                 position: media.position,
@@ -1402,8 +1393,8 @@ impl MediaService {
                         ) {
                             tracing::warn!(
                                 error = %e,
-                                room_id = %room_id.as_str(),
-                                media_id = %media.id.as_str(),
+                                room_id = %room_id,
+                                media_id = %media.id,
                                 "Failed to broadcast moved media add event"
                             );
                         }
@@ -1411,14 +1402,14 @@ impl MediaService {
                         &room_id,
                         &user_id,
                         &actor_username,
-                        media.id.as_str(),
+                        media.id,
                         &media.name,
                         media.position,
                     ) {
                         tracing::warn!(
                             error = %e,
-                            room_id = %room_id.as_str(),
-                            media_id = %media.id.as_str(),
+                            room_id = %room_id,
+                            media_id = %media.id,
                             "Failed to broadcast media moved event"
                         );
                     }
@@ -1546,15 +1537,15 @@ impl MediaService {
     /// Batch count media items across multiple playlists
     pub async fn count_playlist_media_batch(
         &self,
-        playlist_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+        playlist_ids: &[PlaylistId],
+    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
         self.media_repo.count_by_playlists_batch(playlist_ids).await
     }
 
     pub async fn count_playlist_media_batch_accessible(
         &self,
-        playlist_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, i64>> {
+        playlist_ids: &[PlaylistId],
+    ) -> Result<std::collections::HashMap<PlaylistId, i64>> {
         self.media_repo
             .count_by_playlists_batch_accessible(playlist_ids)
             .await
@@ -1777,9 +1768,9 @@ impl MediaService {
         })?;
         let current_dynamic_media = crate::models::Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room_id.clone(),
-            creator_id: playlist.creator_id.clone(),
+            playlist_id: Some(playlist.id),
+            room_id: *room_id,
+            creator_id: playlist.creator_id,
             name: format!("dynamic:{playlist_id}"),
             position: 0.0,
             source_provider: provider_name.clone(),
@@ -1790,9 +1781,9 @@ impl MediaService {
             version: 0,
         };
 
-        let mut ctx = ProviderContext::new("synctv").with_room_id(room_id.as_str());
+        let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
         if let Some(creator_id) = playlist.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+            ctx = ctx.with_credential_owner_id(*creator_id);
         }
         if let Some(provider_instance_name) =
             current_dynamic_media.provider_instance_name.as_deref()
@@ -2110,15 +2101,12 @@ mod tests {
         let max_retries = super::MediaService::EDIT_MAX_RETRIES;
 
         // Expected error format should include media_id and max_retries
-        let expected_msg = format!(
-            "Media edit failed after {} attempts for media_id={}",
-            max_retries,
-            media_id.as_str()
-        );
+        let expected_msg =
+            format!("Media edit failed after {max_retries} attempts for media_id={media_id}");
 
         // Verify the format includes the key debugging information
         assert!(
-            expected_msg.contains(media_id.as_str()),
+            expected_msg.contains(&media_id.to_string()),
             "Error message should contain media_id"
         );
         assert!(
@@ -2134,13 +2122,11 @@ mod tests {
         let attempts = 3;
 
         let expected_msg = format!(
-            "Media edit failed: concurrent modification after {} retries for media_id={}",
-            attempts,
-            media_id.as_str()
+            "Media edit failed: concurrent modification after {attempts} retries for media_id={media_id}"
         );
 
         assert!(
-            expected_msg.contains(media_id.as_str()),
+            expected_msg.contains(&media_id.to_string()),
             "Error message should contain media_id"
         );
         assert!(

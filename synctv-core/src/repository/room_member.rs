@@ -238,8 +238,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id.as_str())
-            .bind(member.user_id.as_str())
+            .bind(member.room_id)
+            .bind(member.user_id)
             .bind(member.role)
             .bind(permission_bits_to_i64(member.added_permissions)?)
             .bind(permission_bits_to_i64(member.removed_permissions)?)
@@ -297,8 +297,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id.as_str())
-            .bind(member.user_id.as_str())
+            .bind(member.room_id)
+            .bind(member.user_id)
             .bind(member.role)
             .bind(permission_bits_to_i64(member.added_permissions)?)
             .bind(permission_bits_to_i64(member.removed_permissions)?)
@@ -357,7 +357,7 @@ impl RoomMemberRepository {
              WHERE id = $1
              FOR UPDATE",
         )
-        .bind(member.room_id.as_str())
+        .bind(member.room_id)
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -380,8 +380,8 @@ impl RoomMemberRepository {
                  WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
                  FOR UPDATE",
             )
-            .bind(member.room_id.as_str())
-            .bind(member.user_id.as_str())
+            .bind(member.room_id)
+            .bind(member.user_id)
             .fetch_optional(&mut **tx)
             .await?;
 
@@ -403,7 +403,7 @@ impl RoomMemberRepository {
             let max_members = options.max_members;
             if max_members > 0 {
                 sqlx::query("SELECT id FROM rooms WHERE id = $1 FOR UPDATE")
-                    .bind(member.room_id.as_str())
+                    .bind(member.room_id)
                     .execute(&mut **tx)
                     .await?;
 
@@ -416,7 +416,7 @@ impl RoomMemberRepository {
                         FOR UPDATE
                     ) sub",
                 )
-                .bind(member.room_id.as_str())
+                .bind(member.room_id)
                 .fetch_one(&mut **tx)
                 .await?;
 
@@ -424,7 +424,7 @@ impl RoomMemberRepository {
                 let current_count = count_i64_to_u64_saturating(count);
                 if current_count >= max_members {
                     tracing::warn!(
-                        room_id = %member.room_id.as_str(),
+                        room_id = %member.room_id,
                         max_members = max_members,
                         current_count = count,
                         "Room is full, rejecting join"
@@ -465,8 +465,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let result = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(member.room_id.as_str())
-            .bind(member.user_id.as_str())
+            .bind(member.room_id)
+            .bind(member.user_id)
             .bind(member.role)
             .bind(permission_bits_to_i64(member.added_permissions)?)
             .bind(permission_bits_to_i64(member.removed_permissions)?)
@@ -511,7 +511,7 @@ impl RoomMemberRepository {
              SET left_at = $2, version = version + 1
              WHERE user_id = $1 AND left_at IS NULL",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(chrono::Utc::now())
         .execute(executor)
         .await?;
@@ -534,7 +534,7 @@ impl RoomMemberRepository {
             return Ok(0);
         }
 
-        let room_id_strs: Vec<&str> = room_ids.iter().map(RoomId::as_str).collect();
+        let room_id_strs: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
         let result = sqlx::query(
             "UPDATE room_members
              SET left_at = $2, version = version + 1
@@ -555,8 +555,8 @@ impl RoomMemberRepository {
              SET left_at = $3, version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
@@ -573,8 +573,8 @@ impl RoomMemberRepository {
                AND {ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -589,8 +589,8 @@ impl RoomMemberRepository {
              WHERE rm.room_id = $1 AND rm.user_id = $2"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -621,7 +621,7 @@ impl RoomMemberRepository {
                AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -672,7 +672,7 @@ impl RoomMemberRepository {
         let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT COUNT(*) FROM room_members rm JOIN users u ON rm.user_id = u.id WHERE rm.room_id = ",
         );
-        count_builder.push_bind(room_id.as_str());
+        count_builder.push_bind(room_id);
         match query.status {
             Some(MemberStatus::Left) => {
                 count_builder.push(" AND rm.left_at IS NOT NULL");
@@ -691,7 +691,7 @@ impl RoomMemberRepository {
         if let Some(pattern) = &search_pattern {
             count_builder.push(" AND (u.username ILIKE ");
             count_builder.push_bind(pattern);
-            count_builder.push(" OR rm.user_id ILIKE ");
+            count_builder.push(" OR rm.user_id::text ILIKE ");
             count_builder.push_bind(pattern);
             count_builder.push(")");
         }
@@ -732,7 +732,7 @@ impl RoomMemberRepository {
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = ",
         );
-        list_builder.push_bind(room_id.as_str());
+        list_builder.push_bind(room_id);
         match query.status {
             Some(MemberStatus::Left) => {
                 list_builder.push(" AND rm.left_at IS NOT NULL");
@@ -751,7 +751,7 @@ impl RoomMemberRepository {
         if let Some(pattern) = &search_pattern {
             list_builder.push(" AND (u.username ILIKE ");
             list_builder.push_bind(pattern);
-            list_builder.push(" OR rm.user_id ILIKE ");
+            list_builder.push(" OR rm.user_id::text ILIKE ");
             list_builder.push_bind(pattern);
             list_builder.push(")");
         }
@@ -801,19 +801,19 @@ impl RoomMemberRepository {
                AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
         let online_set: std::collections::HashSet<_> = online_user_ids
             .iter()
-            .map(super::super::models::id::UserId::as_str)
+            .map(super::super::models::id::UserId::as_i64)
             .collect();
 
         rows.into_iter()
             .map(|row| {
                 let mut member = Self::row_to_member_with_user(&row)?;
-                member.is_online = online_set.contains(member.user_id.as_str());
+                member.is_online = online_set.contains(&member.user_id.as_i64());
                 Ok(member)
             })
             .collect()
@@ -840,8 +840,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(role)
             .bind(current_version)
             .fetch_optional(&self.pool)
@@ -870,8 +870,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(role)
             .fetch_optional(executor)
             .await?;
@@ -909,8 +909,8 @@ impl RoomMemberRepository {
             MemberStatus::Left => Some(chrono::Utc::now()),
         };
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(left_at)
             .bind(current_version)
             .fetch_optional(&self.pool)
@@ -945,8 +945,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(added_permissions)?)
             .bind(permission_bits_to_i64(removed_permissions)?)
             .bind(current_version)
@@ -982,8 +982,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(added_permissions)?)
             .bind(permission_bits_to_i64(removed_permissions)?)
             .bind(current_version)
@@ -1015,8 +1015,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .fetch_optional(&self.pool)
             .await?;
@@ -1044,8 +1044,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .bind(role)
             .fetch_optional(&self.pool)
@@ -1076,8 +1076,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .fetch_optional(&self.pool)
             .await?;
@@ -1105,8 +1105,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .bind(role)
             .fetch_optional(&self.pool)
@@ -1137,8 +1137,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .fetch_optional(&self.pool)
             .await?;
@@ -1166,8 +1166,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .bind(role)
             .fetch_optional(&self.pool)
@@ -1198,8 +1198,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .fetch_optional(&self.pool)
             .await?;
@@ -1227,8 +1227,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(permission_bits_to_i64(permission)?)
             .bind(role)
             .fetch_optional(&self.pool)
@@ -1259,8 +1259,8 @@ impl RoomMemberRepository {
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .bind(current_version)
             .fetch_optional(&self.pool)
             .await?;
@@ -1287,10 +1287,10 @@ impl RoomMemberRepository {
         let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query(
             r"
-            INSERT INTO room_member_bans (id, room_id, user_id, banned_by, reason, starts_at)
-            SELECT $1, rm.room_id, rm.user_id, $4, $5, $6
+            INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
+            SELECT rm.room_id, rm.user_id, $3, $4, $5
             FROM room_members rm
-            WHERE rm.room_id = $2 AND rm.user_id = $3
+            WHERE rm.room_id = $1 AND rm.user_id = $2
               AND NOT EXISTS (
                   SELECT 1 FROM room_member_bans rmb
                   WHERE rmb.room_id = rm.room_id
@@ -1300,10 +1300,9 @@ impl RoomMemberRepository {
               )
             ",
         )
-        .bind(crate::models::generate_id())
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
-        .bind(banned_by.map(UserId::as_str))
+        .bind(room_id)
+        .bind(user_id)
+        .bind(banned_by.map(UserId::as_i64))
         .bind(reason)
         .bind(now)
         .execute(&mut *tx)
@@ -1320,8 +1319,8 @@ impl RoomMemberRepository {
              SET left_at = COALESCE(left_at, $3), version = version + 1
              WHERE room_id = $1 AND user_id = $2",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -1346,8 +1345,8 @@ impl RoomMemberRepository {
                AND revoked_at IS NULL
                AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .execute(&self.pool)
         .await?;
 
@@ -1369,8 +1368,8 @@ impl RoomMemberRepository {
              FROM room_members
              WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1386,8 +1385,8 @@ impl RoomMemberRepository {
                AND revoked_at IS NULL
                AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)",
         )
-        .bind(room_id.as_str())
-        .bind(user_id.as_str())
+        .bind(room_id)
+        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1404,7 +1403,7 @@ impl RoomMemberRepository {
                AND {ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL}"
         );
         let count: i64 = sqlx::query_scalar(&count_sql)
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_one(&self.pool)
             .await?;
 
@@ -1418,12 +1417,12 @@ impl RoomMemberRepository {
     pub async fn count_by_rooms_batch(
         &self,
         room_ids: &[&RoomId],
-    ) -> Result<std::collections::HashMap<String, i32>> {
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
         if room_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
 
-        let ids: Vec<&str> = room_ids.iter().map(|r| r.as_str()).collect();
+        let ids: Vec<i64> = room_ids.iter().map(|room_id| room_id.as_i64()).collect();
         let batch_sql = format!(
             "SELECT room_id, COUNT(*)::int as member_count
              FROM room_members rm
@@ -1439,7 +1438,7 @@ impl RoomMemberRepository {
 
         let mut map = std::collections::HashMap::with_capacity(rows.len());
         for row in rows {
-            let room_id: String = row.try_get("room_id")?;
+            let room_id: RoomId = row.try_get("room_id")?;
             let count: i32 = row.try_get("member_count")?;
             map.insert(room_id, count);
         }
@@ -1465,7 +1464,7 @@ impl RoomMemberRepository {
              ORDER BY rm.joined_at DESC
              LIMIT $2 OFFSET $3",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -1474,7 +1473,7 @@ impl RoomMemberRepository {
         let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
         let room_ids = rows
             .into_iter()
-            .map(|r| RoomId::from_string(r.get::<String, _>("room_id")))
+            .map(|r| r.get::<RoomId, _>("room_id"))
             .collect();
 
         Ok((room_ids, total_count))
@@ -1543,10 +1542,7 @@ impl RoomMemberRepository {
         );
 
         let rows = Self::bind_my_room_filters(
-            sqlx::query(&sql)
-                .bind(user_id.as_str())
-                .bind(limit)
-                .bind(offset),
+            sqlx::query(&sql).bind(user_id).bind(limit).bind(offset),
             search_pattern.as_deref(),
         )
         .fetch_all(&self.pool)
@@ -1560,10 +1556,10 @@ impl RoomMemberRepository {
             .into_iter()
             .map(|row| {
                 let room = crate::models::Room {
-                    id: RoomId::from_string(row.try_get("id")?),
+                    id: row.try_get("id")?,
                     name: row.try_get("name")?,
                     description: row.try_get("description")?,
-                    created_by: UserId::from_string(row.try_get("created_by")?),
+                    created_by: row.try_get("created_by")?,
                     status: if row
                         .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("closed_at")?
                         .is_some()
@@ -1639,10 +1635,7 @@ impl RoomMemberRepository {
         );
 
         let rows = Self::bind_my_room_filters(
-            sqlx::query(&sql)
-                .bind(user_id.as_str())
-                .bind(limit)
-                .bind(offset),
+            sqlx::query(&sql).bind(user_id).bind(limit).bind(offset),
             search_pattern.as_deref(),
         )
         .fetch_all(&self.pool)
@@ -1656,10 +1649,10 @@ impl RoomMemberRepository {
             .into_iter()
             .map(|row| {
                 let room = crate::models::Room {
-                    id: RoomId::from_string(row.try_get("id")?),
+                    id: row.try_get("id")?,
                     name: row.try_get("name")?,
                     description: row.try_get("description")?,
-                    created_by: UserId::from_string(row.try_get("created_by")?),
+                    created_by: row.try_get("created_by")?,
                     status: if row
                         .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("closed_at")?
                         .is_some()
@@ -1724,7 +1717,7 @@ impl RoomMemberRepository {
              WHERE rm.room_id = $1 AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -1767,9 +1760,9 @@ impl RoomMemberRepository {
                      AND actor.role < target.role
                )",
         )
-        .bind(room_id.as_str())
-        .bind(actor_id.as_str())
-        .bind(target_id.as_str())
+        .bind(room_id)
+        .bind(actor_id)
+        .bind(target_id)
         .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
@@ -1795,11 +1788,11 @@ impl RoomMemberRepository {
         let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query(
             r"
-            INSERT INTO room_member_bans (id, room_id, user_id, banned_by, reason, starts_at)
-            SELECT $1, target.room_id, target.user_id, $4, $5, $6
+            INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
+            SELECT target.room_id, target.user_id, $3, $4, $5
             FROM room_members AS target
-            WHERE target.room_id = $2
-              AND target.user_id = $3
+            WHERE target.room_id = $1
+              AND target.user_id = $2
               AND target.left_at IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM room_member_bans rmb
@@ -1810,17 +1803,16 @@ impl RoomMemberRepository {
               )
               AND EXISTS (
                   SELECT 1 FROM room_members AS actor
-                  WHERE actor.room_id = $2
-                    AND actor.user_id = $4
+                  WHERE actor.room_id = $1
+                    AND actor.user_id = $3
                     AND actor.left_at IS NULL
                     AND actor.role < target.role
               )
             ",
         )
-        .bind(crate::models::generate_id())
-        .bind(room_id.as_str())
-        .bind(target_id.as_str())
-        .bind(actor_id.as_str())
+        .bind(room_id)
+        .bind(target_id)
+        .bind(actor_id)
         .bind(reason)
         .bind(now)
         .execute(&mut *tx)
@@ -1837,8 +1829,8 @@ impl RoomMemberRepository {
              SET left_at = $3, version = version + 1
              WHERE room_id = $1 AND user_id = $2",
         )
-        .bind(room_id.as_str())
-        .bind(target_id.as_str())
+        .bind(room_id)
+        .bind(target_id)
         .bind(now)
         .execute(&mut *tx)
         .await?;
@@ -1868,8 +1860,8 @@ impl RoomMemberRepository {
              WHERE room_id = $1 AND user_id = $2"
         );
         let existing = sqlx::query_as::<_, RoomMember>(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .fetch_optional(executor)
             .await?;
 
@@ -1906,8 +1898,8 @@ impl RoomMemberRepository {
         };
 
         Ok(RoomMemberWithUser {
-            room_id: RoomId::from_string(row.try_get("room_id")?),
-            user_id: UserId::from_string(row.try_get("user_id")?),
+            room_id: row.try_get("room_id")?,
+            user_id: row.try_get("user_id")?,
             username: row.try_get("username")?,
             role,
             status,

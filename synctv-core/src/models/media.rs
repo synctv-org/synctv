@@ -6,60 +6,27 @@ use std::str::FromStr;
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 use super::query::SortDirection;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MediaListSortBy {
-    Name,
-    AddedAt,
-    UpdatedAt,
-    SourceProvider,
-    ProviderInstanceName,
-    #[default]
-    Position,
-}
-
-impl MediaListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::AddedAt => "added_at",
-            Self::UpdatedAt => "updated_at",
-            Self::SourceProvider => "source_provider",
-            Self::ProviderInstanceName => "provider_instance_name",
-            Self::Position => "position",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MediaListSortBy {
+        Name => { display: "name", sql: "name" },
+        AddedAt => { display: "added_at", sql: "added_at", aliases: ["addedat"] },
+        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        SourceProvider => {
+            display: "source_provider",
+            sql: "source_provider",
+            aliases: ["sourceprovider"]
+        },
+        ProviderInstanceName => {
+            display: "provider_instance_name",
+            sql: "provider_instance_name",
+            aliases: ["providerinstancename"]
+        },
+        Position => { display: "position", sql: "position" },
     }
-}
-
-impl std::str::FromStr for MediaListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "name" => Ok(Self::Name),
-            "added_at" | "addedat" => Ok(Self::AddedAt),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "source_provider" | "sourceprovider" => Ok(Self::SourceProvider),
-            "provider_instance_name" | "providerinstancename" => Ok(Self::ProviderInstanceName),
-            "position" => Ok(Self::Position),
-            other => Err(format!("Unknown media list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for MediaListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Name => "name",
-            Self::AddedAt => "added_at",
-            Self::UpdatedAt => "updated_at",
-            Self::SourceProvider => "source_provider",
-            Self::ProviderInstanceName => "provider_instance_name",
-            Self::Position => "position",
-        };
-        f.write_str(value)
-    }
+    default = Position;
+    error = "Unknown media list sort field";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,9 +465,9 @@ impl PlaybackResult {
         playback_infos.insert(mode_name.to_string(), playback_info);
 
         Self {
-            id: Some(media.id.clone()),
-            playlist_id: media.playlist_id.clone(),
-            room_id: media.room_id.clone(),
+            id: Some(media.id),
+            playlist_id: media.playlist_id,
+            room_id: media.room_id,
             name: media.name.clone(),
             position: media.position,
             playback_infos,
@@ -766,30 +733,26 @@ mod tests {
         // The builder should always pick the first-inserted mode as default
         // when no explicit default_mode is set. This must be deterministic
         // across multiple runs (IndexMap preserves insertion order).
-        let playlist_id = PlaylistId::from_string("pl1".to_string());
-        let room_id = RoomId::from_string("r1".to_string());
+        let playlist_id = PlaylistId::from(60_001);
+        let room_id = RoomId::from(60_002);
 
         for _ in 0..20 {
-            let result = PlaybackResult::builder(
-                Some(playlist_id.clone()),
-                room_id.clone(),
-                "test".to_string(),
-                0.0,
-            )
-            .add_mode(
-                "alpha".to_string(),
-                PlaybackInfo::single_url("http://a".to_string(), "A".to_string()),
-            )
-            .add_mode(
-                "beta".to_string(),
-                PlaybackInfo::single_url("http://b".to_string(), "B".to_string()),
-            )
-            .add_mode(
-                "gamma".to_string(),
-                PlaybackInfo::single_url("http://c".to_string(), "C".to_string()),
-            )
-            .build()
-            .expect("build should succeed");
+            let result =
+                PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
+                    .add_mode(
+                        "alpha".to_string(),
+                        PlaybackInfo::single_url("http://a".to_string(), "A".to_string()),
+                    )
+                    .add_mode(
+                        "beta".to_string(),
+                        PlaybackInfo::single_url("http://b".to_string(), "B".to_string()),
+                    )
+                    .add_mode(
+                        "gamma".to_string(),
+                        PlaybackInfo::single_url("http://c".to_string(), "C".to_string()),
+                    )
+                    .build()
+                    .expect("build should succeed");
 
             assert_eq!(
                 result.default_mode, "alpha",
@@ -800,8 +763,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_explicit_default_mode() {
-        let playlist_id = PlaylistId::from_string("pl1".to_string());
-        let room_id = RoomId::from_string("r1".to_string());
+        let playlist_id = PlaylistId::from(60_003);
+        let room_id = RoomId::from(60_004);
 
         let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(
@@ -821,8 +784,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_empty_returns_none() {
-        let playlist_id = PlaylistId::from_string("pl1".to_string());
-        let room_id = RoomId::from_string("r1".to_string());
+        let playlist_id = PlaylistId::from(60_005);
+        let room_id = RoomId::from(60_006);
 
         let result =
             PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0).build();
@@ -831,8 +794,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_invalid_default_mode_returns_none() {
-        let playlist_id = PlaylistId::from_string("pl1".to_string());
-        let room_id = RoomId::from_string("r1".to_string());
+        let playlist_id = PlaylistId::from(60_007);
+        let room_id = RoomId::from(60_008);
 
         let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(

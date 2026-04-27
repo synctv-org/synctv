@@ -67,7 +67,7 @@ pub(crate) async fn generate_publish_key(
             EndpointRateLimitCategory::Media,
             move |authenticated| async move {
                 client_api
-                    .create_publish_key(authenticated.user_id.as_str(), req)
+                    .create_publish_key(&authenticated.user_id, req)
                     .await
             },
         )
@@ -113,7 +113,7 @@ pub(crate) async fn handle_stream_info(
             move |authenticated| async move {
                 client_api
                     .get_stream_info(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         path.room_id.as_str(),
                         path.media_id.as_str(),
                     )

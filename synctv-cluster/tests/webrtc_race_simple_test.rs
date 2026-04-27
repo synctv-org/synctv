@@ -5,12 +5,18 @@ use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 #[tokio::test]
@@ -31,10 +37,8 @@ async fn test_simple_rtc_state_check() {
     let room = rid("room1");
 
     // Register and join
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC
     mgr.mark_rtc_joined(&room, &user, "conn1", true);

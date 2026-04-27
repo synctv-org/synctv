@@ -256,42 +256,12 @@ impl std::fmt::Display for Role {
     }
 }
 
-// Database mapping: Role -> SMALLINT (1=creator, 2=admin, 3=member, 4=guest)
-impl sqlx::Type<sqlx::Postgres> for Role {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for Role {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let val: i16 = match self {
-            Self::Creator => 1,
-            Self::Admin => 2,
-            Self::Member => 3,
-            Self::Guest => 4,
-        };
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Role {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        match val {
-            1 => Ok(Self::Creator),
-            2 => Ok(Self::Admin),
-            3 => Ok(Self::Member),
-            4 => Ok(Self::Guest),
-            _ => Err(format!("Invalid Role value: {val}").into()),
-        }
-    }
-}
+sqlx_i16_enum!(Role, "Invalid Role value", {
+    Creator = 1,
+    Admin = 2,
+    Member = 3,
+    Guest = 4,
+});
 
 #[cfg(test)]
 mod tests {

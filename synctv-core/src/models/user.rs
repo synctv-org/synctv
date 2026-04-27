@@ -139,84 +139,31 @@ impl std::fmt::Display for UserStatus {
     }
 }
 
-// Database mapping: UserRole -> SMALLINT (1=root, 2=admin, 3=user)
-impl sqlx::Type<sqlx::Postgres> for UserRole {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for UserRole {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        let val: i16 = match self {
-            Self::Root => 1,
-            Self::Admin => 2,
-            Self::User => 3,
-        };
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserRole {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        match val {
-            1 => Ok(Self::Root),
-            2 => Ok(Self::Admin),
-            3 => Ok(Self::User),
-            _ => Err(format!("Invalid UserRole value: {val}").into()),
-        }
-    }
-}
+sqlx_i16_enum!(UserRole, "Invalid UserRole value", {
+    Root = 1,
+    Admin = 2,
+    User = 3,
+});
 
 /// User signup method
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[repr(i16)]
 pub enum SignupMethod {
     /// Unknown or unspecified signup method (default)
     #[default]
-    Unknown,
+    Unknown = 0,
     /// Registered via email verification flow
-    Email,
+    Email = 1,
     /// Registered via username + password (no email verification)
-    Password,
+    Password = 2,
     /// Registered via OAuth2 provider
-    OAuth2,
+    OAuth2 = 3,
     /// Created by an administrator
-    AdminCreated,
+    AdminCreated = 4,
 }
 
 impl SignupMethod {
-    /// Integer representation for database storage.
-    #[must_use]
-    pub const fn as_i16(&self) -> i16 {
-        match self {
-            Self::Unknown => 0,
-            Self::Email => 1,
-            Self::Password => 2,
-            Self::OAuth2 => 3,
-            Self::AdminCreated => 4,
-        }
-    }
-
-    /// Parse from database integer value.
-    #[must_use]
-    pub const fn from_i16(v: i16) -> Option<Self> {
-        match v {
-            0 => Some(Self::Unknown),
-            1 => Some(Self::Email),
-            2 => Some(Self::Password),
-            3 => Some(Self::OAuth2),
-            4 => Some(Self::AdminCreated),
-            _ => None,
-        }
-    }
-
     /// String representation for API serialization.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
@@ -232,41 +179,38 @@ impl SignupMethod {
     /// Parse signup method from string name.
     #[must_use]
     pub fn from_str_name(s: &str) -> Option<Self> {
-        match s {
-            "unknown" => Some(Self::Unknown),
-            "email" => Some(Self::Email),
-            "password" => Some(Self::Password),
-            "oauth2" => Some(Self::OAuth2),
-            "admin_created" => Some(Self::AdminCreated),
-            _ => None,
+        s.parse().ok()
+    }
+}
+
+impl FromStr for SignupMethod {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "unknown" => Ok(Self::Unknown),
+            "email" => Ok(Self::Email),
+            "password" => Ok(Self::Password),
+            "oauth2" => Ok(Self::OAuth2),
+            "admin_created" | "admincreated" => Ok(Self::AdminCreated),
+            other => Err(format!("Unknown signup method: {other}")),
         }
     }
 }
 
-// Database mapping: SignupMethod <-> SMALLINT
-impl sqlx::Type<sqlx::Postgres> for SignupMethod {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+impl std::fmt::Display for SignupMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
-impl sqlx::Encode<'_, sqlx::Postgres> for SignupMethod {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_i16(), buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let v = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Self::from_i16(v).ok_or_else(|| format!("Unknown SignupMethod value: {v}").into())
-    }
-}
+sqlx_i16_enum!(SignupMethod, "Unknown SignupMethod value", {
+    Unknown = 0,
+    Email = 1,
+    Password = 2,
+    OAuth2 = 3,
+    AdminCreated = 4,
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
@@ -503,56 +447,18 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum UserListSortBy {
-    Username,
-    Email,
-    Role,
-    UpdatedAt,
-    #[default]
-    CreatedAt,
-}
-
-impl UserListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Username => "username",
-            Self::Email => "email",
-            Self::Role => "role",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum UserListSortBy {
+        Username => { display: "username", sql: "username" },
+        Email => { display: "email", sql: "email" },
+        Role => { display: "role", sql: "role" },
+        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
     }
-}
-
-impl FromStr for UserListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "username" => Ok(Self::Username),
-            "email" => Ok(Self::Email),
-            "role" => Ok(Self::Role),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            other => Err(format!("Unknown user list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for UserListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Username => "username",
-            Self::Email => "email",
-            Self::Role => "role",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        };
-        f.write_str(value)
-    }
+    default = CreatedAt;
+    error = "Unknown user list sort field";
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -649,5 +555,19 @@ mod tests {
             !user.has_usable_password(),
             "OAuth2 user with empty hash should NOT have usable password regardless of pv"
         );
+    }
+
+    #[test]
+    fn test_signup_method_display_and_parse_roundtrip() {
+        assert_eq!(SignupMethod::AdminCreated.to_string(), "admin_created");
+        assert_eq!(
+            "OAUTH2".parse::<SignupMethod>().unwrap(),
+            SignupMethod::OAuth2
+        );
+        assert_eq!(
+            SignupMethod::from_str_name("admincreated"),
+            Some(SignupMethod::AdminCreated)
+        );
+        assert!("ldap".parse::<SignupMethod>().is_err());
     }
 }

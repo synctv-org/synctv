@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    models::{RoomId, UserId},
+    models::{MediaId, PlaylistId, RoomId, UserId},
     Result,
 };
 
@@ -67,13 +67,13 @@ pub enum RoomEvent {
         playing: bool,
         position: f64,
         speed: f64,
-        media_id: Option<String>,
+        media_id: Option<MediaId>,
     },
     /// Media added to playlist
     MediaAdded {
         user_id: UserId,
         username: String,
-        media_id: String,
+        media_id: MediaId,
         title: String,
         url: String,
         position: f64,
@@ -82,13 +82,13 @@ pub enum RoomEvent {
     MediaRemoved {
         user_id: Option<UserId>,
         username: String,
-        media_id: String,
+        media_id: MediaId,
     },
     /// Media updated (name or position changed)
     MediaUpdated {
         user_id: UserId,
         username: String,
-        media_id: String,
+        media_id: MediaId,
         title: String,
         position: f64,
     },
@@ -96,13 +96,13 @@ pub enum RoomEvent {
     PlaylistReordered {
         user_id: Option<UserId>,
         username: String,
-        media_ids: Vec<String>,
+        media_ids: Vec<MediaId>,
     },
     /// Playlist deleted
     PlaylistDeleted {
         user_id: Option<UserId>,
         username: String,
-        playlist_id: String,
+        playlist_id: PlaylistId,
     },
     /// Member permissions changed
     PermissionChanged {
@@ -133,16 +133,16 @@ pub enum RoomEvent {
     /// Room deleted
     RoomDeleted,
     /// Live stream started (publisher connected)
-    StreamStarted { media_id: String, user_id: UserId },
+    StreamStarted { media_id: MediaId, user_id: UserId },
     /// Live stream stopped (publisher disconnected)
-    StreamStopped { media_id: String, user_id: UserId },
+    StreamStopped { media_id: MediaId, user_id: UserId },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MediaAddedNotification<'a> {
     pub user_id: &'a UserId,
     pub username: &'a str,
-    pub media_id: &'a str,
+    pub media_id: MediaId,
     pub title: &'a str,
     pub url: &'a str,
     pub position: f64,
@@ -253,15 +253,15 @@ impl NotificationService {
         tracing::trace!(
             "Publishing local room event {} for room {}",
             event.event_type(),
-            room_id.as_str()
+            room_id
         );
 
-        let _ = self.event_tx.send((room_id.clone(), event.clone()));
+        let _ = self.event_tx.send((*room_id, event.clone()));
 
         tracing::debug!(
             "Published local room event {} for room {}",
             event.event_type(),
-            room_id.as_str()
+            room_id
         );
 
         Ok(())
@@ -275,7 +275,7 @@ impl NotificationService {
         username: &str,
     ) -> Result<()> {
         let event = RoomEvent::UserJoined {
-            user_id: user_id.clone(),
+            user_id: *user_id,
             username: username.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -289,7 +289,7 @@ impl NotificationService {
         username: &str,
     ) -> Result<()> {
         let event = RoomEvent::UserLeft {
-            user_id: user_id.clone(),
+            user_id: *user_id,
             username: username.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -306,7 +306,7 @@ impl NotificationService {
     ) -> Result<()> {
         let event = RoomEvent::ChatMessage {
             message_id: message_id.to_string(),
-            user_id: user_id.clone(),
+            user_id: *user_id,
             username: username.to_string(),
             content: content.to_string(),
             timestamp: chrono::Utc::now(),
@@ -324,7 +324,7 @@ impl NotificationService {
         position: &str,
     ) -> Result<()> {
         let event = RoomEvent::Danmaku {
-            user_id: user_id.clone(),
+            user_id: *user_id,
             username: username.to_string(),
             content: content.to_string(),
             position: position.to_string(),
@@ -340,7 +340,7 @@ impl NotificationService {
         playing: bool,
         position: f64,
         speed: f64,
-        media_id: Option<String>,
+        media_id: Option<MediaId>,
     ) -> Result<()> {
         let event = RoomEvent::PlaybackStateChanged {
             playing,
@@ -355,12 +355,12 @@ impl NotificationService {
     pub fn notify_media_added(
         &self,
         room_id: &RoomId,
-        notification: MediaAddedNotification<'_>,
+        notification: &MediaAddedNotification<'_>,
     ) -> Result<()> {
         let event = RoomEvent::MediaAdded {
-            user_id: notification.user_id.clone(),
+            user_id: *notification.user_id,
             username: notification.username.to_string(),
-            media_id: notification.media_id.to_string(),
+            media_id: notification.media_id,
             title: notification.title.to_string(),
             url: notification.url.to_string(),
             position: notification.position,
@@ -374,12 +374,12 @@ impl NotificationService {
         room_id: &RoomId,
         user_id: Option<&UserId>,
         username: &str,
-        media_id: &str,
+        media_id: MediaId,
     ) -> Result<()> {
         let event = RoomEvent::MediaRemoved {
-            user_id: user_id.cloned(),
+            user_id: user_id.copied(),
             username: username.to_string(),
-            media_id: media_id.to_string(),
+            media_id,
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -390,14 +390,14 @@ impl NotificationService {
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
-        media_id: &str,
+        media_id: MediaId,
         title: &str,
         position: f64,
     ) -> Result<()> {
         let event = RoomEvent::MediaUpdated {
-            user_id: user_id.clone(),
+            user_id: *user_id,
             username: username.to_string(),
-            media_id: media_id.to_string(),
+            media_id,
             title: title.to_string(),
             position,
         };
@@ -410,10 +410,10 @@ impl NotificationService {
         room_id: &RoomId,
         user_id: Option<&UserId>,
         username: &str,
-        media_ids: &[String],
+        media_ids: &[MediaId],
     ) -> Result<()> {
         let event = RoomEvent::PlaylistReordered {
-            user_id: user_id.cloned(),
+            user_id: user_id.copied(),
             username: username.to_string(),
             media_ids: media_ids.to_vec(),
         };
@@ -426,12 +426,12 @@ impl NotificationService {
         room_id: &RoomId,
         user_id: Option<&UserId>,
         username: &str,
-        playlist_id: &str,
+        playlist_id: PlaylistId,
     ) -> Result<()> {
         let event = RoomEvent::PlaylistDeleted {
-            user_id: user_id.cloned(),
+            user_id: user_id.copied(),
             username: username.to_string(),
-            playlist_id: playlist_id.to_string(),
+            playlist_id,
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -443,14 +443,14 @@ impl NotificationService {
         notification: PermissionChangedNotification<'_>,
     ) -> Result<()> {
         let event = RoomEvent::PermissionChanged {
-            user_id: notification.user_id.clone(),
+            user_id: *notification.user_id,
             role: notification.role,
             effective_permissions: notification.effective_permissions,
             added_permissions: notification.added_permissions,
             removed_permissions: notification.removed_permissions,
             admin_added_permissions: notification.admin_added_permissions,
             admin_removed_permissions: notification.admin_removed_permissions,
-            updated_by_user_id: notification.updated_by_user_id.clone(),
+            updated_by_user_id: *notification.updated_by_user_id,
             updated_by_username: notification.updated_by_username.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -458,9 +458,7 @@ impl NotificationService {
 
     /// Notify member kicked
     pub fn notify_member_kicked(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
-        let event = RoomEvent::MemberKicked {
-            user_id: user_id.clone(),
-        };
+        let event = RoomEvent::MemberKicked { user_id: *user_id };
         self.broadcast_to_room(room_id, &event)
     }
 
@@ -476,7 +474,7 @@ impl NotificationService {
         let event = RoomEvent::SettingsUpdated {
             settings,
             version,
-            user_id: user_id.cloned(),
+            user_id: user_id.copied(),
             username: username.to_string(),
         };
         self.broadcast_to_room(room_id, &event)
@@ -492,12 +490,12 @@ impl NotificationService {
     pub fn notify_stream_started(
         &self,
         room_id: &RoomId,
-        media_id: &str,
+        media_id: &MediaId,
         user_id: &UserId,
     ) -> Result<()> {
         let event = RoomEvent::StreamStarted {
-            media_id: media_id.to_string(),
-            user_id: user_id.clone(),
+            media_id: *media_id,
+            user_id: *user_id,
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -506,12 +504,12 @@ impl NotificationService {
     pub fn notify_stream_stopped(
         &self,
         room_id: &RoomId,
-        media_id: &str,
+        media_id: &MediaId,
         user_id: &UserId,
     ) -> Result<()> {
         let event = RoomEvent::StreamStopped {
-            media_id: media_id.to_string(),
-            user_id: user_id.clone(),
+            media_id: *media_id,
+            user_id: *user_id,
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -531,7 +529,7 @@ impl NotificationService {
 
         tracing::info!(
             "Kicking all guests from room {} due to: {}",
-            room_id.as_str(),
+            room_id,
             event.event_type()
         );
 
@@ -552,13 +550,13 @@ mod tests {
     #[test]
     fn test_room_event_serialization() {
         let event = RoomEvent::UserJoined {
-            user_id: UserId::from_string("user123".to_string()),
+            user_id: UserId::from(123),
             username: "testuser".to_string(),
         };
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"UserJoined""#));
-        assert!(json.contains("user123"));
+        assert!(json.contains(r#""user_id":123"#));
     }
 
     #[tokio::test]
@@ -575,12 +573,12 @@ mod tests {
         let mut rx = service.subscribe();
 
         // Create test room and user
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("test_user".to_string());
+        let room_id = RoomId::from(1);
+        let user_id = UserId::from(2);
 
         // Broadcast user joined event
         let event = RoomEvent::UserJoined {
-            user_id: user_id.clone(),
+            user_id,
             username: "testuser".to_string(),
         };
 
@@ -604,8 +602,8 @@ mod tests {
     async fn test_local_only_notification_service_keeps_in_process_subscribers_working() {
         let service = NotificationService::default();
         let mut rx = service.subscribe();
-        let room_id = RoomId::from_string("local-only-room".to_string());
-        let user_id = UserId::from_string("local-only-user".to_string());
+        let room_id = RoomId::from(3);
+        let user_id = UserId::from(4);
 
         service
             .broadcast_to_room(
@@ -660,12 +658,12 @@ mod tests {
                 playing: true,
                 position: 100.0,
                 speed: 1.0,
-                media_id: Some("media123".to_string()),
+                media_id: Some(MediaId::from(123)),
             },
             RoomEvent::MediaAdded {
                 user_id: UserId::new(),
                 username: "test".to_string(),
-                media_id: "media123".to_string(),
+                media_id: MediaId::from(123),
                 title: "Test Video".to_string(),
                 url: "http://example.com/video.mp4".to_string(),
                 position: 1.0,
@@ -673,24 +671,24 @@ mod tests {
             RoomEvent::MediaRemoved {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_id: "media123".to_string(),
+                media_id: MediaId::from(123),
             },
             RoomEvent::MediaUpdated {
                 user_id: UserId::new(),
                 username: "test".to_string(),
-                media_id: "media123".to_string(),
+                media_id: MediaId::from(123),
                 title: "Updated Video".to_string(),
                 position: 2.0,
             },
             RoomEvent::PlaylistReordered {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_ids: vec!["media1".to_string(), "media2".to_string()],
+                media_ids: vec![MediaId::from(1), MediaId::from(2)],
             },
             RoomEvent::PlaylistDeleted {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                playlist_id: "playlist123".to_string(),
+                playlist_id: PlaylistId::from(123),
             },
             RoomEvent::PermissionChanged {
                 user_id: UserId::new(),
@@ -718,11 +716,11 @@ mod tests {
             },
             RoomEvent::RoomDeleted,
             RoomEvent::StreamStarted {
-                media_id: "media123".to_string(),
+                media_id: MediaId::from(123),
                 user_id: UserId::new(),
             },
             RoomEvent::StreamStopped {
-                media_id: "media123".to_string(),
+                media_id: MediaId::from(123),
                 user_id: UserId::new(),
             },
         ];

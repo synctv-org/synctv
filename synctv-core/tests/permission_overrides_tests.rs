@@ -23,7 +23,7 @@ async fn test_allow_override_role_default() {
         .create_room(
             "Allow Override Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -31,7 +31,7 @@ async fn test_allow_override_role_default() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -44,12 +44,7 @@ async fn test_allow_override_role_default() {
 
     room_service
         .member_service()
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            member.id.clone(),
-            PermissionBits::BAN_MEMBER,
-        )
+        .grant_permission(room.id, creator.id, member.id, PermissionBits::BAN_MEMBER)
         .await
         .unwrap();
 
@@ -75,7 +70,7 @@ async fn test_deny_override_role_default() {
         .create_room(
             "Deny Override Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -83,7 +78,7 @@ async fn test_deny_override_role_default() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -96,12 +91,7 @@ async fn test_deny_override_role_default() {
 
     room_service
         .member_service()
-        .revoke_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            member.id.clone(),
-            PermissionBits::SEND_CHAT,
-        )
+        .revoke_permission(room.id, creator.id, member.id, PermissionBits::SEND_CHAT)
         .await
         .unwrap();
 

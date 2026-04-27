@@ -214,6 +214,8 @@ pub struct SharedApiRuntime {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    /// Shared sqids codec for API-facing resource identifiers.
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
     /// Shared impl-level request executor for auth, rate limiting, and timeout.
     pub request_executor: Arc<crate::impls::RequestExecutor>,
     // Unified API implementation layer
@@ -258,6 +260,8 @@ pub struct AppState {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    /// Shared sqids codec for API-facing resource identifiers.
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
     /// Shared impl-level request executor for auth, rate limiting, and timeout.
     pub request_executor: Arc<crate::impls::RequestExecutor>,
     // Unified API implementation layer
@@ -355,6 +359,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         heartbeat_schedule: shared_api_runtime.heartbeat_schedule,
         jwt_validator: shared_api_runtime.jwt_validator.clone(),
         security_pipeline: shared_api_runtime.security_pipeline.clone(),
+        public_id_codec: shared_api_runtime.public_id_codec.clone(),
         request_executor: shared_api_runtime.request_executor.clone(),
         client_api: shared_api_runtime.client_api.clone(),
         admin_api: shared_api_runtime.admin_api.clone(),
@@ -408,6 +413,10 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
         config.jwt_service.clone(),
     )));
+    let public_id_codec = Arc::new(
+        crate::PublicIdCodec::from_config(&config.config.external_ids)
+            .expect("external_ids config must be validated before building API runtime"),
+    );
     let request_executor = Arc::new(crate::impls::RequestExecutor::new(
         config.config.clone(),
         jwt_validator.clone(),
@@ -426,6 +435,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             config.live_streaming_infrastructure.clone(),
             config.providers_manager.clone(),
             config.settings_registry.clone(),
+            public_id_codec.clone(),
         )
         .with_cluster_fanout_service(config.cluster_fanout_service.clone())
         .with_shared_runtime(redis_runtime.clone())
@@ -471,6 +481,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             config.publish_key_service.clone(),
             config.config.clone(),
             config.audit_service.clone(),
+            public_id_codec.clone(),
         )
         .with_cluster_fanout_service(config.cluster_fanout_service.clone())
         .with_provider_stores(provider_stores.clone())
@@ -487,19 +498,23 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         config.email_service.clone(),
         config.email_token_service.clone(),
         config.rate_limiter.clone(),
+        public_id_codec.clone(),
     );
 
     // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
-    let notification_api = config
-        .notification_service
-        .as_ref()
-        .map(|notif_svc| Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone())));
+    let notification_api = config.notification_service.as_ref().map(|notif_svc| {
+        Arc::new(crate::impls::NotificationApiImpl::new(
+            notif_svc.clone(),
+            public_id_codec.clone(),
+        ))
+    });
 
     // Create shared OAuth2ApiImpl
     let oauth2_api = config.oauth2_service.as_ref().map(|oauth2_svc| {
         Arc::new(crate::impls::OAuth2ApiImpl::new(
             oauth2_svc.clone(),
             config.user_service.clone(),
+            public_id_codec.clone(),
         ))
     });
 
@@ -546,6 +561,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         credential_encryption: config.credential_encryption.clone(),
         credential_repo: credential_repo.clone(),
         signing_key: proxy_signing_key.clone(),
+        public_id_codec: public_id_codec.clone(),
     });
 
     SharedApiRuntime {
@@ -556,6 +572,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         heartbeat_schedule: config.heartbeat_schedule,
         jwt_validator,
         security_pipeline,
+        public_id_codec,
         request_executor,
         client_api,
         admin_api,
@@ -1896,7 +1913,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
+                    .body(Body::from(r#"{"room_id":"123"}"#))
                     .expect("request"),
             )
             .await
@@ -1913,7 +1930,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
+                    .body(Body::from(r#"{"room_id":"123"}"#))
                     .expect("request"),
             )
             .await
@@ -2403,7 +2420,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
+                    .body(Body::from(r#"{"room_id":"123"}"#))
                     .expect("request"),
             )
             .await
@@ -2416,7 +2433,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"AbC123xYz890"}"#))
+                    .body(Body::from(r#"{"room_id":"123"}"#))
                     .expect("request"),
             )
             .await

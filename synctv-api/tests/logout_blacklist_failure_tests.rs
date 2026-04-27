@@ -72,7 +72,7 @@ fn test_jwt_service_creates_valid_tokens() {
 
     // Verify it can be parsed
     let claims = jwt.verify_access_token(&token).unwrap();
-    assert_eq!(claims.sub, user_id.as_str());
+    assert_eq!(claims.sub, user_id.to_string());
     assert!(
         !claims.jti.is_empty(),
         "JTI should be present for blacklisting"

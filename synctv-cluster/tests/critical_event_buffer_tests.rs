@@ -157,7 +157,7 @@ fn test_playback_state_changed_is_not_critical() {
     let event = ClusterEvent::PlaybackStateChanged {
         event_id: event_id(),
         user_id,
-        room_id: room_id.clone(),
+        room_id,
         username: "test_user".to_string(),
         state: synctv_core::models::playback::RoomPlaybackState::new(room_id),
         timestamp: chrono::Utc::now(),

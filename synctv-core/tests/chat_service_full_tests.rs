@@ -169,7 +169,7 @@ async fn test_send_message_without_send_chat_permission_denied() {
         .create_room(
             "Chat Perm Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -177,24 +177,19 @@ async fn test_send_message_without_send_chat_permission_denied() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
     // Revoke SEND_CHAT permission from the member
     room_service
         .member_service()
-        .revoke_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            member.id.clone(),
-            PermissionBits::SEND_CHAT,
-        )
+        .revoke_permission(room.id, creator.id, member.id, PermissionBits::SEND_CHAT)
         .await
         .unwrap();
 
     let result = chat_service
-        .send_message(room.id.clone(), member.id.clone(), "Hello".to_string())
+        .send_message(room.id, member.id, "Hello".to_string())
         .await;
 
     assert!(
@@ -232,7 +227,7 @@ async fn test_send_message_chat_disabled_rejected() {
         .create_room(
             "Chat Disabled".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             Some(settings),
         )
@@ -241,7 +236,7 @@ async fn test_send_message_chat_disabled_rejected() {
 
     // Creator has all permissions, but chat is disabled for the room
     let result = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Hello".to_string())
+        .send_message(room.id, creator.id, "Hello".to_string())
         .await;
 
     assert!(
@@ -275,7 +270,7 @@ async fn test_send_message_rate_limit_triggers() {
         .create_room(
             "Chat RL Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -333,7 +328,7 @@ async fn test_send_message_rate_limit_triggers() {
     let mut rate_limited = false;
     for i in 0..20 {
         let result = chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg{i}"))
+            .send_message(room.id, creator.id, format!("msg{i}"))
             .await;
         if let Err(Error::RateLimited(_)) = &result {
             rate_limited = true;
@@ -369,7 +364,7 @@ async fn test_send_danmaku_disabled_rejected() {
         .create_room(
             "Danmaku Disabled".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             Some(settings),
         )
@@ -377,14 +372,14 @@ async fn test_send_danmaku_disabled_rejected() {
         .unwrap();
 
     let request = SendDanmakuRequest {
-        room_id: room.id.clone(),
+        room_id: room.id,
         content: "Hello".to_string(),
         color: "#FFFFFF".to_string(),
         position: DanmakuPosition::Scroll,
     };
 
     let result = chat_service
-        .send_danmaku(room.id.clone(), creator.id.clone(), request)
+        .send_danmaku(room.id, creator.id, request)
         .await;
 
     assert!(
@@ -420,7 +415,7 @@ async fn test_delete_message_owner_can_delete_own() {
         .create_room(
             "Del Msg Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -428,12 +423,12 @@ async fn test_delete_message_owner_can_delete_own() {
         .unwrap();
 
     let msg = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Delete me".to_string())
+        .send_message(room.id, creator.id, "Delete me".to_string())
         .await
         .unwrap();
 
     // Owner should be able to delete their own message
-    let result = chat_service.delete_message(&msg.id, &creator.id).await;
+    let result = chat_service.delete_message(msg.id, &creator.id).await;
 
     assert!(
         result.is_ok(),
@@ -467,7 +462,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
         .create_room(
             "Del Msg Perm Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -475,22 +470,18 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
     // Creator sends a message
     let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Protected msg".to_string(),
-        )
+        .send_message(room.id, creator.id, "Protected msg".to_string())
         .await
         .unwrap();
 
     // Member (non-owner without DELETE_CHAT) tries to delete -- should fail
-    let result = chat_service.delete_message(&msg.id, &member.id).await;
+    let result = chat_service.delete_message(msg.id, &member.id).await;
 
     assert!(
         result.is_err(),
@@ -528,7 +519,7 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .create_room(
             "Del Msg Admin Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -536,34 +527,25 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), admin.id.clone(), None)
+        .join_room(room.id, admin.id, None)
         .await
         .unwrap();
 
     // Grant DELETE_CHAT permission to admin
     room_service
         .member_service()
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            admin.id.clone(),
-            PermissionBits::DELETE_CHAT,
-        )
+        .grant_permission(room.id, creator.id, admin.id, PermissionBits::DELETE_CHAT)
         .await
         .unwrap();
 
     // Creator sends a message
     let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Deletable msg".to_string(),
-        )
+        .send_message(room.id, creator.id, "Deletable msg".to_string())
         .await
         .unwrap();
 
     // Admin (with DELETE_CHAT) can delete another user's message
-    let result = chat_service.delete_message(&msg.id, &admin.id).await;
+    let result = chat_service.delete_message(msg.id, &admin.id).await;
 
     assert!(
         result.is_ok(),
@@ -589,7 +571,7 @@ impl NotificationObserver {
 
     fn observe(&self, room_id: &RoomId, event: &RoomEvent) {
         *self.event_count.lock().unwrap() += 1;
-        *self.last_room_id.lock().unwrap() = Some(room_id.as_str().to_string());
+        *self.last_room_id.lock().unwrap() = Some(room_id.to_string());
         *self.last_event_type.lock().unwrap() = Some(event.event_type().to_string());
     }
 
@@ -727,7 +709,7 @@ async fn test_send_message_broadcasts_to_room_members() {
         .create_room(
             "Broadcast Test Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -742,11 +724,7 @@ async fn test_send_message_broadcasts_to_room_members() {
     );
 
     let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Hello, world!".to_string(),
-        )
+        .send_message(room.id, creator.id, "Hello, world!".to_string())
         .await
         .expect("send_message should succeed");
 
@@ -764,8 +742,8 @@ async fn test_send_message_broadcasts_to_room_members() {
         "One event should have been published"
     );
     assert_eq!(
-        observer.get_last_room_id().as_deref(),
-        Some(room.id.as_str()),
+        observer.get_last_room_id(),
+        Some(room.id.to_string()),
         "Event should be published for the correct room"
     );
     assert_eq!(
@@ -775,7 +753,7 @@ async fn test_send_message_broadcasts_to_room_members() {
     );
 
     // Verify the message was persisted
-    assert!(!msg.id.is_empty(), "Message should have an ID");
+    assert!(msg.id > 0, "Message should have a positive ID");
     assert_eq!(msg.content, "Hello, world!", "Message content should match");
 }
 
@@ -797,7 +775,7 @@ async fn test_get_history_cursor_pagination_basic() {
         .create_room(
             "Cursor Pagination Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -807,7 +785,7 @@ async fn test_get_history_cursor_pagination_basic() {
     let mut sent_messages = Vec::new();
     for i in 0..5 {
         let msg = chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("message_{i}"))
+            .send_message(room.id, creator.id, format!("message_{i}"))
             .await
             .unwrap();
         sent_messages.push(msg);
@@ -839,7 +817,7 @@ async fn test_get_history_cursor_pagination_basic() {
     // Page 2: Get next 2 messages using cursor
     let cursor1_val = cursor1.unwrap();
     let (page2, cursor2) = chat_service
-        .get_history(&room.id, Some((cursor1_val.0, &cursor1_val.1)), 2)
+        .get_history(&room.id, Some((cursor1_val.0, cursor1_val.1)), 2)
         .await
         .expect("get_history page 2 should succeed");
 
@@ -854,7 +832,7 @@ async fn test_get_history_cursor_pagination_basic() {
     // Page 3: Get last message
     let cursor2_val = cursor2.unwrap();
     let (page3, cursor3) = chat_service
-        .get_history(&room.id, Some((cursor2_val.0, &cursor2_val.1)), 2)
+        .get_history(&room.id, Some((cursor2_val.0, cursor2_val.1)), 2)
         .await
         .expect("get_history page 3 should succeed");
 
@@ -883,7 +861,7 @@ async fn test_get_history_empty_room() {
         .create_room(
             "Empty Chat Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -924,7 +902,7 @@ async fn test_get_history_single_page() {
         .create_room(
             "Single Page Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -933,7 +911,7 @@ async fn test_get_history_single_page() {
 
     for i in 0..3 {
         chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
+            .send_message(room.id, creator.id, format!("msg_{i}"))
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -980,7 +958,7 @@ async fn test_get_history_limit_capped_at_100() {
         .create_room(
             "Limit Cap Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -989,7 +967,7 @@ async fn test_get_history_limit_capped_at_100() {
 
     for i in 0..105 {
         chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
+            .send_message(room.id, creator.id, format!("msg_{i}"))
             .await
             .unwrap();
     }
@@ -1025,40 +1003,20 @@ async fn test_get_history_messages_from_correct_room() {
         .unwrap();
 
     let (room1, _) = room_service
-        .create_room(
-            "Room 1".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Room 1".to_string(), String::new(), creator.id, None, None)
         .await
         .unwrap();
     let (room2, _) = room_service
-        .create_room(
-            "Room 2".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Room 2".to_string(), String::new(), creator.id, None, None)
         .await
         .unwrap();
 
     chat_service
-        .send_message(
-            room1.id.clone(),
-            creator.id.clone(),
-            "room1_message".to_string(),
-        )
+        .send_message(room1.id, creator.id, "room1_message".to_string())
         .await
         .unwrap();
     chat_service
-        .send_message(
-            room2.id.clone(),
-            creator.id.clone(),
-            "room2_message".to_string(),
-        )
+        .send_message(room2.id, creator.id, "room2_message".to_string())
         .await
         .unwrap();
 
@@ -1114,7 +1072,7 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         .create_room(
             "Danmaku Broadcast Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1131,14 +1089,14 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
     let mut notification_rx = notification_service.subscribe();
 
     let request = SendDanmakuRequest {
-        room_id: room.id.clone(),
+        room_id: room.id,
         content: "Test danmaku".to_string(),
         color: "#FF0000".to_string(),
         position: DanmakuPosition::Top,
     };
 
     let danmaku = chat_service
-        .send_danmaku(room.id.clone(), creator.id.clone(), request)
+        .send_danmaku(room.id, creator.id, request)
         .await
         .expect("send_danmaku should succeed");
 
@@ -1155,8 +1113,8 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
         "At least one event should have been published for danmaku"
     );
     assert_eq!(
-        observer.get_last_room_id().as_deref(),
-        Some(room.id.as_str()),
+        observer.get_last_room_id(),
+        Some(room.id.to_string()),
         "Event should be published for the correct room"
     );
     assert_eq!(
@@ -1194,7 +1152,7 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
         .create_room(
             "Deleted User Chat Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1203,8 +1161,8 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
 
     let msg = chat_service
         .send_message(
-            room.id.clone(),
-            creator.id.clone(),
+            room.id,
+            creator.id,
             "Message from soon-deleted user".to_string(),
         )
         .await
@@ -1219,7 +1177,7 @@ async fn test_chat_history_with_deleted_user_returns_none_user_id() {
     // Simulate user deletion: SET NULL on user_id via raw SQL
     // (foreign key ON DELETE SET NULL)
     sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
-        .bind(&msg.id)
+        .bind(msg.id)
         .bind(msg.created_at)
         .execute(&pool)
         .await
@@ -1263,7 +1221,7 @@ async fn test_send_message_oversized_content_rejected() {
         .create_room(
             "Oversized Msg Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1272,7 +1230,7 @@ async fn test_send_message_oversized_content_rejected() {
 
     let oversized_content: String = "x".repeat(501);
     let result = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), oversized_content)
+        .send_message(room.id, creator.id, oversized_content)
         .await;
 
     assert!(result.is_err(), "Oversized message should be rejected");
@@ -1308,7 +1266,7 @@ async fn test_send_message_valid_content_persisted() {
         .create_room(
             "Valid Msg Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1316,18 +1274,14 @@ async fn test_send_message_valid_content_persisted() {
         .unwrap();
 
     let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Hello, valid message!".to_string(),
-        )
+        .send_message(room.id, creator.id, "Hello, valid message!".to_string())
         .await
         .expect("Valid message should be persisted");
 
     assert_eq!(msg.content, "Hello, valid message!");
-    assert_eq!(msg.user_id, Some(creator.id.clone()));
+    assert_eq!(msg.user_id, Some(creator.id));
     assert_eq!(msg.room_id, room.id);
-    assert!(!msg.id.is_empty());
+    assert!(msg.id > 0);
 
     // Verify via history
     let (history, _) = chat_service.get_history(&room.id, None, 10).await.unwrap();
@@ -1356,7 +1310,7 @@ async fn test_send_message_html_xss_stripped() {
         .create_room(
             "XSS Strip Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1365,8 +1319,8 @@ async fn test_send_message_html_xss_stripped() {
 
     let msg = chat_service
         .send_message(
-            room.id.clone(),
-            creator.id.clone(),
+            room.id,
+            creator.id,
             "<script>alert('xss')</script>Hello safe world".to_string(),
         )
         .await
@@ -1414,7 +1368,7 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
         .create_room(
             "Del Null User Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1422,23 +1376,19 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
     // Creator sends a message
     let msg = chat_service
-        .send_message(
-            room.id.clone(),
-            creator.id.clone(),
-            "Orphaned message".to_string(),
-        )
+        .send_message(room.id, creator.id, "Orphaned message".to_string())
         .await
         .unwrap();
 
     // Simulate user deletion: SET user_id to NULL
     sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
-        .bind(&msg.id)
+        .bind(msg.id)
         .bind(msg.created_at)
         .execute(&pool)
         .await
@@ -1446,7 +1396,7 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
 
     // Member (without DELETE_CHAT permission) tries to delete orphaned message
     // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT permission
-    let result = chat_service.delete_message(&msg.id, &member.id).await;
+    let result = chat_service.delete_message(msg.id, &member.id).await;
 
     assert!(
         result.is_err(),
@@ -1458,7 +1408,7 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
     }
 
     // Room creator (has all permissions) should be able to delete
-    let result = chat_service.delete_message(&msg.id, &creator.id).await;
+    let result = chat_service.delete_message(msg.id, &creator.id).await;
     assert!(
         result.is_ok(),
         "Room creator (with DELETE_CHAT) should be able to delete orphaned message"

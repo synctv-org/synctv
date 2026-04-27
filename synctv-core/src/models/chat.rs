@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChatMessage {
-    pub id: String, // base62 ID (12 chars)
+    pub id: i64,
     pub room_id: RoomId,
     /// The user who sent this message.
     ///
@@ -21,7 +22,7 @@ impl ChatMessage {
     #[must_use]
     pub fn new(room_id: RoomId, user_id: UserId, content: String) -> Self {
         Self {
-            id: super::id::generate_id(),
+            id: 0,
             room_id,
             user_id: Some(user_id),
             content,
@@ -69,6 +70,25 @@ impl DanmakuPosition {
     }
 }
 
+impl FromStr for DanmakuPosition {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "top" => Ok(Self::Top),
+            "bottom" => Ok(Self::Bottom),
+            "scroll" => Ok(Self::Scroll),
+            other => Err(format!("Unknown danmaku position: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for DanmakuPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl DanmakuMessage {
     #[must_use]
     pub fn new(
@@ -95,4 +115,23 @@ pub struct SendDanmakuRequest {
     pub content: String,
     pub color: String,
     pub position: DanmakuPosition,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn danmaku_position_display_and_parse_roundtrip() {
+        assert_eq!(DanmakuPosition::Top.to_string(), "top");
+        assert_eq!(
+            "bottom".parse::<DanmakuPosition>().unwrap(),
+            DanmakuPosition::Bottom
+        );
+        assert_eq!(
+            "SCROLL".parse::<DanmakuPosition>().unwrap(),
+            DanmakuPosition::Scroll
+        );
+        assert!("middle".parse::<DanmakuPosition>().is_err());
+    }
 }

@@ -429,13 +429,14 @@ impl PlaybackService {
                                         cache.invalidate(&room_id).await;
                                         let l2_cache = { l2_cache.read().clone() };
                                         if let Some(l2_cache) = l2_cache {
-                                            let room_id = RoomId::from_string(room_id.clone());
+                                            if let Ok(room_id) = room_id.parse::<RoomId>() {
                                             if let Err(e) = l2_cache.invalidate(&room_id).await {
                                                 tracing::warn!(
-                                                    room_id = %room_id.as_str(),
+                                                    room_id = %room_id,
                                                     error = %e,
                                                     "Failed to invalidate playback state from L2 cache"
                                                 );
+                                            }
                                             }
                                         }
                                         tracing::debug!(
@@ -447,13 +448,14 @@ impl PlaybackService {
                                         cache.invalidate(&room_id).await;
                                         let l2_cache = { l2_cache.read().clone() };
                                         if let Some(l2_cache) = l2_cache {
-                                            let room_id = RoomId::from_string(room_id.clone());
+                                            if let Ok(room_id) = room_id.parse::<RoomId>() {
                                             if let Err(e) = l2_cache.invalidate(&room_id).await {
                                                 tracing::warn!(
-                                                    room_id = %room_id.as_str(),
+                                                    room_id = %room_id,
                                                     error = %e,
                                                     "Failed to invalidate room-scoped playback state from L2 cache"
                                                 );
+                                            }
                                             }
                                         }
                                     }
@@ -586,7 +588,7 @@ impl PlaybackService {
             // Log warning if broadcast failed to reach any destination
             if !result.is_success() {
                 tracing::warn!(
-                    room_id = %state.room_id.as_str(),
+                    room_id = %state.room_id,
                     local_sent = result.local_sent,
                     redis_sent = result.redis_sent,
                     "Playback state broadcast failed to reach any destination; \
@@ -596,7 +598,7 @@ impl PlaybackService {
             } else if result.should_warn_missing_redis_delivery() {
                 // Partial failure: local clients got it, but Redis publish failed
                 tracing::warn!(
-                    room_id = %state.room_id.as_str(),
+                    room_id = %state.room_id,
                     local_sent = result.local_sent,
                     "Playback state broadcast reached local clients but failed to publish to Redis; \
                      other replicas may have stale playback state"
@@ -636,7 +638,7 @@ impl PlaybackService {
                     if attempt + 1 < broadcast_delays.len() {
                         tracing::warn!(
                             error = %e,
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             attempt = attempt + 1,
                             max_attempts = broadcast_delays.len(),
                             "{context}: broadcast failed, retrying..."
@@ -648,7 +650,7 @@ impl PlaybackService {
         }
         if !broadcast_ok {
             tracing::error!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 attempts = broadcast_delays.len(),
                 "{context}: broadcast failed after all retry attempts, replicas may have stale state"
             );
@@ -661,7 +663,7 @@ impl PlaybackService {
     /// on L2 miss, uses `SingleFlight` to ensure only one concurrent DB fetch per
     /// `room_id`, then populates both L1 and L2 caches.
     pub async fn get_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
-        let cache_key = room_id.as_str().to_string();
+        let cache_key = room_id.to_string();
 
         // L1 cache hit
         if let Some(state) = self.playback_cache.get(&cache_key).await {
@@ -682,7 +684,7 @@ impl PlaybackService {
                     .with_label_values(&["playback", "l2"])
                     .inc();
                 tracing::debug!(
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     version = state.version,
                     "Playback state cache hit (L2)"
                 );
@@ -695,7 +697,7 @@ impl PlaybackService {
         let repo = self.playback_repo.clone();
         let cache = self.playback_cache.clone();
         let l2_cache = self.playback_l2_cache();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = *room_id;
 
         let state = self
             .single_flight
@@ -710,15 +712,13 @@ impl PlaybackService {
                 };
 
                 // Populate L1 cache
-                cache
-                    .insert(state.room_id.as_str().to_string(), state.clone())
-                    .await;
+                cache.insert(state.room_id.to_string(), state.clone()).await;
 
                 // Populate L2 cache (if configured)
                 if let Some(ref l2) = l2_cache {
                     if let Err(e) = l2.set(&state.room_id, state.clone()).await {
                         tracing::warn!(
-                            room_id = %state.room_id.as_str(),
+                            room_id = %state.room_id,
                             error = %e,
                             "Failed to set playback state in L2 cache"
                         );
@@ -752,14 +752,14 @@ impl PlaybackService {
             if let Err(e) = service.invalidate_playback_state(room_id).await {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to broadcast playback state cache invalidation"
                 );
             }
         }
 
         // Invalidate L1 cache
-        let cache_key = room_id.as_str().to_string();
+        let cache_key = room_id.to_string();
         self.playback_cache.invalidate(&cache_key).await;
 
         // Invalidate L2 cache (if configured)
@@ -767,7 +767,7 @@ impl PlaybackService {
             if let Err(e) = l2_cache.invalidate(room_id).await {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to invalidate playback state from L2 cache"
                 );
             }
@@ -786,7 +786,7 @@ impl PlaybackService {
             .await?;
 
         let state = self
-            .update_state(room_id.clone(), |state| {
+            .update_state(room_id, |state| {
                 if !playing {
                     // Snapshot the computed playback position before pausing so that
                     // the stored current_time reflects where the user actually was.
@@ -828,7 +828,7 @@ impl PlaybackService {
             .await?;
 
         let result = self
-            .update_state(room_id.clone(), |state| {
+            .update_state(room_id, |state| {
                 state.current_time = current_time;
                 state.updated_at = chrono::Utc::now();
                 // version is incremented by the SQL UPDATE, not here
@@ -850,7 +850,7 @@ impl PlaybackService {
                 // Degraded response: seek failed due to contention, but return
                 // the latest state so the client can display the current position.
                 tracing::warn!(
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     requested_time = current_time,
                     "Seek failed after max retries, returning latest state as degraded response"
                 );
@@ -878,7 +878,7 @@ impl PlaybackService {
         validate_playback_speed_value(speed)?;
 
         let state = self
-            .update_state(room_id.clone(), |state| {
+            .update_state(room_id, |state| {
                 // Snapshot the computed playback position before changing speed so that
                 // the stored current_time reflects where the user actually was at the
                 // old speed. Without this, the position would be wrong because
@@ -980,7 +980,7 @@ impl PlaybackService {
                     .and_then(|item| {
                         item.map(|item| {
                             Ok(NextTarget::Dynamic {
-                                playlist_id: playlist.id.clone(),
+                                playlist_id: playlist.id,
                                 target: item.target,
                             })
                         })
@@ -1034,8 +1034,8 @@ impl PlaybackService {
                                 Some(_) => None,
                                 None => {
                                     tracing::warn!(
-                                        room_id = %room_id.as_str(),
-                                        media_id = %current_id.as_str(),
+                                        room_id = %room_id,
+                                        media_id = %current_id,
                                         "Sequential: current media no longer present, falling back to first available item"
                                     );
                                     playlist.first()
@@ -1052,8 +1052,8 @@ impl PlaybackService {
                                 .find(|m| &m.id == current_id)
                                 .or_else(|| {
                                     tracing::warn!(
-                                        room_id = %room_id.as_str(),
-                                        media_id = %current_id.as_str(),
+                                        room_id = %room_id,
+                                        media_id = %current_id,
                                         "RepeatOne: current media no longer present, falling back to first available item"
                                     );
                                     playlist.first()
@@ -1068,8 +1068,8 @@ impl PlaybackService {
                                 Some(&playlist[(pos + 1) % playlist.len()])
                             } else {
                                 tracing::warn!(
-                                    room_id = %room_id.as_str(),
-                                    media_id = %current_id.as_str(),
+                                    room_id = %room_id,
+                                    media_id = %current_id,
                                     "RepeatAll: current media no longer present, falling back to first available item"
                                 );
                                 playlist.first()
@@ -1100,7 +1100,7 @@ impl PlaybackService {
 
             let Some(next_target) = next_target else {
                 tracing::info!(
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     mode = ?mode,
                     "Playlist ended"
                 );
@@ -1123,7 +1123,7 @@ impl PlaybackService {
                         }
                         Err(error) => return Err(error),
                     }
-                    updated_state.playing_media_id = Some(next.id.clone());
+                    updated_state.playing_media_id = Some(next.id);
                     updated_state.playing_playlist_id = None;
                     updated_state.target = Vec::new();
                 }
@@ -1149,7 +1149,7 @@ impl PlaybackService {
                         Err(error) => return Err(error),
                     }
                     updated_state.playing_media_id = None;
-                    updated_state.playing_playlist_id = Some(playlist_id.clone());
+                    updated_state.playing_playlist_id = Some(*playlist_id);
                     updated_state.target = target.clone();
                 }
             }
@@ -1160,7 +1160,7 @@ impl PlaybackService {
             match self.playback_repo.update(&updated_state).await {
                 Ok(saved_state) => {
                     // Invalidate local cache
-                    let cache_key = room_id.as_str().to_string();
+                    let cache_key = room_id.to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
                     // Broadcast to other replicas with retry
@@ -1168,7 +1168,7 @@ impl PlaybackService {
                         .await;
 
                     tracing::info!(
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         target = ?next_target,
                         mode = ?mode,
                         "Auto-played next media"
@@ -1183,7 +1183,7 @@ impl PlaybackService {
                         let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
                         let delay = backoff + jitter;
                         tracing::debug!(
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             attempt = attempt + 1,
                             delay_ms = delay,
                             "play_next version conflict, re-fetching state and retrying"
@@ -1222,7 +1222,7 @@ impl PlaybackService {
 
         // Get current media to check duration
         let state = self.get_state(room_id).await?;
-        let playing_media_id = state.playing_media_id.clone();
+        let playing_media_id = state.playing_media_id;
 
         let playing_media = match playing_media_id {
             Some(ref id) => self
@@ -1285,7 +1285,6 @@ impl PlaybackService {
             Self::BACKOFF_BASE_MS,
             Self::UPDATE_STATE_RETRY_EXHAUSTED,
             || {
-                let room_id = room_id.clone();
                 let update_fn = &update_fn;
                 async move {
                     // Get current state (lazy-init: only INSERT if row doesn't exist yet)
@@ -1302,7 +1301,7 @@ impl PlaybackService {
                     // Invalidate local L1 cache so the next read fetches fresh data.
                     // This avoids write-through which would self-invalidate when the
                     // Redis Pub/Sub bounce-back arrives.
-                    let cache_key = room_id.as_str().to_string();
+                    let cache_key = room_id.to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
                     // Update L2 cache with the new state (if configured).
@@ -1314,7 +1313,7 @@ impl PlaybackService {
                         {
                             tracing::warn!(
                                 error = %e,
-                                room_id = %room_id.as_str(),
+                                room_id = %room_id,
                                 "Failed to update playback state in L2 cache"
                             );
                         }
@@ -1356,7 +1355,7 @@ impl PlaybackService {
         update_fn(&mut state);
         let updated_state = self.playback_repo.update(&state).await?;
 
-        let cache_key = room_id.as_str().to_string();
+        let cache_key = room_id.to_string();
         self.playback_cache.invalidate(&cache_key).await;
 
         let l2_cache = self.playback_l2_cache();
@@ -1364,7 +1363,7 @@ impl PlaybackService {
             if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to update playback state in L2 cache"
                 );
             }
@@ -1464,7 +1463,7 @@ impl PlaybackService {
 
         if target.media_id.is_none() && target.playlist_id.is_none() {
             let state = self
-                .update_state(room_id.clone(), |state| {
+                .update_state(room_id, |state| {
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
                     state.target = Vec::new();
@@ -1520,12 +1519,7 @@ impl PlaybackService {
 
             let resolved = self
                 .media_service
-                .resolve_dynamic_playlist_item(
-                    room_id.clone(),
-                    user_id.clone(),
-                    playlist_id,
-                    &target.target,
-                )
+                .resolve_dynamic_playlist_item(room_id, user_id, playlist_id, &target.target)
                 .await?;
             if resolved.is_none() {
                 return Err(Error::NotFound(
@@ -1535,7 +1529,7 @@ impl PlaybackService {
         }
 
         let state = self
-            .update_state(room_id.clone(), |state| {
+            .update_state(room_id, |state| {
                 state.playing_media_id.clone_from(&target.media_id);
                 state.playing_playlist_id.clone_from(&target.playlist_id);
                 state.target.clone_from(&target.target);
@@ -1586,13 +1580,13 @@ impl PlaybackService {
         resource_kind: &'static str,
     ) -> Result<Option<RoomPlaybackState>> {
         tracing::warn!(
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             resource_kind,
             "Stopping playback because the target creator is not active"
         );
 
         let state = self
-            .update_state(room_id.clone(), |state| {
+            .update_state(*room_id, |state| {
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
                 state.target = Vec::new();
@@ -1745,10 +1739,10 @@ impl PlaybackService {
         };
 
         let state = if let Some(expected) = expected_version {
-            self.update_state_with_expected_version(room_id.clone(), expected, apply_update)
+            self.update_state_with_expected_version(room_id, expected, apply_update)
                 .await?
         } else {
-            self.update_state(room_id.clone(), apply_update).await?
+            self.update_state(room_id, apply_update).await?
         };
 
         // Cache invalidation is already handled inside update_state()
@@ -1944,8 +1938,8 @@ mod tests {
     async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from_string("room-playback-stop".to_string());
-        let cache_key = room_id.as_str().to_string();
+        let room_id = RoomId::from(10_001);
+        let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
@@ -1961,7 +1955,7 @@ mod tests {
         playback_service.shutdown().await;
 
         let updated_state = RoomPlaybackState {
-            room_id: room_id.clone(),
+            room_id,
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
@@ -1991,8 +1985,8 @@ mod tests {
     async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from_string("room-playback-restart".to_string());
-        let cache_key = room_id.as_str().to_string();
+        let room_id = RoomId::from(10_002);
+        let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
@@ -2002,7 +1996,7 @@ mod tests {
         playback_service.shutdown().await;
 
         let updated_state = RoomPlaybackState {
-            room_id: room_id.clone(),
+            room_id,
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
@@ -2041,8 +2035,8 @@ mod tests {
     async fn test_start_activates_invalidation_listener_after_wiring_service() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from_string("room-playback-autostart".to_string());
-        let cache_key = room_id.as_str().to_string();
+        let room_id = RoomId::from(10_003);
+        let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
@@ -2059,7 +2053,7 @@ mod tests {
         .expect("start() should mark playback invalidation listener as running");
 
         let updated_state = RoomPlaybackState {
-            room_id: room_id.clone(),
+            room_id,
             playing_media_id: None,
             playing_playlist_id: None,
             target: Vec::new(),
@@ -2107,7 +2101,7 @@ mod tests {
             "synctv:test:playback:".to_string(),
         )
         .expect("test playback L2 cache should build");
-        let room_id = RoomId::from_string("room-playback-late-l2".to_string());
+        let room_id = RoomId::from(10_004);
 
         playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
@@ -2127,7 +2121,7 @@ mod tests {
 
         invalidation_service
             .broadcast_all(InvalidationMessage::PlaybackState {
-                room_id: room_id.as_str().to_string(),
+                room_id: room_id.to_string(),
             })
             .await
             .expect("playback invalidation should broadcast locally");
@@ -2231,9 +2225,9 @@ mod tests {
         use super::*;
 
         /// Helper to create a playback state with a specific version
-        fn make_state(room_id: &str, version: i64, current_time: f64) -> RoomPlaybackState {
+        fn make_state(room_id: i64, version: i64, current_time: f64) -> RoomPlaybackState {
             RoomPlaybackState {
-                room_id: RoomId::from_string(room_id.to_string()),
+                room_id: RoomId::from(room_id),
                 playing_media_id: None,
                 playing_playlist_id: None,
                 target: Vec::new(),
@@ -2255,12 +2249,13 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = "room_001";
+            let room_id = 31_001;
+            let cache_key = room_id.to_string();
             let new_state = make_state(room_id, 5, 100.0);
 
             // Simulate the CAS logic from the invalidation handler
             cache
-                .entry(room_id.to_string())
+                .entry(cache_key.clone())
                 .and_upsert_with(|maybe_entry| {
                     let result = match maybe_entry {
                         Some(entry) => {
@@ -2277,7 +2272,7 @@ mod tests {
                 })
                 .await;
 
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 5);
             assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
         }
@@ -2288,20 +2283,21 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = "room_002";
+            let room_id = 31_002;
+            let cache_key = room_id.to_string();
 
             // Insert initial state with version 3
             let initial_state = make_state(room_id, 3, 50.0);
-            cache.insert(room_id.to_string(), initial_state).await;
+            cache.insert(cache_key.clone(), initial_state).await;
 
             // Verify initial state
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 3);
 
             // Try to update with version 7 (higher)
             let new_state = make_state(room_id, 7, 150.0);
             cache
-                .entry(room_id.to_string())
+                .entry(cache_key.clone())
                 .and_upsert_with(|maybe_entry| {
                     let result = match maybe_entry {
                         Some(entry) => {
@@ -2319,7 +2315,7 @@ mod tests {
                 .await;
 
             // Cache should now have version 7
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 7);
             assert!((cached.current_time - 150.0).abs() < f64::EPSILON);
         }
@@ -2330,16 +2326,17 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = "room_003";
+            let room_id = 31_003;
+            let cache_key = room_id.to_string();
 
             // Insert initial state with version 10
             let initial_state = make_state(room_id, 10, 200.0);
-            cache.insert(room_id.to_string(), initial_state).await;
+            cache.insert(cache_key.clone(), initial_state).await;
 
             // Try to update with version 5 (lower - simulates delayed/out-of-order message)
             let old_state = make_state(room_id, 5, 100.0);
             cache
-                .entry(room_id.to_string())
+                .entry(cache_key.clone())
                 .and_upsert_with(|maybe_entry| {
                     let result = match maybe_entry {
                         Some(entry) => {
@@ -2357,7 +2354,7 @@ mod tests {
                 .await;
 
             // Cache should still have version 10 (not downgraded to 5)
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 10);
             assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
         }
@@ -2368,16 +2365,17 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = "room_004";
+            let room_id = 31_004;
+            let cache_key = room_id.to_string();
 
             // Insert initial state with version 5
             let initial_state = make_state(room_id, 5, 200.0);
-            cache.insert(room_id.to_string(), initial_state).await;
+            cache.insert(cache_key.clone(), initial_state).await;
 
             // Try to update with same version 5 but different content
             let duplicate_state = make_state(room_id, 5, 999.0);
             cache
-                .entry(room_id.to_string())
+                .entry(cache_key.clone())
                 .and_upsert_with(|maybe_entry| {
                     let result = match maybe_entry {
                         Some(entry) => {
@@ -2395,7 +2393,7 @@ mod tests {
                 .await;
 
             // Cache should still have original content (not overwritten)
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 5);
             assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
         }
@@ -2406,14 +2404,15 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = "room_005";
+            let room_id = 31_005;
+            let cache_key = room_id.to_string();
 
             // Apply updates in non-monotonic order: v1, v5, v3, v7, v2
             let versions = [1i64, 5, 3, 7, 2];
             for v in versions {
                 let state = make_state(room_id, v, version_to_current_time(v));
                 cache
-                    .entry(room_id.to_string())
+                    .entry(cache_key.clone())
                     .and_upsert_with(|maybe_entry| {
                         let result = match maybe_entry {
                             Some(entry) => {
@@ -2432,7 +2431,7 @@ mod tests {
             }
 
             // Cache should have version 7 (the highest)
-            let cached = cache.get(room_id).await.expect("should have entry");
+            let cached = cache.get(&cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 7);
             assert!((cached.current_time - 70.0).abs() < f64::EPSILON);
         }
@@ -2443,18 +2442,19 @@ mod tests {
             let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
                 Arc::new(moka::future::Cache::new(100));
 
-            let room_id = Arc::new("room_006".to_string());
+            let room_id = 31_006;
+            let cache_key = Arc::new(room_id.to_string());
             let cache_clone = cache.clone();
 
             // Spawn 10 concurrent tasks, each trying to insert a different version
             let handles: Vec<_> = (1..=10)
                 .map(|v| {
-                    let room_id = room_id.clone();
+                    let cache_key = cache_key.clone();
                     let cache = cache_clone.clone();
                     tokio::spawn(async move {
-                        let state = make_state(&room_id, v, version_to_current_time(v));
+                        let state = make_state(room_id, v, version_to_current_time(v));
                         cache
-                            .entry(room_id.to_string())
+                            .entry(cache_key.to_string())
                             .and_upsert_with(|maybe_entry| {
                                 let result = match maybe_entry {
                                     Some(entry) => {
@@ -2480,7 +2480,7 @@ mod tests {
             }
 
             // Cache should have version 10 (the highest)
-            let cached = cache.get(&*room_id).await.expect("should have entry");
+            let cached = cache.get(&*cache_key).await.expect("should have entry");
             assert_eq!(cached.version, 10);
             assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
         }

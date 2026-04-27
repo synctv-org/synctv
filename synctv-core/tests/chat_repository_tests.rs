@@ -43,7 +43,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -67,7 +67,7 @@ async fn setup_room(pool: &PgPool, username: &str, room_name: &str) -> (User, Ro
 }
 
 fn make_chat_message(room_id: &RoomId, user_id: &UserId, content: &str) -> ChatMessage {
-    ChatMessage::new(room_id.clone(), user_id.clone(), content.to_string())
+    ChatMessage::new(*room_id, *user_id, content.to_string())
 }
 
 // ─── list_by_room_cursor pagination ──────────────────────────────────
@@ -84,7 +84,7 @@ async fn test_list_by_room_cursor_pagination() {
     for i in 0..5 {
         let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
         let created = chat_repo.create(&msg).await.unwrap();
-        created_ids.push(created.id.clone());
+        created_ids.push(created.id);
         // Small delay to ensure ordering
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
@@ -106,7 +106,7 @@ async fn test_list_by_room_cursor_pagination() {
     // Page 2: next 2 messages
     let cursor1_val = cursor1.unwrap();
     let (page2, cursor2) = chat_repo
-        .list_by_room_cursor(&room.id, Some((cursor1_val.0, &cursor1_val.1)), 2)
+        .list_by_room_cursor(&room.id, Some((cursor1_val.0, cursor1_val.1)), 2)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2);
@@ -120,7 +120,7 @@ async fn test_list_by_room_cursor_pagination() {
     // Page 3: last page (1 message)
     let cursor2_val = cursor2.unwrap();
     let (page3, cursor3) = chat_repo
-        .list_by_room_cursor(&room.id, Some((cursor2_val.0, &cursor2_val.1)), 2)
+        .list_by_room_cursor(&room.id, Some((cursor2_val.0, cursor2_val.1)), 2)
         .await
         .unwrap();
     assert_eq!(page3.len(), 1);
@@ -140,7 +140,7 @@ async fn test_get_by_id_recent_message() {
     let msg = make_chat_message(&room.id, &user.id, "recent message");
     let created = chat_repo.create(&msg).await.unwrap();
 
-    let fetched = chat_repo.get_by_id(&created.id).await.unwrap();
+    let fetched = chat_repo.get_by_id(created.id).await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().content, "recent message");
 }
@@ -162,16 +162,16 @@ async fn test_get_by_id_old_message_succeeds() {
         r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old message', 1, $4)",
     )
-    .bind(&msg_id)
-    .bind(room.id.as_str())
-    .bind(user.id.as_str())
+    .bind(msg_id)
+    .bind(room.id)
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
     .unwrap();
 
     // get_by_id should now successfully retrieve messages older than 90 days
-    let fetched = chat_repo.get_by_id(&msg_id).await.unwrap();
+    let fetched = chat_repo.get_by_id(msg_id).await.unwrap();
     assert!(
         fetched.is_some(),
         "get_by_id should return messages older than 90 days for audit purposes"
@@ -196,16 +196,16 @@ async fn test_get_by_id_very_old_message_succeeds() {
         r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)",
     )
-    .bind(&msg_id)
-    .bind(room.id.as_str())
-    .bind(user.id.as_str())
+    .bind(msg_id)
+    .bind(room.id)
+    .bind(user.id)
     .bind(very_old_date)
     .execute(&pool)
     .await
     .unwrap();
 
     // get_by_id should retrieve very old messages for audit purposes
-    let fetched = chat_repo.get_by_id(&msg_id).await.unwrap();
+    let fetched = chat_repo.get_by_id(msg_id).await.unwrap();
     assert!(
         fetched.is_some(),
         "get_by_id should return messages from any time period"
@@ -220,7 +220,7 @@ async fn test_get_by_id_nonexistent_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
 
-    let fetched = chat_repo.get_by_id("nonexistent_msg_id").await.unwrap();
+    let fetched = chat_repo.get_by_id(i64::MAX).await.unwrap();
     assert!(
         fetched.is_none(),
         "get_by_id should return None for non-existent messages"
@@ -460,7 +460,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
         )
         ",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(&pool)
     .await
     .expect("Failed to get query plan");
@@ -618,9 +618,9 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
         r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old message', 1, $4)",
     )
-    .bind(&old_msg_id)
-    .bind(room.id.as_str())
-    .bind(user.id.as_str())
+    .bind(old_msg_id)
+    .bind(room.id)
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
@@ -665,9 +665,9 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
         r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
           VALUES ($1, $2, $3, 'old cursor message', 1, $4)",
     )
-    .bind(&old_msg_id)
-    .bind(room.id.as_str())
-    .bind(user.id.as_str())
+    .bind(old_msg_id)
+    .bind(room.id)
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
@@ -724,7 +724,7 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
         )
         ",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(&pool)
     .await
     .expect("Failed to get plan with filter");
@@ -747,7 +747,7 @@ async fn test_cleanup_query_keeps_partition_pruning_filter() {
         )
         ",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(&pool)
     .await
     .expect("Failed to get plan without filter");

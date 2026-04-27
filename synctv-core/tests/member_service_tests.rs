@@ -117,7 +117,7 @@ async fn test_add_member_respects_max_members() {
         .create_room(
             "Max Members Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -126,16 +126,12 @@ async fn test_add_member_respects_max_members() {
 
     // First joiner should succeed (member count: 2)
     let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner1.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner1.id, None).await;
     assert!(result.is_ok(), "First joiner should succeed");
 
     // Second joiner should fail (member count would be 3, exceeding max 2)
     let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner2.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner2.id, None).await;
     assert!(result.is_err(), "Second joiner should be rejected");
 }
 
@@ -153,7 +149,7 @@ async fn test_kick_member_role_hierarchy() {
         .create_room(
             "Kick Hierarchy Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -162,25 +158,20 @@ async fn test_kick_member_role_hierarchy() {
 
     // Add admin as member first, then promote to admin
     room_service
-        .join_room(room.id.clone(), admin.id.clone(), None)
+        .join_room(room.id, admin.id, None)
         .await
         .unwrap();
 
     // Promote to admin role
     let member_service = room_service.member_service();
     member_service
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            admin.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
 
     // Admin trying to kick Creator should fail
     let result = member_service
-        .kick_member(room.id.clone(), admin.id.clone(), creator.id.clone())
+        .kick_member(room.id, admin.id, creator.id)
         .await;
 
     assert!(result.is_err(), "Admin cannot kick Creator");
@@ -213,7 +204,7 @@ async fn test_kick_member_creator_can_kick_admin() {
         .create_room(
             "Kick Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -221,25 +212,20 @@ async fn test_kick_member_creator_can_kick_admin() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), admin.id.clone(), None)
+        .join_room(room.id, admin.id, None)
         .await
         .unwrap();
 
     // Promote to admin
     let member_service = room_service.member_service();
     member_service
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            admin.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
 
     // Creator should be able to kick admin
     let result = member_service
-        .kick_member(room.id.clone(), creator.id.clone(), admin.id.clone())
+        .kick_member(room.id, creator.id, admin.id)
         .await;
 
     assert!(result.is_ok(), "Creator should be able to kick admin");
@@ -268,7 +254,7 @@ async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
         .create_room(
             "Unique Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -276,18 +262,13 @@ async fn test_set_member_role_rejects_promoting_another_member_to_creator() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let result = room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            RoomRole::Creator,
-        )
+        .set_member_role(room.id, creator.id, target.id, RoomRole::Creator)
         .await;
 
     assert!(
@@ -313,7 +294,7 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
         .create_room(
             "Demote Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -322,12 +303,7 @@ async fn test_set_member_role_rejects_demoting_the_room_creator() {
 
     let result = room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            creator.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, creator.id, RoomRole::Admin)
         .await;
 
     assert!(
@@ -362,7 +338,7 @@ async fn test_ban_sets_status_and_banned_at() {
         .create_room(
             "Ban Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -370,7 +346,7 @@ async fn test_ban_sets_status_and_banned_at() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -378,9 +354,9 @@ async fn test_ban_sets_status_and_banned_at() {
     let member_service = room_service.member_service();
     member_service
         .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             Some("Test ban reason".to_string()),
         )
         .await
@@ -411,7 +387,7 @@ async fn test_unban_clears_ban_metadata_without_rejoining_member() {
         .create_room(
             "Unban Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -419,7 +395,7 @@ async fn test_unban_clears_ban_metadata_without_rejoining_member() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -427,7 +403,7 @@ async fn test_unban_clears_ban_metadata_without_rejoining_member() {
 
     // Ban first
     member_service
-        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, creator.id, target.id, None)
         .await
         .unwrap();
 
@@ -442,7 +418,7 @@ async fn test_unban_clears_ban_metadata_without_rejoining_member() {
 
     // Unban
     member_service
-        .unban_member(room.id.clone(), creator.id.clone(), target.id.clone())
+        .unban_member(room.id, creator.id, target.id)
         .await
         .unwrap();
 
@@ -489,7 +465,7 @@ async fn test_admin_ban_member_can_ban_departed_member() {
         .create_room(
             "Admin Ban Departed Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -497,22 +473,19 @@ async fn test_admin_ban_member_can_ban_departed_member() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    room_service
-        .leave_room(room.id.clone(), target.id.clone())
-        .await
-        .unwrap();
+    room_service.leave_room(room.id, target.id).await.unwrap();
 
     room_service
         .member_service()
         .admin_ban_member(
-            room.id.clone(),
-            creator.id.clone(),
+            room.id,
+            creator.id,
             &creator.username,
-            target.id.clone(),
-            Some(creator.id.clone()),
+            target.id,
+            Some(creator.id),
             Some("prevent rejoin".to_string()),
         )
         .await
@@ -550,7 +523,7 @@ async fn test_ban_member_preserves_ban_semantics() {
         .create_room(
             "Status Ban Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -558,13 +531,13 @@ async fn test_ban_member_preserves_ban_semantics() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let member_service = room_service.member_service();
     member_service
-        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, creator.id, target.id, None)
         .await
         .unwrap();
 
@@ -602,7 +575,7 @@ async fn test_set_member_status_can_set_member_pending_and_approve_back_to_activ
         .create_room(
             "Status Pending Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -610,18 +583,13 @@ async fn test_set_member_status_can_set_member_pending_and_approve_back_to_activ
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let pending = room_service
         .member_service()
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Active,
-        )
+        .set_member_status(room.id, creator.id, target.id, MemberStatus::Active)
         .await
         .unwrap();
 
@@ -629,12 +597,7 @@ async fn test_set_member_status_can_set_member_pending_and_approve_back_to_activ
 
     let active = room_service
         .member_service()
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Active,
-        )
+        .set_member_status(room.id, creator.id, target.id, MemberStatus::Active)
         .await
         .unwrap();
 
@@ -661,7 +624,7 @@ async fn test_set_member_status_rejects_specialized_left_transition() {
         .create_room(
             "Status Specialized Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -669,19 +632,14 @@ async fn test_set_member_status_rejects_specialized_left_transition() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let member_service = room_service.member_service();
 
     let left_err = member_service
-        .set_member_status(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            MemberStatus::Left,
-        )
+        .set_member_status(room.id, creator.id, target.id, MemberStatus::Left)
         .await
         .unwrap_err();
     assert!(
@@ -704,7 +662,7 @@ async fn test_grant_permission_bitwise_or() {
         .create_room(
             "Grant Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -712,7 +670,7 @@ async fn test_grant_permission_bitwise_or() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -720,12 +678,7 @@ async fn test_grant_permission_bitwise_or() {
 
     // Grant BAN_MEMBER permission
     let updated = member_service
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::BAN_MEMBER,
-        )
+        .grant_permission(room.id, creator.id, target.id, PermissionBits::BAN_MEMBER)
         .await
         .unwrap();
 
@@ -736,12 +689,7 @@ async fn test_grant_permission_bitwise_or() {
 
     // Grant another permission (KICK_MEMBER) - should be bitwise OR'd
     let updated = member_service
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::KICK_MEMBER,
-        )
+        .grant_permission(room.id, creator.id, target.id, PermissionBits::KICK_MEMBER)
         .await
         .unwrap();
 
@@ -772,7 +720,7 @@ async fn test_revoke_permission() {
         .create_room(
             "Revoke Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -780,7 +728,7 @@ async fn test_revoke_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -788,12 +736,7 @@ async fn test_revoke_permission() {
 
     // Revoke SEND_CHAT permission (which is in default member permissions)
     let updated = member_service
-        .revoke_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::SEND_CHAT,
-        )
+        .revoke_permission(room.id, creator.id, target.id, PermissionBits::SEND_CHAT)
         .await
         .unwrap();
 
@@ -877,7 +820,7 @@ async fn test_ban_broadcasts_kick_event_with_reason() {
         .create_room(
             "Ban Broadcast Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -885,7 +828,7 @@ async fn test_ban_broadcasts_kick_event_with_reason() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -901,12 +844,7 @@ async fn test_ban_broadcasts_kick_event_with_reason() {
     // Ban with a specific reason
     let ban_reason = "Violating community guidelines";
     member_service
-        .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            Some(ban_reason.to_string()),
-        )
+        .ban_member(room.id, creator.id, target.id, Some(ban_reason.to_string()))
         .await
         .unwrap();
 
@@ -941,7 +879,7 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
         .create_room(
             "Ban Delay Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -949,7 +887,7 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -963,9 +901,9 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
     // The actual propagation delay is only added when an event_broadcaster is configured.
     member_service
         .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             Some("Testing propagation delay".to_string()),
         )
         .await
@@ -1013,7 +951,7 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
         .create_room(
             "Ban With Broadcaster Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1021,7 +959,7 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -1048,9 +986,9 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
 
     member_service
         .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             Some("Testing with broadcaster".to_string()),
         )
         .await
@@ -1093,7 +1031,7 @@ async fn test_set_member_status_banned_broadcasts_disconnect_event() {
         .create_room(
             "Status Broadcast Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1101,7 +1039,7 @@ async fn test_set_member_status_banned_broadcasts_disconnect_event() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -1119,7 +1057,7 @@ async fn test_set_member_status_banned_broadcasts_disconnect_event() {
     member_service.set_event_broadcaster(broadcaster.clone());
 
     member_service
-        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, creator.id, target.id, None)
         .await
         .unwrap();
 
@@ -1151,7 +1089,7 @@ async fn test_kick_member_also_broadcasts_kick_event() {
         .create_room(
             "Kick Broadcast Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1159,7 +1097,7 @@ async fn test_kick_member_also_broadcasts_kick_event() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -1167,7 +1105,7 @@ async fn test_kick_member_also_broadcasts_kick_event() {
 
     // Kick the member
     member_service
-        .kick_member(room.id.clone(), creator.id.clone(), member.id.clone())
+        .kick_member(room.id, creator.id, member.id)
         .await
         .unwrap();
 
@@ -1203,7 +1141,7 @@ async fn test_remove_member_returns_not_found_for_non_member() {
         .create_room(
             "Remove NotFound Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1212,9 +1150,7 @@ async fn test_remove_member_returns_not_found_for_non_member() {
 
     // non_member never joined, so remove_member should return NotFound
     let member_service = room_service.member_service();
-    let result = member_service
-        .remove_member(room.id.clone(), non_member.id.clone())
-        .await;
+    let result = member_service.remove_member(room.id, non_member.id).await;
 
     assert!(result.is_err(), "remove_member should fail for non-member");
     match result.unwrap_err() {
@@ -1251,7 +1187,7 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
         .create_room(
             "Remove Idempotent Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1260,7 +1196,7 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
 
     // Member joins
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -1272,9 +1208,7 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
 
     // First remove should succeed
     let member_service = room_service.member_service();
-    let result = member_service
-        .remove_member(room.id.clone(), member.id.clone())
-        .await;
+    let result = member_service.remove_member(room.id, member.id).await;
     assert!(result.is_ok(), "First remove_member should succeed");
 
     // Verify member is removed
@@ -1284,9 +1218,7 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
     );
 
     // Second remove should return NotFound (atomic check + remove)
-    let result = member_service
-        .remove_member(room.id.clone(), member.id.clone())
-        .await;
+    let result = member_service.remove_member(room.id, member.id).await;
     assert!(
         result.is_err(),
         "Second remove_member should fail for already-removed member"
@@ -1328,7 +1260,7 @@ async fn test_remove_member_concurrent_no_race() {
         .create_room(
             "Remove Concurrent Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1337,7 +1269,7 @@ async fn test_remove_member_concurrent_no_race() {
 
     // Member joins
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -1349,8 +1281,8 @@ async fn test_remove_member_concurrent_no_race() {
     let mut handles = vec![];
     for _ in 0..5 {
         let ms = member_service.clone();
-        let room_id = room.id.clone();
-        let user_id = member.id.clone();
+        let room_id = room.id;
+        let user_id = member.id;
         let sc = success_count.clone();
         let nc = notfound_count.clone();
 

@@ -128,7 +128,11 @@ mod tests {
     use std::sync::Arc;
 
     fn create_test_room_id(id: &str) -> RoomId {
-        RoomId(id.to_string())
+        RoomId::from(match id {
+            "r1" => 1,
+            "r2" => 2,
+            _ => 3,
+        })
     }
 
     fn create_test_state(id: &str) -> RoomPlaybackState {

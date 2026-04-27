@@ -63,9 +63,7 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
             PublishRequest {
                 event: ClusterEvent::CacheInvalidate {
                     event_id: synctv_common::snanoid!(16),
-                    targets: vec![CacheTarget::Room {
-                        room_id: room_id.as_str().to_string(),
-                    }],
+                    targets: vec![CacheTarget::Room { room_id: *room_id }],
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -108,10 +106,7 @@ mod tests {
             .await
             .expect("local room cache fanout should not fail");
 
-        service.publish_invalidation(
-            reservation,
-            &RoomId::from_string("room-cache-local".to_string()),
-        );
+        service.publish_invalidation(reservation, &RoomId::from(109_001));
     }
 
     #[tokio::test]
@@ -123,7 +118,7 @@ mod tests {
             .reserve_invalidation()
             .await
             .expect("cluster room cache fanout should reserve");
-        let room_id = RoomId::from_string("test_room_cache".to_string());
+        let room_id = RoomId::from(109_002);
 
         service.publish_invalidation(reservation, &room_id);
 
@@ -134,7 +129,9 @@ mod tests {
             } => {
                 assert_eq!(targets.len(), 1);
                 match &targets[0] {
-                    CacheTarget::Room { room_id } => assert_eq!(room_id, "test_room_cache"),
+                    CacheTarget::Room { room_id } => {
+                        assert_eq!(room_id, &RoomId::from(109_002));
+                    }
                     other => panic!("expected CacheTarget::Room, got {other:?}"),
                 }
                 assert!(!event_id.is_empty());

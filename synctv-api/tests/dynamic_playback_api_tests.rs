@@ -42,6 +42,10 @@ fn decode_dynamic_target(target: &[u8]) -> String {
         .to_string()
 }
 
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::default_for_tests()
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -307,8 +311,8 @@ async fn create_dynamic_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(owner_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*owner_id),
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
         position: 0.0,
@@ -370,15 +374,17 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .create_room(
             "API Dynamic Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
         .await
         .unwrap();
-
     let playlist =
         create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -390,15 +396,16 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         None,
         Some(providers_manager),
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     client_api
         .start_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::StartPlaybackRequest {
                 media_id: String::new(),
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: playlist_public_id.clone(),
                 target: br#"{"relative_path":"/episode-1.mp4"}"#.to_vec(),
             },
         )
@@ -407,8 +414,8 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 
     let response = client_api
         .get_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
@@ -418,7 +425,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 
     let state = response.playback_state.unwrap();
     assert_eq!(state.playing_media_id, "");
-    assert_eq!(state.playing_playlist_id, playlist.id.as_str());
+    assert_eq!(state.playing_playlist_id, playlist_public_id);
     let state_target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
     assert_eq!(
         state_target,
@@ -431,7 +438,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         playlist.version.to_string(),
         "dynamic playback snapshot version should use playlist version only"
     );
-    assert_eq!(playback_snapshot.playlist_id, playlist.id.as_str());
+    assert_eq!(playback_snapshot.playlist_id, playlist_public_id);
     assert_eq!(playback_snapshot.name, "episode-1.mp4");
     let playback_target_meta = playback_snapshot.metadata.get("target").unwrap();
     let playback_target_value: String = serde_json::from_str(playback_target_meta).unwrap();
@@ -491,7 +498,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         .create_room(
             "API Dynamic Path".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -500,6 +507,9 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
 
     let playlist =
         create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_default").await;
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -511,14 +521,15 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
         None,
         Some(providers_manager),
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     let response = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: playlist_public_id.clone(),
                 target: br#"{"relative_path":"season-1"}"#.to_vec(),
                 page: 1,
                 page_size: 50,
@@ -544,7 +555,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     );
 
     assert_eq!(response.current_path.len(), 2);
-    assert_eq!(response.current_path[0].playlist_id, playlist.id.as_str());
+    assert_eq!(response.current_path[0].playlist_id, playlist_public_id);
     assert_eq!(response.current_path[0].name, "Dynamic Playlist");
     assert!(response.current_path[0].target.is_empty());
     assert_eq!(response.current_path[1].playlist_id, "");
@@ -602,7 +613,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .create_room(
             "API Dynamic Bound Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -610,6 +621,9 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         .unwrap();
 
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -621,15 +635,16 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
         None,
         Some(providers_manager),
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     client_api
         .start_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::StartPlaybackRequest {
                 media_id: String::new(),
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: playlist_public_id,
                 target: br#"{"relative_path":"/bound-episode-1.mp4"}"#.to_vec(),
             },
         )
@@ -638,8 +653,8 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
 
     let response = client_api
         .get_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
@@ -693,7 +708,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         .create_room(
             "API Signed Provider Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -702,8 +717,8 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 
     let media = Media::from_provider(
         None,
-        room.id.clone(),
-        Some(owner.id.clone()),
+        room.id,
+        Some(owner.id),
         "Signed Provider Media".to_string(),
         serde_json::json!({
             "url": "https://example.com/video.mp4",
@@ -716,6 +731,9 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         0.0,
     );
     media_repo.create(&media).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let media_public_id = codec.encode_media_id(media.id).unwrap();
 
     let provider_stores = Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
         "test:provider:".to_string(),
@@ -730,6 +748,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         None,
         Some(providers_manager),
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_signing_key(Arc::new(ProxySigningKey::derive_from(
         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
@@ -738,10 +757,10 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 
     client_api
         .start_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::StartPlaybackRequest {
-                media_id: media.id.as_str().to_string(),
+                media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: Vec::new(),
             },
@@ -751,8 +770,8 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 
     let response = client_api
         .get_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
@@ -805,12 +824,13 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
         .create_room(
             "API Idle Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
         .await
         .unwrap();
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -822,12 +842,13 @@ async fn test_get_playback_without_active_media_returns_stable_non_empty_snapsho
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     let response = client_api
         .get_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
@@ -873,7 +894,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         .create_room(
             "API Playback State Only".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -882,8 +903,8 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
 
     let media = Media::from_provider(
         None,
-        room.id.clone(),
-        Some(owner.id.clone()),
+        room.id,
+        Some(owner.id),
         "Broken Playback Provider".to_string(),
         serde_json::json!({ "opaque": true }),
         "missing_provider",
@@ -891,6 +912,9 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         0.0,
     );
     media_repo.create(&media).await.unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let media_public_id = codec.encode_media_id(media.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -902,14 +926,15 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     client_api
         .start_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::StartPlaybackRequest {
-                media_id: media.id.as_str().to_string(),
+                media_id: media_public_id.clone(),
                 playlist_id: String::new(),
                 target: Vec::new(),
             },
@@ -919,8 +944,8 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
 
     let response = client_api
         .get_playback(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::GetPlaybackRequest {
                 playback_client_profile: None,
             },
@@ -931,7 +956,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
     let playback_state = response
         .playback_state
         .expect("playback state should still be returned when snapshot generation fails");
-    assert_eq!(playback_state.playing_media_id, media.id.as_str());
+    assert_eq!(playback_state.playing_media_id, media_public_id);
     assert!(playback_state.is_playing);
     assert!(
         response.playback_snapshot.is_none(),
@@ -987,7 +1012,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         .create_room(
             "API Dynamic Bound Browse".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -995,6 +1020,9 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         .unwrap();
 
     let playlist = create_dynamic_playlist(&pool, &room.id, &owner.id, "fake_dynamic_alt").await;
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new(
         user_service,
@@ -1006,14 +1034,15 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
         None,
         Some(providers_manager),
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
 
     let response = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: playlist_public_id,
                 target: Vec::new(),
                 page: 1,
                 page_size: 50,
@@ -1064,7 +1093,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         .create_room(
             "API Root Items".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1073,8 +1102,8 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
 
     let root_media = synctv_core::models::Media::from_direct_single_mode(
         None,
-        room.id.clone(),
-        Some(owner.id.clone()),
+        room.id,
+        Some(owner.id),
         "Root Media".to_string(),
         "direct",
         synctv_core::models::PlaybackInfo {
@@ -1105,12 +1134,14 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     );
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
 
     let response = client_api
         .list_playlist_items(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_api::proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: Vec::new(),

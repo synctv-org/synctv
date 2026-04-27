@@ -5,7 +5,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::health_monitor::NodeHealth;
-use super::node_registry::{ClusterMode, HeartbeatResult, NodeInfo, NodeViewMode};
+use super::node_registry::{
+    ClusterMode, HeartbeatResult, NodeDiscoverySource, NodeInfo, NodeViewMode,
+};
 use crate::error::Result;
 
 #[async_trait]
@@ -18,8 +20,16 @@ pub trait ClusterNodeDirectory: Send + Sync {
     async fn get_all_nodes(&self) -> Result<Vec<NodeInfo>>;
     async fn get_routable_nodes(&self) -> Result<(Vec<NodeInfo>, NodeViewMode)>;
     async fn update_local_metadata(&self, key: &str, value: String);
-    async fn upsert_discovered_local_node(&self, node_info: NodeInfo, discovery_source: &str);
-    async fn remove_discovered_local_node(&self, node_id: &str, discovery_source: &str) -> bool;
+    async fn upsert_discovered_local_node(
+        &self,
+        node_info: NodeInfo,
+        discovery_source: NodeDiscoverySource,
+    );
+    async fn remove_discovered_local_node(
+        &self,
+        node_id: &str,
+        discovery_source: NodeDiscoverySource,
+    ) -> bool;
     fn heartbeat_timeout_secs(&self) -> i64;
     fn cluster_mode(&self) -> ClusterMode;
     fn cancel_token(&self) -> CancellationToken;

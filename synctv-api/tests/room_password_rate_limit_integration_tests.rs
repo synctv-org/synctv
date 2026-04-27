@@ -93,19 +93,24 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_rate_limiter(synctv_core::service::rate_limit::RateLimiter::local_only(
         "api:room-password:".to_string(),
     ));
 
+    let room_public_id = synctv_api::PublicIdCodec::default_for_tests()
+        .encode_room_id(room.id)
+        .unwrap();
+
     for _attempt in 0..4 {
         let err = client_api
             .join_room(
-                member.id.as_str(),
-                room.id.as_str(),
+                &member.id,
+                &room_public_id,
                 synctv_api::proto::client::JoinRoomRequest {
                     password: "WrongPassword".to_string(),
-                    room_id: room.id.to_string(),
+                    room_id: room_public_id.clone(),
                 },
                 Some("192.168.1.100"),
             )
@@ -119,11 +124,11 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
 
     client_api
         .join_room(
-            member.id.as_str(),
-            room.id.as_str(),
+            &member.id,
+            &room_public_id,
             synctv_api::proto::client::JoinRoomRequest {
                 password: "CorrectPassword123".to_string(),
-                room_id: room.id.to_string(),
+                room_id: room_public_id.clone(),
             },
             Some("192.168.1.100"),
         )
@@ -131,17 +136,17 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .expect("successful password check should pass");
 
     room_service
-        .leave_room(room.id.clone(), member.id.clone())
+        .leave_room(room.id, member.id)
         .await
         .expect("member should be able to leave after successful join");
 
     let err = client_api
         .join_room(
-            member.id.as_str(),
-            room.id.as_str(),
+            &member.id,
+            &room_public_id,
             synctv_api::proto::client::JoinRoomRequest {
                 password: "WrongPassword".to_string(),
-                room_id: room.id.to_string(),
+                room_id: room_public_id.clone(),
             },
             Some("192.168.1.100"),
         )

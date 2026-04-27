@@ -36,6 +36,20 @@ use crate::http::{
 };
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 
+fn decode_or_parse_proxy_user_id(
+    codec: &crate::PublicIdCodec,
+    value: &str,
+) -> Result<UserId, ApiError> {
+    crate::impls::parse_user_id_param(value, "user_id", codec)
+}
+
+fn decode_or_parse_proxy_room_id(
+    codec: &crate::PublicIdCodec,
+    value: &str,
+) -> Result<RoomId, ApiError> {
+    crate::impls::parse_room_id_param(value, "room_id", codec)
+}
+
 fn set_default_cache_control(
     mut response: axum::response::Response,
     value: &'static str,
@@ -286,8 +300,14 @@ fn execute_unified_proxy_handler(
                             )
                         })?;
 
-                    let uid = UserId::from_string(claims.user_id.clone());
-                    let rid = RoomId::from_string(claims.room_id.clone());
+                    let uid = decode_or_parse_proxy_user_id(
+                        &state_for_resolution.public_id_codec,
+                        &claims.user_id,
+                    )?;
+                    let rid = decode_or_parse_proxy_room_id(
+                        &state_for_resolution.public_id_codec,
+                        &claims.room_id,
+                    )?;
                     validate_fresh_proxy_access_api(&state_for_resolution, &rid, &uid).await?;
 
                     let proxy = state_for_resolution
@@ -889,6 +909,7 @@ mod tests {
                 ),
             ),
             signing_key: state.proxy_signing_key.clone(),
+            public_id_codec: state.public_id_codec.clone(),
         });
         state
     }
@@ -930,7 +951,7 @@ mod tests {
             .create_room(
                 "Proxy Room".to_string(),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -939,14 +960,14 @@ mod tests {
         state
             .proxy_services
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join");
 
         let raw_query = build_proxy_query(
             state.proxy_signing_key.as_ref(),
-            room.id.as_str(),
-            member.id.as_str(),
+            &room.id.to_string(),
+            &member.id.to_string(),
             "v1",
         );
 
@@ -994,7 +1015,7 @@ mod tests {
             .create_room(
                 "Proxy Closed Room".to_string(),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -1003,14 +1024,14 @@ mod tests {
         state
             .proxy_services
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join");
 
         let raw_query = build_proxy_query(
             state.proxy_signing_key.as_ref(),
-            room.id.as_str(),
-            member.id.as_str(),
+            &room.id.to_string(),
+            &member.id.to_string(),
             "v1",
         );
 

@@ -57,12 +57,10 @@ impl UserOAuthProviderRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let id = synctv_common::snanoid!(12);
-
         let result = sqlx::query(
             r"
-            INSERT INTO oauth2_clients (id, provider, provider_user_id, user_id, username, email, avatar_url)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO oauth2_clients (provider, provider_user_id, user_id, username, email, avatar_url)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (provider, provider_user_id)
             DO UPDATE SET
                 username = EXCLUDED.username,
@@ -72,10 +70,9 @@ impl UserOAuthProviderRepository {
             WHERE oauth2_clients.user_id = EXCLUDED.user_id
             "
         )
-        .bind(&id)
         .bind(provider.as_str())
         .bind(provider_user_id)
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(&user_info.username)
         .bind(&user_info.email)
         .bind(&user_info.avatar)
@@ -129,7 +126,7 @@ impl UserOAuthProviderRepository {
     pub async fn find_by_user(&self, user_id: &UserId) -> Result<Vec<UserOAuthProviderMapping>> {
         let rows =
             sqlx::query_as::<_, OAuth2ClientRow>("SELECT * FROM oauth2_clients WHERE user_id = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .fetch_all(&self.pool)
                 .await?;
 
@@ -146,7 +143,7 @@ impl UserOAuthProviderRepository {
         let result = sqlx::query(
             "DELETE FROM oauth2_clients WHERE user_id = $1 AND provider = $2 AND provider_user_id = $3"
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(provider.as_str())
         .bind(provider_user_id)
         .execute(&self.pool)
@@ -176,7 +173,7 @@ impl UserOAuthProviderRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let result = sqlx::query("DELETE FROM oauth2_clients WHERE user_id = $1")
-            .bind(user_id.as_str())
+            .bind(user_id)
             .execute(executor)
             .await?;
 
@@ -190,7 +187,7 @@ impl UserOAuthProviderRepository {
         provider: &OAuth2Provider,
     ) -> Result<bool> {
         let result = sqlx::query("DELETE FROM oauth2_clients WHERE user_id = $1 AND provider = $2")
-            .bind(user_id.as_str())
+            .bind(user_id)
             .bind(provider.as_str())
             .execute(&self.pool)
             .await?;
@@ -199,13 +196,13 @@ impl UserOAuthProviderRepository {
     }
 }
 
-/// Row representation for SQL queries (`user_id` as String)
+/// Row representation for SQL queries.
 #[derive(FromRow)]
 struct OAuth2ClientRow {
-    pub id: String,
+    pub id: i64,
     pub provider: String,
     pub provider_user_id: String,
-    pub user_id: String,
+    pub user_id: UserId,
     pub username: String,
     pub email: Option<String>,
     pub avatar_url: Option<String>,
@@ -219,7 +216,7 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
             id: row.id,
             provider: row.provider,
             provider_user_id: row.provider_user_id,
-            user_id: UserId(row.user_id),
+            user_id: row.user_id,
             username: row.username,
             email: row.email,
             avatar_url: row.avatar_url,
@@ -238,10 +235,10 @@ mod tests {
     fn test_oauth2_client_row_to_mapping_all_fields() {
         let now = Utc::now();
         let row = OAuth2ClientRow {
-            id: "abc123".to_string(),
+            id: 1,
             provider: "github".to_string(),
             provider_user_id: "gh_user_456".to_string(),
-            user_id: "local_user_789".to_string(),
+            user_id: UserId::from(42),
             username: "ghuser".to_string(),
             email: Some("ghuser@example.com".to_string()),
             avatar_url: Some("https://avatars.example.com/ghuser.png".to_string()),
@@ -250,10 +247,10 @@ mod tests {
         };
 
         let mapping: UserOAuthProviderMapping = row.into();
-        assert_eq!(mapping.id, "abc123");
+        assert_eq!(mapping.id, 1);
         assert_eq!(mapping.provider, "github");
         assert_eq!(mapping.provider_user_id, "gh_user_456");
-        assert_eq!(mapping.user_id.as_str(), "local_user_789");
+        assert_eq!(mapping.user_id, UserId::from(42));
         assert_eq!(mapping.username, "ghuser");
         assert_eq!(mapping.email.as_deref(), Some("ghuser@example.com"));
         assert_eq!(
@@ -268,10 +265,10 @@ mod tests {
     fn test_oauth2_client_row_to_mapping_optional_fields_none() {
         let now = Utc::now();
         let row = OAuth2ClientRow {
-            id: "def456".to_string(),
+            id: 2,
             provider: "oidc".to_string(),
             provider_user_id: "oidc_user_001".to_string(),
-            user_id: "user_002".to_string(),
+            user_id: UserId::from(2),
             username: "oidcuser".to_string(),
             email: None,
             avatar_url: None,
@@ -288,10 +285,10 @@ mod tests {
     fn test_mapping_provider_enum_from_row() {
         let now = Utc::now();
         let row = OAuth2ClientRow {
-            id: "id".to_string(),
+            id: 3,
             provider: "google".to_string(),
             provider_user_id: "goog_123".to_string(),
-            user_id: "user".to_string(),
+            user_id: UserId::from(3),
             username: "googleuser".to_string(),
             email: None,
             avatar_url: None,

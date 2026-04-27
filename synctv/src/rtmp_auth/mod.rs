@@ -25,7 +25,7 @@ use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
 use synctv_core::{
-    models::{MediaId, Room, RoomStatus, UserId, UserStatus},
+    models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
     service::{RoomService, StreamingPublishKeyService, UserService},
     RedisConnectionRuntime, SharedStateMode, SharedStateProfile,
 };
@@ -41,15 +41,15 @@ use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 pub trait UserStreamIndex: Send + Sync {
     async fn put(
         &self,
-        user_id: &str,
-        room_id: &str,
-        media_id: &str,
+        user_id: UserId,
+        room_id: RoomId,
+        media_id: MediaId,
         ttl_secs: i64,
     ) -> anyhow::Result<()>;
 
-    async fn delete(&self, user_id: &str) -> anyhow::Result<()>;
+    async fn delete(&self, user_id: UserId) -> anyhow::Result<()>;
 
-    async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>>;
+    async fn get(&self, user_id: UserId) -> anyhow::Result<Option<(RoomId, MediaId)>>;
 
     fn supports_cross_node_lookup(&self) -> bool;
 }
@@ -61,19 +61,19 @@ struct LocalOnlyUserStreamIndex;
 impl UserStreamIndex for LocalOnlyUserStreamIndex {
     async fn put(
         &self,
-        _user_id: &str,
-        _room_id: &str,
-        _media_id: &str,
+        _user_id: UserId,
+        _room_id: RoomId,
+        _media_id: MediaId,
         _ttl_secs: i64,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn delete(&self, _user_id: &str) -> anyhow::Result<()> {
+    async fn delete(&self, _user_id: UserId) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn get(&self, _user_id: &str) -> anyhow::Result<Option<(String, String)>> {
+    async fn get(&self, _user_id: UserId) -> anyhow::Result<Option<(RoomId, MediaId)>> {
         Ok(None)
     }
 
@@ -115,13 +115,13 @@ impl SharedUserStreamIndex {
 impl UserStreamIndex for SharedUserStreamIndex {
     async fn put(
         &self,
-        user_id: &str,
-        room_id: &str,
-        media_id: &str,
+        user_id: UserId,
+        room_id: RoomId,
+        media_id: MediaId,
         ttl_secs: i64,
     ) -> anyhow::Result<()> {
         let stream_value = format!("{room_id}|{media_id}");
-        let redis_key = self.user_stream_key(user_id);
+        let redis_key = self.user_stream_key(&user_id.to_string());
         let mut conn = self.redis_conn_snapshot().await;
         let _: ((), i64) = redis::pipe()
             .set(&redis_key, &stream_value)
@@ -131,22 +131,31 @@ impl UserStreamIndex for SharedUserStreamIndex {
         Ok(())
     }
 
-    async fn delete(&self, user_id: &str) -> anyhow::Result<()> {
+    async fn delete(&self, user_id: UserId) -> anyhow::Result<()> {
         let mut conn = self.redis_conn_snapshot().await;
-        let key = self.user_stream_key(user_id);
+        let key = self.user_stream_key(&user_id.to_string());
         let _: () = redis::cmd("DEL").arg(&key).query_async(&mut conn).await?;
         Ok(())
     }
 
-    async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>> {
+    async fn get(&self, user_id: UserId) -> anyhow::Result<Option<(RoomId, MediaId)>> {
         let mut conn = self.redis_conn_snapshot().await;
-        let key = self.user_stream_key(user_id);
+        let key = self.user_stream_key(&user_id.to_string());
         let result: Option<String> = redis::cmd("GET").arg(&key).query_async(&mut conn).await?;
-        Ok(result.and_then(|stream_value| {
-            stream_value
-                .split_once('|')
-                .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
-        }))
+        result
+            .map(|stream_value| {
+                let (room_id, media_id) = stream_value
+                    .split_once('|')
+                    .ok_or_else(|| anyhow::anyhow!("invalid user stream index value"))?;
+                let room_id = room_id
+                    .parse::<RoomId>()
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                let media_id = media_id
+                    .parse::<MediaId>()
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                Ok((room_id, media_id))
+            })
+            .transpose()
     }
 
     fn supports_cross_node_lookup(&self) -> bool {
@@ -188,7 +197,7 @@ pub enum StreamLifecycleEvent {
 #[derive(Debug, Clone)]
 struct PendingPublishCleanup {
     epoch: u64,
-    user_id: String,
+    user_id: UserId,
 }
 
 /// Maximum number of pending publish cleanup entries retained per (room, media) key.
@@ -221,6 +230,8 @@ pub struct SyncTvRtmpAuth {
     api_address: String,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
+    /// Shared codec for client-visible RTMP app/stream identifiers.
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
     /// Optional shared restart flag from LivestreamServer. When set, new
     /// publications are rejected during the StreamHub cleanup/re-register window.
     is_restarting: Option<Arc<AtomicBool>>,
@@ -241,6 +252,7 @@ impl SyncTvRtmpAuth {
         registry: Arc<dyn StreamRegistryTrait>,
         node_id: String,
         api_address: String,
+        public_id_codec: Arc<synctv_core::PublicIdCodec>,
         stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     ) -> Self {
         Self {
@@ -252,10 +264,35 @@ impl SyncTvRtmpAuth {
             node_id,
             api_address,
             stream_event_tx,
+            public_id_codec,
             is_restarting: None,
             user_stream_index: Arc::new(LocalOnlyUserStreamIndex),
             pending_publish_cleanups: Arc::new(DashMap::new()),
         }
+    }
+
+    fn decode_rtmp_room_id(
+        &self,
+        app_name: &str,
+    ) -> Result<RoomId, Box<dyn std::error::Error + Send + Sync>> {
+        if let Ok(room_id) = app_name.parse::<RoomId>() {
+            return Ok(room_id);
+        }
+        self.public_id_codec
+            .decode_room_id(app_name)
+            .map_err(|error| format!("Invalid RTMP room id: {error}").into())
+    }
+
+    fn decode_rtmp_media_id(
+        &self,
+        stream_name: &str,
+    ) -> Result<MediaId, Box<dyn std::error::Error + Send + Sync>> {
+        if let Ok(media_id) = stream_name.parse::<MediaId>() {
+            return Ok(media_id);
+        }
+        self.public_id_codec
+            .decode_media_id(stream_name)
+            .map_err(|error| format!("Invalid RTMP media id: {error}").into())
     }
 
     #[must_use]
@@ -387,10 +424,7 @@ impl SyncTvRtmpAuth {
         Ok(remaining.is_none())
     }
 
-    async fn delete_user_stream_key(&self, user_id: &str, context: &'static str) {
-        if user_id.is_empty() {
-            return;
-        }
+    async fn delete_user_stream_key(&self, user_id: UserId, context: &'static str) {
         if let Err(error) = self.user_stream_index.delete(user_id).await {
             tracing::warn!(
                 user_id = %user_id,
@@ -432,14 +466,13 @@ impl AuthCallback for SyncTvRtmpAuth {
             .await?;
 
         // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
-        self.register_and_start_ttl(&validated, app_name, stream_name)
-            .await?;
+        self.register_and_start_ttl(&validated).await?;
 
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
         // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
         Ok(Some(synctv_livestream::rtmp_auth::AuthPublishRewrite {
-            app_name: validated.room_id,
-            stream_name: validated.media_id,
+            app_name: validated.room_id.to_string(),
+            stream_name: validated.media_id.to_string(),
         }))
     }
 
@@ -518,14 +551,14 @@ impl AuthCallback for SyncTvRtmpAuth {
             "Publisher unpublished, fenced cleanup completed"
         );
 
-        self.delete_user_stream_key(&attempt.user_id, "unpublish")
+        self.delete_user_stream_key(attempt.user_id, "unpublish")
             .await;
 
         if let Some(ref tx) = self.stream_event_tx {
             let _ = tx.send(StreamLifecycleEvent::Stopped {
                 room_id: app_name.to_string(),
                 media_id: stream_name.to_string(),
-                user_id: attempt.user_id,
+                user_id: attempt.user_id.to_string(),
             });
         }
     }
@@ -582,7 +615,7 @@ impl AuthCallback for SyncTvRtmpAuth {
         let _ = self
             .user_stream_tracker
             .remove_stream(app_name, stream_name);
-        self.delete_user_stream_key(&attempt.user_id, "rollback")
+        self.delete_user_stream_key(attempt.user_id, "rollback")
             .await;
 
         tracing::info!(
@@ -626,9 +659,9 @@ fn extract_token_from_query(query: &str) -> Option<String> {
 /// Validated publish claims with authorization level
 #[derive(Debug)]
 struct ValidatedPublish {
-    room_id: String,
-    media_id: String,
-    user_id: String,
+    room_id: RoomId,
+    media_id: MediaId,
+    user_id: UserId,
     auth_level: &'static str,
 }
 
@@ -674,12 +707,13 @@ impl SyncTvRtmpAuth {
         stream_name: &str,
         query: Option<&str>,
     ) -> Result<ValidatedPublish, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_room_id = self.decode_rtmp_room_id(app_name)?;
+        let expected_media_id = self.decode_rtmp_media_id(stream_name)?;
+
         // Validate room
         let room = self
             .room_service
-            .get_room(&synctv_core::models::RoomId::from_string(
-                app_name.to_string(),
-            ))
+            .get_room(&expected_room_id)
             .await
             .map_err(|e| format!("Failed to load room: {e}"))?;
 
@@ -693,8 +727,6 @@ impl SyncTvRtmpAuth {
         })?;
 
         // Validate JWT stream_key
-        let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-        let expected_media_id = synctv_core::models::MediaId::from_string(stream_name.to_string());
         let claims = self
             .publish_key_service
             .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
@@ -702,7 +734,10 @@ impl SyncTvRtmpAuth {
             .map_err(|e| format!("Invalid stream key: {e}"))?;
 
         // Re-verify user status at connection time
-        let user_id = UserId::from_string(claims.user_id.clone());
+        let user_id = claims
+            .user_id
+            .parse::<UserId>()
+            .map_err(|error| format!("Invalid user id in stream key: {error}"))?;
         let user = self
             .user_service
             .get_user(&user_id)
@@ -722,13 +757,19 @@ impl SyncTvRtmpAuth {
 
         // Authorization check
         let auth_level = self
-            .check_publish_authorization(&user, app_name, &user_id, &claims)
+            .check_publish_authorization(
+                &user,
+                &expected_room_id,
+                &expected_media_id,
+                &user_id,
+                &claims,
+            )
             .await?;
 
         Ok(ValidatedPublish {
-            room_id: claims.room_id,
-            media_id: claims.media_id,
-            user_id: claims.user_id,
+            room_id: expected_room_id,
+            media_id: expected_media_id,
+            user_id,
             auth_level,
         })
     }
@@ -744,7 +785,7 @@ impl SyncTvRtmpAuth {
         &self,
         app_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
+        let room_id = self.decode_rtmp_room_id(app_name)?;
 
         // Validate room exists and check status
         let room = self
@@ -788,7 +829,8 @@ impl SyncTvRtmpAuth {
     async fn check_publish_authorization(
         &self,
         user: &synctv_core::models::User,
-        app_name: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
         user_id: &UserId,
         claims: &synctv_core::service::publish_key::PublishClaims,
     ) -> Result<&'static str, Box<dyn std::error::Error + Send + Sync>> {
@@ -797,11 +839,10 @@ impl SyncTvRtmpAuth {
         let is_room_admin_or_creator = if is_global_admin {
             false
         } else {
-            let room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
             match self
                 .room_service
                 .member_service()
-                .get_member(&room_id, user_id)
+                .get_member(room_id, user_id)
                 .await
             {
                 Ok(Some(member)) => matches!(
@@ -813,19 +854,17 @@ impl SyncTvRtmpAuth {
         };
 
         // Verify media belongs to this room
-        let media_id = MediaId::from_string(claims.media_id.clone());
-        let room_id_obj = synctv_core::models::RoomId::from_string(app_name.to_string());
         let media = self
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_media(media_id)
             .await
             .map_err(|e| format!("Failed to load media: {e}"))?
             .ok_or_else(|| format!("Media {} not found", claims.media_id))?;
-        if media.room_id != room_id_obj {
+        if media.room_id != *room_id {
             return Err(format!(
                 "Media {} does not belong to room {}",
-                claims.media_id, app_name
+                claims.media_id, room_id
             )
             .into());
         }
@@ -859,8 +898,6 @@ impl SyncTvRtmpAuth {
     async fn register_and_start_ttl(
         &self,
         validated: &ValidatedPublish,
-        app_name: &str,
-        stream_name: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Enforce single-publisher-per-media: atomically register in Redis.
         // This also writes user→stream to `stream:user_publishers:{user_id}` via
@@ -869,10 +906,10 @@ impl SyncTvRtmpAuth {
         let registered = self
             .registry
             .try_register_publisher(
-                &validated.room_id,
-                &validated.media_id,
+                &validated.room_id.to_string(),
+                &validated.media_id.to_string(),
                 &self.node_id,
-                &validated.user_id,
+                &validated.user_id.to_string(),
                 &self.api_address,
             )
             .await
@@ -887,13 +924,16 @@ impl SyncTvRtmpAuth {
         }
 
         let registered_epoch = self
-            .lookup_registered_epoch(&validated.room_id, &validated.media_id)
+            .lookup_registered_epoch(
+                &validated.room_id.to_string(),
+                &validated.media_id.to_string(),
+            )
             .await?;
 
         tracing::info!(
             "Publisher authenticated and registered: user={}, room={}, media={}, node={}, auth={}, epoch={}",
             validated.user_id,
-            app_name,
+            validated.room_id,
             validated.media_id,
             self.node_id,
             validated.auth_level,
@@ -908,9 +948,9 @@ impl SyncTvRtmpAuth {
         if let Err(error) = self
             .user_stream_index
             .put(
-                &validated.user_id,
-                &validated.room_id,
-                &validated.media_id,
+                validated.user_id,
+                validated.room_id,
+                validated.media_id,
                 PUBLISHER_TTL_SECS,
             )
             .await
@@ -925,8 +965,8 @@ impl SyncTvRtmpAuth {
             if let Err(unreg_err) = self
                 .registry
                 .unregister_publisher_if_epoch_matches(
-                    &validated.room_id,
-                    &validated.media_id,
+                    &validated.room_id.to_string(),
+                    &validated.media_id.to_string(),
                     registered_epoch,
                 )
                 .await
@@ -944,28 +984,28 @@ impl SyncTvRtmpAuth {
 
         // Track user->stream mapping locally for kick-on-ban (O(1) local lookup)
         self.user_stream_tracker.insert(
-            validated.user_id.clone(),
-            app_name.to_string(),
-            validated.media_id.clone(),
-            app_name,
-            stream_name,
+            validated.user_id.to_string(),
+            validated.room_id.to_string(),
+            validated.media_id.to_string(),
+            &validated.room_id.to_string(),
+            &validated.media_id.to_string(),
         );
 
         // Emit stream lifecycle event
         if let Some(ref tx) = self.stream_event_tx {
             let _ = tx.send(StreamLifecycleEvent::Started {
-                room_id: validated.room_id.clone(),
-                media_id: validated.media_id.clone(),
-                user_id: validated.user_id.clone(),
+                room_id: validated.room_id.to_string(),
+                media_id: validated.media_id.to_string(),
+                user_id: validated.user_id.to_string(),
             });
         }
 
         self.remember_pending_publish_cleanup(
-            &validated.room_id,
-            &validated.media_id,
+            &validated.room_id.to_string(),
+            &validated.media_id.to_string(),
             PendingPublishCleanup {
                 epoch: registered_epoch,
-                user_id: validated.user_id.clone(),
+                user_id: validated.user_id,
             },
         );
 
@@ -977,11 +1017,16 @@ impl SyncTvRtmpAuth {
     ///
     /// Returns `Some((room_id, media_id))` if the user is actively publishing.
     #[allow(dead_code)]
-    pub async fn get_user_stream(&self, user_id: &str) -> Option<(String, String)> {
+    pub async fn get_user_stream(&self, user_id: UserId) -> Option<(RoomId, MediaId)> {
+        let user_id_key = user_id.to_string();
         // Fast path: check local in-memory tracker
-        let local = self.user_stream_tracker.get_user_streams(user_id);
+        let local = self.user_stream_tracker.get_user_streams(&user_id_key);
         if !local.is_empty() {
-            return local.into_iter().next();
+            return local.into_iter().next().and_then(|(room_id, media_id)| {
+                let room_id = room_id.parse::<RoomId>().ok()?;
+                let media_id = media_id.parse::<MediaId>().ok()?;
+                Some((room_id, media_id))
+            });
         }
 
         // Slow path: check the shared cross-node user-stream index.
@@ -999,8 +1044,15 @@ impl SyncTvRtmpAuth {
         }
 
         // Final fallback: check Set-based publisher reverse index
-        if let Ok(publishers) = self.registry.get_user_publishers(user_id).await {
-            return publishers.into_iter().next();
+        if let Ok(publishers) = self.registry.get_user_publishers(&user_id_key).await {
+            return publishers
+                .into_iter()
+                .next()
+                .and_then(|(room_id, media_id)| {
+                    let room_id = room_id.parse::<RoomId>().ok()?;
+                    let media_id = media_id.parse::<MediaId>().ok()?;
+                    Some((room_id, media_id))
+                });
         }
 
         None
@@ -1334,6 +1386,7 @@ mod tests {
             synctv_livestream::relay::local_stream_registry(),
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
+            Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
             None,
         )
         .with_restarting_flag(restarting);
@@ -1351,17 +1404,13 @@ mod tests {
         let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-delayed-unpublish";
-        let media_id = "media-delayed-unpublish";
-        let second_user_id = "user-second";
+        let room_id = "101";
+        let media_id = "201";
+        let second_user_id = "302";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-first"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("first publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "301"))
+            .await
+            .expect("first publish registration should succeed");
 
         let first_epoch = registry
             .get_publisher(room_id, media_id)
@@ -1375,13 +1424,9 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, second_user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("second publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+            .await
+            .expect("second publish registration should succeed");
 
         auth.on_unpublish(room_id, media_id, None).await;
 
@@ -1403,16 +1448,12 @@ mod tests {
         let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-delayed-fence";
-        let media_id = "media-delayed-fence";
+        let room_id = "102";
+        let media_id = "202";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-first"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("first publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "303"))
+            .await
+            .expect("first publish registration should succeed");
 
         let first_epoch = registry
             .get_publisher(room_id, media_id)
@@ -1426,13 +1467,9 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-second"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("second publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "304"))
+            .await
+            .expect("second publish registration should succeed");
 
         auth.on_unpublish(room_id, media_id, None).await;
         auth.on_publish_rollback(room_id, media_id, None).await;
@@ -1451,17 +1488,13 @@ mod tests {
         let registry = synctv_livestream::relay::local_stream_registry();
         let auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-delayed-rollback";
-        let media_id = "media-delayed-rollback";
-        let second_user_id = "user-second";
+        let room_id = "103";
+        let media_id = "203";
+        let second_user_id = "306";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-first"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("first publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "305"))
+            .await
+            .expect("first publish registration should succeed");
 
         let first_epoch = registry
             .get_publisher(room_id, media_id)
@@ -1475,13 +1508,9 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, second_user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("second publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+            .await
+            .expect("second publish registration should succeed");
 
         auth.on_publish_rollback(room_id, media_id, None).await;
 
@@ -1498,16 +1527,12 @@ mod tests {
         let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
         let auth = make_test_auth_with_registry_dyn(registry.clone());
 
-        let room_id = "room-retry-unpublish";
-        let media_id = "media-retry-unpublish";
+        let room_id = "104";
+        let media_id = "204";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-retry"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "307"))
+            .await
+            .expect("publish registration should succeed");
 
         registry.set_fail_unregister_if_epoch_matches_times(1);
 
@@ -1535,16 +1560,12 @@ mod tests {
         let registry = Arc::new(FlakyUnregisterRegistry::new(local_stream_registry()));
         let auth = make_test_auth_with_registry_dyn(registry.clone());
 
-        let room_id = "room-retry-rollback";
-        let media_id = "media-retry-rollback";
+        let room_id = "105";
+        let media_id = "205";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, "user-retry"),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, "308"))
+            .await
+            .expect("publish registration should succeed");
 
         registry.set_fail_unregister_if_epoch_matches_times(1);
 
@@ -1573,17 +1594,13 @@ mod tests {
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-restarted-unpublish";
-        let media_id = "media-restarted-unpublish";
-        let user_id = "user-restarted";
+        let room_id = "106";
+        let media_id = "206";
+        let user_id = "309";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
+            .await
+            .expect("publish registration should succeed");
 
         restarted_auth.on_unpublish(room_id, media_id, None).await;
 
@@ -1596,7 +1613,7 @@ mod tests {
         );
         assert!(
             restarted_auth
-                .get_user_stream(user_id)
+                .get_user_stream(UserId::from(309))
                 .await
                 .is_some(),
             "restarted unpublish must leave the persisted user stream mapping intact without a fence"
@@ -1609,17 +1626,13 @@ mod tests {
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-restarted-rollback";
-        let media_id = "media-restarted-rollback";
-        let user_id = "user-restarted-rollback";
+        let room_id = "107";
+        let media_id = "207";
+        let user_id = "310";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, user_id))
+            .await
+            .expect("publish registration should succeed");
 
         restarted_auth
             .on_publish_rollback(room_id, media_id, None)
@@ -1634,7 +1647,7 @@ mod tests {
         );
         assert!(
             restarted_auth
-                .get_user_stream(user_id)
+                .get_user_stream(UserId::from(310))
                 .await
                 .is_some(),
             "restarted rollback must leave the persisted user stream mapping intact without a fence"
@@ -1647,18 +1660,14 @@ mod tests {
         let auth = make_test_auth_with_registry(registry.clone());
         let restarted_auth = make_test_auth_with_registry(registry.clone());
 
-        let room_id = "room-restarted-stale-unpublish";
-        let media_id = "media-restarted-stale-unpublish";
-        let first_user_id = "user-first";
-        let second_user_id = "user-second";
+        let room_id = "108";
+        let media_id = "208";
+        let first_user_id = "311";
+        let second_user_id = "312";
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, first_user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("first publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, first_user_id))
+            .await
+            .expect("first publish registration should succeed");
 
         let first_epoch = registry
             .get_publisher(room_id, media_id)
@@ -1672,13 +1681,9 @@ mod tests {
             .await
             .expect("test setup should remove first publisher");
 
-        auth.register_and_start_ttl(
-            &validated_publish(room_id, media_id, second_user_id),
-            room_id,
-            media_id,
-        )
-        .await
-        .expect("second publish registration should succeed");
+        auth.register_and_start_ttl(&validated_publish(room_id, media_id, second_user_id))
+            .await
+            .expect("second publish registration should succeed");
 
         restarted_auth.on_unpublish(room_id, media_id, None).await;
 
@@ -1689,17 +1694,17 @@ mod tests {
             .expect("restarted stale unpublish must not remove the replacement publisher");
         assert_eq!(current.user_id, second_user_id);
         assert_eq!(
-            restarted_auth.get_user_stream(second_user_id).await,
-            Some((room_id.to_string(), media_id.to_string())),
+            restarted_auth.get_user_stream(UserId::from(312)).await,
+            Some((RoomId::from(108), MediaId::from(208),)),
             "replacement publisher mapping must remain after restarted stale unpublish"
         );
     }
 
     fn validated_publish(room_id: &str, media_id: &str, user_id: &str) -> ValidatedPublish {
         ValidatedPublish {
-            room_id: room_id.to_string(),
-            media_id: media_id.to_string(),
-            user_id: user_id.to_string(),
+            room_id: room_id.parse().expect("numeric test room id"),
+            media_id: media_id.parse().expect("numeric test media id"),
+            user_id: user_id.parse().expect("numeric test user id"),
             auth_level: "test",
         }
     }
@@ -1746,6 +1751,7 @@ mod tests {
             registry,
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
+            Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
             None,
         )
     }
@@ -1755,7 +1761,7 @@ mod tests {
         let room = Room::new_with_status(
             "Closed room".to_string(),
             String::new(),
-            UserId::from_string("user-1".to_string()),
+            UserId::from(1),
             RoomStatus::Closed,
         );
         let err =
@@ -1772,10 +1778,7 @@ mod tests {
 
     #[test]
     fn test_validate_rtmp_room_state_rejects_banned_room() {
-        let mut room = Room::new(
-            "Banned room".to_string(),
-            UserId::from_string("user-1".to_string()),
-        );
+        let mut room = Room::new("Banned room".to_string(), UserId::from(1));
         room.ban();
 
         assert_eq!(
@@ -1852,6 +1855,7 @@ mod tests {
             synctv_livestream::relay::local_stream_registry(),
             "node-1".to_string(),
             "127.0.0.1:50051".to_string(),
+            Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
             None,
         )
         .with_user_stream_index(Arc::new(SharedUserStreamIndex::new(
@@ -1868,14 +1872,14 @@ mod tests {
             .await
             .expect("verification connection should build");
         let _: () = verify_conn
-            .set("test-rtmp:rtmp:user_stream:user-1", "room-1|media-1")
+            .set("test-rtmp:rtmp:user_stream:1", "101|201")
             .await
             .expect("seed user stream mapping");
 
-        let user_stream = auth.get_user_stream("user-1").await;
+        let user_stream = auth.get_user_stream(UserId::from(1)).await;
         assert_eq!(
             user_stream,
-            Some(("room-1".to_string(), "media-1".to_string())),
+            Some((RoomId::from(101), MediaId::from(201))),
             "RTMP auth must re-read the shared Redis handle after a hot swap"
         );
     }
@@ -1903,17 +1907,14 @@ mod tests {
             .await
             .expect("verification connection should build");
         let _: () = verify_conn
-            .set(
-                "test:rtmp:user_stream:user-runtime",
-                "room-runtime|media-runtime",
-            )
+            .set("test:rtmp:user_stream:2", "102|202")
             .await
             .expect("seed user stream mapping");
 
-        let user_stream = auth.get_user_stream("user-runtime").await;
+        let user_stream = auth.get_user_stream(UserId::from(2)).await;
         assert_eq!(
             user_stream,
-            Some(("room-runtime".to_string(), "media-runtime".to_string())),
+            Some((RoomId::from(102), MediaId::from(202))),
             "RTMP auth should accept injected redis runtime trait objects"
         );
     }
@@ -1924,24 +1925,21 @@ mod tests {
     impl UserStreamIndex for MockSharedUserStreamIndex {
         async fn put(
             &self,
-            _user_id: &str,
-            _room_id: &str,
-            _media_id: &str,
+            _user_id: UserId,
+            _room_id: RoomId,
+            _media_id: MediaId,
             _ttl_secs: i64,
         ) -> anyhow::Result<()> {
             Ok(())
         }
 
-        async fn delete(&self, _user_id: &str) -> anyhow::Result<()> {
+        async fn delete(&self, _user_id: UserId) -> anyhow::Result<()> {
             Ok(())
         }
 
-        async fn get(&self, user_id: &str) -> anyhow::Result<Option<(String, String)>> {
-            if user_id == "shared-user" {
-                Ok(Some((
-                    "shared-room".to_string(),
-                    "shared-media".to_string(),
-                )))
+        async fn get(&self, user_id: UserId) -> anyhow::Result<Option<(RoomId, MediaId)>> {
+            if user_id == UserId::from(3) {
+                Ok(Some((RoomId::from(103), MediaId::from(203))))
             } else {
                 Ok(None)
             }
@@ -1958,10 +1956,10 @@ mod tests {
             make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
                 .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
 
-        let user_stream = auth.get_user_stream("shared-user").await;
+        let user_stream = auth.get_user_stream(UserId::from(3)).await;
         assert_eq!(
             user_stream,
-            Some(("shared-room".to_string(), "shared-media".to_string())),
+            Some((RoomId::from(103), MediaId::from(203))),
             "RTMP auth should accept any injected shared user-stream index implementation"
         );
     }

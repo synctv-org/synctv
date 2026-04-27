@@ -25,7 +25,6 @@ fn nonnegative_i64_to_u64(value: i64) -> u64 {
 
 #[derive(Debug)]
 struct PendingRegistrationRequest {
-    id: UserId,
     username: String,
     email: Option<String>,
     password_hash: String,
@@ -237,7 +236,7 @@ impl UserService {
              ORDER BY id
              FOR UPDATE",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
@@ -247,7 +246,7 @@ impl UserService {
     async fn query_membership_room_ids_in_tx(
         &self,
         user_id: &UserId,
-        owned_room_ids: &HashSet<String>,
+        owned_room_ids: &HashSet<RoomId>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<RoomId>> {
         let rows = sqlx::query(
@@ -259,14 +258,14 @@ impl UserService {
                AND r.deleted_at IS NULL
              ORDER BY rm.room_id",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         let mut room_ids = Vec::new();
         for row in rows {
-            let room_id = RoomId::from_string(row.try_get::<String, _>("room_id")?);
-            if !owned_room_ids.contains(room_id.as_str()) {
+            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            if !owned_room_ids.contains(&room_id) {
                 room_ids.push(room_id);
             }
         }
@@ -277,7 +276,7 @@ impl UserService {
     async fn query_owned_room_entries_in_tx(
         &self,
         user_id: &UserId,
-        owned_room_ids: &HashSet<String>,
+        owned_room_ids: &HashSet<RoomId>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<HashMap<RoomId, UserOwnedRoomEntries>> {
         let mut entries_by_room = HashMap::<RoomId, UserOwnedRoomEntries>::new();
@@ -290,16 +289,16 @@ impl UserService {
                AND r.deleted_at IS NULL
              ORDER BY p.room_id, p.id",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         for row in playlist_rows {
-            let room_id = RoomId::from_string(row.try_get::<String, _>("room_id")?);
-            if owned_room_ids.contains(room_id.as_str()) {
+            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            if owned_room_ids.contains(&room_id) {
                 continue;
             }
-            let playlist_id = PlaylistId::from_string(row.try_get::<String, _>("id")?);
+            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
             entries_by_room
                 .entry(room_id)
                 .or_default()
@@ -315,16 +314,16 @@ impl UserService {
                AND r.deleted_at IS NULL
              ORDER BY m.room_id, m.id",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         for row in media_rows {
-            let room_id = RoomId::from_string(row.try_get::<String, _>("room_id")?);
-            if owned_room_ids.contains(room_id.as_str()) {
+            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            if owned_room_ids.contains(&room_id) {
                 continue;
             }
-            let media_id = MediaId::from_string(row.try_get::<String, _>("id")?);
+            let media_id = MediaId::from(row.try_get::<i64, _>("id")?);
             entries_by_room
                 .entry(room_id)
                 .or_default()
@@ -345,8 +344,8 @@ impl UserService {
             return Ok(Vec::new());
         }
 
-        let playlist_id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
-        let media_id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+        let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
+        let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
 
         let rows = sqlx::query(
             "WITH RECURSIVE target_playlists AS (
@@ -368,15 +367,15 @@ impl UserService {
             ORDER BY m.id",
         )
         .bind(&playlist_id_strs)
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(&media_id_strs)
         .fetch_all(&mut **tx)
         .await?;
 
         rows.into_iter()
             .map(|row| {
-                let media_id = row.try_get::<String, _>("id")?;
-                Ok(MediaId::from_string(media_id))
+                let media_id = row.try_get::<i64, _>("id")?;
+                Ok(MediaId::from(media_id))
             })
             .collect()
     }
@@ -397,27 +396,27 @@ impl UserService {
              WHERE room_id = $1
              FOR UPDATE",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(&mut **tx)
         .await?;
 
         let mut playback_reset = false;
         if let Some(row) = playback_row {
-            let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
-            let playing_playlist_id: Option<String> = row.try_get("playing_playlist_id")?;
+            let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
+            let playing_playlist_id: Option<PlaylistId> = row.try_get("playing_playlist_id")?;
 
             let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
                 deleted_media_ids
                     .iter()
-                    .any(|media_id| media_id.as_str() == current_id.as_str())
+                    .any(|media_id| media_id == current_id)
             });
 
             let deletes_playing_playlist = if let Some(playing_playlist_id) = playing_playlist_id {
                 if playlist_ids.is_empty() {
                     false
                 } else {
-                    let playlist_id_strs: Vec<&str> =
-                        playlist_ids.iter().map(PlaylistId::as_str).collect();
+                    let playlist_id_strs: Vec<i64> =
+                        playlist_ids.iter().map(PlaylistId::as_i64).collect();
                     sqlx::query_scalar(
                         "WITH RECURSIVE target_playlists AS (
                             SELECT id
@@ -456,7 +455,7 @@ impl UserService {
                          updated_at = NOW()
                      WHERE room_id = $1",
                 )
-                .bind(room_id.as_str())
+                .bind(room_id)
                 .execute(&mut **tx)
                 .await?;
                 playback_reset = true;
@@ -464,7 +463,7 @@ impl UserService {
         }
 
         if !media_ids.is_empty() {
-            let media_id_strs: Vec<&str> = media_ids.iter().map(MediaId::as_str).collect();
+            let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
             sqlx::query("DELETE FROM media WHERE id = ANY($1)")
                 .bind(&media_id_strs)
                 .execute(&mut **tx)
@@ -472,7 +471,7 @@ impl UserService {
         }
 
         if !playlist_ids.is_empty() {
-            let playlist_id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+            let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
             sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
                 .bind(&playlist_id_strs)
                 .execute(&mut **tx)
@@ -480,7 +479,7 @@ impl UserService {
         }
 
         Ok(UserDeletedRoomImpact {
-            room_id: room_id.clone(),
+            room_id: *room_id,
             deleted_media_ids,
             playback_reset,
         })
@@ -497,10 +496,7 @@ impl UserService {
         Vec<UserDeletedRoomImpact>,
     )> {
         let owned_room_ids = self.query_owned_room_ids_in_tx(user_id, tx).await?;
-        let owned_room_id_set: HashSet<String> = owned_room_ids
-            .iter()
-            .map(|room_id| room_id.as_str().to_string())
-            .collect();
+        let owned_room_id_set: HashSet<RoomId> = owned_room_ids.iter().copied().collect();
         let membership_room_ids = self
             .query_membership_room_ids_in_tx(user_id, &owned_room_id_set, tx)
             .await?;
@@ -513,8 +509,8 @@ impl UserService {
         let mut deleted_media = 0usize;
         let mut playback_resets = 0usize;
 
-        let mut modified_room_ids: Vec<RoomId> = entries_by_room.keys().cloned().collect();
-        modified_room_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let mut modified_room_ids: Vec<RoomId> = entries_by_room.keys().copied().collect();
+        modified_room_ids.sort_unstable();
         for room_id in modified_room_ids {
             let entries = entries_by_room
                 .get(&room_id)
@@ -546,70 +542,70 @@ impl UserService {
         }
 
         let oauth_mappings_deleted = sqlx::query("DELETE FROM oauth2_clients WHERE user_id = $1")
-            .bind(user_id.as_str())
+            .bind(user_id)
             .execute(&mut **tx)
             .await?
             .rows_affected();
 
         let email_tokens_deleted = sqlx::query("DELETE FROM email_tokens WHERE user_id = $1")
-            .bind(user_id.as_str())
+            .bind(user_id)
             .execute(&mut **tx)
             .await?
             .rows_affected();
 
         let provider_credentials_deleted =
             sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
 
         let notifications_deleted = sqlx::query("DELETE FROM notifications WHERE user_id = $1")
-            .bind(user_id.as_str())
+            .bind(user_id)
             .execute(&mut **tx)
             .await?
             .rows_affected();
 
         let mut room_member_bans_cleared =
             sqlx::query("UPDATE room_member_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
         room_member_bans_cleared +=
             sqlx::query("UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
         room_member_bans_cleared +=
             sqlx::query("UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
         room_member_bans_cleared +=
             sqlx::query("UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
         room_member_bans_cleared +=
             sqlx::query("UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
         room_member_bans_cleared +=
             sqlx::query("UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
 
         let chat_messages_anonymized =
             sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE user_id = $1")
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .execute(&mut **tx)
                 .await?
                 .rows_affected();
@@ -642,7 +638,7 @@ impl UserService {
     fn log_username_cache_write_failure(user_id: &UserId, operation: &'static str, error: &Error) {
         tracing::warn!(
             error = %error,
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             operation,
             "Username cache update failed after primary user mutation; continuing with durable result"
         );
@@ -859,22 +855,21 @@ impl UserService {
         password_hash: &str,
         signup_method: SignupMethod,
     ) -> Result<User> {
-        let request_id = UserId::new();
-        sqlx::query(
+        let request_id = sqlx::query_scalar::<_, i64>(
             r"
             INSERT INTO user_registration_requests (
-                id, username, email, password_hash, signup_method, status, requested_at
+                username, email, password_hash, signup_method, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+            RETURNING id
             ",
         )
-        .bind(request_id.as_str())
         .bind(username)
         .bind(email)
         .bind(password_hash)
         .bind(signup_method)
-        .bind(ReviewStatus::Pending.as_i16())
-        .execute(self.repository.pool())
+        .bind(ReviewStatus::Pending)
+        .fetch_one(self.repository.pool())
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(ref db_err) if db_err.constraint().is_some() => {
@@ -892,7 +887,7 @@ impl UserService {
             signup_method,
             UserStatus::Active,
         );
-        user.id = request_id;
+        user.id = UserId::from(request_id);
         Ok(user)
     }
 
@@ -902,28 +897,23 @@ impl UserService {
     ) -> Result<Option<PendingRegistrationRequest>> {
         let row = sqlx::query(
             r"
-            SELECT id, username, email, password_hash, signup_method
+            SELECT username, email, password_hash, signup_method
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
             ",
         )
-        .bind(request_id.as_str())
-        .bind(ReviewStatus::Pending.as_i16())
+        .bind(request_id)
+        .bind(ReviewStatus::Pending)
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
-            let signup_method_i16: i16 = row.try_get("signup_method")?;
-            let signup_method = SignupMethod::from_i16(signup_method_i16).ok_or_else(|| {
-                sqlx::Error::Decode(format!("Invalid signup_method: {signup_method_i16}").into())
-            })?;
             Ok(PendingRegistrationRequest {
-                id: row.try_get("id")?,
                 username: row.try_get("username")?,
                 email: row.try_get("email")?,
                 password_hash: row.try_get("password_hash")?,
-                signup_method,
+                signup_method: row.try_get("signup_method")?,
             })
         })
         .transpose()
@@ -940,8 +930,7 @@ impl UserService {
             .await?
             .ok_or_else(|| {
                 Error::NotFound(format!(
-                    "Pending registration request {} not found",
-                    request_id.as_str()
+                    "Pending registration request {request_id} not found"
                 ))
             })?;
 
@@ -960,13 +949,12 @@ impl UserService {
             ));
         }
 
-        let mut user = User::new(
+        let user = User::new(
             request.username.clone(),
             request.email.clone(),
             request.password_hash,
             request.signup_method,
         );
-        user.id = request.id;
         let created = self
             .repository
             .create_with_executor(&user, &mut *tx)
@@ -979,9 +967,9 @@ impl UserService {
             WHERE id = $1
             ",
         )
-        .bind(request_id.as_str())
-        .bind(ReviewStatus::Approved.as_i16())
-        .bind(reviewed_by.map(UserId::as_str))
+        .bind(request_id)
+        .bind(ReviewStatus::Approved)
+        .bind(reviewed_by.map(UserId::as_i64))
         .execute(&mut *tx)
         .await?;
 
@@ -1336,13 +1324,12 @@ impl UserService {
         if user.status == crate::models::UserStatus::Banned {
             sqlx::query(
                 r"
-                INSERT INTO user_bans (id, user_id, banned_by, reason, starts_at)
-                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
                 ",
             )
-            .bind(crate::models::generate_id())
-            .bind(created_user.id.as_str())
-            .bind(banned_by.map(UserId::as_str))
+            .bind(created_user.id)
+            .bind(banned_by.map(UserId::as_i64))
             .bind("created with banned status")
             .execute(&mut *tx)
             .await?;
@@ -1353,9 +1340,7 @@ impl UserService {
             self.repository
                 .get_by_id(&created_user.id)
                 .await?
-                .ok_or_else(|| {
-                    Error::NotFound(format!("User {} not found", created_user.id.as_str()))
-                })?
+                .ok_or_else(|| Error::NotFound(format!("User {} not found", created_user.id)))?
         } else {
             created_user
         };
@@ -1542,14 +1527,14 @@ impl UserService {
     ) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
-        let user_id = UserId::from_string(claims.sub.clone());
+        let user_id: UserId = claims.sub.parse().map_err(crate::Error::Internal)?;
 
         // Rate limit per-user refresh requests to prevent abuse.
         // An attacker with a stolen token could otherwise:
         // 1. Rapidly call refresh_token to exhaust server resources
         // 2. Trigger family revocation, locking out the legitimate user
         // Rate limit key is per-user: "refresh:<user_id>"
-        let rate_limit_key = format!("refresh:{}", user_id.as_str());
+        let rate_limit_key = format!("refresh:{user_id}");
         self.refresh_rate_limiter
             .check_rate_limit_with_control(
                 &rate_limit_key,
@@ -1560,7 +1545,7 @@ impl UserService {
             .await
             .map_err(|e| {
                 tracing::warn!(
-                    user_id = %user_id.as_str(),
+                    user_id = %user_id,
                     error = %e,
                     "Refresh token rate limit exceeded"
                 );
@@ -1590,7 +1575,7 @@ impl UserService {
             // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
             let family_key = self
                 .key_builder
-                .refresh_token_family_revoked(user_id.as_str());
+                .refresh_token_family_revoked(&user_id.to_string());
             let family_revoked_at = self
                 .token_blacklist
                 .get_family_revoked_at_checked(&family_key)
@@ -1601,7 +1586,7 @@ impl UserService {
                 // since sub-second precision is lost in Unix timestamps.
                 if claims.iat <= revoked_at {
                     tracing::warn!(
-                        user_id = %user_id.as_str(),
+                        user_id = %user_id,
                         jti = %old_jti,
                         revoked_at = revoked_at,
                         token_iat = claims.iat,
@@ -1630,7 +1615,7 @@ impl UserService {
                     // was stolen and both the legitimate user and attacker are trying to use it.
                     // Revoke the entire refresh token family for this user as a precaution.
                     tracing::warn!(
-                        user_id = %user_id.as_str(),
+                        user_id = %user_id,
                         jti = %old_jti,
                         "Blacklisted refresh token JTI replayed — revoking entire token family"
                     );
@@ -1749,7 +1734,7 @@ impl UserService {
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;
 
-        tracing::info!("Password updated for user {}", user_id.as_str());
+        tracing::info!("Password updated for user {user_id}");
 
         Ok(updated_user)
     }
@@ -1796,7 +1781,7 @@ impl UserService {
             .repository
             .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         let target_username = new_username.unwrap_or_else(|| current_user.username.clone());
         let mut new_password_hash: Option<String> = None;
@@ -1851,7 +1836,7 @@ impl UserService {
         tracing::info!(
             "Email verification status set to {} for user {}",
             email_verified,
-            user_id.as_str()
+            user_id
         );
 
         Ok(updated_user)
@@ -1951,12 +1936,12 @@ impl UserService {
         if let Err(e) = self.brute_force.reset(&user.username).await {
             tracing::warn!(
                 error = %e,
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 username = %user.username,
                 "Failed to reset brute-force state during user deletion"
             );
         }
-        let refresh_rate_limit_key = format!("refresh:{}", user_id.as_str());
+        let refresh_rate_limit_key = format!("refresh:{user_id}");
         if let Err(e) = self
             .refresh_rate_limiter
             .reset(&refresh_rate_limit_key)
@@ -1964,7 +1949,7 @@ impl UserService {
         {
             tracing::warn!(
                 error = %e,
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 "Failed to reset refresh rate limit state during user deletion"
             );
         }
@@ -1973,7 +1958,7 @@ impl UserService {
         if let Err(e) = self.invalidate_username_cache(user_id).await {
             tracing::warn!(
                 error = %e,
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 "Failed to invalidate username cache during user deletion"
             );
         }
@@ -1982,7 +1967,7 @@ impl UserService {
         self.notify_user_invalidation(user_id).await;
 
         tracing::info!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             username = %user.username,
             oauth_mappings_deleted = cleanup.oauth_mappings_deleted,
             email_tokens_deleted = cleanup.email_tokens_deleted,
@@ -1998,7 +1983,7 @@ impl UserService {
             "User soft-deleted with transactional resource cleanup"
         );
 
-        modified_rooms.sort_by(|left, right| left.room_id.as_str().cmp(right.room_id.as_str()));
+        modified_rooms.sort_by_key(|room| room.room_id);
 
         Ok(UserDeletionSummary {
             user_id: user.id,
@@ -2035,7 +2020,7 @@ impl UserService {
         self.repository
             .get_by_id_for_update_with_executor(user_id, &mut *tx)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         if self.repository.is_banned(user_id).await? {
             return Err(Error::InvalidInput("User is already banned".to_string()));
@@ -2059,7 +2044,7 @@ impl UserService {
             .repository
             .get_by_id(user_id)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
         self.notify_user_invalidation(user_id).await;
 
         Ok(updated)
@@ -2079,8 +2064,8 @@ impl UserService {
     /// - `InvalidInput` if `user_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_delete_users(
         &self,
-        user_ids: &[String],
-    ) -> Result<Vec<(String, Result<()>)>> {
+        user_ids: &[UserId],
+    ) -> Result<Vec<(UserId, Result<()>)>> {
         if user_ids.is_empty() {
             return Err(Error::InvalidInput("user_ids cannot be empty".to_string()));
         }
@@ -2094,11 +2079,9 @@ impl UserService {
 
         let mut results = Vec::with_capacity(user_ids.len());
 
-        for user_id_str in user_ids {
-            let user_id = UserId::from_string(user_id_str.clone());
-
-            let result = self.delete_user(&user_id).await;
-            results.push((user_id_str.clone(), result));
+        for user_id in user_ids {
+            let result = self.delete_user(user_id).await;
+            results.push((*user_id, result));
         }
 
         Ok(results)
@@ -2197,7 +2180,7 @@ impl UserService {
                     if candidate == &base_username {
                         tracing::info!(
                             "Created new user {} (username='{}', sanitized from '{}') via OAuth2 provider {} (provider_user_id={})",
-                            created_user.id.as_str(),
+                            created_user.id,
                             candidate,
                             username,
                             provider.as_str(),
@@ -2207,7 +2190,7 @@ impl UserService {
                         tracing::info!(
                             "Username '{}' was taken; created user {} as '{}' (original '{}') via OAuth2 provider {} (provider_user_id={})",
                             base_username,
-                            created_user.id.as_str(),
+                            created_user.id,
                             candidate,
                             username,
                             provider.as_str(),
@@ -2266,7 +2249,7 @@ impl UserService {
             Err(error) => {
                 tracing::warn!(
                     error = %error,
-                    user_id = %user_id.as_str(),
+                    user_id = %user_id,
                     "Username cache read failed; falling back to database"
                 );
             }
@@ -2303,14 +2286,14 @@ impl UserService {
         let missing_ids: Vec<UserId> = user_ids
             .iter()
             .filter(|id| !result.contains_key(*id))
-            .cloned()
+            .copied()
             .collect();
 
         // Fetch missing usernames from database in a single batch query
         if !missing_ids.is_empty() {
             let users = self.repository.get_by_ids(&missing_ids).await?;
             for user in users {
-                let user_id = user.id.clone();
+                let user_id = user.id;
                 let username = user.username.clone();
                 self.cache_username_best_effort(&user_id, &username, "get_usernames")
                     .await;
@@ -2388,7 +2371,7 @@ impl UserService {
             if let Err(e) = service.invalidate_and_broadcast_user(user_id).await {
                 tracing::warn!(
                     error = %e,
-                    user_id = %user_id.as_str(),
+                    user_id = %user_id,
                     "Failed to broadcast user cache invalidation"
                 );
             }

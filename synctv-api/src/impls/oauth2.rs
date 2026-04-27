@@ -32,6 +32,7 @@ use super::ApiError;
 pub struct OAuth2ApiImpl {
     pub oauth2_service: Arc<OAuth2Service>,
     pub user_service: Arc<UserService>,
+    public_id_codec: Arc<crate::PublicIdCodec>,
 }
 
 impl OAuth2ApiImpl {
@@ -45,10 +46,15 @@ impl OAuth2ApiImpl {
     }
 
     #[must_use]
-    pub const fn new(oauth2_service: Arc<OAuth2Service>, user_service: Arc<UserService>) -> Self {
+    pub fn new(
+        oauth2_service: Arc<OAuth2Service>,
+        user_service: Arc<UserService>,
+        public_id_codec: Arc<crate::PublicIdCodec>,
+    ) -> Self {
         Self {
             oauth2_service,
             user_service,
+            public_id_codec,
         }
     }
 
@@ -124,7 +130,7 @@ impl OAuth2ApiImpl {
             .get_authorization_url_with_user_with_control(
                 provider,
                 redirect_url,
-                Some(user_id.clone()),
+                Some(*user_id),
                 control,
             )
             .await
@@ -294,7 +300,7 @@ impl OAuth2ApiImpl {
             access_token: Some(access_token),
             refresh_token: Some(refresh_token),
             expires_in,
-            user_info: Some(user_to_oauth2_user_info(&user)),
+            user_info: Some(user_to_oauth2_user_info(&user, &self.public_id_codec)),
             redirect_url: oauth_state.redirect_url,
             is_bind: false,
         })
@@ -443,7 +449,7 @@ pub struct LinkedProviderInfo {
 }
 
 /// Convert User model to `OAuth2UserInfo` proto
-fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
+fn user_to_oauth2_user_info(user: &User, public_id_codec: &crate::PublicIdCodec) -> OAuth2UserInfo {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 
     let proto_role = match user.role {
@@ -458,7 +464,9 @@ fn user_to_oauth2_user_info(user: &User) -> OAuth2UserInfo {
     };
 
     OAuth2UserInfo {
-        user_id: user.id.to_string(),
+        user_id: public_id_codec
+            .encode_user_id(user.id)
+            .expect("positive user ID must encode"),
         username: user.username.clone(),
         email: user.email.clone().unwrap_or_default(),
         avatar: String::new(), // User model doesn't have avatar field currently

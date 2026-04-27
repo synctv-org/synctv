@@ -8,6 +8,7 @@ use super::{
     store::VersionedPlayback,
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
+use crate::models::{MediaId, RoomId};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
@@ -36,14 +37,14 @@ impl RtmpProvider {
 
     fn resolve_live_binding<'a>(
         ctx: &'a ProviderContext<'a>,
-    ) -> Result<(&'a str, &'a str), ProviderError> {
-        let room_id = ctx.room_id.ok_or_else(|| {
+    ) -> Result<(&'a RoomId, &'a MediaId), ProviderError> {
+        let room_id = ctx.room_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
                 "Missing room_id in provider context for internal RTMP playback".to_string(),
             )
         })?;
 
-        let media_id = ctx.media_id.ok_or_else(|| {
+        let media_id = ctx.media_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
                 "Missing media_id in provider context for internal RTMP playback".to_string(),
             )
@@ -81,7 +82,7 @@ impl RtmpProvider {
     fn build_proxy_action(
         rest: &str,
         versioned: &VersionedPlayback,
-        verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
+        ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
         let room_id = versioned
             .result
@@ -95,32 +96,46 @@ impl RtmpProvider {
             .get("media_id")
             .and_then(|value| value.as_str())
             .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+        let room_id = super::proxy::parse_proxy_room_id(
+            &ctx.services.public_id_codec,
+            room_id,
+            "RTMP playback metadata",
+        )?;
+        let media_id = super::proxy::parse_proxy_media_id(
+            &ctx.services.public_id_codec,
+            media_id,
+            "RTMP playback metadata",
+        )?;
 
         match rest {
             stream if stream == "stream" || stream.starts_with("stream/") => {
-                let claims = verified_claims.ok_or_else(|| {
+                let claims = ctx.verified_claims.ok_or_else(|| {
                     ProviderError::ApiError("Missing verified proxy claims".into())
                 })?;
                 Ok(ProxyAction::LiveFlv {
                     provider_name: Self::NAME.to_string(),
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    user_id: claims.user_id.clone(),
+                    room_id,
+                    media_id,
+                    user_id: super::proxy::parse_proxy_user_id(
+                        &ctx.services.public_id_codec,
+                        &claims.user_id,
+                        "RTMP proxy claims",
+                    )?,
                     expires_at: claims.expires_at,
                 })
             }
             "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
                 provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
+                room_id,
+                media_id,
                 version: versioned.version.clone(),
             }),
             segment if segment.starts_with("segment/") => {
                 let segment_name = segment.trim_start_matches("segment/");
                 let disguised_as_png = segment_name.ends_with(".png");
                 Ok(ProxyAction::LiveHlsSegment {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
+                    room_id,
+                    media_id,
                     segment_name: segment_name.to_string(),
                     disguised_as_png,
                 })
@@ -151,7 +166,7 @@ impl MediaProvider for RtmpProvider {
         Self::validate_config_shape(source_config)?;
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
-        let result = super::build_live_playback(media_id, room_id);
+        let result = super::build_live_playback(*media_id, *room_id);
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5); // 5 minutes for live
@@ -185,20 +200,60 @@ impl ProviderProxy for RtmpProvider {
             .ok_or(ProviderError::NotFound)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
-        Self::build_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_proxy_action(rest, &versioned, ctx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{MediaId, RoomId, UserId};
+    use crate::provider::proxy::ProxyServices;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn create_context() -> ProviderContext<'static> {
         ProviderContext::new("synctv")
-            .with_user_id("test_user")
-            .with_room_id("test_room")
-            .with_media_id("test_media")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100))
+    }
+
+    fn fake_proxy_services() -> ProxyServices {
+        let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
+        let jwt = crate::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
+            .expect("jwt");
+        let username_cache =
+            crate::cache::UsernameCache::local_only("test:username:".to_string(), 100, 60);
+        let token_blacklist = Arc::new(
+            crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
+                1000, 3600, 86400,
+            ),
+        );
+        let key_builder = crate::cache::KeyBuilder::new("test");
+        let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
+        let user_service = crate::service::UserService::new(
+            pool.clone(),
+            jwt,
+            username_cache,
+            crate::config::PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+        let credential_repo = Arc::new(crate::repository::UserProviderCredentialRepository::new(
+            pool.clone(),
+        ));
+        let room_service = crate::service::RoomService::new(pool, user_service);
+        ProxyServices {
+            room_service: Arc::new(room_service),
+            credential_encryption: None,
+            credential_repo,
+            signing_key: Arc::new(crate::service::ProxySigningKey::derive_from(
+                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+            )),
+            public_id_codec: Arc::new(crate::PublicIdCodec::default_for_tests()),
+        }
     }
 
     #[tokio::test]
@@ -280,8 +335,8 @@ mod tests {
 
         let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
 
-        assert_eq!(result.metadata.get("room_id"), Some(&json!("test_room")));
-        assert_eq!(result.metadata.get("media_id"), Some(&json!("test_media")));
+        assert_eq!(result.metadata.get("room_id"), Some(&json!(10)));
+        assert_eq!(result.metadata.get("media_id"), Some(&json!(100)));
         assert!(result.playback_infos.contains_key("hls"));
         assert!(result.playback_infos.contains_key("flv"));
     }
@@ -295,9 +350,9 @@ mod tests {
         let provider = RtmpProvider::new();
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("synctv")
-            .with_user_id("user1")
-            .with_room_id("room1")
-            .with_media_id("media1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100))
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
         let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
@@ -339,17 +394,17 @@ mod tests {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
 
         let ctx1 = ProviderContext::new("synctv")
-            .with_user_id("user1")
-            .with_room_id("room1")
-            .with_media_id("media1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100))
             .with_signing_key(&signing_key)
             .with_store(store.clone());
         let first = provider.generate_playback(&ctx1, &json!({})).await.unwrap();
 
         let ctx2 = ProviderContext::new("synctv")
-            .with_user_id("user2")
-            .with_room_id("room1")
-            .with_media_id("media1")
+            .with_user_id(UserId::from(2))
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100))
             .with_signing_key(&signing_key)
             .with_store(store);
         let second = provider.generate_playback(&ctx2, &json!({})).await.unwrap();
@@ -373,8 +428,8 @@ mod tests {
             "cached playback must be re-signed per user"
         );
         assert!(
-            second_hls.contains("uid=user2")
-                || second_hls.contains("user_id=user2")
+            second_hls.contains("uid=2")
+                || second_hls.contains("user_id=2")
                 || second_hls.contains("sig=")
         );
     }
@@ -391,35 +446,51 @@ mod tests {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
                 metadata: HashMap::from([
-                    ("room_id".to_string(), json!("room1")),
-                    ("media_id".to_string(), json!("media1")),
+                    ("room_id".to_string(), json!("10")),
+                    ("media_id".to_string(), json!("100")),
                 ]),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
+        let services = fake_proxy_services();
         let claims = ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),
-            room_id: "room1".to_string(),
-            user_id: "user1".to_string(),
+            room_id: services
+                .public_id_codec
+                .encode_room_id(RoomId::from(10))
+                .expect("room id should encode"),
+            user_id: services
+                .public_id_codec
+                .encode_user_id(UserId::from(1))
+                .expect("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
         };
-        let action = RtmpProvider::build_proxy_action("stream", &versioned, Some(&claims)).unwrap();
+        let ctx = ProxyRequestContext {
+            sub_path: "v1/stream",
+            query_string: None,
+            store: None,
+            proxy_base: "/api/providers/proxy/rtmp",
+            services: &services,
+            verified_claims: Some(&claims),
+            request_context: None,
+        };
+        let action = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap();
         match action {
             ProxyAction::LiveFlv {
                 user_id,
                 expires_at,
                 ..
             } => {
-                assert_eq!(user_id, "user1");
+                assert_eq!(user_id, UserId::from(1));
                 assert_eq!(expires_at, claims.expires_at);
             }
             other => panic!("expected LiveFlv action, got {other:?}"),
         }
     }
 
-    #[test]
-    fn resolve_proxy_flv_requires_verified_claims() {
+    #[tokio::test]
+    async fn resolve_proxy_flv_requires_verified_claims() {
         use crate::provider::store::VersionedPlayback;
         use std::collections::HashMap;
 
@@ -429,14 +500,24 @@ mod tests {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
                 metadata: HashMap::from([
-                    ("room_id".to_string(), json!("room1")),
-                    ("media_id".to_string(), json!("media1")),
+                    ("room_id".to_string(), json!("10")),
+                    ("media_id".to_string(), json!("100")),
                 ]),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let err = RtmpProvider::build_proxy_action("stream", &versioned, None).unwrap_err();
+        let services = fake_proxy_services();
+        let ctx = ProxyRequestContext {
+            sub_path: "v1/stream",
+            query_string: None,
+            store: None,
+            proxy_base: "/api/providers/proxy/rtmp",
+            services: &services,
+            verified_claims: None,
+            request_context: None,
+        };
+        let err = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap_err();
         assert!(matches!(err, ProviderError::ApiError(_)));
     }
 }

@@ -109,7 +109,7 @@ async fn test_playback_state_l1_cache_hit() {
         .create_room(
             "L1 Hit Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -159,7 +159,7 @@ async fn test_playback_state_l1_miss_hits_l2() {
         .create_room(
             "L2 Hit Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -174,7 +174,7 @@ async fn test_playback_state_l1_miss_hits_l2() {
     // After implementation: manually populate L2 to verify it's checked
     // For now, we verify the basic flow works
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
-    let l2_key = format!("synctv:playback:{}", room.id.as_str());
+    let l2_key = format!("synctv:playback:{}", room.id);
 
     // Manually set in L2 to simulate it being there
     let state_json = serde_json::to_string(&state1).unwrap();
@@ -211,7 +211,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
         .create_room(
             "DB Fallback Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -230,7 +230,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
          \"current_time\", speed, is_playing, updated_at, version \
          FROM room_playback_state WHERE room_id = $1",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -256,7 +256,7 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .create_room(
             "Persist Missing Playback Row".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -264,7 +264,7 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .unwrap();
 
     sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room.id.as_str())
+        .bind(room.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -275,9 +275,9 @@ async fn test_playback_state_get_state_persists_missing_row() {
         .await
         .unwrap();
 
-    let persisted: Option<(String,)> =
+    let persisted: Option<(RoomId,)> =
         sqlx::query_as("SELECT room_id FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_optional(&pool)
             .await
             .unwrap();
@@ -318,7 +318,7 @@ async fn test_playback_state_cross_replica_consistency() {
         .create_room(
             "Cross Replica Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -329,7 +329,7 @@ async fn test_playback_state_cross_replica_consistency() {
 
     // Update playback state
     let updated_state = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 123.45)
+        .seek(room.id, owner.id, 123.45)
         .await
         .unwrap();
 
@@ -342,7 +342,7 @@ async fn test_playback_state_cross_replica_consistency() {
 
     // Manually test L2 propagation
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
-    let l2_key = format!("synctv:playback:{}", room.id.as_str());
+    let l2_key = format!("synctv:playback:{}", room.id);
 
     // Set in L2 (simulating what the implementation should do)
     let state_json = serde_json::to_string(&updated_state.state).unwrap();
@@ -384,7 +384,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
         .create_room(
             "Cache Inv Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -399,7 +399,7 @@ async fn test_playback_state_cache_invalidation_on_update() {
 
     // Update state (should invalidate cache)
     let _ = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .seek(room.id, owner.id, 50.0)
         .await
         .unwrap();
 
@@ -431,9 +431,7 @@ async fn test_playback_state_l2_has_proper_ttl() {
     let l2_key = "test:playback:ttl_test";
 
     // Set a value with TTL
-    let test_state = synctv_core::models::RoomPlaybackState::new(RoomId::from_string(
-        "ttl_test_room".to_string(),
-    ));
+    let test_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_000));
     let state_json = serde_json::to_string(&test_state).unwrap();
     l2.set(l2_key, &state_json, 60).await.unwrap();
 
@@ -459,9 +457,7 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
     let l2_key = "test:playback:version_test";
 
-    let mut newer_state = synctv_core::models::RoomPlaybackState::new(RoomId::from_string(
-        "version_room".to_string(),
-    ));
+    let mut newer_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_001));
     newer_state.version = 10;
     newer_state.current_time = 100.0;
     newer_state.updated_at = Utc::now();
@@ -476,9 +472,7 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
         .unwrap();
     assert!(was_set, "Newer state should be set");
 
-    let mut older_state = synctv_core::models::RoomPlaybackState::new(RoomId::from_string(
-        "version_room".to_string(),
-    ));
+    let mut older_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_001));
     older_state.version = 5;
     older_state.current_time = 50.0;
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
@@ -523,7 +517,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
         .create_room(
             "SingleFlight Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -536,7 +530,7 @@ async fn test_playback_state_singleflight_prevents_thundering_herd() {
 
     for _ in 0..10 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
+        let rid = room.id;
         let b = barrier.clone();
 
         let handle = tokio::spawn(async move {
@@ -590,7 +584,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
         .create_room(
             "L2 Fallback Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -601,12 +595,12 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
 
     // Update state
     let result = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 200.0)
+        .seek(room.id, owner.id, 200.0)
         .await
         .unwrap();
 
     // Write to L2 (simulating what implementation should do)
-    let l2_key = format!("synctv:playback:{}", room.id.as_str());
+    let l2_key = format!("synctv:playback:{}", room.id);
     let state_json = serde_json::to_string(&result.state).unwrap();
     l2.set(&l2_key, &state_json, 300).await.unwrap();
 
@@ -690,7 +684,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         .create_room(
             "Invalidate L2 Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -736,8 +730,8 @@ async fn test_playback_state_cache_direct_with_redis() {
     )
     .expect("Failed to create PlaybackStateCache");
 
-    let room_id = RoomId::from_string("cache_test_room".to_string());
-    let state = synctv_core::models::RoomPlaybackState::new(room_id.clone());
+    let room_id = RoomId::from(10_000_005);
+    let state = synctv_core::models::RoomPlaybackState::new(room_id);
 
     // Cache miss
     assert!(
@@ -788,9 +782,9 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string())
         .expect("Failed to create PlaybackStateCache");
 
-    let room_id = RoomId::from_string("newer_test_room".to_string());
+    let room_id = RoomId::from(10_000_006);
 
-    let mut state1 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
+    let mut state1 = synctv_core::models::RoomPlaybackState::new(room_id);
     state1.version = 5;
     state1.current_time = 50.0;
     state1.updated_at = Utc::now();
@@ -798,7 +792,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     // Set initial state
     cache.set(&room_id, state1.clone()).await.unwrap();
 
-    let mut state2 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
+    let mut state2 = synctv_core::models::RoomPlaybackState::new(room_id);
     state2.version = 10;
     state2.current_time = 100.0;
     state2.updated_at = Utc::now() + chrono::Duration::seconds(10);
@@ -818,7 +812,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
         "Should have position 100"
     );
 
-    let mut state3 = synctv_core::models::RoomPlaybackState::new(room_id.clone());
+    let mut state3 = synctv_core::models::RoomPlaybackState::new(room_id);
     state3.version = 3;
     state3.current_time = 25.0;
     state3.updated_at = Utc::now() - chrono::Duration::seconds(30);

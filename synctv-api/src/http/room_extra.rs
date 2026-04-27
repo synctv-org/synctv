@@ -62,7 +62,7 @@ pub async fn add_member(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .add_member(authenticated.user_id.as_str(), &room_id, req)
+                    .add_member(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -105,7 +105,7 @@ pub async fn list_room_join_reviews(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 client_api
-                    .list_room_join_reviews(authenticated.user_id.as_str(), &room_id, req)
+                    .list_room_join_reviews(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -154,7 +154,7 @@ pub async fn approve_room_join_review(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .approve_room_join_review(authenticated.user_id.as_str(), &room_id, req)
+                    .approve_room_join_review(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -209,7 +209,7 @@ pub async fn reject_room_join_review(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .reject_room_join_review(authenticated.user_id.as_str(), &room_id, req)
+                    .reject_room_join_review(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -257,7 +257,7 @@ pub async fn kick_member(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .kick_member(authenticated.user_id.as_str(), &room_id, req)
+                    .kick_member(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -306,7 +306,7 @@ pub async fn set_member_permissions(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .update_member_permissions(authenticated.user_id.as_str(), &room_id, req)
+                    .update_member_permissions(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -355,7 +355,7 @@ pub async fn ban_member(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .ban_member(authenticated.user_id.as_str(), &room_id, req)
+                    .ban_member(&authenticated.user_id, &room_id, req)
                     .await
             },
         )
@@ -403,7 +403,7 @@ pub async fn unban_member(
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 client_api
-                    .unban_member(authenticated.user_id.as_str(), &room_id, req)
+                    .unban_member(&authenticated.user_id, &room_id, req)
                     .await
             },
         )

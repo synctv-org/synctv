@@ -75,6 +75,7 @@ fn make_client_api(
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
 }
 
@@ -101,7 +102,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
         .create_room(
             "Member Visibility Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -109,31 +110,27 @@ async fn test_get_room_members_requires_view_member_list_permission() {
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            observer.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, observer.id, RoomRole::Member, false)
         .await
         .unwrap();
 
     room_service
         .member_service()
         .revoke_permission(
-            room.id.clone(),
-            owner.id.clone(),
-            observer.id.clone(),
+            room.id,
+            owner.id,
+            observer.id,
             PermissionBits::VIEW_MEMBER_LIST,
         )
         .await
         .unwrap();
 
+    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let err = client_api
         .get_room_members(
-            observer.id.as_str(),
-            room.id.as_str(),
+            &observer.id,
+            &room_id,
             synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
@@ -186,7 +183,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         .create_room(
             "Pending Visibility Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -194,25 +191,21 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            observer.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, observer.id, RoomRole::Member, false)
         .await
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), pending_user.id.clone(), None)
+        .join_room(room.id, pending_user.id, None)
         .await
         .unwrap();
 
+    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .get_room_members(
-            observer.id.as_str(),
-            room.id.as_str(),
+            &observer.id,
+            &room_id,
             synctv_proto::client::GetRoomMembersRequest {
                 page: 1,
                 page_size: 20,
@@ -242,8 +235,8 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
 
     let err = client_api
         .list_room_join_reviews(
-            observer.id.as_str(),
-            room.id.as_str(),
+            &observer.id,
+            &room_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 20,
@@ -261,8 +254,8 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
 
     let reviews = client_api
         .list_room_join_reviews(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 20,
@@ -275,7 +268,10 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
 
     assert_eq!(reviews.total, 1);
     assert_eq!(reviews.reviews.len(), 1);
-    assert_eq!(reviews.reviews[0].user_id, pending_user.id.as_str());
+    assert_eq!(
+        reviews.reviews[0].user_id,
+        public_id_codec.encode_user_id(pending_user.id).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -305,7 +301,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         .create_room(
             "Member Version Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -313,13 +309,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         .unwrap();
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            member_one.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, member_one.id, RoomRole::Member, false)
         .await
         .unwrap();
 
@@ -334,12 +324,14 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         sort_direction: 0,
     };
 
+    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let first = client_api
-        .get_room_members(owner.id.as_str(), room.id.as_str(), request.clone())
+        .get_room_members(&owner.id, &room_id, request.clone())
         .await
         .unwrap();
     let second = client_api
-        .get_room_members(owner.id.as_str(), room.id.as_str(), request.clone())
+        .get_room_members(&owner.id, &room_id, request.clone())
         .await
         .unwrap();
 
@@ -347,18 +339,12 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
     assert_eq!(first.version, second.version);
 
     room_service
-        .add_member(
-            room.id.clone(),
-            owner.id.clone(),
-            member_two.id.clone(),
-            RoomRole::Member,
-            false,
-        )
+        .add_member(room.id, owner.id, member_two.id, RoomRole::Member, false)
         .await
         .unwrap();
 
     let third = client_api
-        .get_room_members(owner.id.as_str(), room.id.as_str(), request)
+        .get_room_members(&owner.id, &room_id, request)
         .await
         .unwrap();
 

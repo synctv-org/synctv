@@ -59,52 +59,17 @@ impl std::fmt::Display for MemberStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum RoomMemberListSortBy {
-    Username,
-    Role,
-    Status,
-    #[default]
-    JoinedAt,
-}
-
-impl RoomMemberListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Username => "u.username",
-            Self::Role => "rm.role",
-            Self::Status => "rm.left_at",
-            Self::JoinedAt => "rm.joined_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RoomMemberListSortBy {
+        Username => { display: "username", sql: "u.username" },
+        Role => { display: "role", sql: "rm.role" },
+        Status => { display: "status", sql: "rm.left_at" },
+        JoinedAt => { display: "joined_at", sql: "rm.joined_at", aliases: ["joinedat"] },
     }
-}
-
-impl std::str::FromStr for RoomMemberListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "username" => Ok(Self::Username),
-            "role" => Ok(Self::Role),
-            "status" => Ok(Self::Status),
-            "joined_at" | "joinedat" => Ok(Self::JoinedAt),
-            other => Err(format!("Unknown room member list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for RoomMemberListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Username => "username",
-            Self::Role => "role",
-            Self::Status => "status",
-            Self::JoinedAt => "joined_at",
-        };
-        f.write_str(value)
-    }
+    default = JoinedAt;
+    error = "Unknown room member list sort field";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,56 +102,22 @@ impl Default for RoomMemberListQuery {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum MyRoomListSortBy {
-    Name,
-    CreatedAt,
-    UpdatedAt,
-    LastActivityAt,
-    #[default]
-    JoinedAt,
-}
-
-impl MyRoomListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Name => "r.name",
-            Self::CreatedAt => "r.created_at",
-            Self::UpdatedAt => "r.updated_at",
-            Self::LastActivityAt => "r.last_activity_at",
-            Self::JoinedAt => "rm.joined_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MyRoomListSortBy {
+        Name => { display: "name", sql: "r.name" },
+        CreatedAt => { display: "created_at", sql: "r.created_at", aliases: ["createdat"] },
+        UpdatedAt => { display: "updated_at", sql: "r.updated_at", aliases: ["updatedat"] },
+        LastActivityAt => {
+            display: "last_activity_at",
+            sql: "r.last_activity_at",
+            aliases: ["lastactivityat"]
+        },
+        JoinedAt => { display: "joined_at", sql: "rm.joined_at", aliases: ["joinedat"] },
     }
-}
-
-impl std::str::FromStr for MyRoomListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "name" => Ok(Self::Name),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "last_activity_at" | "lastactivityat" => Ok(Self::LastActivityAt),
-            "joined_at" | "joinedat" => Ok(Self::JoinedAt),
-            other => Err(format!("Unknown related room list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for MyRoomListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Name => "name",
-            Self::CreatedAt => "created_at",
-            Self::UpdatedAt => "updated_at",
-            Self::LastActivityAt => "last_activity_at",
-            Self::JoinedAt => "joined_at",
-        };
-        f.write_str(value)
-    }
+    default = JoinedAt;
+    error = "Unknown related room list sort field";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -471,8 +402,8 @@ impl RoomMemberWithUser {
     #[must_use]
     pub fn effective_permissions(&self, role_default: PermissionBits) -> PermissionBits {
         let member = RoomMember {
-            room_id: self.room_id.clone(),
-            user_id: self.user_id.clone(),
+            room_id: self.room_id,
+            user_id: self.user_id,
             role: self.role,
             status: self.status,
             added_permissions: self.added_permissions,
@@ -496,11 +427,7 @@ mod tests {
     use super::*;
 
     fn test_member(role: RoomRole) -> RoomMember {
-        RoomMember::new(
-            RoomId("test_room".to_string()),
-            UserId("test_user".to_string()),
-            role,
-        )
+        RoomMember::new(RoomId::from(1), UserId::from(1), role)
     }
 
     #[test]
@@ -567,7 +494,7 @@ mod tests {
         assert!(!left_member.is_active());
 
         let mut banned_member = test_member(RoomRole::Member);
-        banned_member.ban(UserId("banner".to_string()), None);
+        banned_member.ban(UserId::from(2), None);
         assert!(!banned_member.is_active());
     }
 
@@ -581,8 +508,8 @@ mod tests {
             "Precondition: left_at starts as None"
         );
 
-        let banner = UserId("banner".to_string());
-        member.ban(banner.clone(), Some("bad behavior".to_string()));
+        let banner = UserId::from(2);
+        member.ban(banner, Some("bad behavior".to_string()));
 
         assert_eq!(member.status, MemberStatus::Left);
         assert!(
@@ -598,7 +525,7 @@ mod tests {
     #[test]
     fn test_unban_preserves_lifecycle_state() {
         let mut member = test_member(RoomRole::Member);
-        let banner = UserId("banner".to_string());
+        let banner = UserId::from(2);
         member.ban(banner, None);
         assert!(member.left_at.is_some(), "Precondition: ban sets left_at");
 

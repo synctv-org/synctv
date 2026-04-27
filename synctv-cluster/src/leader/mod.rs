@@ -244,8 +244,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use synctv_core::{
-    config::RedisDeploymentMode, service::DistributedLock, Config, RedisConnectionRuntime,
-    SharedStateProfile,
+    config::{ClusterLeaderElectionMode, RedisDeploymentMode},
+    service::DistributedLock,
+    Config, RedisConnectionRuntime, SharedStateProfile,
 };
 
 /// Leadership change event for observers.
@@ -344,8 +345,8 @@ pub async fn build_managed_leader_runtime(
         ));
     }
 
-    match config.cluster.leader_election_mode.as_str() {
-        "k8s_lease" => {
+    match config.cluster.leader_election_mode {
+        ClusterLeaderElectionMode::K8sLease => {
             let pod_name = std::env::var("POD_NAME").map_err(|_| {
                 anyhow::anyhow!(
                     "cluster.leader_election_mode='k8s_lease' requires POD_NAME; \
@@ -372,10 +373,9 @@ pub async fn build_managed_leader_runtime(
 
             Ok(Arc::new(AnyLeaderElector::K8s(elector)))
         }
-        "redis" => build_redis_leader_runtime(config, node_id, shared_state_profile),
-        other => Err(anyhow::anyhow!(
-            "cluster.leader_election_mode is validated before startup: {other}"
-        )),
+        ClusterLeaderElectionMode::Redis => {
+            build_redis_leader_runtime(config, node_id, shared_state_profile)
+        }
     }
 }
 
@@ -391,15 +391,14 @@ pub fn build_managed_leader_runtime(
         ));
     }
 
-    match config.cluster.leader_election_mode.as_str() {
-        "k8s_lease" => Err(anyhow::anyhow!(
+    match config.cluster.leader_election_mode {
+        ClusterLeaderElectionMode::K8sLease => Err(anyhow::anyhow!(
             "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
              Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
         )),
-        "redis" => build_redis_leader_runtime(config, node_id, shared_state_profile),
-        other => Err(anyhow::anyhow!(
-            "cluster.leader_election_mode is validated before startup: {other}"
-        )),
+        ClusterLeaderElectionMode::Redis => {
+            build_redis_leader_runtime(config, node_id, shared_state_profile)
+        }
     }
 }
 
@@ -1132,7 +1131,7 @@ impl LeaderElect for LeaderElector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core::config::RedisDeploymentMode;
+    use synctv_core::config::{ClusterLeaderElectionMode, RedisDeploymentMode};
     use synctv_core::{Config, RedisConnectionRuntime, SharedStateProfile};
 
     #[test]
@@ -1180,7 +1179,7 @@ mod tests {
     async fn test_builder_rejects_redis_mode_with_sentinel() {
         let mut config = Config::default();
         config.cluster.enabled = true;
-        config.cluster.leader_election_mode = "redis".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
 
@@ -1237,7 +1236,7 @@ mod tests {
 
         let mut config = Config::default();
         config.cluster.enabled = true;
-        config.cluster.leader_election_mode = "redis".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
         let profile = SharedStateProfile::from_runtime(
             Some(Arc::new(FakeRedisRuntime) as Arc<dyn RedisConnectionRuntime>),
             "synctv:",

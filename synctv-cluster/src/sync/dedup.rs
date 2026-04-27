@@ -38,7 +38,7 @@ impl DedupKey {
             event_type: event.event_type().to_string(),
             room_id: event
                 .room_id()
-                .map_or_else(|| "global".to_string(), |id| id.as_str().to_string()),
+                .map_or_else(|| "global".to_string(), ToString::to_string),
             user_id: String::new(),
             extra: eid.to_string(),
             timestamp_ms: event.timestamp().timestamp_millis(),
@@ -232,8 +232,8 @@ mod tests {
 
         let event = crate::sync::events::ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room1".to_string()),
-            user_id: UserId::from_string("user1".to_string()),
+            room_id: RoomId::from(10_000_092),
+            user_id: UserId::from(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),
@@ -252,8 +252,8 @@ mod tests {
     fn test_dedup_from_event_rejects_empty_event_id() {
         let event = crate::sync::events::ClusterEvent::ChatMessage {
             event_id: String::new(),
-            room_id: RoomId::from_string("room1".to_string()),
-            user_id: UserId::from_string("user1".to_string()),
+            room_id: RoomId::from(10_000_092),
+            user_id: UserId::from(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),

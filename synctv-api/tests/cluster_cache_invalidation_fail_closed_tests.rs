@@ -18,6 +18,10 @@ use synctv_core::{
     Config,
 };
 
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::default_for_tests()
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -88,6 +92,7 @@ async fn test_create_room_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -96,7 +101,7 @@ async fn test_create_room_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .create_room(
-            owner.id.as_str(),
+            &owner.id,
             synctv_api::proto::client::CreateRoomRequest {
                 name: "Fanout Room".to_string(),
                 description: "Room creation fanout regression".to_string(),
@@ -137,7 +142,7 @@ async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fan
         .create_room(
             "Protected Room".to_string(),
             "Room with password".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -164,6 +169,7 @@ async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fan
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -172,8 +178,8 @@ async fn test_set_room_password_fails_closed_when_cluster_cache_invalidation_fan
 
     let err = client_api
         .set_room_password(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::SetRoomPasswordRequest {
                 password: "NewPassword123".to_string(),
             },
@@ -205,7 +211,7 @@ async fn test_set_room_password_fails_closed_when_room_settings_fanout_fails() {
         .create_room(
             "Protected Room".to_string(),
             "Room with password".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -231,6 +237,7 @@ async fn test_set_room_password_fails_closed_when_room_settings_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -239,8 +246,8 @@ async fn test_set_room_password_fails_closed_when_room_settings_fanout_fails() {
 
     let err = client_api
         .set_room_password(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::SetRoomPasswordRequest {
                 password: "NewPassword123".to_string(),
             },
@@ -276,7 +283,7 @@ async fn test_update_member_permissions_fails_closed_when_cluster_fanout_fails()
         .create_room(
             "Permission Room".to_string(),
             "Room for permission updates".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -285,7 +292,7 @@ async fn test_update_member_permissions_fails_closed_when_cluster_fanout_fails()
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), target.id.clone(), RoomRole::Member)
+        .add_member(room.id, target.id, RoomRole::Member)
         .await
         .unwrap();
 
@@ -309,6 +316,7 @@ async fn test_update_member_permissions_fails_closed_when_cluster_fanout_fails()
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -317,10 +325,10 @@ async fn test_update_member_permissions_fails_closed_when_cluster_fanout_fails()
 
     let err = client_api
         .update_member_permissions(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::UpdateMemberPermissionsRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(target.id).unwrap(),
                 added_permissions: 1,
                 removed_permissions: 0,
                 admin_added_permissions: 0,
@@ -363,7 +371,7 @@ async fn test_kick_member_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Kick Room".to_string(),
             "Room for kick regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -372,7 +380,7 @@ async fn test_kick_member_fails_closed_when_cluster_fanout_fails() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), target.id.clone(), RoomRole::Member)
+        .add_member(room.id, target.id, RoomRole::Member)
         .await
         .unwrap();
 
@@ -396,6 +404,7 @@ async fn test_kick_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -404,10 +413,10 @@ async fn test_kick_member_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .kick_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::KickMemberRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(target.id).unwrap(),
             },
         )
         .await
@@ -442,7 +451,7 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Ban Room".to_string(),
             "Room for ban regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -451,7 +460,7 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), target.id.clone(), RoomRole::Member)
+        .add_member(room.id, target.id, RoomRole::Member)
         .await
         .unwrap();
 
@@ -475,6 +484,7 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -483,10 +493,10 @@ async fn test_ban_member_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .ban_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::BanMemberRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(target.id).unwrap(),
                 reason: "ban".to_string(),
             },
         )
@@ -526,7 +536,7 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Unban Room".to_string(),
             "Room for unban regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -535,12 +545,12 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), target.id.clone(), RoomRole::Member)
+        .add_member(room.id, target.id, RoomRole::Member)
         .await
         .unwrap();
     room_service
         .member_service()
-        .ban_member(room.id.clone(), owner.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, owner.id, target.id, None)
         .await
         .unwrap();
 
@@ -564,6 +574,7 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -572,10 +583,10 @@ async fn test_unban_member_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .unban_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::UnbanMemberRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: public_id_codec().encode_user_id(target.id).unwrap(),
             },
         )
         .await
@@ -623,7 +634,7 @@ async fn test_transfer_room_ownership_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Ownership Transfer Room".to_string(),
             "Room for ownership transfer fail-closed regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -631,7 +642,7 @@ async fn test_transfer_room_ownership_fails_closed_when_cluster_fanout_fails() {
         .unwrap();
     room_service
         .member_service()
-        .add_member(room.id.clone(), successor.id.clone(), RoomRole::Member)
+        .add_member(room.id, successor.id, RoomRole::Member)
         .await
         .unwrap();
 
@@ -654,6 +665,7 @@ async fn test_transfer_room_ownership_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -662,10 +674,10 @@ async fn test_transfer_room_ownership_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .transfer_room_ownership(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::TransferRoomOwnershipRequest {
-                new_owner_user_id: successor.id.as_str().to_string(),
+                new_owner_user_id: public_id_codec().encode_user_id(successor.id).unwrap(),
             },
         )
         .await
@@ -727,7 +739,7 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
         .create_room(
             "Ownership Transfer Publish Room".to_string(),
             "Room for ownership transfer fanout verification".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -735,7 +747,7 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
         .unwrap();
     room_service
         .member_service()
-        .add_member(room.id.clone(), successor.id.clone(), RoomRole::Member)
+        .add_member(room.id, successor.id, RoomRole::Member)
         .await
         .unwrap();
 
@@ -758,6 +770,7 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -766,10 +779,10 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
 
     let response = client_api
         .transfer_room_ownership(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::TransferRoomOwnershipRequest {
-                new_owner_user_id: successor.id.as_str().to_string(),
+                new_owner_user_id: public_id_codec().encode_user_id(successor.id).unwrap(),
             },
         )
         .await
@@ -780,7 +793,7 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
             .room
             .expect("room response should exist")
             .created_by,
-        successor.id.as_str()
+        public_id_codec().encode_user_id(successor.id).unwrap()
     );
 
     let mut old_owner_permission_changed = false;
@@ -825,7 +838,7 @@ async fn test_transfer_room_ownership_publishes_permission_and_cache_invalidatio
             ClusterEvent::CacheInvalidate { targets, .. } => {
                 assert_eq!(targets.len(), 1);
                 match &targets[0] {
-                    CacheTarget::Room { room_id } => assert_eq!(room_id, room.id.as_str()),
+                    CacheTarget::Room { room_id } => assert_eq!(room_id, &room.id),
                     other => panic!("expected room cache invalidation, got {other:?}"),
                 }
                 cache_invalidated = true;
@@ -865,7 +878,7 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Room Settings Room".to_string(),
             "Room for reset regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -901,6 +914,7 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -908,7 +922,10 @@ async fn test_reset_room_settings_fails_closed_when_cluster_fanout_fails() {
     ));
 
     let err = client_api
-        .reset_room_settings(owner.id.as_str(), room.id.as_str())
+        .reset_room_settings(
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
+        )
         .await
         .expect_err("cluster mode must fail closed when room settings fanout fails");
 
@@ -946,7 +963,7 @@ async fn test_update_room_settings_fails_closed_when_room_cache_invalidation_fan
         .create_room(
             "Room Settings Update Room".to_string(),
             "Room for update cache invalidation regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -979,6 +996,7 @@ async fn test_update_room_settings_fails_closed_when_room_cache_invalidation_fan
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -987,8 +1005,8 @@ async fn test_update_room_settings_fails_closed_when_room_cache_invalidation_fan
 
     let err = client_api
         .update_room_settings(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::UpdateRoomSettingsRequest {
                 settings: serde_json::to_vec(&updated).unwrap(),
             },
@@ -1028,7 +1046,7 @@ async fn test_reset_room_settings_fails_closed_when_room_cache_invalidation_fano
         .create_room(
             "Room Settings Reset Cache Room".to_string(),
             "Room for reset cache invalidation regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1065,6 +1083,7 @@ async fn test_reset_room_settings_fails_closed_when_room_cache_invalidation_fano
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1072,7 +1091,7 @@ async fn test_reset_room_settings_fails_closed_when_room_cache_invalidation_fano
     ));
 
     let err = client_api
-        .reset_room_settings(owner.id.as_str(), room.id.as_str())
+        .reset_room_settings(&owner.id, &public_id_codec().encode_room_id(room.id).unwrap())
         .await
         .expect_err(
             "cluster mode must fail closed when room cache invalidation fanout fails for settings reset",
@@ -1112,7 +1131,7 @@ async fn test_create_playlist_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Playlist Fanout Room".to_string(),
             "Playlist creation fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1139,6 +1158,7 @@ async fn test_create_playlist_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1147,8 +1167,8 @@ async fn test_create_playlist_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .create_playlist(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::CreatePlaylistRequest {
                 name: "Should Fail".to_string(),
                 parent_id: String::new(),
@@ -1193,7 +1213,7 @@ async fn test_update_playlist_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Playlist Update Room".to_string(),
             "Playlist update fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1202,10 +1222,10 @@ async fn test_update_playlist_fails_closed_when_cluster_fanout_fails() {
     let playlist = room_service
         .playlist_service()
         .create_playlist(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id.clone(),
+                room_id: room.id,
                 name: "Original Name".to_string(),
                 parent_id: None,
                 source_provider: None,
@@ -1236,6 +1256,7 @@ async fn test_update_playlist_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1244,10 +1265,10 @@ async fn test_update_playlist_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .update_playlist(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::UpdatePlaylistRequest {
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
                 name: "Updated Name".to_string(),
             },
         )
@@ -1288,7 +1309,7 @@ async fn test_delete_playlist_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Playlist Delete Room".to_string(),
             "Playlist delete fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1297,10 +1318,10 @@ async fn test_delete_playlist_fails_closed_when_cluster_fanout_fails() {
     let playlist = room_service
         .playlist_service()
         .create_playlist(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id.clone(),
+                room_id: room.id,
                 name: "Delete Me".to_string(),
                 parent_id: None,
                 source_provider: None,
@@ -1330,6 +1351,7 @@ async fn test_delete_playlist_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1338,10 +1360,10 @@ async fn test_delete_playlist_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .delete_playlist(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::DeletePlaylistRequest {
-                playlist_id: playlist.id.as_str().to_string(),
+                playlist_id: public_id_codec().encode_playlist_id(playlist.id).unwrap(),
                 force: false,
             },
         )
@@ -1381,7 +1403,7 @@ async fn test_delete_entries_playlist_delete_fails_closed_when_cluster_fanout_fa
         .create_room(
             "Playlist Delete Entries Room".to_string(),
             "Playlist delete-entries fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1390,10 +1412,10 @@ async fn test_delete_entries_playlist_delete_fails_closed_when_cluster_fanout_fa
     let playlist = room_service
         .playlist_service()
         .create_playlist(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::playlist::CreatePlaylistRequest {
-                room_id: room.id.clone(),
+                room_id: room.id,
                 name: "Delete Me Via Entries".to_string(),
                 parent_id: None,
                 source_provider: None,
@@ -1423,6 +1445,7 @@ async fn test_delete_entries_playlist_delete_fails_closed_when_cluster_fanout_fa
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1431,10 +1454,10 @@ async fn test_delete_entries_playlist_delete_fails_closed_when_cluster_fanout_fa
 
     let err = client_api
         .delete_entries(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::DeleteEntriesRequest {
-                playlist_ids: vec![playlist.id.as_str().to_string()],
+                playlist_ids: vec![public_id_codec().encode_playlist_id(playlist.id).unwrap()],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -1481,7 +1504,7 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
         .create_room(
             "Cascade Delete Room".to_string(),
             "Room for delete_entries cascade fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1491,10 +1514,10 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     let parent_playlist = room_service
         .playlist_service()
         .create_playlist(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             CreatePlaylistRequest {
-                room_id: room.id.clone(),
+                room_id: room.id,
                 name: "Parent Playlist".to_string(),
                 parent_id: None,
                 source_provider: None,
@@ -1507,12 +1530,12 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     let child_playlist = room_service
         .playlist_service()
         .create_playlist(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             CreatePlaylistRequest {
-                room_id: room.id.clone(),
+                room_id: room.id,
                 name: "Child Playlist".to_string(),
-                parent_id: Some(parent_playlist.id.clone()),
+                parent_id: Some(parent_playlist.id),
                 source_provider: None,
                 source_config: None,
                 provider_instance_name: None,
@@ -1523,10 +1546,10 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     let nested_media = room_service
         .media_service()
         .add_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             AddMediaRequest {
-                playlist_id: Some(child_playlist.id.clone()),
+                playlist_id: Some(child_playlist.id),
                 name: "Nested Media".to_string(),
                 source_provider: "direct_url".to_string(),
                 provider_instance_name: None,
@@ -1557,6 +1580,7 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1565,10 +1589,12 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
 
     let response = client_api
         .delete_entries(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::DeleteEntriesRequest {
-                playlist_ids: vec![parent_playlist.id.as_str().to_string()],
+                playlist_ids: vec![public_id_codec()
+                    .encode_playlist_id(parent_playlist.id)
+                    .unwrap()],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -1586,13 +1612,13 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     while let Ok(request) = rx.try_recv() {
         match request.event {
             ClusterEvent::PlaylistDeleted { playlist_id, .. } => {
-                deleted_playlist_ids.push(playlist_id.as_str().to_string());
+                deleted_playlist_ids.push(playlist_id);
             }
             ClusterEvent::MediaRemoved { media_id, .. } => {
-                deleted_media_ids.push(media_id.as_str().to_string());
+                deleted_media_ids.push(media_id);
             }
             ClusterEvent::KickPublisher { media_id, .. } => {
-                kicked_media_ids.push(media_id.as_str().to_string());
+                kicked_media_ids.push(media_id);
             }
             ClusterEvent::CacheInvalidate { .. } => {}
             other => panic!("unexpected delete_entries cascade event: {other:?}"),
@@ -1602,10 +1628,7 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     deleted_playlist_ids.sort_unstable();
     deleted_media_ids.sort_unstable();
     kicked_media_ids.sort_unstable();
-    let mut expected_playlist_ids = vec![
-        child_playlist.id.as_str().to_string(),
-        parent_playlist.id.as_str().to_string(),
-    ];
+    let mut expected_playlist_ids = vec![child_playlist.id, parent_playlist.id];
     expected_playlist_ids.sort_unstable();
 
     assert_eq!(
@@ -1615,12 +1638,12 @@ async fn test_delete_entries_publishes_cascaded_playlist_and_media_events() {
     );
     assert_eq!(
         deleted_media_ids,
-        vec![nested_media.id.as_str().to_string()],
+        vec![nested_media.id],
         "cluster fanout must publish MediaRemoved for media deleted through playlist cascade"
     );
     assert_eq!(
         kicked_media_ids,
-        vec![nested_media.id.as_str().to_string()],
+        vec![nested_media.id],
         "delete_entries must also kick publishers for media deleted through playlist cascade"
     );
 }
@@ -1645,7 +1668,7 @@ async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
         .create_room(
             "Media Room".to_string(),
             "Room for media fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1672,6 +1695,7 @@ async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1680,8 +1704,8 @@ async fn test_add_media_fails_closed_when_cluster_fanout_fails() {
 
     let err = client_api
         .add_media(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::AddMediaRequest {
                 playlist_id: None,
                 provider: "direct_url".to_string(),
@@ -1735,7 +1759,7 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
         .create_room(
             "Media Batch Room".to_string(),
             "Room for media batch fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1761,6 +1785,7 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1769,8 +1794,8 @@ async fn test_add_media_batch_fails_closed_when_cluster_fanout_capacity_is_insuf
 
     let err = client_api
         .add_media_batch(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::AddMediaBatchRequest {
                 items: vec![
                     synctv_api::proto::client::AddMediaRequest {
@@ -1840,7 +1865,7 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
         .create_room(
             "Media Reorder Room".to_string(),
             "Room for move-media fanout regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1850,8 +1875,8 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
     let media_one = room_service
         .media_service()
         .add_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             AddMediaRequest {
                 playlist_id: None,
                 name: "fanout-reorder-a".to_string(),
@@ -1867,8 +1892,8 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
     let media_two = room_service
         .media_service()
         .add_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             AddMediaRequest {
                 playlist_id: None,
                 name: "fanout-reorder-b".to_string(),
@@ -1902,6 +1927,7 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -1910,14 +1936,14 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
 
     let err = client_api
         .move_media(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::MoveMediaRequest {
-                media_ids: vec![media_two.id.as_str().to_string()],
+                media_ids: vec![public_id_codec().encode_media_id(media_two.id).unwrap()],
                 source_playlist_id: None,
                 target_playlist_id: None,
                 all_from_scope: false,
-                before_media_id: Some(media_one.id.as_str().to_string()),
+                before_media_id: Some(public_id_codec().encode_media_id(media_one.id).unwrap()),
                 after_media_id: None,
             },
         )
@@ -1935,10 +1961,10 @@ async fn test_move_media_fails_closed_when_media_updated_fanout_fails() {
         .get_room_root_media(&room.id)
         .await
         .unwrap();
-    let ordered_ids: Vec<&str> = media_after.iter().map(|media| media.id.as_str()).collect();
+    let ordered_ids: Vec<_> = media_after.iter().map(|media| media.id).collect();
     assert_eq!(
         ordered_ids,
-        vec![media_one.id.as_str(), media_two.id.as_str()],
+        vec![media_one.id, media_two.id],
         "media reorder must not commit before playlist fanout capacity is reserved"
     );
 }
@@ -1966,7 +1992,7 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
         .create_room(
             "Media Reorder Batch Room".to_string(),
             "Room for playlist reordered fail-closed regression".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1976,8 +2002,8 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
     let media_one = room_service
         .media_service()
         .add_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             AddMediaRequest {
                 playlist_id: None,
                 name: "fanout-reorder-batch-a".to_string(),
@@ -1993,8 +2019,8 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
     let media_two = room_service
         .media_service()
         .add_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             AddMediaRequest {
                 playlist_id: None,
                 name: "fanout-reorder-batch-b".to_string(),
@@ -2028,6 +2054,7 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
     .with_cluster_fanout_service(synctv_api::cluster_fanout::default_cluster_fanout_service(
         Some(tx),
@@ -2036,12 +2063,12 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
 
     let err = client_api
         .move_media(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &public_id_codec().encode_room_id(room.id).unwrap(),
             synctv_api::proto::client::MoveMediaRequest {
                 media_ids: vec![
-                    media_two.id.as_str().to_string(),
-                    media_one.id.as_str().to_string(),
+                    public_id_codec().encode_media_id(media_two.id).unwrap(),
+                    public_id_codec().encode_media_id(media_one.id).unwrap(),
                 ],
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -2064,10 +2091,10 @@ async fn test_move_media_batch_fails_closed_when_playlist_reordered_fanout_fails
         .get_room_root_media(&room.id)
         .await
         .unwrap();
-    let ordered_ids: Vec<&str> = media_after.iter().map(|media| media.id.as_str()).collect();
+    let ordered_ids: Vec<_> = media_after.iter().map(|media| media.id).collect();
     assert_eq!(
         ordered_ids,
-        vec![media_one.id.as_str(), media_two.id.as_str()],
+        vec![media_one.id, media_two.id],
         "batch media reorder must not commit before playlist reordered fanout capacity is reserved"
     );
 }

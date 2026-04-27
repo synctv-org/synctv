@@ -11,7 +11,7 @@ use crate::proto::providers::bilibili::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use synctv_core::models::{ProviderCredential, UserProviderCredential};
+use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{BilibiliProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
@@ -53,13 +53,13 @@ impl BilibiliApiImpl {
     /// Resolve the user's single global Bilibili credential.
     async fn resolve_cookies(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
     ) -> Result<Option<HashMap<String, String>>, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
                 &server_id,
             )
@@ -90,15 +90,15 @@ impl BilibiliApiImpl {
     /// Persist Bilibili cookies as a credential.
     async fn persist_cookies(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         cookies: &HashMap<String, String>,
     ) -> Result<String, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let credential_data = ProviderCredential::bilibili(cookies.clone());
 
         let credential = UserProviderCredential {
-            id: UserProviderCredential::new_id(),
-            user_id: caller_user_id.to_string(),
+            id: 0,
+            user_id: *caller_user_id,
             provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: None,
@@ -123,7 +123,7 @@ impl BilibiliApiImpl {
 
         publish_provider_credential_changed(
             self.event_service.as_ref(),
-            caller_user_id,
+            *caller_user_id,
             synctv_core::provider::BilibiliProvider::NAME,
             &server_id,
         );
@@ -134,7 +134,7 @@ impl BilibiliApiImpl {
     /// Parse Bilibili URL using stored cookies
     pub async fn parse(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: ParseRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
@@ -144,7 +144,7 @@ impl BilibiliApiImpl {
 
     pub async fn parse_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: ParseRequest,
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -305,7 +305,7 @@ impl BilibiliApiImpl {
     /// Check QR code login status. On success, persist cookies server-side.
     pub async fn check_qr(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: CheckQrRequest,
         instance_name: Option<&str>,
     ) -> Result<QrStatusResponse, synctv_core::provider::ProviderError> {
@@ -315,7 +315,7 @@ impl BilibiliApiImpl {
 
     pub async fn check_qr_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: CheckQrRequest,
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -400,7 +400,7 @@ impl BilibiliApiImpl {
     /// Login with SMS code. On success, persist cookies server-side.
     pub async fn login_sms(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: LoginSmsRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginSmsResponse, synctv_core::provider::ProviderError> {
@@ -410,7 +410,7 @@ impl BilibiliApiImpl {
 
     pub async fn login_sms_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: LoginSmsRequest,
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -435,7 +435,7 @@ impl BilibiliApiImpl {
     /// Get user info using stored cookies
     pub async fn get_user_info(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: UserInfoRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
@@ -445,7 +445,7 @@ impl BilibiliApiImpl {
 
     pub async fn get_user_info_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         _req: UserInfoRequest,
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -477,14 +477,14 @@ impl BilibiliApiImpl {
     /// Logout and delete stored credential
     pub async fn logout(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         _req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         if let Some(existing) = self
             .credential_repo
             .get_by_provider_and_server(
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
                 &server_id,
             )
@@ -496,7 +496,7 @@ impl BilibiliApiImpl {
             })?
         {
             self.credential_repo
-                .delete(&existing.id)
+                .delete(existing.id)
                 .await
                 .map_err(|e| {
                     synctv_core::provider::ProviderError::Internal(format!(
@@ -505,7 +505,7 @@ impl BilibiliApiImpl {
                 })?;
             publish_provider_credential_changed(
                 self.event_service.as_ref(),
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::BilibiliProvider::NAME,
                 &server_id,
             );
@@ -518,7 +518,7 @@ impl BilibiliApiImpl {
 
     pub async fn get_binds(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         _instance_name: Option<&str>,
     ) -> Result<GetBindsResponse, crate::impls::ApiError> {
         let server_id = UserProviderCredential::bilibili_server_id();
@@ -532,7 +532,7 @@ impl BilibiliApiImpl {
         .into_iter()
         .filter(|credential| credential.server_id == server_id)
         .map(|credential| BindInfo {
-            id: credential.id,
+            id: credential.id.to_string(),
             server_id: credential.server_id,
             created_at: credential.created_at.timestamp(),
         })
@@ -570,7 +570,7 @@ mod tests {
 
         let response = api
             .get_user_info(
-                "user-1",
+                &synctv_core::models::UserId::new(),
                 crate::proto::providers::bilibili::UserInfoRequest {
                     instance_name: String::new(),
                 },
@@ -594,7 +594,7 @@ mod tests {
 
         let response = api
             .logout(
-                "user-1",
+                &synctv_core::models::UserId::new(),
                 crate::proto::providers::bilibili::LogoutRequest {
                     instance_name: String::new(),
                 },

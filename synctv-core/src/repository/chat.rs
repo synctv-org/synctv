@@ -22,19 +22,13 @@ impl ChatRepository {
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
-            INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id, room_id, user_id, content, message_type, created_at
             ",
         )
-        .bind(&message.id)
-        .bind(message.room_id.as_str())
-        .bind(
-            message
-                .user_id
-                .as_ref()
-                .map(super::super::models::id::UserId::as_str),
-        )
+        .bind(message.room_id)
+        .bind(message.user_id)
         .bind(&message.content)
         .bind(message.message_type)
         .bind(message.created_at)
@@ -57,9 +51,9 @@ impl ChatRepository {
     pub async fn list_by_room_cursor(
         &self,
         room_id: &RoomId,
-        cursor: Option<(DateTime<Utc>, &str)>,
+        cursor: Option<(DateTime<Utc>, i64)>,
         limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, String)>)> {
+    ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, i64)>)> {
         // Enforce maximum page size to prevent OOM on very large rooms
         let limit = limit.clamp(1, 100);
 
@@ -73,7 +67,7 @@ impl ChatRepository {
                 LIMIT $4
                 ",
             )
-            .bind(room_id.as_str())
+            .bind(room_id)
             .bind(cursor_created_at)
             .bind(cursor_id)
             .bind(limit)
@@ -92,7 +86,7 @@ impl ChatRepository {
                 LIMIT $2
                 ",
             )
-            .bind(room_id.as_str())
+            .bind(room_id)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -102,7 +96,7 @@ impl ChatRepository {
         // message in this page. If we got a full page there may be more;
         // otherwise we're at the beginning.
         let next_cursor = if i32::try_from(messages.len()).ok() == Some(limit) {
-            messages.last().map(|m| (m.created_at, m.id.clone()))
+            messages.last().map(|m| (m.created_at, m.id))
         } else {
             None
         };
@@ -119,7 +113,7 @@ impl ChatRepository {
     /// Note: Without a `created_at` filter, this query cannot use partition
     /// pruning and may scan multiple partitions. However, since this is a
     /// primary key lookup, it remains efficient.
-    pub async fn get_by_id(&self, message_id: &str) -> Result<Option<ChatMessage>> {
+    pub async fn get_by_id(&self, message_id: i64) -> Result<Option<ChatMessage>> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
             SELECT id, room_id, user_id, content, message_type, created_at
@@ -138,7 +132,7 @@ impl ChatRepository {
     ///
     /// Requires `created_at` to enable partition pruning. Without it, `PostgreSQL`
     /// would scan all partitions to find the row.
-    pub async fn delete(&self, message_id: &str, created_at: DateTime<Utc>) -> Result<bool> {
+    pub async fn delete(&self, message_id: i64, created_at: DateTime<Utc>) -> Result<bool> {
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
@@ -167,7 +161,7 @@ impl ChatRepository {
               AND created_at >= NOW() - INTERVAL '90 days'
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -206,7 +200,7 @@ impl ChatRepository {
             )
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(keep_count)
         .execute(&self.pool)
         .await?;

@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::node_registry::NodeInfo;
+use super::node_registry::{NodeDiscoverySource, NodeInfo};
 use super::probe_node_identity;
 use super::runtime::ClusterNodeDirectory;
 use crate::error::{Error, Result};
@@ -174,7 +174,9 @@ impl K8sDnsDiscovery {
             .collect();
 
         for (_, info) in verified_peers {
-            registry.upsert_discovered_local_node(info, "k8s_dns").await;
+            registry
+                .upsert_discovered_local_node(info, NodeDiscoverySource::K8sDns)
+                .await;
         }
 
         for node_id in old_mapping
@@ -182,7 +184,7 @@ impl K8sDnsDiscovery {
             .filter(|node_id| !new_node_ids.contains(*node_id))
         {
             let _ = registry
-                .remove_discovered_local_node(node_id, "k8s_dns")
+                .remove_discovered_local_node(node_id, NodeDiscoverySource::K8sDns)
                 .await;
         }
 
@@ -254,8 +256,7 @@ impl K8sDnsDiscovery {
                             let mut info =
                                 NodeInfo::new(identity.node_id, peer.api_address.clone())
                                     .with_epoch(identity.epoch);
-                            info.metadata
-                                .insert("discovery".to_string(), "k8s_dns".to_string());
+                            info.set_discovery_source(NodeDiscoverySource::K8sDns);
                             verified_peers.push((peer.ip.clone(), info));
                         } else {
                             tracing::debug!(
@@ -463,9 +464,7 @@ mod tests {
 
         let mut node_info =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string()).with_epoch(7);
-        node_info
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        node_info.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
             .await;
@@ -494,9 +493,7 @@ mod tests {
         .with_node_registry(registry.clone());
 
         let mut node_info = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string());
-        node_info
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        node_info.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), node_info)])
             .await;
@@ -523,9 +520,7 @@ mod tests {
         .with_node_registry(registry.clone());
 
         let mut dns_node = NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string());
-        dns_node
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        dns_node.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), dns_node)])
             .await;
@@ -558,18 +553,14 @@ mod tests {
 
         let mut original =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.2:8080".to_string()).with_epoch(7);
-        original
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        original.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.2".to_string(), original)])
             .await;
 
         let mut restarted =
             NodeInfo::new("peer-node-1".to_string(), "10.0.0.9:8080".to_string()).with_epoch(8);
-        restarted
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        restarted.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         disc.sync_verified_peers_to_registry(vec![("10.0.0.9".to_string(), restarted)])
             .await;

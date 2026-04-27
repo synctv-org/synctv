@@ -266,8 +266,8 @@ async fn test_refresh_token_happy_path() {
         .verify_refresh_token(&new_refresh)
         .expect("New refresh token valid");
 
-    assert_eq!(access_claims.sub, user.id.as_str());
-    assert_eq!(refresh_claims.sub, user.id.as_str());
+    assert_eq!(access_claims.sub, user.id.to_string());
+    assert_eq!(refresh_claims.sub, user.id.to_string());
 
     // New tokens should be different from old ones
     assert_ne!(new_access, access_token);
@@ -424,7 +424,10 @@ async fn test_refresh_token_password_version_mismatch_rejected() {
     let claims = jwt
         .verify_refresh_token(&refresh_token)
         .expect("Token valid");
-    let user_id = UserId::from_string(claims.sub);
+    let user_id = claims
+        .sub
+        .parse::<UserId>()
+        .expect("valid numeric user id claim");
     service
         .set_password(&user_id, "NewStrongPass1")
         .await
@@ -498,7 +501,7 @@ async fn test_refresh_token_deleted_user_rejected() {
 
     // Soft-delete via raw SQL
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to soft-delete");
@@ -701,7 +704,7 @@ async fn test_login_rejected_user_rejected() {
     .bind(Option::<String>::None)
     .bind("not-used")
     .bind(user.signup_method)
-    .bind(synctv_core::models::ReviewStatus::Rejected.as_i16())
+    .bind(synctv_core::models::ReviewStatus::Rejected)
     .bind("rejected by test")
     .execute(&pool)
     .await
@@ -746,7 +749,7 @@ async fn test_login_soft_deleted_user_rejected() {
 
     // Soft-delete
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to soft-delete");
@@ -781,7 +784,7 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
 
     // Set email_verified = false
     sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to set unverified");
@@ -819,7 +822,7 @@ async fn test_login_unverified_email_allowed_when_not_required() {
 
     // Set email_verified = false
     sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to set unverified");
@@ -946,7 +949,7 @@ async fn test_login_email_verification_no_account_enumeration() {
 
     // Mark email as unverified (but user is Active because verification was not required during registration)
     sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
-        .bind(user_with_email.id.as_str())
+        .bind(user_with_email.id)
         .execute(&pool)
         .await
         .expect("Failed to set unverified");
@@ -1098,9 +1101,9 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
         .expect("Delete with OAuth2 cleanup should succeed");
 
     // Verify user is soft-deleted
-    let deleted_user: Option<(String,)> =
+    let deleted_user: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM users WHERE id = $1 AND deleted_at IS NOT NULL")
-            .bind(user.id.as_str())
+            .bind(user.id)
             .fetch_optional(&pool)
             .await
             .expect("Query should succeed");
@@ -1886,7 +1889,7 @@ async fn test_refresh_token_email_verification_recheck() {
 
     // Un-verify the email
     sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to un-verify email");

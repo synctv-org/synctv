@@ -1,397 +1,200 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Expected length of all entity IDs (shared base62 IDs)
-pub const ID_LENGTH: usize = 12;
+pub const INVITE_CODE_LENGTH: usize = 24;
 
-/// Generate a 12-character shared base62 ID for entity IDs
-pub fn generate_id() -> String {
-    synctv_common::snanoid!(ID_LENGTH)
+static EPHEMERAL_ID_COUNTER: AtomicI64 = AtomicI64::new(1_000_000_000);
+static USER_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static ROOM_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static MEDIA_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static PLAYLIST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static REVIEW_REQUEST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static BAN_RECORD_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+
+/// Generate a process-local positive numeric ID for tests and in-memory values.
+///
+/// Persistent database rows must use database identity columns instead.
+pub fn generate_id() -> i64 {
+    EPHEMERAL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Validate that an externally-supplied ID string uses the expected base62
-/// alphabet and length.
-///
-/// Returns `Err` with a descriptive message when validation fails.
-fn validate_id(id: &str, type_name: &str) -> Result<(), String> {
-    if id.len() != ID_LENGTH {
-        return Err(format!(
-            "invalid {type_name}: expected {ID_LENGTH} characters, got {}",
-            id.len()
-        ));
-    }
+pub fn generate_invite_code() -> String {
+    synctv_common::snanoid!(INVITE_CODE_LENGTH)
+}
 
-    if synctv_common::id::is_valid_with_len(id, ID_LENGTH) {
+fn validate_id(id: i64, type_name: &str) -> Result<(), String> {
+    if id > 0 {
         Ok(())
     } else {
-        Err(format!(
-            "invalid {type_name}: expected only ASCII alphanumeric characters"
-        ))
+        Err(format!("invalid {type_name}: expected a positive integer"))
     }
 }
 
-/// User ID type (CHAR(12) shared base62 ID)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct UserId(pub String);
+pub trait TypedId:
+    Copy + From<i64> + Into<i64> + fmt::Display + FromStr<Err = String> + Send + Sync + 'static
+{
+    const TYPE_NAME: &'static str;
 
-impl UserId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(generate_id())
-    }
-
-    #[must_use]
-    pub const fn from_string(id: String) -> Self {
-        Self(id)
-    }
-
-    /// Create a `UserId` from an externally-supplied string, validating the
-    /// expected base62 format. Use this in API / gRPC handlers that receive
-    /// IDs from untrusted input.
-    pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id(&id, "UserId")?;
-        Ok(Self(id))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+    fn get(self) -> i64;
 }
 
-impl Default for UserId {
-    fn default() -> Self {
-        Self::new()
-    }
+macro_rules! numeric_id_type {
+    ($name:ident, $label:literal, $counter:ident) => {
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(i64);
+
+        impl $name {
+            pub const MAX: Self = Self(i64::MAX);
+
+            #[must_use]
+            pub fn new() -> Self {
+                Self($counter.fetch_add(1, Ordering::Relaxed))
+            }
+
+            #[must_use]
+            pub fn get(self) -> i64 {
+                self.0
+            }
+
+            #[must_use]
+            pub fn as_i64(&self) -> i64 {
+                self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl From<i64> for $name {
+            fn from(id: i64) -> Self {
+                Self(id)
+            }
+        }
+
+        impl TryFrom<u64> for $name {
+            type Error = String;
+
+            fn try_from(id: u64) -> Result<Self, Self::Error> {
+                let id =
+                    i64::try_from(id).map_err(|_| format!("invalid {}: exceeds i64", $label))?;
+                validate_id(id, $label)?;
+                Ok(Self(id))
+            }
+        }
+
+        impl From<$name> for i64 {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+
+        impl TypedId for $name {
+            const TYPE_NAME: &'static str = $label;
+
+            fn get(self) -> i64 {
+                self.0
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                let id = value
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|error| format!("invalid {}: {error}", $label))?;
+                validate_id(id, $label)?;
+                Ok(Self(id))
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let id = i64::deserialize(deserializer)?;
+                validate_id(id, $label).map_err(serde::de::Error::custom)?;
+                Ok(Self(id))
+            }
+        }
+
+        impl sqlx::Type<sqlx::Postgres> for $name {
+            fn type_info() -> sqlx::postgres::PgTypeInfo {
+                <i64 as sqlx::Type<sqlx::Postgres>>::type_info()
+            }
+        }
+
+        impl sqlx::Encode<'_, sqlx::Postgres> for $name {
+            fn encode_by_ref(
+                &self,
+                buf: &mut sqlx::postgres::PgArgumentBuffer,
+            ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+                <i64 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
+            }
+        }
+
+        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $name {
+            fn decode(
+                value: sqlx::postgres::PgValueRef<'r>,
+            ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let id = <i64 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+                validate_id(id, $label)?;
+                Ok(Self(id))
+            }
+        }
+    };
 }
 
-impl std::fmt::Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for UserId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-// Database mapping: UserId <-> CHAR(12) (using bpchar for fixed-length strings)
-impl sqlx::Type<sqlx::Postgres> for UserId {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("bpchar")
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for UserId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserId {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(s))
-    }
-}
-
-/// Room ID type (CHAR(12) shared base62 ID)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RoomId(pub String);
-
-impl RoomId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(generate_id())
-    }
-
-    #[must_use]
-    pub const fn from_string(id: String) -> Self {
-        Self(id)
-    }
-
-    /// Create a `RoomId` from an externally-supplied string, validating the
-    /// expected base62 format. Use this in API / gRPC handlers that receive
-    /// IDs from untrusted input.
-    pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id(&id, "RoomId")?;
-        Ok(Self(id))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for RoomId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for RoomId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for RoomId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-// Database mapping: RoomId <-> CHAR(12) (using bpchar for fixed-length strings)
-impl sqlx::Type<sqlx::Postgres> for RoomId {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("bpchar")
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for RoomId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomId {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(s))
-    }
-}
-
-/// Media ID type (CHAR(12) shared base62 ID)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MediaId(pub String);
-
-impl MediaId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(generate_id())
-    }
-
-    #[must_use]
-    pub const fn from_string(id: String) -> Self {
-        Self(id)
-    }
-
-    /// Create a `MediaId` from an externally-supplied string, validating the
-    /// expected base62 format. Use this in API / gRPC handlers that receive
-    /// IDs from untrusted input.
-    pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id(&id, "MediaId")?;
-        Ok(Self(id))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for MediaId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for MediaId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for MediaId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-// Database mapping: MediaId <-> CHAR(12) (using bpchar for fixed-length strings)
-impl sqlx::Type<sqlx::Postgres> for MediaId {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("bpchar")
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for MediaId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MediaId {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(s))
-    }
-}
-
-/// Playlist ID type (CHAR(12) shared base62 ID)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PlaylistId(pub String);
-
-impl PlaylistId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(generate_id())
-    }
-
-    #[must_use]
-    pub const fn from_string(id: String) -> Self {
-        Self(id)
-    }
-
-    /// Create a `PlaylistId` from an externally-supplied string, validating the
-    /// expected base62 format. Use this in API / gRPC handlers that receive
-    /// IDs from untrusted input.
-    pub fn from_string_validated(id: String) -> Result<Self, String> {
-        validate_id(&id, "PlaylistId")?;
-        Ok(Self(id))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for PlaylistId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for PlaylistId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for PlaylistId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-// Database mapping: PlaylistId <-> CHAR(12) (using bpchar for fixed-length strings)
-impl sqlx::Type<sqlx::Postgres> for PlaylistId {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("bpchar")
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for PlaylistId {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for PlaylistId {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(s))
-    }
-}
+numeric_id_type!(UserId, "UserId", USER_ID_COUNTER);
+numeric_id_type!(RoomId, "RoomId", ROOM_ID_COUNTER);
+numeric_id_type!(MediaId, "MediaId", MEDIA_ID_COUNTER);
+numeric_id_type!(PlaylistId, "PlaylistId", PLAYLIST_ID_COUNTER);
+numeric_id_type!(
+    ReviewRequestId,
+    "ReviewRequestId",
+    REVIEW_REQUEST_ID_COUNTER
+);
+numeric_id_type!(BanRecordId, "BanRecordId", BAN_RECORD_ID_COUNTER);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_id() {
-        let id = generate_id();
-        assert_eq!(id.len(), 12);
-        assert!(synctv_common::id::is_valid(&id));
-        assert!(!id.contains('-'));
-        assert!(!id.contains('_'));
-    }
-
-    #[test]
-    fn test_user_id() {
+    fn new_ids_are_positive_and_unique() {
         let id1 = UserId::new();
         let id2 = UserId::new();
+        assert!(id1.as_i64() > 0);
         assert_ne!(id1, id2);
-        assert_eq!(id1.as_str().len(), 12);
     }
 
     #[test]
-    fn test_room_id() {
-        let id1 = RoomId::new();
-        let id2 = RoomId::new();
-        assert_ne!(id1, id2);
-        assert_eq!(id1.as_str().len(), 12);
+    fn parsed_ids_accept_positive_integers() {
+        assert_eq!("1".parse::<UserId>().unwrap().as_i64(), 1);
+        assert_eq!("2".parse::<RoomId>().unwrap().as_i64(), 2);
+        assert_eq!("3".parse::<MediaId>().unwrap().as_i64(), 3);
+        assert_eq!("4".parse::<PlaylistId>().unwrap().as_i64(), 4);
+        assert_eq!("5".parse::<ReviewRequestId>().unwrap().as_i64(), 5);
+        assert_eq!("6".parse::<BanRecordId>().unwrap().as_i64(), 6);
     }
 
     #[test]
-    fn test_media_id() {
-        let id1 = MediaId::new();
-        let id2 = MediaId::new();
-        assert_ne!(id1, id2);
-        assert_eq!(id1.as_str().len(), 12);
-    }
-
-    #[test]
-    fn test_from_string_validated_accepts_valid_base62_id() {
-        let valid = "abcdefghijkl".to_string(); // 12 chars
-        assert!(UserId::from_string_validated(valid.clone()).is_ok());
-        assert!(RoomId::from_string_validated(valid.clone()).is_ok());
-        assert!(MediaId::from_string_validated(valid.clone()).is_ok());
-        assert!(PlaylistId::from_string_validated(valid).is_ok());
-    }
-
-    #[test]
-    fn test_from_string_validated_rejects_wrong_length() {
-        let too_short = "abc".to_string();
-        let too_long = "abcdefghijklmnop".to_string();
-
-        assert!(UserId::from_string_validated(too_short.clone()).is_err());
-        assert!(UserId::from_string_validated(too_long.clone()).is_err());
-        assert!(RoomId::from_string_validated(too_short.clone()).is_err());
-        assert!(MediaId::from_string_validated(too_short.clone()).is_err());
-        assert!(PlaylistId::from_string_validated(too_short).is_err());
-        assert!(PlaylistId::from_string_validated(too_long).is_err());
-    }
-
-    #[test]
-    fn test_from_string_validated_rejects_empty() {
-        assert!(UserId::from_string_validated(String::new()).is_err());
-    }
-
-    #[test]
-    fn test_from_string_validated_rejects_non_base62_characters() {
-        for invalid in ["abc-defghijk", "abc_defghijk", "abc.defghijk"] {
-            assert!(UserId::from_string_validated(invalid.to_string()).is_err());
-            assert!(RoomId::from_string_validated(invalid.to_string()).is_err());
-            assert!(MediaId::from_string_validated(invalid.to_string()).is_err());
-            assert!(PlaylistId::from_string_validated(invalid.to_string()).is_err());
-        }
+    fn parsed_ids_reject_non_positive_values() {
+        assert!("0".parse::<UserId>().is_err());
+        assert!("-1".parse::<RoomId>().is_err());
     }
 }

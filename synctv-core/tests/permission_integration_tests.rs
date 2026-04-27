@@ -19,11 +19,11 @@ use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
-    let username = format!("test_user_{}", user_id.as_str());
+    let username = format!("test_user_{user_id}");
     let user = User {
-        id: user_id.clone(),
+        id: *user_id,
         username,
-        email: Some(format!("{}@test.com", user_id.as_str())),
+        email: Some(format!("{user_id}@test.com")),
         password_hash: "test_hash".to_string(),
         signup_method: SignupMethod::Email,
         role: synctv_core::models::UserRole::User,
@@ -113,12 +113,7 @@ async fn test_permission_check_with_database_member() {
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let mut member = make_member(
-        room.id.clone(),
-        user_id.clone(),
-        RoomRole::Member,
-        MemberStatus::Active,
-    );
+    let mut member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
     member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA;
     member_repo
         .add(&member)
@@ -165,12 +160,7 @@ async fn test_permission_allow_deny_pattern() {
 
     let admin_id = UserId::new();
     create_test_user(&pool, &admin_id).await;
-    let admin_member = make_member(
-        room.id.clone(),
-        admin_id.clone(),
-        RoomRole::Admin,
-        MemberStatus::Active,
-    );
+    let admin_member = make_member(room.id, admin_id, RoomRole::Admin, MemberStatus::Active);
     member_repo
         .add(&admin_member)
         .await
@@ -178,12 +168,7 @@ async fn test_permission_allow_deny_pattern() {
 
     let guest_id = UserId::new();
     create_test_user(&pool, &guest_id).await;
-    let guest_member = make_member(
-        room.id.clone(),
-        guest_id.clone(),
-        RoomRole::Guest,
-        MemberStatus::Active,
-    );
+    let guest_member = make_member(room.id, guest_id, RoomRole::Guest, MemberStatus::Active);
     member_repo
         .add(&guest_member)
         .await
@@ -215,7 +200,7 @@ async fn test_permission_banned_member_denied() {
 
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
-    let room = make_room(creator_id.clone());
+    let room = make_room(creator_id);
     room_repo
         .create(&room)
         .await
@@ -224,12 +209,7 @@ async fn test_permission_banned_member_denied() {
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
     // First add as active member, then ban them (the add() method doesn't support setting banned_at/left_at)
-    let member = make_member(
-        room.id.clone(),
-        user_id.clone(),
-        RoomRole::Member,
-        MemberStatus::Active,
-    );
+    let member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
     member_repo
         .add(&member)
         .await
@@ -320,12 +300,7 @@ async fn test_concurrent_permission_checks() {
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let member = make_member(
-        room.id.clone(),
-        user_id.clone(),
-        RoomRole::Member,
-        MemberStatus::Active,
-    );
+    let member = make_member(room.id, user_id, RoomRole::Member, MemberStatus::Active);
     member_repo
         .add(&member)
         .await
@@ -336,8 +311,8 @@ async fn test_concurrent_permission_checks() {
     let mut handles = vec![];
     for _ in 0..10 {
         let service = perm_service.clone();
-        let room_id = room.id.clone();
-        let uid = user_id.clone();
+        let room_id = room.id;
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             service

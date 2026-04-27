@@ -70,7 +70,7 @@ async fn test_create_and_get_token() {
     assert_eq!(created.user_id, user.id);
     assert_eq!(
         created.token_type,
-        EmailTokenType::EmailVerification.as_i16()
+        i16::from(EmailTokenType::EmailVerification)
     );
     assert!(created.used_at.is_none());
 
@@ -406,14 +406,14 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
     assert_eq!(second.user_id, user.id);
     assert_eq!(
         second.token_type,
-        EmailTokenType::EmailVerification.as_i16()
+        i16::from(EmailTokenType::EmailVerification)
     );
 
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
-    .bind(user.id.as_str())
-    .bind(EmailTokenType::EmailVerification.as_i16())
+    .bind(user.id)
+    .bind(i16::from(EmailTokenType::EmailVerification))
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -454,8 +454,8 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
-    .bind(user.id.as_str())
-    .bind(EmailTokenType::EmailVerification.as_i16())
+    .bind(user.id)
+    .bind(i16::from(EmailTokenType::EmailVerification))
     .fetch_one(user_repo.pool())
     .await
     .unwrap();

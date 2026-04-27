@@ -1072,7 +1072,7 @@ impl OAuth2Service {
                     if candidate == &base_username {
                         tracing::info!(
                             "Created new user {} (username='{}', sanitized from '{}') via OAuth2 provider {} (provider_user_id={})",
-                            created_user.id.as_str(),
+                            created_user.id,
                             candidate,
                             user_info.username,
                             provider.as_str(),
@@ -1082,7 +1082,7 @@ impl OAuth2Service {
                         tracing::info!(
                             "Username '{}' was taken; created user {} as '{}' (original '{}') via OAuth2 provider {} (provider_user_id={})",
                             base_username,
-                            created_user.id.as_str(),
+                            created_user.id,
                             candidate,
                             user_info.username,
                             provider.as_str(),
@@ -1157,7 +1157,7 @@ impl OAuth2Service {
         // Set email_verified if the provider confirmed the email.
         if user_info.email_verified && user_info.email.is_some() {
             sqlx::query("UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1")
-                .bind(new_user.id.as_str())
+                .bind(new_user.id)
                 .execute(&mut *tx)
                 .await
                 .internal_with_err("Failed to set email_verified in transaction")?;
@@ -1166,7 +1166,7 @@ impl OAuth2Service {
         tx.commit().await?;
 
         info!(
-            user_id = %new_user.id.as_str(),
+            user_id = %new_user.id,
             provider = %provider.as_str(),
             "Created new user via OAuth2 and linked provider in single transaction"
         );
@@ -1641,19 +1641,22 @@ mod tests {
     #[tokio::test]
     async fn test_state_preserves_bind_user_id() {
         let service = create_test_service();
-        let user_id = UserId::from_string("user_42".to_string());
+        let user_id = UserId::from(93_001);
         let state = OAuth2State {
             instance_name: "logto".to_string(),
             redirect_url: None,
             created_at: chrono::Utc::now(),
-            bind_user_id: Some(user_id.clone()),
+            bind_user_id: Some(user_id),
             pkce_verifier: "bind_verifier".to_string(),
         };
 
         service.store_state("bind_token", &state).await.unwrap();
         let retrieved = service.consume_state("bind_token").await.unwrap();
 
-        assert_eq!(retrieved.bind_user_id.as_ref().unwrap().as_str(), "user_42");
+        assert_eq!(
+            retrieved.bind_user_id.as_ref().unwrap().to_string(),
+            "93001"
+        );
     }
 
     #[tokio::test]
@@ -1941,7 +1944,7 @@ mod tests {
             )
             .await;
 
-        let user_id = UserId::from_string("user_bind_42".to_string());
+        let user_id = UserId::from(93_002);
         let (auth_url, state_token) = service
             .get_authorization_url_with_user("logto", None, Some(user_id))
             .await
@@ -1951,10 +1954,7 @@ mod tests {
 
         let state = service.verify_state(&state_token).await.unwrap();
         assert_eq!(state.instance_name, "logto");
-        assert_eq!(
-            state.bind_user_id.as_ref().unwrap().as_str(),
-            "user_bind_42"
-        );
+        assert_eq!(state.bind_user_id.as_ref().unwrap().to_string(), "93002");
         assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
     }
 
@@ -2112,7 +2112,7 @@ mod tests {
             )
             .await;
 
-        let user_id = UserId::from_string("existing_user_99".to_string());
+        let user_id = UserId::from(93_003);
 
         // Step 1: Generate auth URL with user binding
         let (_, state_token) = service
@@ -2122,10 +2122,7 @@ mod tests {
 
         // Step 2: Verify state carries user ID
         let state = service.verify_state(&state_token).await.unwrap();
-        assert_eq!(
-            state.bind_user_id.as_ref().unwrap().as_str(),
-            "existing_user_99"
-        );
+        assert_eq!(state.bind_user_id.as_ref().unwrap().to_string(), "93003");
         assert_eq!(state.instance_name, "logto");
     }
 
@@ -2179,7 +2176,7 @@ mod tests {
             instance_name: "github".to_string(),
             redirect_url: Some("/dashboard".to_string()),
             created_at: chrono::Utc::now(),
-            bind_user_id: Some(UserId::from_string("user_1".to_string())),
+            bind_user_id: Some(UserId::from(93_004)),
             pkce_verifier: "S256_challenge_verifier".to_string(),
         };
 
@@ -2190,8 +2187,8 @@ mod tests {
         assert_eq!(deserialized.redirect_url, state.redirect_url);
         assert_eq!(deserialized.pkce_verifier, state.pkce_verifier);
         assert_eq!(
-            deserialized.bind_user_id.as_ref().unwrap().as_str(),
-            "user_1"
+            deserialized.bind_user_id.as_ref().unwrap().to_string(),
+            "93004"
         );
     }
 
@@ -2256,7 +2253,7 @@ mod tests {
             auth_url: "https://auth.test/authorize".to_string(),
             pkce_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string(),
             user_info: Some(crate::oauth2::OAuth2UserInfo {
-                provider_user_id: "u1".to_string(),
+                provider_user_id: "94001".to_string(),
                 username: "user1".to_string(),
                 email: None,
                 avatar: None,

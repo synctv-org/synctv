@@ -25,7 +25,7 @@ async fn test_creator_has_all_permissions() {
         .create_room(
             "Perm Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )

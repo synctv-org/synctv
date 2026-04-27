@@ -24,7 +24,7 @@ async fn test_initial_state_is_stopped() {
         .create_room(
             "Initial State Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -53,7 +53,7 @@ async fn test_stopped_to_playing_transition() {
         .create_room(
             "Play Transition Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -62,7 +62,7 @@ async fn test_stopped_to_playing_transition() {
 
     let state = room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
@@ -82,7 +82,7 @@ async fn test_playing_to_paused_transition() {
         .create_room(
             "Pause Transition Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -91,12 +91,12 @@ async fn test_playing_to_paused_transition() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
 
@@ -116,7 +116,7 @@ async fn test_paused_to_playing_transition() {
         .create_room(
             "Resume Transition Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -125,16 +125,16 @@ async fn test_paused_to_playing_transition() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
@@ -154,7 +154,7 @@ async fn test_state_transition_matrix_all_valid() {
         .create_room(
             "Matrix Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -164,37 +164,37 @@ async fn test_state_transition_matrix_all_valid() {
     let playback_service = room_service.playback_service();
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
     assert!(!state.is_playing);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     assert!(state.is_playing);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     assert!(state.is_playing);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
     assert!(!state.is_playing);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
     assert!(!state.is_playing);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     assert!(state.is_playing);
@@ -213,7 +213,7 @@ async fn test_rapid_state_transitions() {
         .create_room(
             "Toggle Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -225,7 +225,7 @@ async fn test_rapid_state_transitions() {
     for i in 0..10 {
         let playing = i % 2 == 0;
         let state = playback_service
-            .set_playing(room.id.clone(), owner.id.clone(), playing)
+            .set_playing(room.id, owner.id, playing)
             .await
             .unwrap();
 

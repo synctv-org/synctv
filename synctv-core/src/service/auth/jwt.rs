@@ -59,7 +59,7 @@ pub struct Claims {
 impl Claims {
     #[must_use]
     pub fn user_id(&self) -> UserId {
-        UserId::from_string(self.sub.clone())
+        self.sub.parse().expect("valid numeric user id claim")
     }
 
     #[must_use]
@@ -115,7 +115,7 @@ impl GuestClaims {
     /// Parse room ID from claims
     #[must_use]
     pub fn room_id(&self) -> RoomId {
-        RoomId::from_string(self.room_id.clone())
+        self.room_id.parse().expect("valid numeric room id claim")
     }
 
     /// Get session ID
@@ -493,7 +493,7 @@ impl JwtService {
         };
 
         let claims = Claims {
-            sub: user_id.as_str().to_string(),
+            sub: user_id.to_string(),
             typ: match token_type {
                 TokenType::Access => "access".to_string(),
                 TokenType::Refresh => "refresh".to_string(),
@@ -603,8 +603,8 @@ impl JwtService {
         let session_id = synctv_common::snanoid!(16); // Generate random session ID
 
         let guest_claims = GuestClaims {
-            sub: format!("guest:{}:{}", room_id.as_str(), session_id),
-            room_id: room_id.as_str().to_string(),
+            sub: format!("guest:{room_id}:{session_id}"),
+            room_id: room_id.to_string(),
             session_id,
             jti: synctv_common::snanoid!(16), // Unique JWT ID for individual token revocation
             typ: "guest".to_string(),
@@ -764,7 +764,7 @@ mod tests {
         let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = jwt.verify_access_token(&token).unwrap();
 
-        assert_eq!(claims.sub, user_id.as_str());
+        assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_access_token());
     }
 
@@ -776,7 +776,7 @@ mod tests {
         let token = jwt.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         let claims = jwt.verify_refresh_token(&token).unwrap();
 
-        assert_eq!(claims.sub, user_id.as_str());
+        assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_refresh_token());
     }
 
@@ -981,7 +981,7 @@ mod tests {
         let token = jwt.sign_guest_token(&room_id).unwrap();
         let claims = jwt.verify_guest_token(&token).unwrap();
         assert!(claims.sub.starts_with("guest:"));
-        assert!(claims.sub.contains(room_id.as_str()));
+        assert!(claims.sub.contains(&room_id.to_string()));
     }
 
     #[test]

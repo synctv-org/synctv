@@ -187,6 +187,7 @@ fn verify_signed_thumbnail_access(
 fn authorize_thumbnail_request(
     signing_key: &ProxySigningKey,
     auth_user_id: &str,
+    public_auth_user_id: &str,
     raw_query: &str,
     credential_owner_id: Option<&str>,
     scope: ThumbnailSignatureScope<'_>,
@@ -200,7 +201,7 @@ fn authorize_thumbnail_request(
         credential_owner_id,
         ..scope
     };
-    verify_signed_thumbnail_access(signing_key, auth_user_id, raw_query, scope).map(Some)
+    verify_signed_thumbnail_access(signing_key, public_auth_user_id, raw_query, scope).map(Some)
 }
 
 pub(crate) fn sign_emby_thumbnail_url(
@@ -346,13 +347,8 @@ pub(crate) async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
-                api.login_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.login_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -400,13 +396,8 @@ pub(crate) async fn list(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.list_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.list_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -454,13 +445,8 @@ pub(crate) async fn me(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.get_me_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.get_me_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -499,21 +485,18 @@ pub(crate) async fn logout(
 
     let api = state.emby_api.clone();
     let request_meta = request_metadata(request_meta);
-    let resp =
-        state
-            .client_api
-            .execute_user_endpoint(
-                &request_meta,
-                EndpointRateLimitCategory::Auth,
-                move |authenticated| async move {
-                    api.logout(authenticated.user_id.as_str(), req).await
-                },
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Emby logout failed: {}", e);
-                e
-            })?;
+    let resp = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |authenticated| async move { api.logout(&authenticated.user_id, req).await },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Emby logout failed: {}", e);
+            e
+        })?;
     Ok(Json(resp))
 }
 
@@ -549,8 +532,7 @@ pub(crate) async fn binds(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 tracing::info!("Emby binds request for user: {}", authenticated.user_id);
-                api.get_binds(authenticated.user_id.as_str(), instance_name)
-                    .await
+                api.get_binds(&authenticated.user_id, instance_name).await
             },
         )
         .await
@@ -602,34 +584,45 @@ pub(crate) async fn thumbnail(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 let state = operation_state;
+                let auth_user_id_key = authenticated.user_id.to_string();
+                let public_auth_user_id = state
+                    .public_id_codec
+                    .encode_user_id(authenticated.user_id)
+                    .map_err(crate::impls::ApiError::Internal)?;
                 let scope = ThumbnailSignatureScope {
                     item_id: &item_id,
                     server_id,
-                    credential_owner_id: credential_owner_id
-                        .unwrap_or(authenticated.user_id.as_str()),
+                    credential_owner_id: credential_owner_id.unwrap_or(auth_user_id_key.as_str()),
                     max_height,
                     max_width,
                 };
                 if let Some(room_id) = authorize_thumbnail_request(
                     &state.proxy_signing_key,
-                    authenticated.user_id.as_str(),
+                    &auth_user_id_key,
+                    &public_auth_user_id,
                     raw_query,
                     credential_owner_id,
                     scope,
                 )
                 .map_err(app_error_to_api_error)?
                 {
-                    super::validate_fresh_proxy_access(
-                        &state,
-                        &synctv_core::models::RoomId::from_string(room_id),
-                        &authenticated.user_id,
-                    )
-                    .await
-                    .map_err(app_error_to_api_error)?;
+                    let room_id = state
+                        .public_id_codec
+                        .decode_room_id(&room_id)
+                        .map_err(crate::impls::ApiError::InvalidInput)?;
+                    super::validate_fresh_proxy_access(&state, &room_id, &authenticated.user_id)
+                        .await
+                        .map_err(app_error_to_api_error)?;
                 }
 
-                let credential_lookup_user_id =
-                    credential_owner_id.unwrap_or_else(|| authenticated.user_id.as_str());
+                let credential_lookup_user_id = if let Some(public_id) = credential_owner_id {
+                    state
+                        .public_id_codec
+                        .decode_user_id(public_id)
+                        .map_err(crate::impls::ApiError::InvalidInput)?
+                } else {
+                    authenticated.user_id
+                };
 
                 let credential = state
                     .user_provider_credential_repository
@@ -705,6 +698,7 @@ mod tests {
         let err = authorize_thumbnail_request(
             &signing_key,
             "viewer-1",
+            "viewer-1",
             "server_id=emby-main&credential_owner_id=owner-1&max_height=300",
             Some("owner-1"),
             ThumbnailSignatureScope {
@@ -740,6 +734,7 @@ mod tests {
 
         let err = authorize_thumbnail_request(
             &signing_key,
+            "viewer-2",
             "viewer-2",
             &raw_query,
             Some("owner-1"),

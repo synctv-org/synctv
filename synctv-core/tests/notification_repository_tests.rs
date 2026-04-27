@@ -47,7 +47,7 @@ async fn create_user(pool: &PgPool, username: &str) -> User {
 
 fn make_notif_request(user_id: &UserId, title: &str) -> CreateNotificationRequest {
     CreateNotificationRequest {
-        user_id: user_id.clone(),
+        user_id: *user_id,
         notification_type: NotificationType::SystemAnnouncement,
         title: title.to_string(),
         content: "test content".to_string(),
@@ -176,10 +176,10 @@ async fn test_delete_older_than_boundary() {
 
     let old_date = Utc::now() - Duration::days(31);
     sqlx::query(
-        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old Notif', 'old', '{}', false, $2, $2)"
+        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES ($1, 'system_announcement', 'Old Notif', 'old', '{}', false, $2, $2)"
     )
-    .bind(user.id.as_str())
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
@@ -299,10 +299,10 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
     // Insert a notification older than 6 months via raw SQL
     let old_date = Utc::now() - Duration::days(200);
     sqlx::query(
-        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old Notif', 'old', '{}', false, $2, $2)",
+        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES ($1, 'system_announcement', 'Old Notif', 'old', '{}', false, $2, $2)",
     )
-    .bind(user.id.as_str())
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
@@ -349,10 +349,10 @@ async fn test_count_by_user_has_partition_pruning() {
     // Insert a notification older than 6 months
     let old_date = Utc::now() - Duration::days(200);
     sqlx::query(
-        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old', 'old', '{}', false, $2, $2)",
+        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES ($1, 'system_announcement', 'Old', 'old', '{}', false, $2, $2)",
     )
-    .bind(user.id.as_str())
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await
@@ -386,10 +386,10 @@ async fn test_count_unread_has_partition_pruning() {
     // Insert an old unread notification (> 6 months)
     let old_date = Utc::now() - Duration::days(200);
     sqlx::query(
-        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
-          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old Unread', 'old', '{}', false, $2, $2)",
+        r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES ($1, 'system_announcement', 'Old Unread', 'old', '{}', false, $2, $2)",
     )
-    .bind(user.id.as_str())
+    .bind(user.id)
     .bind(old_date)
     .execute(&pool)
     .await

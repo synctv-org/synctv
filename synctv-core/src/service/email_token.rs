@@ -10,6 +10,7 @@
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use synctv_common::ExecutionControl;
@@ -24,10 +25,11 @@ use crate::{
 
 /// Token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i16)]
 pub enum EmailTokenType {
-    EmailVerification,
-    PasswordReset,
-    EmailLogin,
+    EmailVerification = 1,
+    PasswordReset = 2,
+    EmailLogin = 3,
 }
 
 impl EmailTokenType {
@@ -37,15 +39,6 @@ impl EmailTokenType {
             Self::EmailVerification => "email_verification",
             Self::PasswordReset => "password_reset",
             Self::EmailLogin => "email_login",
-        }
-    }
-
-    #[must_use]
-    pub const fn as_i16(self) -> i16 {
-        match self {
-            Self::EmailVerification => 1,
-            Self::PasswordReset => 2,
-            Self::EmailLogin => 3,
         }
     }
 
@@ -61,6 +54,31 @@ impl EmailTokenType {
     #[must_use]
     pub const fn keeps_multiple_unused_tokens(self) -> bool {
         matches!(self, Self::EmailLogin)
+    }
+}
+
+impl fmt::Display for EmailTokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<EmailTokenType> for i16 {
+    fn from(value: EmailTokenType) -> Self {
+        value as Self
+    }
+}
+
+impl TryFrom<i16> for EmailTokenType {
+    type Error = String;
+
+    fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::EmailVerification),
+            2 => Ok(Self::PasswordReset),
+            3 => Ok(Self::EmailLogin),
+            other => Err(format!("Invalid EmailTokenType value: {other}")),
+        }
     }
 }
 
@@ -175,7 +193,7 @@ impl EmailTokenService {
     ) -> Result<String> {
         // Check rate limit if configured
         if let Some(ref limiter) = self.rate_limiter {
-            let rate_limit_key = format!("email:{}:{}", token_type.as_str(), user_id.as_str());
+            let rate_limit_key = format!("email:{token_type}:{user_id}");
 
             match limiter
                 .check_rate_limit_with_control(
@@ -191,7 +209,7 @@ impl EmailTokenService {
                     retry_after_seconds,
                 }) => {
                     warn!(
-                        user_id = %user_id.as_str(),
+                        user_id = %user_id,
                         token_type = %token_type.as_str(),
                         retry_after_seconds,
                         "Email token rate limit exceeded"
@@ -231,11 +249,7 @@ impl EmailTokenService {
                 .await?;
         }
 
-        debug!(
-            "Generated {} token for user {}",
-            token_type.as_str(),
-            user_id.as_str()
-        );
+        debug!("Generated {} token for user {}", token_type, user_id);
 
         Ok(token)
     }
@@ -267,8 +281,7 @@ impl EmailTokenService {
 
         info!(
             "Validated {} token for user {}",
-            token_type.as_str(),
-            token_record.user_id.as_str()
+            token_type, token_record.user_id
         );
 
         Ok(token_record.user_id)
@@ -304,8 +317,7 @@ impl EmailTokenService {
 
         info!(
             "Validated {} token for expected user {}",
-            token_type.as_str(),
-            expected_user_id.as_str()
+            token_type, expected_user_id
         );
 
         Ok(token_record.user_id)
@@ -333,11 +345,7 @@ impl EmailTokenService {
         )
         .await?;
 
-        debug!(
-            "Invalidated all {} tokens for user {}",
-            token_type.as_str(),
-            user_id.as_str()
-        );
+        debug!("Invalidated all {} tokens for user {}", token_type, user_id);
 
         Ok(())
     }
@@ -369,8 +377,7 @@ impl EmailTokenService {
 
         debug!(
             "Invalidated specific {} token for user {}",
-            token_type.as_str(),
-            user_id.as_str()
+            token_type, user_id
         );
 
         Ok(())
@@ -406,9 +413,9 @@ mod tests {
         assert_eq!(email_verify.as_str(), "email_verification");
         assert_eq!(password_reset.as_str(), "password_reset");
         assert_eq!(email_login.as_str(), "email_login");
-        assert_eq!(email_verify.as_i16(), 1);
-        assert_eq!(password_reset.as_i16(), 2);
-        assert_eq!(email_login.as_i16(), 3);
+        assert_eq!(i16::from(email_verify), 1);
+        assert_eq!(i16::from(password_reset), 2);
+        assert_eq!(i16::from(email_login), 3);
 
         // Email verification: 24 hours
         assert_eq!(email_verify.expiration_duration(), Duration::hours(24));

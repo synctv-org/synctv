@@ -56,14 +56,12 @@ pub async fn init_database_with_cancel(
         .idle_timeout(Duration::from_secs(config.database.idle_timeout_seconds))
         .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
         .after_connect(move |conn, _meta| {
-            let pg_client_min_messages = pg_client_min_messages;
             Box::pin(async move {
                 apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
                 Ok(())
             })
         })
         .after_release(move |conn, _meta| {
-            let pg_client_min_messages = pg_client_min_messages;
             Box::pin(async move {
                 apply_session_settings(conn, statement_timeout_ms, pg_client_min_messages).await?;
                 Ok(true)

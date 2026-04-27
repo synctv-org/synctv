@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS room_playback_state (
-    room_id CHAR(12) PRIMARY KEY REFERENCES rooms(id) ON DELETE RESTRICT,
-    playing_media_id CHAR(12) NULL,
-    playing_playlist_id CHAR(12) NULL,
+    room_id BIGINT PRIMARY KEY REFERENCES rooms(id) ON DELETE RESTRICT,
+    playing_media_id BIGINT NULL,
+    playing_playlist_id BIGINT NULL,
     target BYTEA NOT NULL DEFAULT ''::bytea,
     "current_time" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,

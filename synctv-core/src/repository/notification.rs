@@ -1,7 +1,3 @@
-use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool, Row};
-use uuid::Uuid;
-
 use crate::{
     models::{
         id::UserId,
@@ -12,6 +8,8 @@ use crate::{
     },
     Error, Result,
 };
+use chrono::{DateTime, Utc};
+use sqlx::{FromRow, PgPool, Row};
 
 /// Notification repository for database operations
 #[derive(Clone, Debug)]
@@ -27,18 +25,16 @@ impl NotificationRepository {
 
     /// Create a new notification
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
-        let id = Uuid::new_v4();
         let now = Utc::now();
 
         let n = sqlx::query_as::<_, Notification>(
             r"
-            INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, user_id, type, title, content, data, is_read, created_at, updated_at
             ",
         )
-        .bind(id)
-        .bind(req.user_id.as_str())
+        .bind(req.user_id)
         .bind(req.notification_type.to_string())
         .bind(&req.title)
         .bind(&req.content)
@@ -58,7 +54,7 @@ impl NotificationRepository {
     /// alone forces `PostgreSQL` to scan every partition. Adding a `created_at`
     /// range filter (last year to now) lets the planner prune irrelevant
     /// partitions and use a targeted index scan instead.
-    pub async fn get_by_id(&self, notification_id: Uuid) -> Result<Option<Notification>> {
+    pub async fn get_by_id(&self, notification_id: i64) -> Result<Option<Notification>> {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
@@ -101,7 +97,7 @@ impl NotificationRepository {
              COUNT(*) OVER() AS total_count \
              FROM notifications WHERE user_id = ",
         );
-        qb.push_bind(user_id.as_str());
+        qb.push_bind(user_id);
 
         // Partition pruning: limit scan to the retention window (6 months)
         qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
@@ -167,7 +163,7 @@ impl NotificationRepository {
     ) -> Result<i64> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
             sqlx::QueryBuilder::new("SELECT COUNT(*) FROM notifications WHERE user_id = ");
-        qb.push_bind(user_id.as_str());
+        qb.push_bind(user_id);
 
         // Partition pruning: limit scan to the retention window (6 months)
         qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
@@ -199,7 +195,7 @@ impl NotificationRepository {
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -210,7 +206,7 @@ impl NotificationRepository {
     ///
     /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
     /// partition pruning on the range-partitioned `notifications` table.
-    pub async fn mark_as_read(&self, user_id: &UserId, notification_ids: &[Uuid]) -> Result<u64> {
+    pub async fn mark_as_read(&self, user_id: &UserId, notification_ids: &[i64]) -> Result<u64> {
         if notification_ids.is_empty() {
             return Ok(0);
         }
@@ -223,7 +219,7 @@ impl NotificationRepository {
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(notification_ids)
         .execute(&self.pool)
         .await?;
@@ -249,7 +245,7 @@ impl NotificationRepository {
                   AND created_at >= NOW() - INTERVAL '6 months'
                 ",
             )
-            .bind(user_id.as_str())
+            .bind(user_id)
             .bind(before_time)
             .execute(&self.pool)
             .await?
@@ -262,7 +258,7 @@ impl NotificationRepository {
                   AND created_at >= NOW() - INTERVAL '6 months'
                 ",
             )
-            .bind(user_id.as_str())
+            .bind(user_id)
             .execute(&self.pool)
             .await?
         };
@@ -276,7 +272,7 @@ impl NotificationRepository {
     /// partition pruning on the range-partitioned `notifications` table.
     /// Notifications older than 6 months are purged by `delete_older_than`,
     /// so this time bound is safe for user-facing delete operations.
-    pub async fn delete(&self, user_id: &UserId, notification_id: Uuid) -> Result<()> {
+    pub async fn delete(&self, user_id: &UserId, notification_id: i64) -> Result<()> {
         let result = sqlx::query(
             r"
             DELETE FROM notifications
@@ -284,7 +280,7 @@ impl NotificationRepository {
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(notification_id)
         .execute(&self.pool)
         .await?;
@@ -308,7 +304,7 @@ impl NotificationRepository {
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .execute(&self.pool)
         .await?;
 
@@ -343,7 +339,7 @@ mod tests {
     /// Test CreateNotificationRequest struct creation with minimal fields
     #[test]
     fn test_create_notification_request_minimal() {
-        let user_id = UserId::from_string("user_123".to_string());
+        let user_id = UserId::from(91_001);
         let req = CreateNotificationRequest {
             user_id,
             notification_type: NotificationType::SystemAnnouncement,
@@ -352,7 +348,7 @@ mod tests {
             data: serde_json::json!({}),
         };
 
-        assert_eq!(req.user_id.as_str(), "user_123");
+        assert_eq!(req.user_id, user_id);
         assert_eq!(req.notification_type, NotificationType::SystemAnnouncement);
         assert_eq!(req.title, "Test Title");
         assert_eq!(req.content, "Test Content");
@@ -362,7 +358,7 @@ mod tests {
     /// Test CreateNotificationRequest with custom data
     #[test]
     fn test_create_notification_request_with_data() {
-        let user_id = UserId::from_string("user_456".to_string());
+        let user_id = UserId::from(91_002);
         let data = serde_json::json!({
             "room_id": "room_abc",
             "inviter": "user_789"
@@ -402,10 +398,7 @@ mod tests {
     #[test]
     fn test_mark_as_read_request() {
         let req = MarkAsReadRequest {
-            notification_ids: vec![
-                Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-                Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap(),
-            ],
+            notification_ids: vec![1, 2],
         };
 
         assert_eq!(req.notification_ids.len(), 2);
@@ -524,7 +517,7 @@ mod tests {
 
         // Create notification
         let req = CreateNotificationRequest {
-            user_id: created_user.id.clone(),
+            user_id: created_user.id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "Test Notification".to_string(),
             content: "This is a test notification".to_string(),
@@ -533,7 +526,7 @@ mod tests {
 
         let notification = repo.create(&req).await.unwrap();
 
-        assert!(!notification.id.is_nil());
+        assert!(notification.id > 0);
         assert_eq!(notification.user_id, created_user.id);
         assert_eq!(
             notification.notification_type,
@@ -557,7 +550,7 @@ mod tests {
         let created_user = user_repo.create(&user).await.unwrap();
 
         let req = CreateNotificationRequest {
-            user_id: created_user.id.clone(),
+            user_id: created_user.id,
             notification_type: NotificationType::RoomEvent,
             title: "Room Event".to_string(),
             content: "User joined room".to_string(),
@@ -580,7 +573,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let repo = NotificationRepository::new(pool.clone());
 
-        let non_existent_id = Uuid::new_v4();
+        let non_existent_id = i64::MAX;
         let found = repo.get_by_id(non_existent_id).await.unwrap();
         assert!(found.is_none());
     }
@@ -600,7 +593,7 @@ mod tests {
         // Create multiple notifications
         for i in 0..5 {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: NotificationType::SystemAnnouncement,
                 title: format!("Notification {i}"),
                 content: format!("Content {i}"),
@@ -642,7 +635,7 @@ mod tests {
 
         // Create notification
         let req = CreateNotificationRequest {
-            user_id: created_user.id.clone(),
+            user_id: created_user.id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "Test".to_string(),
             content: "Content".to_string(),
@@ -704,7 +697,7 @@ mod tests {
             NotificationType::RoomInvitation,
         ] {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: nt,
                 title: "Test".to_string(),
                 content: "Content".to_string(),
@@ -749,7 +742,7 @@ mod tests {
         let mut notification_ids = Vec::new();
         for i in 0..3 {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: NotificationType::SystemAnnouncement,
                 title: format!("Test {i}"),
                 content: "Content".to_string(),
@@ -798,7 +791,7 @@ mod tests {
         // Create multiple notifications
         for i in 0..5 {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: NotificationType::SystemAnnouncement,
                 title: format!("Test {i}"),
                 content: "Content".to_string(),
@@ -830,7 +823,7 @@ mod tests {
 
         // Create notification
         let req = CreateNotificationRequest {
-            user_id: created_user.id.clone(),
+            user_id: created_user.id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "Test".to_string(),
             content: "Content".to_string(),
@@ -861,7 +854,7 @@ mod tests {
 
         // Create notification
         let req = CreateNotificationRequest {
-            user_id: created_user.id.clone(),
+            user_id: created_user.id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "To Delete".to_string(),
             content: "Content".to_string(),
@@ -886,7 +879,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let repo = NotificationRepository::new(pool.clone());
         let user_id = UserId::new();
-        let non_existent_id = Uuid::new_v4();
+        let non_existent_id = i64::MAX;
 
         let result = repo.delete(&user_id, non_existent_id).await;
         assert!(result.is_err());
@@ -908,7 +901,7 @@ mod tests {
         // Create notifications
         for i in 0..3 {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: NotificationType::SystemAnnouncement,
                 title: format!("Test {i}"),
                 content: "Content".to_string(),
@@ -962,7 +955,7 @@ mod tests {
             NotificationType::RoomEvent,
         ] {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: nt,
                 title: "Test".to_string(),
                 content: "Content".to_string(),
@@ -1006,7 +999,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..3 {
             let req = CreateNotificationRequest {
-                user_id: created_user.id.clone(),
+                user_id: created_user.id,
                 notification_type: NotificationType::SystemAnnouncement,
                 title: format!("Test {i}"),
                 content: "Content".to_string(),

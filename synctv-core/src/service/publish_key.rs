@@ -434,19 +434,17 @@ impl PublishKeyService {
     ) -> Result<PublishClaims> {
         let claims = self.decode_publish_claims(token)?;
 
-        if claims.room_id != room_id.as_str() {
+        if claims.room_id.parse::<RoomId>().ok() != Some(*room_id) {
             return Err(Error::Authorization(format!(
                 "Token room mismatch: expected {}, got {}",
-                room_id.as_str(),
-                claims.room_id
+                room_id, claims.room_id
             )));
         }
 
-        if claims.media_id != media_id.as_str() {
+        if claims.media_id.parse::<MediaId>().ok() != Some(*media_id) {
             return Err(Error::Authorization(format!(
                 "Token media mismatch: expected {}, got {}",
-                media_id.as_str(),
-                claims.media_id
+                media_id, claims.media_id
             )));
         }
 
@@ -546,9 +544,9 @@ impl PublishKeyService {
         let exp = now + (self.token_ttl_hours * 3600);
 
         let claims = PublishClaims {
-            room_id: room_id.as_str().to_string(),
-            media_id: media_id.as_str().to_string(),
-            user_id: user_id.as_str().to_string(),
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            user_id: user_id.to_string(),
             perm_start_live: true,
             iat: now,
             exp,
@@ -562,9 +560,9 @@ impl PublishKeyService {
 
         Ok(PublishKey {
             token,
-            room_id: room_id.as_str().to_string(),
-            media_id: media_id.as_str().to_string(),
-            user_id: user_id.as_str().to_string(),
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+            user_id: user_id.to_string(),
             expires_at: exp,
         })
     }
@@ -607,7 +605,7 @@ impl PublishKeyService {
             .validate_publish_key_for_stream_claims(token, room_id, media_id)
             .await?;
 
-        Ok(UserId::from_string(claims.user_id))
+        claims.user_id.parse().map_err(crate::Error::Internal)
     }
 
     /// Verify a publish key for a specific room/media with user status check.
@@ -632,7 +630,7 @@ impl PublishKeyService {
         F: FnOnce(&UserId) -> Result<()>,
     {
         let claims = self.decode_stream_publish_claims(token, room_id, media_id)?;
-        let user_id = UserId::from_string(claims.user_id.clone());
+        let user_id = claims.user_id.parse().map_err(crate::Error::Internal)?;
 
         user_validator(&user_id)?;
 
@@ -713,9 +711,9 @@ mod tests {
     async fn test_publish_key_service_supports_service_trait_object() {
         let service: Arc<dyn StreamingPublishKeyService> =
             Arc::new(PublishKeyService::new(create_jwt_service(), 24));
-        let room_id = RoomId::from_string("trait_room01".to_string());
-        let media_id = MediaId::from_string("trait_media1".to_string());
-        let user_id = UserId::from_string("trait_user01".to_string());
+        let room_id = RoomId::from(40_001);
+        let media_id = MediaId::from(40_002);
+        let user_id = UserId::from(40_003);
 
         let key = service
             .generate_publish_key(&room_id, &media_id, &user_id)
@@ -725,9 +723,9 @@ mod tests {
             .await
             .expect("trait-object publish key service should validate key");
 
-        assert_eq!(claims.room_id, room_id.as_str());
-        assert_eq!(claims.media_id, media_id.as_str());
-        assert_eq!(claims.user_id, user_id.as_str());
+        assert_eq!(claims.room_id, room_id.to_string());
+        assert_eq!(claims.media_id, media_id.to_string());
+        assert_eq!(claims.user_id, user_id.to_string());
     }
 
     #[tokio::test]
@@ -737,9 +735,9 @@ mod tests {
         let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
         let service = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
             .expect("standalone mode should allow local publish-key service");
-        let room_id = RoomId::from_string("builder_room01".to_string());
-        let media_id = MediaId::from_string("builder_media1".to_string());
-        let user_id = UserId::from_string("builder_user01".to_string());
+        let room_id = RoomId::from(40_004);
+        let media_id = MediaId::from(40_005);
+        let user_id = UserId::from(40_006);
 
         let key = service
             .generate_publish_key(&room_id, &media_id, &user_id)
@@ -749,9 +747,9 @@ mod tests {
             .await
             .expect("generated key should validate through the trait object");
 
-        assert_eq!(claims.room_id, room_id.as_str());
-        assert_eq!(claims.media_id, media_id.as_str());
-        assert_eq!(claims.user_id, user_id.as_str());
+        assert_eq!(claims.room_id, room_id.to_string());
+        assert_eq!(claims.media_id, media_id.to_string());
+        assert_eq!(claims.user_id, user_id.to_string());
     }
 
     #[test]
@@ -802,9 +800,9 @@ mod tests {
             .unwrap();
 
         assert!(!key.token.is_empty());
-        assert_eq!(key.room_id, room_id.as_str());
-        assert_eq!(key.media_id, media_id.as_str());
-        assert_eq!(key.user_id, user_id.as_str());
+        assert_eq!(key.room_id, room_id.to_string());
+        assert_eq!(key.media_id, media_id.to_string());
+        assert_eq!(key.user_id, user_id.to_string());
         assert!(key.expires_at > 0);
     }
 
@@ -842,9 +840,9 @@ mod tests {
 
         let claims = service.validate_publish_key(&key.token).await.unwrap();
 
-        assert_eq!(claims.room_id, room_id.as_str());
-        assert_eq!(claims.media_id, media_id.as_str());
-        assert_eq!(claims.user_id, user_id.as_str());
+        assert_eq!(claims.room_id, room_id.to_string());
+        assert_eq!(claims.media_id, media_id.to_string());
+        assert_eq!(claims.user_id, user_id.to_string());
         assert!(claims.perm_start_live);
     }
 

@@ -331,7 +331,8 @@ message UpdateUserResponse {
 
 message CreateWebSocketTicketRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -385,7 +386,8 @@ message CreateRoomResponse {
 // Note: UserService room-scoped resource request; room_id is carried in payload.
 message GetRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -398,7 +400,8 @@ message GetRoomResponse {
 message JoinRoomRequest {
     string password = 1; // Optional room password
     string room_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -535,7 +538,8 @@ message ResetRoomSettingsResponse {
 
 message TransferRoomOwnershipRequest {
     string new_owner_user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }]; // Target active member user ID
 }
@@ -626,7 +630,8 @@ message ListRoomStreamsResponse {
 
 message AddMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     synctv.common.RoomMemberRole role = 2; // Defaults to MEMBER when unspecified
@@ -665,7 +670,7 @@ message ListRoomJoinReviewsRequest {
     int32 page_size = 2;
     synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
     string user_id = 4 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
 }
@@ -677,7 +682,8 @@ message ListRoomJoinReviewsResponse {
 
 message ApproveRoomJoinReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -689,7 +695,8 @@ message ApproveRoomJoinReviewResponse {
 
 message RejectRoomJoinReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2 [(buf.validate.field).string.max_len = 500];
@@ -702,7 +709,8 @@ message RejectRoomJoinReviewResponse {
 
 message UpdateMemberPermissionsRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }]; // Target user
     synctv.common.RoomMemberRole role = 2; // New role (optional)
@@ -723,7 +731,8 @@ message UpdateMemberPermissionsResponse {
 
 message KickMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];  // Target user to kick
 }
@@ -734,7 +743,8 @@ message KickMemberResponse {
 
 message BanMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];   // Target user to ban
     string reason = 2 [(buf.validate.field).string.max_len = 500];    // Optional ban reason
@@ -746,7 +756,8 @@ message BanMemberResponse {
 
 message UnbanMemberRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];  // Target user to unban
 }
@@ -771,8 +782,8 @@ message CreatePlaylistRequest {
     };
     option (buf.validate.message).cel = {
         id: "playlist.parent_id.format"
-        message: "parent_id must be a 12-character base62 ID when provided"
-        expression: "this.parent_id == '' || this.parent_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "parent_id must be a public identifier when provided"
+        expression: "this.parent_id == '' || this.parent_id.matches('^[A-Za-z0-9]{1,64}$')"
     };
     string name = 1 [(buf.validate.field).string = {
         max_len: 255
@@ -801,7 +812,8 @@ message CreatePlaylistResponse {
 
 message UpdatePlaylistRequest {
     string playlist_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string name = 2 [
@@ -818,17 +830,20 @@ message UpdatePlaylistResponse {
 
 message MovePlaylistRequest {
     string playlist_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     oneof anchor {
         option (buf.validate.oneof).required = true;
         string before_playlist_id = 2 [(buf.validate.field).string = {
-            len: 12,
+            min_len: 1,
+        max_len: 64,
             pattern: "^[A-Za-z0-9]+$"
         }];
         string after_playlist_id = 3 [(buf.validate.field).string = {
-            len: 12,
+            min_len: 1,
+        max_len: 64,
             pattern: "^[A-Za-z0-9]+$"
         }];
     }
@@ -840,7 +855,8 @@ message MovePlaylistResponse {
 
 message DeletePlaylistRequest {
     string playlist_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     bool force = 2;
@@ -857,7 +873,8 @@ message DeletePlaylistResponse {
 // Get single playlist info
 message GetPlaylistRequest {
     string playlist_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -872,8 +889,8 @@ message GetPlaylistResponse {
 message ListPlaylistsRequest {
     option (buf.validate.message).cel = {
         id: "list_playlists.parent_id.format"
-        message: "parent_id must be a 12-character base62 ID when provided"
-        expression: "this.parent_id == '' || this.parent_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "parent_id must be a public identifier when provided"
+        expression: "this.parent_id == '' || this.parent_id.matches('^[A-Za-z0-9]{1,64}$')"
     };
     string parent_id = 1; // Optional parent ID to get children of specific playlist
     option (buf.validate.message).cel = {
@@ -969,7 +986,8 @@ message AddMediaRequest {
         expression: "this.provider != ''"
     };
     optional string playlist_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }]; // Target playlist ID. Omit for room-root media
     string provider = 2 [
@@ -996,7 +1014,8 @@ message AddMediaResponse {
 
 message DeleteMediaRequest {
     string media_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     bool force = 2;
@@ -1024,7 +1043,8 @@ message DeleteEntriesRequest {
     repeated string playlist_ids = 1 [(buf.validate.field).repeated = {
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
@@ -1032,7 +1052,8 @@ message DeleteEntriesRequest {
     repeated string media_ids = 2 [(buf.validate.field).repeated = {
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
@@ -1144,26 +1165,31 @@ message MoveMediaRequest {
         max_items: 100,
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
     }];
     optional string source_playlist_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }]; // Used only when all_from_scope=true. Omit for room root.
     optional string target_playlist_id = 3 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }]; // Omit for room root. When anchor is set, this must match the anchor scope.
     bool all_from_scope = 4; // Move every media item from the source scope instead of explicit media_ids.
     optional string before_media_id = 5 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     optional string after_media_id = 6 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -1176,7 +1202,8 @@ message MoveMediaResponse {
 // Edit Media
 message EditMediaRequest {
     string media_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string title = 2 [(buf.validate.field).string.max_len = 500];
@@ -1230,13 +1257,13 @@ enum PlaybackPatchState {
 message UpdatePlaybackRequest {
     option (buf.validate.message).cel = {
         id: "update_playback.media_id.format"
-        message: "media_id must be empty or a 12-character base62 ID"
-        expression: "this.media_id == '' || this.media_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "media_id must be empty or a public identifier"
+        expression: "this.media_id == '' || this.media_id.matches('^[A-Za-z0-9]{1,64}$')"
     };
     option (buf.validate.message).cel = {
         id: "update_playback.playlist_id.format"
-        message: "playlist_id must be empty or a 12-character base62 ID"
-        expression: "this.playlist_id == '' || this.playlist_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "playlist_id must be empty or a public identifier"
+        expression: "this.playlist_id == '' || this.playlist_id.matches('^[A-Za-z0-9]{1,64}$')"
     };
     option (buf.validate.message).cel = {
         id: "update_playback.switch_requires_target_id"
@@ -1736,58 +1763,68 @@ message MyRoom {
 // Room Discovery
 message CheckRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomMemberTargetPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomJoinReviewPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string request_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomMediaTargetPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string media_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomPlaylistTargetPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string playlist_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -1975,24 +2012,24 @@ message PlayingChanged {
 // WebRTC Offer (SDP offer from initiator)
 // Client sends this to another specific peer through the server
 message WebRTCOffer {
-    string to = 1;          // Target: "user_id" or "user_id:conn_id"
-    string from = 2;        // Sender: Set by server, format: "user_id:conn_id"
+    string to = 1;          // Target: "public_user_id:conn_id"
+    string from = 2;        // Sender: Set by server, format: "public_user_id|conn_id"
     string data = 3;        // SDP offer (JSON string, opaque to server)
 }
 
 // WebRTC Answer (SDP answer from receiver)
 // Response to an offer
 message WebRTCAnswer {
-    string to = 1;          // Target: "user_id" or "user_id:conn_id"
-    string from = 2;        // Sender: Set by server, format: "user_id:conn_id"
+    string to = 1;          // Target: "public_user_id:conn_id"
+    string from = 2;        // Sender: Set by server, format: "public_user_id|conn_id"
     string data = 3;        // SDP answer (JSON string, opaque to server)
 }
 
 // WebRTC ICE Candidate
 // Sent repeatedly during ICE negotiation
 message WebRTCIceCandidate {
-    string to = 1;          // Target: "user_id" or "user_id:conn_id"
-    string from = 2;        // Sender: Set by server, format: "user_id:conn_id"
+    string to = 1;          // Target: "public_user_id:conn_id"
+    string from = 2;        // Sender: Set by server, format: "public_user_id|conn_id"
     string data = 3;        // ICE candidate (JSON string, opaque to server)
 }
 

@@ -99,15 +99,14 @@ impl RoomRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let sql = format!(
-            "INSERT INTO rooms (id, name, description, created_by, closed_at, created_at, updated_at, version, last_activity_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "INSERT INTO rooms (name, description, created_by, closed_at, created_at, updated_at, version, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING {ROOM_RETURNING_COLUMNS}"
         );
         let created = sqlx::query_as::<_, Room>(&sql)
-            .bind(room.id.as_str())
             .bind(&room.name)
             .bind(&room.description)
-            .bind(room.created_by.as_str())
+            .bind(room.created_by)
             .bind(room.closed_at)
             .bind(room.created_at)
             .bind(room.updated_at)
@@ -142,7 +141,7 @@ impl RoomRepository {
              WHERE r.id = $1 AND r.deleted_at IS NULL"
         );
         let room = sqlx::query_as::<_, Room>(&sql)
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -173,7 +172,7 @@ impl RoomRepository {
              RETURNING {ROOM_RETURNING_COLUMNS}"
         );
         let updated = sqlx::query_as::<_, Room>(&sql)
-            .bind(room.id.as_str())
+            .bind(room.id)
             .bind(&room.name)
             .bind(&room.description)
             .bind(room.closed_at)
@@ -192,7 +191,7 @@ impl RoomRepository {
             } else {
                 Err(crate::Error::NotFound(format!(
                     "Room {} not found",
-                    room.id.as_str()
+                    room.id
                 )))
             }
         }
@@ -205,7 +204,7 @@ impl RoomRepository {
              SET deleted_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
@@ -402,7 +401,7 @@ impl RoomRepository {
              WHERE {relation_sql} AND {count_where}"
         );
         let count: i64 = Self::bind_filters_scalar(
-            sqlx::query_scalar(&count_sql).bind(user_id.as_str()),
+            sqlx::query_scalar(&count_sql).bind(user_id),
             query,
             search_pattern.as_ref(),
         )
@@ -420,7 +419,7 @@ impl RoomRepository {
         );
         let rooms: Vec<Room> = Self::bind_filters(
             sqlx::query_as::<_, Room>(&list_sql)
-                .bind(user_id.as_str())
+                .bind(user_id)
                 .bind(limit)
                 .bind(offset),
             query,
@@ -500,7 +499,7 @@ impl RoomRepository {
              FROM rooms
              WHERE id = $1 AND deleted_at IS NULL",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -524,7 +523,7 @@ impl RoomRepository {
                      AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                )",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -541,7 +540,7 @@ impl RoomRepository {
                AND {ACTIVE_ROOM_MEMBER_BAN_NOT_EXISTS_SQL}"
         );
         let count: i64 = sqlx::query_scalar(&count_sql)
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_one(&self.pool)
             .await?;
 
@@ -563,7 +562,7 @@ impl RoomRepository {
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL",
         )
-        .bind(creator_id.as_str())
+        .bind(creator_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -576,7 +575,7 @@ impl RoomRepository {
              LIMIT $2 OFFSET $3"
         );
         let rooms = sqlx::query_as::<_, Room>(&sql)
-            .bind(creator_id.as_str())
+            .bind(creator_id)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -600,7 +599,7 @@ impl RoomRepository {
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL",
         )
-        .bind(creator_id.as_str())
+        .bind(creator_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -621,7 +620,7 @@ impl RoomRepository {
             "
         );
         let rows = sqlx::query(&sql)
-            .bind(creator_id.as_str())
+            .bind(creator_id)
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -660,12 +659,10 @@ impl RoomRepository {
         };
         let room = sqlx::query_as::<_, Room>(&sql)
             .bind(closed_at)
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| {
-                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
-            })?;
+            .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
         Ok(room)
     }
@@ -675,10 +672,10 @@ impl RoomRepository {
         if is_banned {
             sqlx::query(
                 r"
-                INSERT INTO room_bans (id, room_id, starts_at)
-                SELECT $1, r.id, CURRENT_TIMESTAMP
+                INSERT INTO room_bans (room_id, starts_at)
+                SELECT r.id, CURRENT_TIMESTAMP
                 FROM rooms r
-                WHERE r.id = $2 AND r.deleted_at IS NULL
+                WHERE r.id = $1 AND r.deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM room_bans rb
                       WHERE rb.room_id = r.id
@@ -687,8 +684,7 @@ impl RoomRepository {
                   )
                 ",
             )
-            .bind(crate::models::generate_id())
-            .bind(room_id.as_str())
+            .bind(room_id)
             .execute(&self.pool)
             .await?;
         } else {
@@ -704,14 +700,15 @@ impl RoomRepository {
                   AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                 ",
             )
-            .bind(room_id.as_str())
+            .bind(room_id)
             .execute(&self.pool)
             .await?;
         }
 
-        let room = self.get_by_id(room_id).await?.ok_or_else(|| {
-            crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
-        })?;
+        let room = self
+            .get_by_id(room_id)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
         Ok(room)
     }
@@ -728,12 +725,10 @@ impl RoomRepository {
         );
         let room = sqlx::query_as::<_, Room>(&sql)
             .bind(description)
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| {
-                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
-            })?;
+            .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
         Ok(room)
     }
@@ -754,13 +749,11 @@ impl RoomRepository {
             "
         );
         let room = sqlx::query_as::<_, Room>(&sql)
-            .bind(room_id.as_str())
-            .bind(new_owner_id.as_str())
+            .bind(room_id)
+            .bind(new_owner_id)
             .fetch_optional(executor)
             .await?
-            .ok_or_else(|| {
-                crate::Error::NotFound(format!("Room {} not found", room_id.as_str()))
-            })?;
+            .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
         Ok(room)
     }
@@ -773,7 +766,7 @@ impl RoomRepository {
         sqlx::query(
             "UPDATE rooms SET last_activity_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -814,8 +807,8 @@ impl RoomRepository {
             "
         );
         let row = sqlx::query(&sql)
-            .bind(room_id.as_str())
-            .bind(user_id.as_str())
+            .bind(room_id)
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -1060,7 +1053,7 @@ mod tests {
         let room = RoomFixture::new()
             .with_name("Test Room")
             .with_description("desc")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
         assert_eq!(created.name, "Test Room");
@@ -1085,13 +1078,13 @@ mod tests {
 
         let room1 = RoomFixture::new()
             .with_name("Duplicate Room Name")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         room_repo.create(&room1).await.unwrap();
 
         let room2 = RoomFixture::new()
             .with_name("Duplicate Room Name")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let result = room_repo.create(&room2).await;
 
@@ -1131,11 +1124,11 @@ mod tests {
 
         let room1 = RoomFixture::new()
             .with_name("Shared Room Name")
-            .with_owner(owner1.id.clone())
+            .with_owner(owner1.id)
             .build();
         let room2 = RoomFixture::new()
             .with_name("Shared Room Name")
-            .with_owner(owner2.id.clone())
+            .with_owner(owner2.id)
             .build();
 
         room_repo.create(&room1).await.unwrap();
@@ -1148,7 +1141,7 @@ mod tests {
     #[test]
     fn test_room_model_new() {
         let creator_id = UserId::new();
-        let room = Room::new("My Room".to_string(), creator_id.clone());
+        let room = Room::new("My Room".to_string(), creator_id);
 
         assert_eq!(room.name, "My Room");
         assert!(room.description.is_empty());
@@ -1166,7 +1159,7 @@ mod tests {
         let room = Room::new_with_description(
             "My Room".to_string(),
             "A test room".to_string(),
-            creator_id.clone(),
+            creator_id,
         );
 
         assert_eq!(room.name, "My Room");
@@ -1233,7 +1226,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let room_repo = RoomRepository::new(pool.clone());
 
-        let room_id = RoomId::from_string("nonexistent".to_string());
+        let room_id = RoomId::from(92_001);
         let result = room_repo.get_by_id(&room_id).await.unwrap();
         assert!(result.is_none());
     }
@@ -1256,7 +1249,7 @@ mod tests {
         let room = RoomFixture::new()
             .with_name("Original Name")
             .with_description("Original description")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1287,7 +1280,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Room to Delete")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1327,7 +1320,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Room to Hard Delete")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1353,7 +1346,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Status Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
         assert_eq!(created.status, RoomStatus::Active);
@@ -1383,7 +1376,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Ban Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
         assert!(!created.is_banned);
@@ -1421,7 +1414,7 @@ mod tests {
         let room = RoomFixture::new()
             .with_name("Desc Test Room")
             .with_description("Original description")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1452,7 +1445,7 @@ mod tests {
         for i in 0..15 {
             let room = RoomFixture::new()
                 .with_name(&format!("List Room {i}"))
-                .with_owner(owner.id.clone())
+                .with_owner(owner.id)
                 .build();
             room_repo.create(&room).await.unwrap();
         }
@@ -1504,14 +1497,14 @@ mod tests {
         // Create active room
         let room = RoomFixture::new()
             .with_name("Active Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         room_repo.create(&room).await.unwrap();
 
         // Create and ban a room
         let mut banned_room = RoomFixture::new()
             .with_name("Banned Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         banned_room.is_banned = true;
         room_repo.create(&banned_room).await.unwrap();
@@ -1594,24 +1587,20 @@ mod tests {
             .create(
                 &RoomFixture::new()
                     .with_name("Counted Room")
-                    .with_owner(owner.id.clone())
+                    .with_owner(owner.id)
                     .build(),
             )
             .await
             .unwrap();
 
         member_repo
-            .add(&RoomMember::new(
-                room.id.clone(),
-                active.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&RoomMember::new(room.id, active.id, RoomRole::Member))
             .await
             .unwrap();
 
         member_repo
             .add(&RoomMember {
-                ..RoomMember::new(room.id.clone(), banned.id.clone(), RoomRole::Member)
+                ..RoomMember::new(room.id, banned.id, RoomRole::Member)
             })
             .await
             .unwrap();
@@ -1633,8 +1622,8 @@ mod tests {
                 joined_at, left_at, version
              ) VALUES ($1, $2, $3, 0, 0, 0, 0, $4, $5, 0)",
         )
-        .bind(room.id.as_str())
-        .bind(rejected.id.as_str())
+        .bind(room.id)
+        .bind(rejected.id)
         .bind(RoomRole::Member)
         .bind(Utc::now())
         .bind(Some(Utc::now()))
@@ -1685,7 +1674,7 @@ mod tests {
         for i in 0..3 {
             let room = RoomFixture::new()
                 .with_name(&format!("Owner1 Room {i}"))
-                .with_owner(owner1.id.clone())
+                .with_owner(owner1.id)
                 .build();
             room_repo.create(&room).await.unwrap();
         }
@@ -1694,7 +1683,7 @@ mod tests {
         for i in 0..2 {
             let room = RoomFixture::new()
                 .with_name(&format!("Owner2 Room {i}"))
-                .with_owner(owner2.id.clone())
+                .with_owner(owner2.id)
                 .build();
             room_repo.create(&room).await.unwrap();
         }
@@ -1733,7 +1722,7 @@ mod tests {
         // Create active room
         let room = RoomFixture::new()
             .with_name("Accessible Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1778,7 +1767,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Join Context Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
 
@@ -1794,7 +1783,7 @@ mod tests {
         assert!(!context.is_banned); // Owner is not banned
 
         // Non-existent room returns None
-        let non_existent = RoomId::from_string("nonexistent".to_string());
+        let non_existent = RoomId::from(92_002);
         let context = room_repo
             .get_join_context(&non_existent, &owner.id)
             .await
@@ -1820,7 +1809,7 @@ mod tests {
         // Create room with executor (pool)
         let room = RoomFixture::new()
             .with_name("Executor Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create_with_executor(&room, &pool).await.unwrap();
         assert_eq!(created.name, "Executor Room");
@@ -1857,7 +1846,7 @@ mod tests {
         let room = RoomFixture::new()
             .with_name("Optimistic Room")
             .with_description("original")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
         let original_version = created.version;
@@ -1904,7 +1893,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Soft Delete Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let created = room_repo.create(&room).await.unwrap();
         let version = created.version;

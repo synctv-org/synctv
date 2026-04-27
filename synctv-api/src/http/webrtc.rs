@@ -51,7 +51,7 @@ pub async fn get_ice_servers(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
-    let room_id = synctv_core::models::RoomId::from_string(path.room_id);
+    let room_id = crate::impls::proto_validated_room_id(path.room_id, &state.public_id_codec);
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let client_api = state.client_api.clone();
 
@@ -155,14 +155,5 @@ mod tests {
         let app_err = map_api_error(api_err);
         // map_api_error should populate the error_code field
         assert!(app_err.error_code.is_some());
-    }
-
-    #[test]
-    fn test_webrtc_room_id_uses_shared_validation_rules() {
-        let err = crate::room_id_validation::parse_room_id("room@invalid").unwrap_err();
-        assert!(matches!(
-            err,
-            crate::http::validation::ValidationError::InvalidFormat { .. }
-        ));
     }
 }

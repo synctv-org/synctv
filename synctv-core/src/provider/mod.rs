@@ -44,6 +44,8 @@ pub use store::*;
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
 
+use crate::models::{MediaId, RoomId};
+
 pub(crate) fn subtitle_headers_for_proxy(
     playback_headers: &std::collections::HashMap<String, String>,
     subtitle: &SubtitleTrack,
@@ -153,7 +155,7 @@ pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> 
 }
 
 #[must_use]
-pub fn build_live_playback(media_id: &str, room_id: &str) -> PlaybackResult {
+pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult {
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -382,15 +384,15 @@ pub fn maybe_sign_versioned_playback(
     ctx: &ProviderContext<'_>,
 ) -> PlaybackResult {
     if let (Some(signing_key), Some(room_id), Some(user_id)) =
-        (ctx.signing_key, ctx.room_id, ctx.user_id)
+        (ctx.signing_key, ctx.proxy_room_id(), ctx.proxy_user_id())
     {
         sign_playback_urls(
             &mut result,
             provider_name,
             version,
             signing_key,
-            room_id,
-            user_id,
+            &room_id,
+            &user_id,
             expires_at,
         );
     }
@@ -533,6 +535,7 @@ pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> ser
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{RoomId, UserId};
     use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
     use crate::service::ProxySigningKey;
     use std::sync::Arc;
@@ -711,8 +714,8 @@ mod tests {
     async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("test")
-            .with_user_id("user-1")
-            .with_room_id("room-1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
             .with_signing_key(&signing_key);
 
         let err = finalize_versioned_playback(
@@ -736,8 +739,8 @@ mod tests {
     async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("test")
-            .with_user_id("user-1")
-            .with_room_id("room-1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
             .with_signing_key(&signing_key);
         let ctx = ctx.with_store(Arc::new(FailVersionMappingStore {
             inner: InMemoryProviderStore::new(16),
@@ -765,8 +768,8 @@ mod tests {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
         let ctx = ProviderContext::new("test")
-            .with_user_id("user-1")
-            .with_room_id("room-1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
             .with_signing_key(&signing_key)
             .with_store(store.clone());
         let versioned = VersionedPlayback {
@@ -791,8 +794,8 @@ mod tests {
         let claims = signing_key
             .parse_and_verify_query(query, "direct_url", "cached-version")
             .expect("valid signed query");
-        assert_eq!(claims.user_id, "user-1");
-        assert_eq!(claims.room_id, "room-1");
+        assert_eq!(claims.user_id, "1");
+        assert_eq!(claims.room_id, "10");
     }
 
     #[test]

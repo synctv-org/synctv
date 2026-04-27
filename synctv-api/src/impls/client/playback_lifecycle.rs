@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use synctv_core::models::RoomPlaybackState;
+use synctv_core::models::{RoomId, RoomPlaybackState, UserId};
 use synctv_core::provider::store::{ProviderStore, ProviderStoreExt};
 use synctv_core::provider::{MediaProvider, PlaybackResult};
 
@@ -41,7 +41,7 @@ pub(super) struct ProviderPlaybackRegistration<'a> {
     pub provider: &'a dyn MediaProvider,
     pub provider_name: &'a str,
     pub provider_instance_name: Option<&'a str>,
-    pub credential_owner_id: Option<&'a str>,
+    pub credential_owner_id: Option<&'a UserId>,
     pub source_config: &'a Value,
     pub result: &'a PlaybackResult,
 }
@@ -56,23 +56,22 @@ fn dynamic_target_hash(target: &[u8]) -> String {
 
 fn playback_target_key(state: &RoomPlaybackState) -> Option<String> {
     if let Some(media_id) = &state.playing_media_id {
-        return Some(format!("media:{}", media_id.as_str()));
+        return Some(format!("media:{media_id}"));
     }
 
     state.playing_playlist_id.as_ref().map(|playlist_id| {
         format!(
-            "playlist:{}:{}",
-            playlist_id.as_str(),
+            "playlist:{playlist_id}:{}",
             dynamic_target_hash(&state.target)
         )
     })
 }
 
-fn room_sessions_key(room_id: &str) -> String {
+fn room_sessions_key(room_id: RoomId) -> String {
     format!("room:{room_id}:sessions")
 }
 
-fn room_lock_key(room_id: &str) -> String {
+fn room_lock_key(room_id: RoomId) -> String {
     format!("room:{room_id}:lock")
 }
 
@@ -106,7 +105,7 @@ impl ClientApiImpl {
 
     async fn load_lifecycle_sessions(
         store: &dyn ProviderStore,
-        room_id: &str,
+        room_id: RoomId,
     ) -> ProviderPlaybackSessionSet {
         match store
             .get::<ProviderPlaybackSessionSet>(&room_sessions_key(room_id))
@@ -117,7 +116,7 @@ impl ClientApiImpl {
             Err(error) => {
                 tracing::warn!(
                     error = %error,
-                    room_id,
+                    room_id = %room_id,
                     "Failed to load provider playback lifecycle sessions"
                 );
                 ProviderPlaybackSessionSet::default()
@@ -127,7 +126,7 @@ impl ClientApiImpl {
 
     async fn save_lifecycle_sessions(
         store: &dyn ProviderStore,
-        room_id: &str,
+        room_id: RoomId,
         sessions: &ProviderPlaybackSessionSet,
     ) {
         let result = if sessions.sessions.is_empty() {
@@ -141,7 +140,7 @@ impl ClientApiImpl {
         if let Err(error) = result {
             tracing::warn!(
                 error = %error,
-                room_id,
+                room_id = %room_id,
                 "Failed to persist provider playback lifecycle sessions"
             );
         }
@@ -150,12 +149,21 @@ impl ClientApiImpl {
     fn lifecycle_context<'a>(
         &'a self,
         session: &'a ProviderPlaybackSession,
-        room_id: &'a str,
+        room_id: RoomId,
     ) -> synctv_core::provider::ProviderContext<'a> {
+        let user_id = session
+            .credential_owner_id
+            .as_ref()
+            .and_then(|id| id.parse::<UserId>().ok())
+            .unwrap_or_else(|| UserId::from(i64::MAX));
+        let credential_owner_id = session
+            .credential_owner_id
+            .as_ref()
+            .and_then(|id| id.parse::<UserId>().ok());
         let ctx = self.build_provider_context(
-            session.credential_owner_id.as_deref().unwrap_or(""),
-            session.credential_owner_id.as_deref(),
-            room_id,
+            &user_id,
+            credential_owner_id.as_ref(),
+            &room_id,
             session.provider_instance_name.as_deref(),
             None,
             None,
@@ -201,7 +209,7 @@ impl ClientApiImpl {
 
     async fn stop_lifecycle_session(
         &self,
-        room_id: &str,
+        room_id: RoomId,
         session: &ProviderPlaybackSession,
         position: f64,
     ) {
@@ -222,7 +230,7 @@ impl ClientApiImpl {
                 error = %error,
                 provider = %session.provider,
                 session_id = %session.provider_session_id,
-                room_id,
+                room_id = %room_id,
                 "Provider playback stop hook failed"
             );
         }
@@ -230,7 +238,7 @@ impl ClientApiImpl {
 
     async fn start_lifecycle_session(
         &self,
-        room_id: &str,
+        room_id: RoomId,
         provider: &dyn MediaProvider,
         provider_name: &str,
         session: &ProviderPlaybackSession,
@@ -248,7 +256,7 @@ impl ClientApiImpl {
                 error = %error,
                 provider = provider_name,
                 session_id = %session.provider_session_id,
-                room_id,
+                room_id = %room_id,
                 "Provider playback start hook failed"
             );
         }
@@ -282,11 +290,11 @@ impl ClientApiImpl {
             return;
         };
 
-        let room_id = state.room_id.as_str();
+        let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
         let Ok(_guard) = store.lock(&lock_key, LIFECYCLE_LOCK_TTL).await else {
             tracing::warn!(
-                room_id,
+                room_id = %room_id,
                 provider = provider_name,
                 session_id = %provider_session_id,
                 "Failed to lock provider playback lifecycle state for session registration"
@@ -315,7 +323,7 @@ impl ClientApiImpl {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(std::string::ToString::to_string),
-            credential_owner_id: credential_owner_id.map(std::string::ToString::to_string),
+            credential_owner_id: credential_owner_id.map(ToString::to_string),
             source_config: source_config.clone(),
             room_target_key,
             provider_session_id,
@@ -348,11 +356,11 @@ impl ClientApiImpl {
             return;
         };
 
-        let room_id = state.room_id.as_str();
+        let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
         let Ok(_guard) = store.lock(&lock_key, LIFECYCLE_LOCK_TTL).await else {
             tracing::warn!(
-                room_id,
+                room_id = %room_id,
                 "Failed to lock provider playback lifecycle state for session cleanup"
             );
             return;
@@ -390,11 +398,11 @@ impl ClientApiImpl {
             return;
         };
 
-        let room_id = state.room_id.as_str();
+        let room_id = state.room_id;
         let lock_key = room_lock_key(room_id);
         let Ok(_guard) = store.lock(&lock_key, LIFECYCLE_LOCK_TTL).await else {
             tracing::debug!(
-                room_id,
+                room_id = %room_id,
                 "Failed to lock provider playback lifecycle state for progress report"
             );
             return;
@@ -437,7 +445,7 @@ impl ClientApiImpl {
                     error = %error,
                     provider = %session.provider,
                     session_id = %session.provider_session_id,
-                    room_id,
+                    room_id = %room_id,
                     "Provider playback progress hook failed"
                 );
                 continue;
@@ -492,7 +500,7 @@ impl ClientApiImpl {
             Err(error) => {
                 tracing::debug!(
                     error = %error,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to load previous playback state for provider lifecycle transition"
                 );
                 None
@@ -508,27 +516,20 @@ mod tests {
 
     #[test]
     fn playback_target_key_treats_static_and_dynamic_targets_as_distinct() {
-        let room_id = RoomId::from_string("room-lifecycle-target".to_string());
+        let room_id = RoomId::from(1);
         let mut state = RoomPlaybackState::new(room_id);
-        state.playing_media_id = Some(synctv_core::models::MediaId::from_string(
-            "media-1".to_string(),
-        ));
-        assert_eq!(
-            playback_target_key(&state).as_deref(),
-            Some("media:media-1")
-        );
+        state.playing_media_id = Some(synctv_core::models::MediaId::from(2));
+        assert_eq!(playback_target_key(&state).as_deref(), Some("media:2"));
 
         state.playing_media_id = None;
-        state.playing_playlist_id = Some(synctv_core::models::PlaylistId::from_string(
-            "playlist-1".to_string(),
-        ));
+        state.playing_playlist_id = Some(synctv_core::models::PlaylistId::from(3));
         state.target = b"target-a".to_vec();
         let first = playback_target_key(&state).expect("dynamic target key");
 
         state.target = b"target-b".to_vec();
         let second = playback_target_key(&state).expect("dynamic target key");
         assert_ne!(first, second);
-        assert!(first.starts_with("playlist:playlist-1:"));
+        assert!(first.starts_with("playlist:3:"));
     }
 
     #[test]

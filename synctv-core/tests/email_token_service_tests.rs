@@ -220,7 +220,7 @@ async fn test_service_concurrent_generation_replaces_unused_token_atomically() {
     let mut handles = Vec::new();
     for _ in 0..8 {
         let svc = service.clone();
-        let user_id = user.id.clone();
+        let user_id = user.id;
         handles.push(tokio::spawn(async move {
             svc.generate_token(&user_id, EmailTokenType::PasswordReset)
                 .await
@@ -257,8 +257,8 @@ async fn test_service_concurrent_generation_replaces_unused_token_atomically() {
     let remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
-    .bind(user.id.as_str())
-    .bind(EmailTokenType::PasswordReset.as_i16())
+    .bind(user.id)
+    .bind(i16::from(EmailTokenType::PasswordReset))
     .fetch_one(&pool)
     .await
     .unwrap();

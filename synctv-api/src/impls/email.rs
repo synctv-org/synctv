@@ -34,6 +34,7 @@ pub struct EmailApiImpl {
     pub email_service: Arc<EmailService>,
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
+    public_id_codec: Arc<crate::PublicIdCodec>,
 }
 
 /// Send verification email result
@@ -77,6 +78,7 @@ pub fn build_shared_email_api(
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
     rate_limiter: impl RequestRateLimiterService + 'static,
+    public_id_codec: Arc<crate::PublicIdCodec>,
 ) -> Option<Arc<EmailApiImpl>> {
     match (email_service, email_token_service) {
         (Some(email_service), Some(email_token_service)) => Some(Arc::new(EmailApiImpl::new(
@@ -84,6 +86,7 @@ pub fn build_shared_email_api(
             email_service,
             email_token_service,
             rate_limiter,
+            public_id_codec,
         ))),
         _ => None,
     }
@@ -148,13 +151,21 @@ impl EmailApiImpl {
         email_service: Arc<EmailService>,
         email_token_service: Arc<EmailTokenService>,
         rate_limiter: impl RequestRateLimiterService + 'static,
+        public_id_codec: Arc<crate::PublicIdCodec>,
     ) -> Self {
         Self {
             user_service,
             email_service,
             email_token_service,
             rate_limiter: Arc::new(rate_limiter),
+            public_id_codec,
         }
+    }
+
+    fn public_user_id(&self, user_id: synctv_core::models::UserId) -> String {
+        self.public_id_codec
+            .encode_user_id(user_id)
+            .expect("positive user ID must encode")
     }
 
     /// Send a verification email.
@@ -275,11 +286,11 @@ impl EmailApiImpl {
             .await
             .map_err(map_email_mutation_error)?;
 
-        tracing::info!("Email verified for user {}", user.id.as_str());
+        tracing::info!("Email verified for user {}", user.id);
 
         Ok(ConfirmEmailResult {
             message: "Email verified successfully".to_string(),
-            user_id: user.id.to_string(),
+            user_id: self.public_user_id(user.id),
         })
     }
 
@@ -326,7 +337,7 @@ impl EmailApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        tracing::info!("Password reset requested for user {}", user.id.as_str());
+        tracing::info!("Password reset requested for user {}", user.id);
 
         Ok(RequestPasswordResetResult {
             message: GENERIC_PASSWORD_RESET_MESSAGE.to_string(),
@@ -455,11 +466,11 @@ impl EmailApiImpl {
             .await
             .map_err(map_email_mutation_error)?;
 
-        tracing::info!("Password reset completed for user {}", user.id.as_str());
+        tracing::info!("Password reset completed for user {}", user.id);
 
         Ok(ConfirmPasswordResetResult {
             message: "Password reset successfully".to_string(),
-            user_id: user.id.to_string(),
+            user_id: self.public_user_id(user.id),
         })
     }
 
@@ -526,7 +537,7 @@ impl EmailApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(ConfirmEmailLoginResult {
-            user_id: user.id.to_string(),
+            user_id: self.public_user_id(user.id),
             user,
             access_token,
             refresh_token,
@@ -591,6 +602,7 @@ mod tests {
             Arc::new(EmailService::new(None).unwrap()),
             Arc::new(EmailTokenService::new(pool)),
             RateLimiter::local_only("email-api-tests:".to_string()),
+            Arc::new(crate::PublicIdCodec::default_for_tests()),
         )
     }
 
@@ -676,7 +688,7 @@ mod tests {
         let first_login = api.confirm_email_login(&email, &first, None).await.unwrap();
         assert_eq!(
             first_login.user_id,
-            created.id.to_string(),
+            api.public_user_id(created.id),
             "first login code should authenticate the target user"
         );
         assert!(!first_login.access_token.is_empty());
@@ -688,7 +700,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             second_login.user_id,
-            created.id.to_string(),
+            api.public_user_id(created.id),
             "second outstanding login code should remain usable"
         );
         assert!(!second_login.access_token.is_empty());

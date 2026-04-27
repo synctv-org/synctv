@@ -41,12 +41,12 @@ fn redis_ticket_service(
     )
 }
 
-fn user_id(id: &str) -> UserId {
-    UserId::from_string(id.to_string())
+fn user_id(id: i64) -> UserId {
+    UserId::from(id)
 }
 
-fn room_id(id: &str) -> RoomId {
-    RoomId::from_string(id.to_string())
+fn room_id(id: i64) -> RoomId {
+    RoomId::from(id)
 }
 
 struct StaticUserValidator {
@@ -68,14 +68,14 @@ async fn test_redis_ticket_create_and_validate_roundtrip() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_rt_1");
-    let rid = room_id("room_rt_1");
+    let uid = user_id(1001);
+    let rid = room_id(2001);
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
     assert!(!ticket.is_empty());
 
     let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id.as_str(), "user_rt_1");
+    assert_eq!(validated.user_id, uid);
     assert_eq!(validated.password_version, 0);
 }
 
@@ -85,8 +85,8 @@ async fn test_redis_ticket_one_time_use() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_otu_1");
-    let rid = room_id("room_otu_1");
+    let uid = user_id(1002);
+    let rid = room_id(2002);
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
 
@@ -108,9 +108,9 @@ async fn test_redis_ticket_room_mismatch_rejected() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_rm_1");
-    let room_a = room_id("room_a");
-    let room_b = room_id("room_b");
+    let uid = user_id(1003);
+    let room_a = room_id(2003);
+    let room_b = room_id(2004);
 
     let ticket = service.create_ticket(&uid, &room_a, 0).await.unwrap();
 
@@ -135,8 +135,8 @@ async fn test_redis_ticket_ttl_expiry() {
     // 1-second TTL
     let service = redis_ticket_service(conn, &prefix, Some(1));
 
-    let uid = user_id("user_ttl_1");
-    let rid = room_id("room_ttl_1");
+    let uid = user_id(1004);
+    let rid = room_id(2005);
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
 
@@ -152,8 +152,8 @@ async fn test_redis_ticket_concurrent_consumption() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_conc_1");
-    let rid = room_id("room_conc_1");
+    let uid = user_id(1005);
+    let rid = room_id(2006);
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
 
@@ -162,7 +162,7 @@ async fn test_redis_ticket_concurrent_consumption() {
     for _ in 0..10 {
         let s = service.clone();
         let t = ticket.clone();
-        let r = rid.clone();
+        let r = rid;
         handles.push(tokio::spawn(
             async move { s.validate_and_consume(&t, &r).await },
         ));
@@ -190,8 +190,8 @@ async fn test_redis_ticket_user_validation_failure_does_not_consume_ticket() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_checked_1");
-    let rid = room_id("room_checked_1");
+    let uid = user_id(1006);
+    let rid = room_id(2007);
     let ticket = service.create_ticket(&uid, &rid, 9).await.unwrap();
 
     let rejecting_validator = StaticUserValidator {
@@ -226,8 +226,8 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
     let (_container, conn, prefix) = start_redis().await;
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("user_checked_once");
-    let rid = room_id("room_checked_once");
+    let uid = user_id(1007);
+    let rid = room_id(2008);
     let ticket = service.create_ticket(&uid, &rid, 3).await.unwrap();
 
     let allow_validator = StaticUserValidator {
@@ -278,14 +278,14 @@ async fn test_cluster_mode_with_redis_roundtrip() {
 
     let service = redis_ticket_service(conn, &prefix, Some(30));
 
-    let uid = user_id("cluster_user_1");
-    let rid = room_id("cluster_room_1");
+    let uid = user_id(1008);
+    let rid = room_id(2009);
 
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
     assert!(!ticket.is_empty());
 
     let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id.as_str(), "cluster_user_1");
+    assert_eq!(validated.user_id, uid);
     assert_eq!(validated.password_version, 0);
 }
 
@@ -325,8 +325,8 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
 
     // "Replica A" creates the ticket
     let service_a = redis_ticket_service(conn, &prefix, Some(30));
-    let uid = user_id("multi_replica_user");
-    let rid = room_id("multi_replica_room");
+    let uid = user_id(1009);
+    let rid = room_id(2010);
 
     let ticket = service_a.create_ticket(&uid, &rid, 0).await.unwrap();
 
@@ -334,7 +334,7 @@ async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
     let service_b = redis_ticket_service(conn_clone, &prefix, Some(30));
 
     let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
-    assert_eq!(validated.user_id.as_str(), "multi_replica_user");
+    assert_eq!(validated.user_id, uid);
 
     // Ticket should be consumed (one-time use)
     let result = service_a.validate_and_consume(&ticket, &rid).await;
@@ -347,13 +347,13 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
     let (_container, conn, _prefix) = start_redis().await;
     let service = redis_ticket_service(conn.clone(), "tenant-a:", Some(30));
 
-    let uid = user_id("user_prefix_1");
-    let rid = room_id("room_prefix_1");
+    let uid = user_id(1010);
+    let rid = room_id(2011);
     let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
 
     let mut redis_conn = conn.read().await.clone();
     let payload: Option<String> = redis_conn
-        .get(format!("tenant-a:ws_ticket:{}:{ticket}", rid.as_str()))
+        .get(format!("tenant-a:ws_ticket:{rid}:{ticket}"))
         .await
         .unwrap();
     assert!(
@@ -362,7 +362,7 @@ async fn test_redis_ticket_uses_configured_key_prefix() {
     );
 
     let old_key_payload: Option<String> = redis_conn
-        .get(format!("synctv:ws_ticket:{}:{ticket}", rid.as_str()))
+        .get(format!("synctv:ws_ticket:{rid}:{ticket}"))
         .await
         .unwrap();
     assert!(

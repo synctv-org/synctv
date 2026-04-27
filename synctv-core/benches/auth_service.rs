@@ -14,7 +14,7 @@ use synctv_core::service::auth::{hash_password, verify_password, JwtService, Tok
 fn bench_jwt_sign(c: &mut Criterion) {
     let jwt_service = JwtService::new("benchmark-secret-key-long-enough-for-entropy-1234567890")
         .expect("Failed to create JwtService");
-    let user_id = UserId::from_string("bench_user_001".to_string());
+    let user_id = UserId::from(1_000_000_001);
 
     c.bench_function("jwt_sign_access_token", |b| {
         b.iter(|| {
@@ -30,7 +30,7 @@ fn bench_jwt_sign(c: &mut Criterion) {
 fn bench_jwt_verify(c: &mut Criterion) {
     let jwt_service = JwtService::new("benchmark-secret-key-long-enough-for-entropy-1234567890")
         .expect("Failed to create JwtService");
-    let user_id = UserId::from_string("bench_user_001".to_string());
+    let user_id = UserId::from(1_000_000_001);
 
     let token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
@@ -118,7 +118,7 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
                         for i in 0..num_concurrent {
                             let jwt_service = jwt_service.clone();
                             tasks.push(tokio::spawn(async move {
-                                let user_id = UserId::from_string(format!("bench_user_{i:03}"));
+                                let user_id = UserId::from(1_000_000_000 + i);
                                 let token = jwt_service
                                     .sign_token(&user_id, TokenType::Access, 0)
                                     .expect("sign failed");

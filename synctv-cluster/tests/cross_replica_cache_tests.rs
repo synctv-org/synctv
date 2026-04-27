@@ -75,6 +75,8 @@ async fn test_cross_replica_cache_invalidation() {
 
     let mut received_user = false;
     let mut received_room = false;
+    let updated_user = UserId::from(10_010_001);
+    let updated_room = RoomId::from(10_010_002);
     broadcast_until_cache_invalidation(
         &node_b,
         &mut local_rx_a,
@@ -82,20 +84,20 @@ async fn test_cross_replica_cache_invalidation() {
             event_id: synctv_common::snanoid!(16),
             targets: vec![
                 CacheTarget::User {
-                    user_id: "updated_user".to_string(),
+                    user_id: updated_user,
                 },
                 CacheTarget::Room {
-                    room_id: "updated_room".to_string(),
+                    room_id: updated_room,
                 },
             ],
             timestamp: Utc::now(),
         },
         |msg| match msg {
-            InvalidationMessage::User { user_id } if user_id == "updated_user" => {
+            InvalidationMessage::User { user_id } if user_id == updated_user.to_string() => {
                 received_user = true;
                 received_user && received_room
             }
-            InvalidationMessage::Room { room_id } if room_id == "updated_room" => {
+            InvalidationMessage::Room { room_id } if room_id == updated_room.to_string() => {
                 received_room = true;
                 received_user && received_room
             }
@@ -120,12 +122,12 @@ async fn test_cross_replica_permission_changed() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from_string("perm_room".to_string());
-    let user_id = UserId::from_string("perm_user".to_string());
+    let room_id = RoomId::from(10_000_036);
+    let user_id = UserId::from(10_000_037);
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -134,8 +136,8 @@ async fn test_cross_replica_permission_changed() {
         &mut room_rx,
         || ClusterEvent::PermissionChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            target_user_id: UserId::from_string("target_user".to_string()),
+            room_id,
+            target_user_id: UserId::from(10_000_038),
             target_username: "target_user".to_string(),
             new_permissions: synctv_core::models::PermissionBits(
                 synctv_core::models::PermissionBits::DEFAULT_MEMBER
@@ -148,11 +150,11 @@ async fn test_cross_replica_permission_changed() {
             removed_permissions: synctv_core::models::PermissionBits::empty(),
             admin_added_permissions: synctv_core::models::PermissionBits::empty(),
             admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
-            changed_by: UserId::from_string("admin_user".to_string()),
+            changed_by: UserId::from(10_000_039),
             changed_by_username: "admin_user".to_string(),
             timestamp: Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::PermissionChanged { target_user_id, .. } if target_user_id.as_str() == "target_user"),
+        |event| matches!(event, ClusterEvent::PermissionChanged { target_user_id, .. } if *target_user_id == UserId::from(10_000_038)),
         "PermissionChanged on node A",
     )
     .await;
@@ -165,7 +167,7 @@ async fn test_cross_replica_permission_changed() {
         ..
     } = &received
     {
-        assert_eq!(target_user_id.as_str(), "target_user");
+        assert_eq!(*target_user_id, UserId::from(10_000_038));
         assert!(
             new_permissions.has(synctv_core::models::PermissionBits::KICK_MEMBER),
             "New permissions should include KICK_MEMBER"
@@ -227,20 +229,22 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
             .await;
 
     let mut received_target = false;
+    let perm_changed_user = UserId::from(10_010_003);
     broadcast_until_cache_invalidation(
         &node_b,
         &mut local_rx_a,
         || ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
-                user_id: "perm_changed_user".to_string(),
+                user_id: perm_changed_user,
             }],
             timestamp: Utc::now(),
         },
         |msg| match msg {
             InvalidationMessage::User { user_id } => {
                 assert_eq!(
-                    user_id, "perm_changed_user",
+                    user_id,
+                    perm_changed_user.to_string(),
                     "Should invalidate the correct user"
                 );
                 received_target = true;
@@ -334,24 +338,26 @@ async fn test_cluster_permission_cache_consistency() {
         .expect("Failed to create node B");
 
     // Test 1: User permission invalidation
-    let user_id = "perm_test_user".to_string();
-    let room_id = "perm_test_room".to_string();
+    let user_id = UserId::from(10_010_004);
+    let room_id = RoomId::from(10_010_005);
 
     broadcast_until_cache_invalidation(
         &node_a,
         &mut rx_b,
         || ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
-            targets: vec![CacheTarget::User {
-                user_id: user_id.clone(),
-            }],
+            targets: vec![CacheTarget::User { user_id }],
             timestamp: Utc::now(),
         },
         |msg| match msg {
             InvalidationMessage::User {
                 user_id: received_user_id,
             } => {
-                assert_eq!(received_user_id, user_id, "User ID should match");
+                assert_eq!(
+                    received_user_id,
+                    user_id.to_string(),
+                    "User ID should match"
+                );
                 true
             }
             other => panic!("Expected User invalidation, got: {other:?}"),
@@ -366,16 +372,18 @@ async fn test_cluster_permission_cache_consistency() {
         &mut rx_a,
         || ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
-            targets: vec![CacheTarget::Room {
-                room_id: room_id.clone(),
-            }],
+            targets: vec![CacheTarget::Room { room_id }],
             timestamp: Utc::now(),
         },
         |msg| match msg {
             InvalidationMessage::Room {
                 room_id: received_room_id,
             } => {
-                assert_eq!(received_room_id, room_id, "Room ID should match");
+                assert_eq!(
+                    received_room_id,
+                    room_id.to_string(),
+                    "Room ID should match"
+                );
                 true
             }
             other => panic!("Expected Room invalidation, got: {other:?}"),
@@ -390,7 +398,7 @@ async fn test_cluster_permission_cache_consistency() {
         let event = ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
-                user_id: format!("rapid_user_{i}"),
+                user_id: UserId::from(10_020_000 + i64::from(i)),
             }],
             timestamp: Utc::now(),
         };
@@ -582,7 +590,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_a_{i}"),
+                    user_id: UserId::from(10_030_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };
@@ -597,7 +605,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_b_{i}"),
+                    user_id: UserId::from(10_040_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };
@@ -612,7 +620,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_c_{i}"),
+                    user_id: UserId::from(10_050_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };

@@ -101,6 +101,7 @@ fn fake_proxy_services() -> ProxyServices {
         signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
             b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
         )),
+        public_id_codec: Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
     }
 }
 

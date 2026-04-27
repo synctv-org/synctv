@@ -10,6 +10,7 @@ use synctv_cluster::discovery::node_registry::{ClusterMode, NodeRegistry};
 use synctv_cluster::discovery::NodeInfo;
 use synctv_cluster::grpc::client::{ClusterClient, ClusterClientConfig, FanOutResult};
 use synctv_cluster::grpc::synctv::cluster::UserOnlineStatus;
+use synctv_core::models::UserId;
 
 // FanOutResult construction and queries
 
@@ -18,9 +19,9 @@ use synctv_cluster::grpc::synctv::cluster::UserOnlineStatus;
 fn test_fan_out_result_partial_failure_tracking() {
     let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
         data: vec![UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room1".to_string()],
+            room_ids: vec![101],
             node_id: "fast-node:50051".to_string(),
         }],
         nodes_succeeded: 1,
@@ -51,13 +52,13 @@ fn test_fan_out_result_all_success() {
     let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
         data: vec![
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
                 room_ids: vec![],
                 node_id: "node-a".to_string(),
             },
             UserOnlineStatus {
-                user_id: "user2".to_string(),
+                user_id: 2,
                 is_online: true,
                 room_ids: vec![],
                 node_id: "node-b".to_string(),
@@ -121,15 +122,15 @@ fn test_merge_user_statuses_any_online_wins() {
     // Node A says user1 offline, Node B says user1 online
     let statuses = vec![
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: false,
             room_ids: vec![],
             node_id: "node-a".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room-a".to_string()],
+            room_ids: vec![101],
             node_id: "node-b".to_string(),
         },
     ];
@@ -139,10 +140,7 @@ fn test_merge_user_statuses_any_online_wins() {
 
     let status = &merged[0];
     assert!(status.is_online, "Any-online-wins: should be online");
-    assert!(
-        status.room_ids.contains(&"room-a".to_string()),
-        "Should contain room-a"
-    );
+    assert!(status.room_ids.contains(&101), "Should contain room-a");
 }
 
 /// Verify `merge_user_statuses`: dedup `room_ids` from multiple nodes.
@@ -150,15 +148,15 @@ fn test_merge_user_statuses_any_online_wins() {
 fn test_merge_user_statuses_dedup_rooms() {
     let statuses = vec![
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room-a".to_string(), "room-b".to_string()],
+            room_ids: vec![101, 102],
             node_id: "node-a".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room-b".to_string(), "room-c".to_string()],
+            room_ids: vec![102, 103],
             node_id: "node-b".to_string(),
         },
     ];
@@ -168,14 +166,10 @@ fn test_merge_user_statuses_dedup_rooms() {
 
     let status = &merged[0];
     let mut rooms = status.room_ids.clone();
-    rooms.sort();
+    rooms.sort_unstable();
     assert_eq!(
         rooms,
-        vec![
-            "room-a".to_string(),
-            "room-b".to_string(),
-            "room-c".to_string()
-        ],
+        vec![101, 102, 103],
         "Room IDs should be deduplicated"
     );
 }
@@ -185,25 +179,25 @@ fn test_merge_user_statuses_dedup_rooms() {
 fn test_merge_user_statuses_multi_user_multi_node() {
     let statuses = vec![
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room-a".to_string()],
+            room_ids: vec![101],
             node_id: "node-a".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user2".to_string(),
+            user_id: 2,
             is_online: false,
             room_ids: vec![],
             node_id: "node-a".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user2".to_string(),
+            user_id: 2,
             is_online: true,
-            room_ids: vec!["room-b".to_string()],
+            room_ids: vec![102],
             node_id: "node-b".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user3".to_string(),
+            user_id: 3,
             is_online: true,
             room_ids: vec![],
             node_id: "node-b".to_string(),
@@ -213,13 +207,13 @@ fn test_merge_user_statuses_multi_user_multi_node() {
     let merged = ClusterClient::merge_user_statuses(statuses);
     assert_eq!(merged.len(), 3, "Should have 3 users");
 
-    let user1 = merged.iter().find(|s| s.user_id == "user1").unwrap();
+    let user1 = merged.iter().find(|s| s.user_id == 1).unwrap();
     assert!(user1.is_online);
 
-    let user2 = merged.iter().find(|s| s.user_id == "user2").unwrap();
+    let user2 = merged.iter().find(|s| s.user_id == 2).unwrap();
     assert!(user2.is_online, "user2 should be online (any-online-wins)");
 
-    let user3 = merged.iter().find(|s| s.user_id == "user3").unwrap();
+    let user3 = merged.iter().find(|s| s.user_id == 3).unwrap();
     assert!(user3.is_online);
 }
 
@@ -235,15 +229,15 @@ fn test_merge_user_statuses_empty() {
 fn test_merge_user_statuses_node_id_merged() {
     let statuses = vec![
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room1".to_string()],
+            room_ids: vec![101],
             node_id: "node-a".to_string(),
         },
         UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room2".to_string()],
+            room_ids: vec![102],
             node_id: "node-b".to_string(),
         },
     ];
@@ -291,7 +285,7 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
     // Since get_all_nodes may error, the fan_out might error too.
     // But the key test is: when there ARE no remote nodes, the result is empty.
     let result = client
-        .fan_out_user_online_status(vec!["user1".to_string()])
+        .fan_out_user_online_status(vec![UserId::from(1)])
         .await;
 
     // The call may fail (Redis unavailable) or succeed with empty.
@@ -342,7 +336,7 @@ async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale()
     );
 
     let err = client
-        .fan_out_user_online_status(vec!["user1".to_string()])
+        .fan_out_user_online_status(vec![UserId::from(1)])
         .await
         .expect_err("stale degraded topology must not be used for fan-out routing");
     assert!(err.to_string().contains("stale"), "unexpected error: {err}");

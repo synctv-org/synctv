@@ -48,6 +48,8 @@ const NODES_CACHE_TTL_SECS: u64 = 2;
 
 /// Maximum number of SSCAN iterations when listing node IDs from the index set.
 const MAX_INDEX_SCAN_ITERATIONS: usize = 1000;
+const NODE_METADATA_DISCOVERY_KEY: &str = "discovery";
+const NODE_DISCOVERY_SOURCE_K8S_DNS: &str = "k8s_dns";
 
 /// Create a failsafe circuit breaker for Redis operations.
 ///
@@ -72,6 +74,20 @@ fn unix_time_millis_u64() -> u64 {
 
 fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeDiscoverySource {
+    K8sDns,
+}
+
+impl NodeDiscoverySource {
+    #[must_use]
+    const fn metadata_value(self) -> &'static str {
+        match self {
+            Self::K8sDns => NODE_DISCOVERY_SOURCE_K8S_DNS,
+        }
+    }
 }
 
 /// Node information
@@ -104,6 +120,26 @@ impl NodeInfo {
     pub const fn with_epoch(mut self, epoch: u64) -> Self {
         self.epoch = epoch;
         self
+    }
+
+    #[must_use]
+    pub fn with_discovery_source(mut self, source: NodeDiscoverySource) -> Self {
+        self.set_discovery_source(source);
+        self
+    }
+
+    pub fn set_discovery_source(&mut self, source: NodeDiscoverySource) {
+        self.metadata.insert(
+            NODE_METADATA_DISCOVERY_KEY.to_string(),
+            source.metadata_value().to_string(),
+        );
+    }
+
+    #[must_use]
+    pub fn has_discovery_source(&self, source: NodeDiscoverySource) -> bool {
+        self.metadata
+            .get(NODE_METADATA_DISCOVERY_KEY)
+            .is_some_and(|value| value == source.metadata_value())
     }
 
     /// Check if node is stale (no recent heartbeat)
@@ -316,11 +352,7 @@ impl NodeRegistry {
 
         nodes
             .into_iter()
-            .filter(|node| {
-                node.metadata
-                    .get("discovery")
-                    .is_none_or(|value| value != "k8s_dns")
-            })
+            .filter(|node| !node.has_discovery_source(NodeDiscoverySource::K8sDns))
             .collect()
     }
 
@@ -337,10 +369,7 @@ impl NodeRegistry {
 
         for node in local_nodes.values() {
             if !node.is_stale(self.heartbeat_timeout_secs)
-                && node
-                    .metadata
-                    .get("discovery")
-                    .is_some_and(|value| value == "k8s_dns")
+                && node.has_discovery_source(NodeDiscoverySource::K8sDns)
                 && !redis_node_ids.contains(&node.node_id)
             {
                 merged_nodes.push(node.clone());
@@ -1654,14 +1683,12 @@ impl NodeRegistry {
     pub async fn remove_discovered_local_node(
         &self,
         node_id: &str,
-        discovery_source: &str,
+        discovery_source: NodeDiscoverySource,
     ) -> bool {
         let mut nodes = self.local_nodes.write().await;
-        let should_remove = nodes.get(node_id).is_some_and(|node| {
-            node.metadata
-                .get("discovery")
-                .is_some_and(|value| value == discovery_source)
-        });
+        let should_remove = nodes
+            .get(node_id)
+            .is_some_and(|node| node.has_discovery_source(discovery_source));
 
         if should_remove {
             nodes.remove(node_id);
@@ -1677,15 +1704,14 @@ impl NodeRegistry {
     /// metadata becomes visible immediately. Entries owned by another source are
     /// left untouched to avoid transient discovery data clobbering Redis-backed
     /// state.
-    pub async fn upsert_discovered_local_node(&self, node_info: NodeInfo, discovery_source: &str) {
+    pub async fn upsert_discovered_local_node(
+        &self,
+        node_info: NodeInfo,
+        discovery_source: NodeDiscoverySource,
+    ) {
         let mut nodes = self.local_nodes.write().await;
         match nodes.get_mut(&node_info.node_id) {
-            Some(existing)
-                if existing
-                    .metadata
-                    .get("discovery")
-                    .is_some_and(|value| value == discovery_source) =>
-            {
+            Some(existing) if existing.has_discovery_source(discovery_source) => {
                 *existing = node_info;
             }
             Some(_) => {}
@@ -1968,11 +1994,19 @@ impl ClusterNodeDirectory for NodeRegistry {
         Self::update_local_metadata(self, key, value).await;
     }
 
-    async fn upsert_discovered_local_node(&self, node_info: NodeInfo, discovery_source: &str) {
+    async fn upsert_discovered_local_node(
+        &self,
+        node_info: NodeInfo,
+        discovery_source: NodeDiscoverySource,
+    ) {
         Self::upsert_discovered_local_node(self, node_info, discovery_source).await;
     }
 
-    async fn remove_discovered_local_node(&self, node_id: &str, discovery_source: &str) -> bool {
+    async fn remove_discovered_local_node(
+        &self,
+        node_id: &str,
+        discovery_source: NodeDiscoverySource,
+    ) -> bool {
         Self::remove_discovered_local_node(self, node_id, discovery_source).await
     }
 
@@ -2170,9 +2204,7 @@ mod tests {
 
         let mut local_nodes = HashMap::new();
         let mut dns_peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
-        dns_peer
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        dns_peer.set_discovery_source(NodeDiscoverySource::K8sDns);
         local_nodes.insert(dns_peer.node_id.clone(), dns_peer);
 
         local_nodes.insert(
@@ -2209,9 +2241,7 @@ mod tests {
 
         let redis_peer = NodeInfo::new("redis-peer-1".to_string(), "10.0.0.10:8080".to_string());
         let mut dns_peer = NodeInfo::new("dns-peer-1".to_string(), "10.0.0.2:8080".to_string());
-        dns_peer
-            .metadata
-            .insert("discovery".to_string(), "k8s_dns".to_string());
+        dns_peer.set_discovery_source(NodeDiscoverySource::K8sDns);
 
         registry
             .nodes_cache

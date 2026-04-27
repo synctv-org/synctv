@@ -283,7 +283,7 @@ async fn extract_handshake_auth(
                     .map_err(app_error_to_api_error)?;
 
                 Ok(HandshakeAuthContext {
-                    user_id: pending.user_id.clone(),
+                    user_id: pending.user_id,
                     ticket_commit: Some(TicketAuthCommit {
                         ticket: query.ticket.clone(),
                         pending,
@@ -483,7 +483,7 @@ async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<S
         .await
         .map_err(|error| {
             error!(
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 error = %error,
                 "WebSocket handshake rejected: failed to load username"
             );
@@ -491,7 +491,7 @@ async fn load_websocket_username(state: &AppState, user_id: &UserId) -> Result<S
         })?
         .ok_or_else(|| {
             warn!(
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 "WebSocket handshake rejected: authenticated user missing username record"
             );
             AppError::unauthorized("Authentication failed")
@@ -1078,8 +1078,8 @@ fn reserve_websocket_upgrade_slots(
     }
 
     Ok(HandshakeReservation {
-        room_id: room_id.clone(),
-        user_id: user_id.clone(),
+        room_id: *room_id,
+        user_id: *user_id,
     })
 }
 
@@ -1098,10 +1098,13 @@ async fn prepare_websocket_upgrade(
         &state.config.server.trusted_proxies,
     )?;
 
-    let rid = synctv_core::models::RoomId::from_string(room_id.to_string());
+    let rid = state
+        .public_id_codec
+        .decode_room_id(room_id)
+        .map_err(|error| AppError::bad_request(format!("Invalid room_id: {error}")))?;
 
     let auth = extract_handshake_auth(state, request_meta, query, &rid, handshake_control).await?;
-    let user_id = auth.user_id.clone();
+    let user_id = auth.user_id;
 
     let room = state
         .room_service
@@ -1123,7 +1126,7 @@ async fn prepare_websocket_upgrade(
 
     validate_websocket_runtime_dependencies(state)?;
     let username = load_websocket_username(state, &user_id).await?;
-    let connection_id = StreamMessageHandler::generate_connection_id(&user_id);
+    let connection_id = StreamMessageHandler::generate_connection_id();
     let reservation =
         reserve_websocket_upgrade_slots(state.connection_manager.as_ref(), &rid, &user_id)?;
 
@@ -1142,8 +1145,8 @@ fn build_failed_upgrade_cleanup(
 ) -> impl FnOnce(axum::Error) + Send + 'static {
     move |error| {
         warn!(
-            room_id = %reservation.room_id.as_str(),
-            user_id = %reservation.user_id.as_str(),
+            room_id = %reservation.room_id,
+            user_id = %reservation.user_id,
             error = %error,
             "WebSocket upgrade failed after reserving connection capacity; releasing reservation"
         );
@@ -1176,15 +1179,13 @@ async fn handle_socket(
     connection_id: String,
     reservation: HandshakeReservation,
 ) {
-    let user_id = auth.user_id.clone();
-    let socket = socket;
+    let user_id = auth.user_id;
     let mut reservation_cleanup =
         ReservationCleanupGuard::new(state.connection_manager.clone(), reservation.clone());
 
     info!(
         "WebSocket connection established: user={}, room={}",
-        user_id.as_str(),
-        room_id.as_str()
+        user_id, room_id
     );
 
     // Check if cluster_manager is available BEFORE incrementing metrics.
@@ -1229,8 +1230,8 @@ async fn handle_socket(
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new(
-        room_id.clone(),
-        user_id.clone(),
+        room_id,
+        user_id,
         username.clone(),
         &state.room_service,
         chat_service,
@@ -1239,6 +1240,7 @@ async fn handle_socket(
         rate_limiter,
         rate_limit_config,
         content_filter,
+        state.public_id_codec.clone(),
         ws_sender_for_handler,
     )
     .with_playback_snapshot_service(state.client_api.clone())
@@ -1340,8 +1342,7 @@ async fn handle_socket(
 
     info!(
         "WebSocket connection closed: user={}, room={}",
-        user_id.as_str(),
-        room_id.as_str()
+        user_id, room_id
     );
 }
 
@@ -1767,12 +1768,9 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from_string("user-timeout-cleanup".to_string());
-        let room_id = RoomId::from_string("room-timeout-cleanup".to_string());
-        let reservation = HandshakeReservation {
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
-        };
+        let user_id = UserId::from(130_001);
+        let room_id = RoomId::from(130_002);
+        let reservation = HandshakeReservation { room_id, user_id };
 
         manager
             .reserve_user_slot(&user_id)
@@ -1832,7 +1830,7 @@ mod tests {
     async fn test_load_websocket_username_fails_closed_on_storage_error() {
         let state = crate::http::tests::test_app_state();
         state.user_service.pool().close().await;
-        let user_id = UserId::from_string("ws-user-storage-error".to_string());
+        let user_id = UserId::from(130_003);
 
         let err = load_websocket_username(&state, &user_id)
             .await
@@ -1926,7 +1924,7 @@ mod tests {
             .create_room(
                 "ws-room-inactive-owner".to_string(),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -1934,7 +1932,7 @@ mod tests {
             .expect("room should be created")
             .0;
         room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("member should join room");
 
@@ -2097,12 +2095,9 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from_string("user-upgrade-fail".to_string());
-        let room_id = RoomId::from_string("room-upgrade-fail".to_string());
-        let reservation = HandshakeReservation {
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
-        };
+        let user_id = UserId::from(130_004);
+        let room_id = RoomId::from(130_005);
+        let reservation = HandshakeReservation { room_id, user_id };
 
         manager
             .reserve_user_slot(&user_id)
@@ -2141,12 +2136,9 @@ mod tests {
     async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state.ws_ticket_service.clone();
-        let user_id = UserId::from_string("user-ticket-restore".to_string());
-        let room_id = RoomId::from_string("room-ticket-restore".to_string());
-        let reservation = HandshakeReservation {
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
-        };
+        let user_id = UserId::from(130_006);
+        let room_id = RoomId::from(130_007);
+        let reservation = HandshakeReservation { room_id, user_id };
 
         state
             .router_config
@@ -2168,9 +2160,9 @@ mod tests {
             .await
             .expect("ticket should prevalidate before upgrade");
         let prepared = PreparedWebSocketUpgrade {
-            room_id: room_id.clone(),
+            room_id,
             auth: HandshakeAuthContext {
-                user_id: user_id.clone(),
+                user_id,
                 ticket_commit: Some(TicketAuthCommit {
                     ticket: ticket.clone(),
                     pending,
@@ -2205,8 +2197,8 @@ mod tests {
     async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state.ws_ticket_service.clone();
-        let user_id = UserId::from_string("user-ticket-claim-fail".to_string());
-        let room_id = RoomId::from_string("room-ticket-claim-fail".to_string());
+        let user_id = UserId::from(130_008);
+        let room_id = RoomId::from(130_009);
 
         let reservation = reserve_websocket_upgrade_slots(
             state.router_config.connection_manager.as_ref(),
@@ -2230,9 +2222,9 @@ mod tests {
             .expect("fixture should spend the ticket before commit");
 
         let prepared = PreparedWebSocketUpgrade {
-            room_id: room_id.clone(),
+            room_id,
             auth: HandshakeAuthContext {
-                user_id: user_id.clone(),
+                user_id,
                 ticket_commit: Some(TicketAuthCommit { ticket, pending }),
             },
             username: "ticket-user".to_string(),
@@ -2262,8 +2254,8 @@ mod tests {
     async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit() {
         let state = crate::http::tests::test_app_state();
         let timeout_state = state.clone();
-        let user_id = UserId::from_string("user-ticket-timeout".to_string());
-        let room_id = RoomId::from_string("room-ticket-timeout".to_string());
+        let user_id = UserId::from(130_010);
+        let room_id = RoomId::from(130_011);
         let reservation = reserve_websocket_upgrade_slots(
             state.router_config.connection_manager.as_ref(),
             &room_id,
@@ -2272,9 +2264,9 @@ mod tests {
         .expect("handshake should reserve websocket capacity");
 
         let prepared = PreparedWebSocketUpgrade {
-            room_id: room_id.clone(),
+            room_id,
             auth: HandshakeAuthContext {
-                user_id: user_id.clone(),
+                user_id,
                 ticket_commit: None,
             },
             username: "ticket-user".to_string(),
@@ -2321,12 +2313,9 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from_string("user-pre-join-transfer".to_string());
-        let room_id = RoomId::from_string("room-pre-join-transfer".to_string());
-        let reservation = HandshakeReservation {
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
-        };
+        let user_id = UserId::from(130_012);
+        let room_id = RoomId::from(130_013);
+        let reservation = HandshakeReservation { room_id, user_id };
         let connection_id = "conn-pre-join-transfer".to_string();
 
         manager
@@ -2346,11 +2335,11 @@ mod tests {
         );
 
         manager
-            .register(connection_id.clone(), user_id.clone())
+            .register(connection_id.clone(), user_id)
             .await
             .expect("pre_join should register the connection before releasing reservation");
         manager
-            .join_room(&connection_id, room_id.clone())
+            .join_room(&connection_id, room_id)
             .await
             .expect("pre_join should join the room before releasing reservation");
 
@@ -2488,7 +2477,7 @@ mod tests {
         }
 
         let connection_id = "conn-forward-failure".to_string();
-        let user_id = UserId::from_string("user-forward-failure".to_string());
+        let user_id = UserId::from(130_014);
         let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         manager
             .register(connection_id.clone(), user_id)

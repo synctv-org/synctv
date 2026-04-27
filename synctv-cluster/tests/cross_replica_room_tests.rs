@@ -35,7 +35,7 @@ async fn test_cross_replica_kick_user() {
         &mut admin_rx_a,
         || ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from_string("victim_user".to_string()),
+            user_id: UserId::from(10_000_040),
             reason: "banned_by_admin".to_string(),
             timestamp: Utc::now(),
         },
@@ -49,7 +49,7 @@ async fn test_cross_replica_kick_user() {
         user_id, reason, ..
     } = &received
     {
-        assert_eq!(user_id.as_str(), "victim_user");
+        assert_eq!(*user_id, UserId::from(10_000_040));
         assert_eq!(reason, "banned_by_admin");
     } else {
         panic!("Expected KickUser event, got {:?}", received.event_type());
@@ -78,12 +78,12 @@ async fn test_cross_replica_room_event_propagation() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from_string("shared_room".to_string());
-    let user_id = UserId::from_string("viewer_user".to_string());
+    let room_id = RoomId::from(10_000_011);
+    let user_id = UserId::from(10_000_041);
 
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -92,8 +92,8 @@ async fn test_cross_replica_room_event_propagation() {
         &mut room_rx,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: UserId::from_string("sender_user".to_string()),
+            room_id,
+            user_id: UserId::from(10_000_042),
             username: "sender".to_string(),
             message: "Hello from node B!".to_string(),
             timestamp: Utc::now(),
@@ -134,10 +134,10 @@ async fn test_cross_replica_kick_publisher() {
     let mut admin_rx_a = node_a.subscribe_admin_events();
 
     // Also subscribe to the room on node A so Redis subscriber is active for this room
-    let room_id = RoomId::from_string("stream_room".to_string());
-    let user_id = UserId::from_string("publisher_user".to_string());
+    let room_id = RoomId::from(10_000_043);
+    let user_id = UserId::from(10_000_044);
     let (_room_rx, conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -146,14 +146,14 @@ async fn test_cross_replica_kick_publisher() {
         &mut admin_rx_a,
         || ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            media_id: MediaId::from_string("live_stream_1".to_string()),
+            room_id,
+            media_id: MediaId::from(10_000_045),
             reason: "room_deleted".to_string(),
             timestamp: Utc::now(),
         },
         |event| {
             matches!(event, ClusterEvent::KickPublisher { room_id, media_id, .. }
-            if room_id.as_str() == "stream_room" && media_id.as_str() == "live_stream_1")
+            if *room_id == RoomId::from(10_000_043) && *media_id == MediaId::from(10_000_045))
         },
         "KickPublisher on node A",
     )
@@ -167,8 +167,8 @@ async fn test_cross_replica_kick_publisher() {
         ..
     } = &received
     {
-        assert_eq!(rid.as_str(), "stream_room");
-        assert_eq!(media_id.as_str(), "live_stream_1");
+        assert_eq!(*rid, RoomId::from(10_000_043));
+        assert_eq!(*media_id, MediaId::from(10_000_045));
         assert_eq!(reason, "room_deleted");
     } else {
         panic!("Expected KickPublisher event");
@@ -187,12 +187,12 @@ async fn test_cross_replica_room_deleted() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from_string("doomed_room".to_string());
-    let user_id = UserId::from_string("user_in_room".to_string());
+    let room_id = RoomId::from(10_000_046);
+    let user_id = UserId::from(10_000_047);
 
     // Subscribe user on node A
     let (mut room_rx, _conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -206,11 +206,11 @@ async fn test_cross_replica_room_deleted() {
         &mut room_rx,
         || ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            deleted_by: UserId::from_string("admin_user".to_string()),
+            room_id,
+            deleted_by: UserId::from(10_000_039),
             timestamp: Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::RoomDeleted { room_id, .. } if room_id.as_str() == "doomed_room"),
+        |event| matches!(event, ClusterEvent::RoomDeleted { room_id, .. } if *room_id == RoomId::from(10_000_046)),
         "RoomDeleted on node A",
     )
     .await;
@@ -249,12 +249,12 @@ async fn test_cross_replica_room_settings_changed() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from_string("settings_room".to_string());
-    let user_id = UserId::from_string("settings_listener".to_string());
+    let room_id = RoomId::from(10_000_048);
+    let user_id = UserId::from(10_000_049);
 
     // Subscribe on node A
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -263,8 +263,8 @@ async fn test_cross_replica_room_settings_changed() {
         &mut room_rx,
         || ClusterEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: UserId::from_string("room_admin".to_string()),
+            room_id,
+            user_id: UserId::from(10_000_050),
             username: "room_admin".to_string(),
             settings_json: serde_json::to_vec(&serde_json::json!({
                 "max_members": 50,
@@ -307,18 +307,18 @@ async fn test_multiple_rooms_cross_replica() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room1 = RoomId::from_string("room_1".to_string());
-    let room2 = RoomId::from_string("room_2".to_string());
-    let user1 = UserId::from_string("user_1".to_string());
-    let user2 = UserId::from_string("user_2".to_string());
+    let room1 = RoomId::from(10_000_051);
+    let room2 = RoomId::from(10_000_052);
+    let user1 = UserId::from(10_000_030);
+    let user2 = UserId::from(10_000_031);
 
     // User1 in room1 on node A, User2 in room2 on node A
     let (mut rx1, conn1) = node_a
-        .subscribe(room1.clone(), user1.clone())
+        .subscribe(room1, user1)
         .await
         .expect("subscribe should succeed");
     let (mut rx2, conn2) = node_a
-        .subscribe(room2.clone(), user2.clone())
+        .subscribe(room2, user2)
         .await
         .expect("subscribe should succeed");
 
@@ -327,8 +327,8 @@ async fn test_multiple_rooms_cross_replica() {
         &mut rx1,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room1.clone(),
-            user_id: UserId::from_string("sender_b".to_string()),
+            room_id: room1,
+            user_id: UserId::from(10_000_053),
             username: "sender_b".to_string(),
             message: "To room 1".to_string(),
             timestamp: Utc::now(),
@@ -351,8 +351,8 @@ async fn test_multiple_rooms_cross_replica() {
         &mut rx2,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room2.clone(),
-            user_id: UserId::from_string("sender_b".to_string()),
+            room_id: room2,
+            user_id: UserId::from(10_000_053),
             username: "sender_b".to_string(),
             message: "To room 2".to_string(),
             timestamp: Utc::now(),

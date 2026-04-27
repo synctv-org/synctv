@@ -28,7 +28,7 @@ async fn test_check_permissions_batch_all_present() {
         .create_room(
             "Batch Perm Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -71,7 +71,7 @@ async fn test_check_permissions_batch_one_missing_fails() {
         .create_room(
             "Batch Miss Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -79,7 +79,7 @@ async fn test_check_permissions_batch_one_missing_fails() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -111,7 +111,7 @@ async fn test_check_role_creator_passes() {
         .create_room(
             "Check Role Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -146,7 +146,7 @@ async fn test_check_role_member_not_creator_fails() {
         .create_room(
             "Check Role 2 Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -154,7 +154,7 @@ async fn test_check_role_member_not_creator_fails() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 

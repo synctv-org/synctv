@@ -2,6 +2,7 @@
 //!
 //! Used by both HTTP and gRPC handlers to avoid duplicating notification logic.
 
+use crate::PublicIdCodec;
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
@@ -11,7 +12,6 @@ use synctv_core::models::notification::{
 use synctv_core::models::SortDirection as CoreSortDirection;
 use synctv_core::models::{PageParams, MAX_PAGE_SIZE};
 use synctv_core::service::UserNotificationService;
-use uuid::Uuid;
 
 use crate::impls::ApiError;
 use crate::proto::client::SortDirection as ProtoSortDirection;
@@ -26,7 +26,10 @@ use crate::proto::client::{
 ///
 /// Shared by both HTTP and gRPC handlers.
 #[must_use]
-pub fn notification_to_proto(n: Notification) -> NotificationProto {
+pub fn notification_to_proto(
+    n: Notification,
+    public_id_codec: &PublicIdCodec,
+) -> NotificationProto {
     let notification_type = match n.notification_type {
         CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
         CoreNotificationType::SystemAnnouncement => ProtoNotificationType::SystemAnnouncement,
@@ -37,7 +40,9 @@ pub fn notification_to_proto(n: Notification) -> NotificationProto {
 
     NotificationProto {
         id: n.id.to_string(),
-        user_id: n.user_id.as_str().to_string(),
+        user_id: public_id_codec
+            .encode_user_id(n.user_id)
+            .expect("notification user_id must be encodable"),
         notification_type: notification_type as i32,
         title: n.title,
         content: n.content,
@@ -101,6 +106,7 @@ pub fn proto_notification_type_to_core(
 /// Shared notification operations implementation.
 pub struct NotificationApiImpl {
     notification_service: Arc<UserNotificationService>,
+    public_id_codec: Arc<PublicIdCodec>,
 }
 
 /// Result of listing notifications
@@ -175,20 +181,21 @@ fn build_notification_list_query(
 
 pub(crate) fn build_get_notification_request(
     req: &GetNotificationRequest,
-) -> Result<Uuid, ApiError> {
+) -> Result<i64, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    Uuid::parse_str(&req.notification_id)
+    req.notification_id
+        .parse::<i64>()
         .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
 }
 
 pub(crate) fn build_mark_as_read_request(
     req: &ProtoMarkAsReadRequest,
-) -> Result<Vec<Uuid>, ApiError> {
+) -> Result<Vec<i64>, ApiError> {
     crate::impls::validate_proto_request(req)?;
     req.notification_ids
         .iter()
         .map(|id| {
-            Uuid::parse_str(id)
+            id.parse::<i64>()
                 .map_err(|_| ApiError::InvalidInput(format!("Invalid notification_id: {id}")))
         })
         .collect()
@@ -196,9 +203,10 @@ pub(crate) fn build_mark_as_read_request(
 
 pub(crate) fn build_delete_notification_request(
     req: &DeleteNotificationRequest,
-) -> Result<Uuid, ApiError> {
+) -> Result<i64, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    Uuid::parse_str(&req.notification_id)
+    req.notification_id
+        .parse::<i64>()
         .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
 }
 
@@ -228,10 +236,19 @@ fn map_notification_mutation_error(err: synctv_core::Error) -> ApiError {
 
 impl NotificationApiImpl {
     #[must_use]
-    pub const fn new(notification_service: Arc<UserNotificationService>) -> Self {
+    pub const fn new(
+        notification_service: Arc<UserNotificationService>,
+        public_id_codec: Arc<PublicIdCodec>,
+    ) -> Self {
         Self {
             notification_service,
+            public_id_codec,
         }
+    }
+
+    #[must_use]
+    pub fn public_id_codec(&self) -> &PublicIdCodec {
+        &self.public_id_codec
     }
 
     /// List notifications for a user with pagination and filters.
@@ -265,7 +282,7 @@ impl NotificationApiImpl {
     pub async fn get_notification(
         &self,
         user_id: &UserId,
-        notification_id: Uuid,
+        notification_id: i64,
     ) -> Result<Notification, ApiError> {
         self.notification_service
             .get(user_id, notification_id)
@@ -277,7 +294,7 @@ impl NotificationApiImpl {
     pub async fn mark_as_read(
         &self,
         user_id: &UserId,
-        notification_ids: Vec<Uuid>,
+        notification_ids: Vec<i64>,
     ) -> Result<(), ApiError> {
         self.notification_service
             .mark_as_read(user_id, MarkAsReadRequest { notification_ids })
@@ -303,7 +320,7 @@ impl NotificationApiImpl {
     pub async fn delete_notification(
         &self,
         user_id: &UserId,
-        notification_id: Uuid,
+        notification_id: i64,
     ) -> Result<(), ApiError> {
         self.notification_service
             .delete(user_id, notification_id)

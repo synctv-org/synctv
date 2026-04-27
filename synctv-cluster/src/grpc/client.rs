@@ -34,6 +34,7 @@ use super::synctv::cluster::{
 };
 use crate::discovery::ClusterNodeDirectory;
 use crate::error::{Error, Result};
+use synctv_core::models::{RoomId, UserId};
 
 /// Configuration for the cluster fan-out client
 #[derive(Debug, Clone)]
@@ -430,8 +431,9 @@ impl ClusterClient {
     /// A user is considered online if ANY node reports them as online.
     pub async fn fan_out_user_online_status(
         &self,
-        user_ids: Vec<String>,
+        user_ids: Vec<UserId>,
     ) -> Result<FanOutResult<Vec<UserOnlineStatus>>> {
+        let user_ids: Vec<i64> = user_ids.into_iter().map(|id| id.as_i64()).collect();
         self.fan_out(
             "GetUserOnlineStatus",
             |node_id, address| {
@@ -451,7 +453,7 @@ impl ClusterClient {
         &self,
         node_id: &str,
         address: &str,
-        user_ids: Vec<String>,
+        user_ids: Vec<i64>,
     ) -> Result<GetUserOnlineStatusResponse> {
         // Check circuit breaker before attempting call
         if !self.circuit_breakers.is_call_permitted(address).await {
@@ -488,16 +490,14 @@ impl ClusterClient {
     /// giving a cluster-wide view of who is connected to a room.
     pub async fn fan_out_room_connections(
         &self,
-        room_id: String,
+        room_id: RoomId,
     ) -> Result<FanOutResult<Vec<RoomConnection>>> {
+        let room_id = room_id.as_i64();
         self.fan_out(
             "GetRoomConnections",
-            |node_id, address| {
-                let room_id = room_id.clone();
-                async move {
-                    self.query_room_connections_single(&node_id, &address, room_id)
-                        .await
-                }
+            |node_id, address| async move {
+                self.query_room_connections_single(&node_id, &address, room_id)
+                    .await
             },
             |response: GetRoomConnectionsResponse| response.connections,
         )
@@ -509,7 +509,7 @@ impl ClusterClient {
         &self,
         node_id: &str,
         address: &str,
-        room_id: String,
+        room_id: i64,
     ) -> Result<GetRoomConnectionsResponse> {
         // Check circuit breaker before attempting call
         if !self.circuit_breakers.is_call_permitted(address).await {
@@ -547,17 +547,17 @@ impl ClusterClient {
     /// - `room_ids` are combined from all nodes
     /// - `node_id` becomes a comma-separated list of all nodes
     pub fn merge_user_statuses(statuses: Vec<UserOnlineStatus>) -> Vec<UserOnlineStatus> {
-        let mut by_user: HashMap<String, UserOnlineStatus> = HashMap::new();
+        let mut by_user: HashMap<i64, UserOnlineStatus> = HashMap::new();
 
         for status in statuses {
             by_user
-                .entry(status.user_id.clone())
+                .entry(status.user_id)
                 .and_modify(|existing| {
                     existing.is_online = existing.is_online || status.is_online;
                     // Merge room_ids, avoiding duplicates
                     for room_id in &status.room_ids {
                         if !existing.room_ids.contains(room_id) {
-                            existing.room_ids.push(room_id.clone());
+                            existing.room_ids.push(*room_id);
                         }
                     }
                     // Append node_id
@@ -640,16 +640,16 @@ mod tests {
     #[test]
     fn test_merge_user_statuses_single_node() {
         let statuses = vec![UserOnlineStatus {
-            user_id: "user1".to_string(),
+            user_id: 1,
             is_online: true,
-            room_ids: vec!["room1".to_string()],
+            room_ids: vec![101],
             node_id: "node1".to_string(),
         }];
 
         let merged = ClusterClient::merge_user_statuses(statuses);
         assert_eq!(merged.len(), 1);
         assert!(merged[0].is_online);
-        assert_eq!(merged[0].room_ids, vec!["room1".to_string()]);
+        assert_eq!(merged[0].room_ids, vec![101]);
         assert_eq!(merged[0].node_id, "node1");
     }
 
@@ -657,19 +657,19 @@ mod tests {
     fn test_merge_user_statuses_multi_node() {
         let statuses = vec![
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
-                room_ids: vec!["room1".to_string()],
+                room_ids: vec![101],
                 node_id: "node1".to_string(),
             },
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
-                room_ids: vec!["room2".to_string()],
+                room_ids: vec![102],
                 node_id: "node2".to_string(),
             },
             UserOnlineStatus {
-                user_id: "user2".to_string(),
+                user_id: 2,
                 is_online: false,
                 room_ids: Vec::new(),
                 node_id: "node1".to_string(),
@@ -679,15 +679,15 @@ mod tests {
         let merged = ClusterClient::merge_user_statuses(statuses);
         assert_eq!(merged.len(), 2);
 
-        let user1 = merged.iter().find(|s| s.user_id == "user1").unwrap();
+        let user1 = merged.iter().find(|s| s.user_id == 1).unwrap();
         assert!(user1.is_online);
         assert_eq!(user1.room_ids.len(), 2);
-        assert!(user1.room_ids.contains(&"room1".to_string()));
-        assert!(user1.room_ids.contains(&"room2".to_string()));
+        assert!(user1.room_ids.contains(&101));
+        assert!(user1.room_ids.contains(&102));
         assert!(user1.node_id.contains("node1"));
         assert!(user1.node_id.contains("node2"));
 
-        let user2 = merged.iter().find(|s| s.user_id == "user2").unwrap();
+        let user2 = merged.iter().find(|s| s.user_id == 2).unwrap();
         assert!(!user2.is_online);
     }
 
@@ -695,15 +695,15 @@ mod tests {
     fn test_merge_user_statuses_dedup_rooms() {
         let statuses = vec![
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
-                room_ids: vec!["room1".to_string(), "room2".to_string()],
+                room_ids: vec![101, 102],
                 node_id: "node1".to_string(),
             },
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
-                room_ids: vec!["room2".to_string(), "room3".to_string()],
+                room_ids: vec![102, 103],
                 node_id: "node2".to_string(),
             },
         ];
@@ -712,24 +712,24 @@ mod tests {
         assert_eq!(merged.len(), 1);
         let user1 = &merged[0];
         assert_eq!(user1.room_ids.len(), 3);
-        assert!(user1.room_ids.contains(&"room1".to_string()));
-        assert!(user1.room_ids.contains(&"room2".to_string()));
-        assert!(user1.room_ids.contains(&"room3".to_string()));
+        assert!(user1.room_ids.contains(&101));
+        assert!(user1.room_ids.contains(&102));
+        assert!(user1.room_ids.contains(&103));
     }
 
     #[test]
     fn test_merge_user_statuses_any_online_wins() {
         let statuses = vec![
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: false,
                 room_ids: Vec::new(),
                 node_id: "node1".to_string(),
             },
             UserOnlineStatus {
-                user_id: "user1".to_string(),
+                user_id: 1,
                 is_online: true,
-                room_ids: vec!["room1".to_string()],
+                room_ids: vec![101],
                 node_id: "node2".to_string(),
             },
         ];
@@ -867,7 +867,7 @@ mod tests {
 
         // Fan-out should return empty results since there are no remote nodes
         let result = client
-            .fan_out_user_online_status(vec!["user1".to_string()])
+            .fan_out_user_online_status(vec![UserId::from(1)])
             .await
             .unwrap();
 
@@ -877,7 +877,7 @@ mod tests {
         assert!(result.is_complete());
 
         let result = client
-            .fan_out_room_connections("room1".to_string())
+            .fan_out_room_connections(RoomId::from(101))
             .await
             .unwrap();
 

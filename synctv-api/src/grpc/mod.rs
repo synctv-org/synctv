@@ -893,6 +893,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             email_service.clone(),
             email_token_service.clone(),
             rate_limiter.clone(),
+            shared_api_runtime.public_id_codec.clone(),
         )
     });
 
@@ -1014,7 +1015,12 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let notification_api = shared_api_runtime
             .notification_api
             .clone()
-            .unwrap_or_else(|| Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone())));
+            .unwrap_or_else(|| {
+                Arc::new(crate::impls::NotificationApiImpl::new(
+                    notif_svc.clone(),
+                    shared_api_runtime.public_id_codec.clone(),
+                ))
+            });
         let notif_impl = NotificationServiceImpl::new(
             notification_api,
             shared_api_runtime.request_executor.clone(),
@@ -1114,6 +1120,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             Arc::new(crate::impls::OAuth2ApiImpl::new(
                 oauth2_svc,
                 user_service.clone(),
+                shared_api_runtime.public_id_codec.clone(),
             ))
         });
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(

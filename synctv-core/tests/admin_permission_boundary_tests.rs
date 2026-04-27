@@ -378,7 +378,7 @@ async fn test_room_creator_permissions_vs_user_role() {
         .create_room(
             "Perm Test Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -556,7 +556,7 @@ async fn test_admin_can_manage_room_with_banned_creator() {
         .create_room(
             "Banned Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -577,19 +577,14 @@ async fn test_admin_can_manage_room_with_banned_creator() {
 
     // Join room as admin
     room_service
-        .join_room(room.id.clone(), admin.id.clone(), None)
+        .join_room(room.id, admin.id, None)
         .await
         .unwrap();
 
     // Promote admin to room admin role
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            admin.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
 

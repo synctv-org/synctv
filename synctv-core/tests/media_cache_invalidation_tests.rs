@@ -68,7 +68,7 @@ async fn test_edit_media_sends_notification() {
                 id: RoomId::new(),
                 name: "Test Room".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -85,8 +85,8 @@ async fn test_edit_media_sends_notification() {
     // Add room owner as a member so permission checks pass
     let member_repo_setup = RoomMemberRepository::new(pool.clone());
     let owner_member = RoomMember {
-        room_id: room.id.clone(),
-        user_id: owner.id.clone(),
+        room_id: room.id,
+        user_id: owner.id,
         role: RoomRole::Creator,
         status: MemberStatus::Active,
         added_permissions: 0,
@@ -110,8 +110,8 @@ async fn test_edit_media_sends_notification() {
             let now = Utc::now();
             Playlist {
                 id: PlaylistId::new(),
-                room_id: room.id.clone(),
-                creator_id: Some(owner.id.clone()),
+                room_id: room.id,
+                creator_id: Some(owner.id),
                 name: String::new(),
                 parent_id: None,
                 position: 0.0,
@@ -180,7 +180,7 @@ async fn test_edit_media_sends_notification() {
 
     // Add media
     let add_req = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Test Media".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
@@ -190,18 +190,18 @@ async fn test_edit_media_sends_notification() {
     };
 
     let media = media_service
-        .add_media(room.id.clone(), owner.id.clone(), add_req)
+        .add_media(room.id, owner.id, add_req)
         .await
         .expect("Failed to add media");
 
     // Edit media
     let edit_req = EditMediaRequest {
-        media_id: media.id.clone(),
+        media_id: media.id,
         name: Some("Updated Media".to_string()),
     };
 
     let updated_media = media_service
-        .edit_media(room.id.clone(), owner.id.clone(), edit_req)
+        .edit_media(room.id, owner.id, edit_req)
         .await
         .expect("Failed to edit media");
 
@@ -217,7 +217,7 @@ async fn test_edit_media_sends_notification() {
                     RoomEvent::MediaUpdated {
                         media_id, title, ..
                     } => {
-                        assert_eq!(media_id, media.id.as_str());
+                        assert_eq!(media_id, media.id);
                         assert_eq!(title, "Updated Media");
                         found_update = true;
                         break;
@@ -252,7 +252,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
                 id: RoomId::new(),
                 name: "Test Room 2".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -269,8 +269,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
     // Add room owner as a member so permission checks pass
     let member_repo_setup = RoomMemberRepository::new(pool.clone());
     let owner_member = RoomMember {
-        room_id: room.id.clone(),
-        user_id: owner.id.clone(),
+        room_id: room.id,
+        user_id: owner.id,
         role: RoomRole::Creator,
         status: MemberStatus::Active,
         added_permissions: 0,
@@ -294,8 +294,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
             let now = Utc::now();
             Playlist {
                 id: PlaylistId::new(),
-                room_id: room.id.clone(),
-                creator_id: Some(owner.id.clone()),
+                room_id: room.id,
+                creator_id: Some(owner.id),
                 name: String::new(),
                 parent_id: None,
                 position: 0.0,
@@ -359,7 +359,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
 
     // Add media
     let add_req = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Test Media".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
@@ -369,18 +369,18 @@ async fn test_edit_media_without_notification_service_succeeds() {
     };
 
     let media = media_service
-        .add_media(room.id.clone(), owner.id.clone(), add_req)
+        .add_media(room.id, owner.id, add_req)
         .await
         .expect("Failed to add media");
 
     // Edit media (should succeed even without notification service)
     let edit_req = EditMediaRequest {
-        media_id: media.id.clone(),
+        media_id: media.id,
         name: Some("Updated Media".to_string()),
     };
 
     let updated_media = media_service
-        .edit_media(room.id.clone(), owner.id.clone(), edit_req)
+        .edit_media(room.id, owner.id, edit_req)
         .await
         .expect("Failed to edit media");
 

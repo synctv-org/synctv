@@ -65,8 +65,8 @@ impl MemberFanoutService for DefaultMemberFanoutService {
             PublishRequest {
                 event: ClusterEvent::KickUserFromRoom {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
+                    room_id: *room_id,
+                    user_id: *user_id,
                     reason: reason.to_string(),
                     timestamp: chrono::Utc::now(),
                 },
@@ -90,11 +90,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-member-fanout".to_string())
+        RoomId::from(103_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-member-fanout".to_string())
+        UserId::from(103_002)
     }
 
     #[tokio::test]
@@ -128,8 +128,8 @@ mod tests {
                 reason,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-member-fanout");
-                assert_eq!(user_id.as_str(), "user-member-fanout");
+                assert_eq!(room_id, RoomId::from(103_001));
+                assert_eq!(user_id, UserId::from(103_002));
                 assert_eq!(reason, "banned");
             }
             other => panic!("expected KickUserFromRoom, got {other:?}"),

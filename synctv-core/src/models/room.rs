@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::fmt::Display;
+use std::str::FromStr;
 
 use super::id::{RoomId, UserId};
 use super::permission::PermissionBits;
@@ -50,6 +51,24 @@ impl RoomStatus {
             (self, new_status),
             (Self::Active, Self::Closed) | (Self::Closed, Self::Active)
         )
+    }
+}
+
+impl FromStr for RoomStatus {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "closed" => Ok(Self::Closed),
+            other => Err(format!("Unknown room status: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for RoomStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -301,52 +320,21 @@ pub struct RoomWithSettings {
     pub settings: RoomSettingsJson,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum RoomListSortBy {
-    Name,
-    UpdatedAt,
-    LastActivityAt,
-    #[default]
-    CreatedAt,
-}
-
-impl RoomListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Name => "r.name",
-            Self::UpdatedAt => "r.updated_at",
-            Self::LastActivityAt => "r.last_activity_at",
-            Self::CreatedAt => "r.created_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RoomListSortBy {
+        Name => { display: "name", sql: "r.name" },
+        UpdatedAt => { display: "updated_at", sql: "r.updated_at", aliases: ["updatedat"] },
+        LastActivityAt => {
+            display: "last_activity_at",
+            sql: "r.last_activity_at",
+            aliases: ["lastactivityat"]
+        },
+        CreatedAt => { display: "created_at", sql: "r.created_at", aliases: ["createdat"] },
     }
-}
-
-impl std::str::FromStr for RoomListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "name" => Ok(Self::Name),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "last_activity_at" | "lastactivityat" => Ok(Self::LastActivityAt),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            other => Err(format!("Unknown room list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for RoomListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Name => "name",
-            Self::UpdatedAt => "updated_at",
-            Self::LastActivityAt => "last_activity_at",
-            Self::CreatedAt => "created_at",
-        };
-        f.write_str(value)
-    }
+    default = CreatedAt;
+    error = "Unknown room list sort field";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

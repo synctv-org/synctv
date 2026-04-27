@@ -244,7 +244,7 @@ impl PermissionService {
     }
 
     pub(crate) fn invalidate_room_cache_local_only(&self, room_id: &RoomId) {
-        let prefix = format!("perm:room:{}:user:", room_id.0);
+        let prefix = format!("perm:room:{room_id}:user:");
         let _ = self.cache.invalidate_entries_if({
             let prefix = prefix.clone();
             move |key, _| key.starts_with(&prefix)
@@ -613,7 +613,7 @@ impl PermissionService {
     /// The namespace prefix prevents collisions with other cache types and
     /// ensures room/user ID pairs are always unique even if IDs overlap.
     fn cache_key(room_id: &RoomId, user_id: &UserId) -> String {
-        format!("perm:room:{}:user:{}", room_id.0, user_id.0)
+        format!("perm:room:{room_id}:user:{user_id}")
     }
 
     /// Check if a user has a specific permission in a room
@@ -692,8 +692,8 @@ impl PermissionService {
             settings_repo.get(room_id).await?
         } else {
             tracing::warn!(
-                room_id = %room_id.as_str(),
-                user_id = %user_id.as_str(),
+                room_id = %room_id,
+                user_id = %user_id,
                 "room_settings_repo not configured, using default RoomSettings; \
                  room-specific permission settings will be ignored"
             );
@@ -737,8 +737,8 @@ impl PermissionService {
             settings_repo.get(room_id).await?
         } else {
             tracing::warn!(
-                room_id = %room_id.as_str(),
-                user_id = %user_id.as_str(),
+                room_id = %room_id,
+                user_id = %user_id,
                 "room_settings_repo not configured, using default RoomSettings; \
                  room-specific permission settings will be ignored"
             );
@@ -836,8 +836,8 @@ impl PermissionService {
             {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
-                    user_id = %user_id.as_str(),
+                    room_id = %room_id,
+                    user_id = %user_id,
                     "Failed to broadcast permission cache invalidation to other replicas"
                 );
                 // Local cache is already invalidated, so this node is consistent.
@@ -866,7 +866,7 @@ impl PermissionService {
             {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to broadcast room permission cache invalidation to other replicas"
                 );
             }
@@ -1038,26 +1038,22 @@ mod tests {
     }
 
     fn make_member(role: RoomRole) -> RoomMember {
-        RoomMember::new(
-            RoomId("room1".to_string()),
-            UserId("user1".to_string()),
-            role,
-        )
+        RoomMember::new(RoomId::from(1), UserId::from(1), role)
     }
 
     #[test]
     fn test_cache_key_generation() {
-        let room_id = RoomId("room123".to_string());
-        let user_id = UserId("user456".to_string());
+        let room_id = RoomId::from(123);
+        let user_id = UserId::from(456);
         let key = PermissionService::cache_key(&room_id, &user_id);
-        assert_eq!(key, "perm:room:room123:user:user456");
+        assert_eq!(key, "perm:room:123:user:456");
     }
 
     #[test]
     fn test_cache_key_different_for_different_users() {
-        let room = RoomId("r1".to_string());
-        let u1 = UserId("u1".to_string());
-        let u2 = UserId("u2".to_string());
+        let room = RoomId::from(1);
+        let u1 = UserId::from(1);
+        let u2 = UserId::from(2);
         assert_ne!(
             PermissionService::cache_key(&room, &u1),
             PermissionService::cache_key(&room, &u2),
@@ -1066,9 +1062,9 @@ mod tests {
 
     #[test]
     fn test_cache_key_different_for_different_rooms() {
-        let r1 = RoomId("r1".to_string());
-        let r2 = RoomId("r2".to_string());
-        let user = UserId("u1".to_string());
+        let r1 = RoomId::from(1);
+        let r2 = RoomId::from(2);
+        let user = UserId::from(1);
         assert_ne!(
             PermissionService::cache_key(&r1, &user),
             PermissionService::cache_key(&r2, &user),
@@ -1203,10 +1199,7 @@ mod tests {
     #[test]
     fn test_banned_member_has_no_permissions() {
         let mut member = make_member(RoomRole::Admin);
-        member.ban(
-            crate::models::UserId::from_string("banner".to_string()),
-            None,
-        );
+        member.ban(crate::models::UserId::from(30_001), None);
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
         assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
@@ -1389,10 +1382,7 @@ mod tests {
     fn test_banned_creator_has_no_permissions_via_has_permission() {
         // RoomMember::has_permission checks status first
         let mut member = make_member(RoomRole::Creator);
-        member.ban(
-            crate::models::UserId::from_string("banner".to_string()),
-            None,
-        );
+        member.ban(crate::models::UserId::from(30_002), None);
         let role_default = PermissionBits(PermissionBits::ALL);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
     }
@@ -1400,10 +1390,7 @@ mod tests {
     #[test]
     fn test_banned_guest_has_no_permissions() {
         let mut member = make_member(RoomRole::Guest);
-        member.ban(
-            crate::models::UserId::from_string("banner".to_string()),
-            None,
-        );
+        member.ban(crate::models::UserId::from(30_003), None);
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
     }
@@ -1641,8 +1628,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
         let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
-        let room_id = RoomId("room1".to_string());
-        let user_id = UserId("user1".to_string());
+        let room_id = RoomId::from(1);
+        let user_id = UserId::from(1);
         let cache_key = PermissionService::cache_key(&room_id, &user_id);
 
         service
@@ -1794,8 +1781,8 @@ mod tests {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
 
             // Insert a value into the cache
-            let room_id = RoomId("room1".to_string());
-            let user_id = UserId("user1".to_string());
+            let room_id = RoomId::from(1);
+            let user_id = UserId::from(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
@@ -1829,9 +1816,9 @@ mod tests {
             let mut receiver = invalidation_service.subscribe();
 
             // Insert values into the cache for multiple users in the same room
-            let room_id = RoomId("room1".to_string());
-            let user1_id = UserId("user1".to_string());
-            let user2_id = UserId("user2".to_string());
+            let room_id = RoomId::from(1);
+            let user1_id = UserId::from(1);
+            let user2_id = UserId::from(2);
 
             service
                 .cache
@@ -1870,7 +1857,7 @@ mod tests {
 
             match result {
                 Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
-                    assert_eq!(rid, "room1");
+                    assert_eq!(rid, "1");
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
@@ -1893,8 +1880,8 @@ mod tests {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
 
             // Insert values into the cache
-            let room_id = RoomId("room1".to_string());
-            let user_id = UserId("user1".to_string());
+            let room_id = RoomId::from(1);
+            let user_id = UserId::from(1);
             service
                 .cache
                 .insert(
@@ -1931,8 +1918,8 @@ mod tests {
             let service = make_service_async();
 
             // Insert a value into the cache
-            let room_id = RoomId("room1".to_string());
-            let user_id = UserId("user1".to_string());
+            let room_id = RoomId::from(1);
+            let user_id = UserId::from(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
@@ -1980,8 +1967,8 @@ mod tests {
             );
 
             // Insert a value into the cache
-            let room_id = RoomId("room1".to_string());
-            let user_id = UserId("user1".to_string());
+            let room_id = RoomId::from(1);
+            let user_id = UserId::from(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service.cache.insert(cache_key.clone(), PermissionBits(PermissionBits::ALL)).await;
 
@@ -2003,8 +1990,8 @@ mod tests {
             // After the fix, this should receive the message
             match result {
                 Ok(Ok(InvalidationMessage::UserPermission { room_id: rid, user_id: uid })) => {
-                    assert_eq!(rid, "room1");
-                    assert_eq!(uid, "user1");
+                    assert_eq!(rid, "1");
+                    assert_eq!(uid, "1");
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
@@ -2056,7 +2043,7 @@ mod tests {
             );
 
             // Invalidate the room cache - this should broadcast via invalidation_service
-            let room_id = RoomId("room1".to_string());
+            let room_id = RoomId::from(1);
             service.invalidate_room_cache(&room_id).await;
 
             // Try to receive the broadcast message
@@ -2068,7 +2055,7 @@ mod tests {
             // After the fix, this should receive the message
             match result {
                 Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
-                    assert_eq!(rid, "room1");
+                    assert_eq!(rid, "1");
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {

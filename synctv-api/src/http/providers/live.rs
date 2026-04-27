@@ -17,7 +17,7 @@ use tracing::{info, warn};
 use crate::http::error::map_api_error;
 use crate::http::{AppError, AppResult, AppState};
 use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
-use synctv_core::models::id::RoomId;
+use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::proxy::ProxyAction;
 use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 use synctv_livestream::error::StreamError;
@@ -70,9 +70,9 @@ pub(crate) async fn execute_live_stream_action(
             execute_flv_stream(
                 state,
                 &provider_name,
-                &room_id,
-                &media_id,
-                &user_id,
+                room_id,
+                media_id,
+                user_id,
                 expires_at,
             )
             .await
@@ -86,8 +86,8 @@ pub(crate) async fn execute_live_stream_action(
             execute_hls_playlist(
                 state,
                 &provider_name,
-                &room_id,
-                &media_id,
+                room_id,
+                media_id,
                 &version,
                 raw_query,
             )
@@ -98,7 +98,7 @@ pub(crate) async fn execute_live_stream_action(
             media_id,
             segment_name,
             disguised_as_png,
-        } => execute_hls_segment(state, &room_id, &media_id, &segment_name, disguised_as_png).await,
+        } => execute_hls_segment(state, room_id, media_id, &segment_name, disguised_as_png).await,
         other => {
             tracing::error!(action = ?other, "execute_live_stream_action received unsupported action");
             Err(AppError::internal("Unsupported live stream proxy action"))
@@ -109,12 +109,14 @@ pub(crate) async fn execute_live_stream_action(
 async fn execute_flv_stream(
     state: &AppState,
     provider_name: &str,
-    room_id_str: &str,
-    media_id: &str,
-    user_id: &str,
+    room_id: RoomId,
+    media_id: MediaId,
+    user_id: UserId,
     expires_at: i64,
 ) -> AppResult<Response> {
-    info!(room_id = %room_id_str, media_id = %media_id, provider = %provider_name, "FLV streaming request");
+    let room_id_key = room_id.to_string();
+    let media_id_key = media_id.to_string();
+    info!(room_id = %room_id, media_id = %media_id, provider = %provider_name, "FLV streaming request");
 
     let infrastructure = state
         .client_api
@@ -124,7 +126,7 @@ async fn execute_flv_stream(
     let source_url = if provider_name == "live_proxy" {
         state
             .client_api
-            .get_live_proxy_source_url(room_id_str, media_id)
+            .get_live_proxy_source_url(&room_id, &media_id)
             .await
     } else {
         None
@@ -132,15 +134,14 @@ async fn execute_flv_stream(
 
     let (rx, subscriber_guard) = FlvStreamingApi::create_session_with_pull(
         infrastructure,
-        room_id_str,
-        media_id,
+        &room_id_key,
+        &media_id_key,
         source_url.as_deref(),
     )
     .await
     .map_err(|e| map_livestream_error("Failed to create FLV session", &*e))?;
 
     let mut disconnect_rx = state.connection_manager.subscribe_disconnect();
-    let room_id = RoomId::from_string(room_id_str.to_string());
 
     let max_connection_duration =
         std::time::Duration::from_secs(state.config.livestream.flv_max_connection_duration_seconds);
@@ -148,8 +149,7 @@ async fn execute_flv_stream(
         std::time::Duration::from_secs(state.config.livestream.flv_write_timeout_seconds);
 
     let (tx, rx_wrapped) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(512);
-    let room_id_clone = room_id.clone();
-    let user_id = synctv_core::models::id::UserId::from_string(user_id.to_string());
+    let room_id_clone = room_id;
     tokio::spawn(async move {
         let _guard = subscriber_guard;
         let mut rx = rx;
@@ -163,7 +163,7 @@ async fn execute_flv_stream(
                 _ = lifecycle_tick.tick() => {
                     if chrono::Utc::now().timestamp() > expires_at {
                         info!(
-                            room_id = %room_id_clone.as_str(),
+                            room_id = %room_id_clone,
                             expires_at,
                             "FLV stream terminated: proxy signature expired"
                         );
@@ -174,7 +174,7 @@ async fn execute_flv_stream(
                         && start_time.elapsed() >= max_connection_duration
                     {
                         info!(
-                            room_id = %room_id_clone.as_str(),
+                            room_id = %room_id_clone,
                             max_duration_secs = max_connection_duration.as_secs(),
                             "FLV stream terminated: max connection duration exceeded"
                         );
@@ -196,7 +196,7 @@ async fn execute_flv_stream(
                             }
                             FlvChunkSendResult::Closed => {
                                 info!(
-                                    room_id = %room_id_clone.as_str(),
+                                    room_id = %room_id_clone,
                                     "FLV stream terminated: client response channel closed"
                                 );
                                 break;
@@ -240,11 +240,13 @@ async fn execute_flv_stream(
 async fn execute_hls_playlist(
     state: &AppState,
     provider_name: &str,
-    room_id: &str,
-    media_id: &str,
+    room_id: RoomId,
+    media_id: MediaId,
     version: &str,
     raw_query: Option<&str>,
 ) -> AppResult<Response> {
+    let room_id_key = room_id.to_string();
+    let media_id_key = media_id.to_string();
     info!(room_id = %room_id, media_id = %media_id, provider = %provider_name, "HLS playlist request");
 
     let infrastructure = state
@@ -254,8 +256,11 @@ async fn execute_hls_playlist(
 
     let segment_disguised_as_png = live_segments_disguised_as_png(state);
 
-    let playlist =
-        HlsStreamingApi::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
+    let playlist = HlsStreamingApi::generate_playlist(
+        infrastructure,
+        &room_id_key,
+        &media_id_key,
+        |ts_name| {
             build_hls_segment_path(
                 provider_name,
                 version,
@@ -263,9 +268,10 @@ async fn execute_hls_playlist(
                 raw_query,
                 segment_disguised_as_png,
             )
-        })
-        .await
-        .map_err(|e| map_livestream_error("Failed to generate HLS playlist", &*e))?;
+        },
+    )
+    .await
+    .map_err(|e| map_livestream_error("Failed to generate HLS playlist", &*e))?;
 
     match playlist {
         Some(content) => Ok(Response::builder()
@@ -308,11 +314,13 @@ fn build_hls_segment_path(
 
 async fn execute_hls_segment(
     state: &AppState,
-    room_id: &str,
-    media_id: &str,
+    room_id: RoomId,
+    media_id: MediaId,
     segment_name: &str,
     disguised_as_png: bool,
 ) -> AppResult<Response> {
+    let room_id_key = room_id.to_string();
+    let media_id_key = media_id.to_string();
     let validated_name = if disguised_as_png {
         segment_name.trim_end_matches(".png")
     } else {
@@ -329,7 +337,7 @@ async fn execute_hls_segment(
         .live_infrastructure()
         .ok_or_else(live_streaming_unavailable_http_error)?;
 
-    let ts_data = HlsStreamingApi::get_segment(infrastructure, room_id, media_id, validated_name)
+    let ts_data = HlsStreamingApi::get_segment(infrastructure, &room_id_key, &media_id_key, validated_name)
         .await
         .map_err(|e| {
             warn!(room_id = %room_id, media_id = %media_id, segment = %validated_name, error = %e, "HLS segment fetch failed");

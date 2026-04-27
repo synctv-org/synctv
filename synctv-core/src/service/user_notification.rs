@@ -3,8 +3,6 @@
 //! Manages user notifications for room invitations, system announcements, and room events
 //! These are database-backed notifications that persist until read/deleted
 
-use uuid::Uuid;
-
 use crate::{
     models::{
         id::UserId,
@@ -149,7 +147,7 @@ impl UserNotificationService {
     }
 
     /// Get notification by ID
-    pub async fn get(&self, user_id: &UserId, notification_id: Uuid) -> Result<Notification> {
+    pub async fn get(&self, user_id: &UserId, notification_id: i64) -> Result<Notification> {
         self.repository
             .get_by_id(notification_id)
             .await?
@@ -197,7 +195,7 @@ impl UserNotificationService {
     }
 
     /// Delete a notification
-    pub async fn delete(&self, user_id: &UserId, notification_id: Uuid) -> Result<()> {
+    pub async fn delete(&self, user_id: &UserId, notification_id: i64) -> Result<()> {
         self.repository.delete(user_id, notification_id).await
     }
 

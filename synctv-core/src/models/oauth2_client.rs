@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use crate::models::UserId;
 
@@ -53,19 +54,7 @@ impl OAuth2Provider {
     /// Parse `OAuth2` provider type from string name (case-insensitive)
     #[must_use]
     pub fn from_str_name(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "qq" => Some(Self::QQ),
-            "github" => Some(Self::GitHub),
-            "google" => Some(Self::Google),
-            "microsoft" => Some(Self::Microsoft),
-            "discord" => Some(Self::Discord),
-            "casdoor" => Some(Self::Casdoor),
-            "logto" => Some(Self::Logto),
-            "oidc" => Some(Self::Oidc),
-            "feishu" => Some(Self::Feishu),
-            "gitee" => Some(Self::Gitee),
-            _ => None,
-        }
+        s.parse().ok()
     }
 
     /// Check if this provider type uses OIDC standard
@@ -97,13 +86,39 @@ impl OAuth2Provider {
     }
 }
 
+impl FromStr for OAuth2Provider {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "qq" => Ok(Self::QQ),
+            "github" => Ok(Self::GitHub),
+            "google" => Ok(Self::Google),
+            "microsoft" => Ok(Self::Microsoft),
+            "discord" => Ok(Self::Discord),
+            "casdoor" => Ok(Self::Casdoor),
+            "logto" => Ok(Self::Logto),
+            "oidc" => Ok(Self::Oidc),
+            "feishu" => Ok(Self::Feishu),
+            "gitee" => Ok(Self::Gitee),
+            other => Err(format!("Unknown OAuth2 provider: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for OAuth2Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// OAuth2/OIDC provider mapping (NO TOKENS)
 ///
 /// Maps `OAuth2` provider accounts to local users.
 /// Tokens are NOT stored - only identity information for lookups.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOAuthProviderMapping {
-    pub id: String,
+    pub id: i64,
     pub provider: String, // Stored as string in DB
     pub provider_user_id: String,
     pub user_id: UserId,
@@ -289,10 +304,10 @@ mod tests {
     #[test]
     fn test_mapping_provider_enum() {
         let mapping = UserOAuthProviderMapping {
-            id: "id1".to_string(),
+            id: 1,
             provider: "github".to_string(),
             provider_user_id: "gh_123".to_string(),
-            user_id: UserId("user_1".to_string()),
+            user_id: UserId::from(1),
             username: "testuser".to_string(),
             email: Some("test@example.com".to_string()),
             avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -305,10 +320,10 @@ mod tests {
     #[test]
     fn test_mapping_provider_enum_unknown() {
         let mapping = UserOAuthProviderMapping {
-            id: "id1".to_string(),
+            id: 1,
             provider: "unknown_provider".to_string(),
             provider_user_id: "xyz".to_string(),
-            user_id: UserId("user_1".to_string()),
+            user_id: UserId::from(1),
             username: "testuser".to_string(),
             email: None,
             avatar_url: None,
@@ -321,10 +336,10 @@ mod tests {
     #[test]
     fn test_mapping_serde_roundtrip() {
         let mapping = UserOAuthProviderMapping {
-            id: "id1".to_string(),
+            id: 1,
             provider: "google".to_string(),
             provider_user_id: "goog_456".to_string(),
-            user_id: UserId("user_2".to_string()),
+            user_id: UserId::from(2),
             username: "googleuser".to_string(),
             email: Some("user@gmail.com".to_string()),
             avatar_url: None,
@@ -353,6 +368,20 @@ mod tests {
         assert_eq!(deserialized.provider, OAuth2Provider::GitHub);
         assert_eq!(deserialized.provider_user_id, "gh_789");
         assert_eq!(deserialized.username, "ghuser");
+    }
+
+    #[test]
+    fn test_provider_display_and_parse_roundtrip() {
+        assert_eq!(OAuth2Provider::GitHub.to_string(), "github");
+        assert_eq!(
+            "LOGTO".parse::<OAuth2Provider>().unwrap(),
+            OAuth2Provider::Logto
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("google"),
+            Some(OAuth2Provider::Google)
+        );
+        assert!("unknown".parse::<OAuth2Provider>().is_err());
     }
 
     #[test]

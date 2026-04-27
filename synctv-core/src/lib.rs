@@ -75,6 +75,7 @@ pub mod metrics;
 pub mod models;
 pub mod oauth2;
 pub mod provider;
+pub mod public_id;
 pub mod redis_runtime;
 pub mod repository;
 pub mod resilience;
@@ -92,8 +93,9 @@ pub mod validation;
 pub mod test_helpers;
 
 pub use cache::KeyBuilder;
-pub use config::{Config, GrpcRateLimitConfig, HttpRateLimitConfig};
+pub use config::{Config, ExternalIdsConfig, GrpcRateLimitConfig, HttpRateLimitConfig};
 pub use error::{Error, InternalExt, Result};
+pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};
 pub use redis_runtime::{
     coordination_runtime_from_client, direct_runtime, direct_runtime_from_conn, shared_runtime,
     shared_runtime_from_conn, DirectRedisConnectionRuntime, ManagedRedisRuntime,

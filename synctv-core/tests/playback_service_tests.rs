@@ -84,7 +84,7 @@ async fn create_top_level_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
@@ -119,7 +119,7 @@ async fn test_seek_negative_rejected() {
         .create_room(
             "Seek Neg Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -128,9 +128,7 @@ async fn test_seek_negative_rejected() {
 
     let playback_service = room_service.playback_service();
 
-    let result = playback_service
-        .seek(room.id.clone(), owner.id.clone(), -5.0)
-        .await;
+    let result = playback_service.seek(room.id, owner.id, -5.0).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -160,7 +158,7 @@ async fn test_speed_zero_rejected() {
         .create_room(
             "Speed Zero Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -169,9 +167,7 @@ async fn test_speed_zero_rejected() {
 
     let playback_service = room_service.playback_service();
 
-    let result = playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 0.0)
-        .await;
+    let result = playback_service.change_speed(room.id, owner.id, 0.0).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -201,7 +197,7 @@ async fn test_speed_above_max_rejected() {
         .create_room(
             "Speed Max Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -210,9 +206,7 @@ async fn test_speed_above_max_rejected() {
 
     let playback_service = room_service.playback_service();
 
-    let result = playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 17.0)
-        .await;
+    let result = playback_service.change_speed(room.id, owner.id, 17.0).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -240,7 +234,7 @@ async fn test_switch_media_resets_position() {
         .create_room(
             "Switch Media Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -252,9 +246,9 @@ async fn test_switch_media_resets_position() {
     // Add a media item
     let media = Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -269,19 +263,13 @@ async fn test_switch_media_resets_position() {
     // First seek to a non-zero position
     let playback_service = room_service.playback_service();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 42.5)
+        .seek(room.id, owner.id, 42.5)
         .await
         .unwrap();
 
     // Switch media should reset position to 0
     let state = playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -315,7 +303,7 @@ async fn test_switch_media_rejects_target() {
         .create_room(
             "Switch Media Relative Path Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -325,8 +313,8 @@ async fn test_switch_media_rejects_target() {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Standalone Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -341,9 +329,9 @@ async fn test_switch_media_rejects_target() {
     let result = room_service
         .playback_service()
         .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
+            room.id,
+            owner.id,
+            Some(media.id),
             None,
             br#"{"relative_path":"/unexpected"}"#.to_vec(),
         )
@@ -369,7 +357,7 @@ async fn test_switch_media_rejects_inactive_creator() {
         .create_room(
             "Switch Inactive Creator Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -384,8 +372,8 @@ async fn test_switch_media_rejects_inactive_creator() {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room.id.clone(),
-        creator_id: Some(media_creator.id.clone()),
+        room_id: room.id,
+        creator_id: Some(media_creator.id),
         name: "Inactive Creator Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -408,13 +396,7 @@ async fn test_switch_media_rejects_inactive_creator() {
 
     let result = room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await;
 
     match result.expect_err("media created by banned user must not be playable") {
@@ -445,7 +427,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         .create_room(
             "Switch Clear Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -455,8 +437,8 @@ async fn test_switch_with_empty_target_clears_playback_state() {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Clearable Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -470,22 +452,16 @@ async fn test_switch_with_empty_target_clears_playback_state() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 33.0)
+        .seek(room.id, owner.id, 33.0)
         .await
         .unwrap();
 
     let state = playback_service
-        .switch(room.id.clone(), owner.id.clone(), None, None, Vec::new())
+        .switch(room.id, owner.id, None, None, Vec::new())
         .await
         .unwrap();
 
@@ -507,13 +483,7 @@ async fn test_playback_optimistic_lock_concurrent() {
     let owner = user_repo.create(&make_user("olc_owner")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room(
-            "OLC Room".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("OLC Room".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -521,8 +491,8 @@ async fn test_playback_optimistic_lock_concurrent() {
     let mut handles = vec![];
     for i in 0..5 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let position = f64::from(i) * 10.0;
 
         let handle =
@@ -581,7 +551,7 @@ async fn test_rapid_sequential_seek_operations() {
         .create_room(
             "Rapid Seek Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -594,8 +564,8 @@ async fn test_rapid_sequential_seek_operations() {
 
     for i in 0..10 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let position = f64::from(i).mul_add(30.0, 10.0); // 10, 40, 70, ...
 
@@ -662,7 +632,7 @@ async fn test_play_next_concurrent_playlist_modification() {
         .create_room(
             "Play Next Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -676,9 +646,9 @@ async fn test_play_next_concurrent_playlist_modification() {
     for i in 0..5 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: format!("Video {i}"),
             position: f64::from(i),
             source_provider: "direct_url".to_string(),
@@ -689,24 +659,18 @@ async fn test_play_next_concurrent_playlist_modification() {
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
-        media_ids.push(media.id.clone());
+        media_ids.push(media.id);
     }
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media_ids[0].clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media_ids[0]), None, Vec::new())
         .await
         .unwrap();
 
     // Verify we're playing first media
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert_eq!(state.playing_media_id, Some(media_ids[0].clone()));
+    assert_eq!(state.playing_media_id, Some(media_ids[0]));
 
     // Set up RoomSettings with auto_play enabled
     let settings = RoomSettings::default();
@@ -719,7 +683,7 @@ async fn test_play_next_concurrent_playlist_modification() {
 
     assert!(result.is_some(), "play_next should return new state");
     let new_state = result.unwrap();
-    assert_eq!(new_state.playing_media_id, Some(media_ids[1].clone()));
+    assert_eq!(new_state.playing_media_id, Some(media_ids[1]));
 }
 
 /// Test `play_next` behavior at the end of playlist.
@@ -746,7 +710,7 @@ async fn test_play_next_at_end_of_playlist() {
         .create_room(
             "Playlist End Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -760,9 +724,9 @@ async fn test_play_next_at_end_of_playlist() {
     for i in 0..3 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: format!("End Video {i}"),
             position: f64::from(i),
             source_provider: "direct_url".to_string(),
@@ -773,18 +737,12 @@ async fn test_play_next_at_end_of_playlist() {
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
-        media_ids.push(media.id.clone());
+        media_ids.push(media.id);
     }
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media_ids[2].clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
         .await
         .unwrap();
 
@@ -809,7 +767,7 @@ async fn test_play_next_at_end_of_playlist() {
         None => {} // Expected: end of playlist
         Some(state) => {
             // If it returns a state, it should be the same (no change)
-            assert_eq!(state.playing_media_id, Some(media_ids[2].clone()));
+            assert_eq!(state.playing_media_id, Some(media_ids[2]));
         }
     }
 }
@@ -826,13 +784,7 @@ async fn test_play_next_with_loop_enabled() {
     let owner = user_repo.create(&make_user("loop_owner")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room(
-            "Loop Room".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Loop Room".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -843,9 +795,9 @@ async fn test_play_next_with_loop_enabled() {
     for i in 0..3 {
         let media = Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: format!("Loop Video {i}"),
             position: f64::from(i),
             source_provider: "direct_url".to_string(),
@@ -856,18 +808,12 @@ async fn test_play_next_with_loop_enabled() {
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
-        media_ids.push(media.id.clone());
+        media_ids.push(media.id);
     }
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media_ids[2].clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
         .await
         .unwrap();
 
@@ -891,7 +837,7 @@ async fn test_play_next_with_loop_enabled() {
     // With loop, should return to first item
     assert!(result.is_some(), "With loop, play_next should return state");
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media_ids[0].clone()));
+    assert_eq!(state.playing_media_id, Some(media_ids[0]));
 }
 
 /// Test behavior when playlist is empty.
@@ -911,7 +857,7 @@ async fn test_empty_playlist_handling() {
         .create_room(
             "Empty Playlist Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -962,7 +908,7 @@ async fn test_concurrent_speed_changes() {
         .create_room(
             "Speed Concurrent Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -977,8 +923,8 @@ async fn test_concurrent_speed_changes() {
 
     for speed in valid_speeds {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
 
         let handle = tokio::spawn(async move {
@@ -1029,7 +975,7 @@ async fn test_state_consistency_after_mixed_operations() {
         .create_room(
             "Mixed Ops Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1041,9 +987,9 @@ async fn test_state_consistency_after_mixed_operations() {
     // Add media
     let media = Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Mixed Test Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -1059,19 +1005,13 @@ async fn test_state_consistency_after_mixed_operations() {
 
     // Switch to media
     playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     // Seek
     let seek_response = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .seek(room.id, owner.id, 50.0)
         .await
         .unwrap();
     assert!(seek_response.seek_applied, "Seek should be applied");
@@ -1083,7 +1023,7 @@ async fn test_state_consistency_after_mixed_operations() {
     // Change speed while playing: the effective position may advance slightly,
     // but it must never move backward from the seek target.
     let speed_state = playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 1.5)
+        .change_speed(room.id, owner.id, 1.5)
         .await
         .unwrap();
     assert!(
@@ -1093,7 +1033,7 @@ async fn test_state_consistency_after_mixed_operations() {
 
     // Pause snapshots the computed playback position.
     let paused_state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
     assert!(
@@ -1104,7 +1044,7 @@ async fn test_state_consistency_after_mixed_operations() {
 
     // Resume should preserve the paused position and flip playback back on.
     let resumed_state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     assert!(
@@ -1149,7 +1089,7 @@ async fn test_seek_success_returns_applied_true() {
         .create_room(
             "Seek Response Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1160,7 +1100,7 @@ async fn test_seek_success_returns_applied_true() {
 
     // A simple seek should succeed and report seek_applied=true
     let response = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 42.5)
+        .seek(room.id, owner.id, 42.5)
         .await
         .unwrap();
 
@@ -1196,7 +1136,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
         .create_room(
             "Seek Retry Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1211,8 +1151,8 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
 
     for i in 0..50 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let position = f64::from(i).mul_add(10.0, 1.0); // Different positions
 
@@ -1277,7 +1217,7 @@ async fn test_seek_response_always_contains_valid_state() {
         .create_room(
             "Seek State Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1288,13 +1228,13 @@ async fn test_seek_response_always_contains_valid_state() {
 
     // First set a known position
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 100.0)
+        .seek(room.id, owner.id, 100.0)
         .await
         .unwrap();
 
     // Now seek to a different position
     let response = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 200.0)
+        .seek(room.id, owner.id, 200.0)
         .await
         .unwrap();
 
@@ -1325,7 +1265,7 @@ async fn test_seek_degraded_response_has_informative_message() {
         .create_room(
             "Seek Message Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1338,8 +1278,8 @@ async fn test_seek_degraded_response_has_informative_message() {
 
     for i in 0..100 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let position = f64::from(i) * 5.0;
 

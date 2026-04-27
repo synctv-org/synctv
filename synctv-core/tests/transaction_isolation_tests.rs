@@ -15,7 +15,7 @@ use synctv_core::{
         MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomStatus, SignupMethod, User, UserId,
         UserStatus,
     },
-    repository::{RoomMemberRepository, RoomRepository, UserRepository},
+    repository::{RoomMemberRepository, RoomRepository},
 };
 use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
@@ -24,11 +24,11 @@ use tokio::sync::Barrier;
 /// Helper to create a test database pool with proper schema
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
-    let username = format!("test_user_{}", user_id.as_str());
+    let username = format!("test_user_{user_id}");
     let user = User {
-        id: user_id.clone(),
+        id: *user_id,
         username,
-        email: Some(format!("{}@test.com", user_id.as_str())),
+        email: Some(format!("{user_id}@test.com")),
         password_hash: "test_hash".to_string(),
         signup_method: SignupMethod::Email,
         role: synctv_core::models::UserRole::User,
@@ -45,11 +45,28 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         banned_by: None,
         banned_reason: None,
     };
-    let user_repo = UserRepository::new(pool.clone());
-    user_repo
-        .create(&user)
-        .await
-        .expect("Failed to create test user");
+    sqlx::query(
+        r"
+        INSERT INTO users (
+            id, username, email, password_hash, signup_method, role, email_verified,
+            created_at, updated_at, password_changed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ",
+    )
+    .bind(user.id)
+    .bind(&user.username)
+    .bind(user.email.as_ref())
+    .bind(&user.password_hash)
+    .bind(user.signup_method)
+    .bind(user.role)
+    .bind(user.email_verified)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .bind(user.password_changed_at)
+    .execute(pool)
+    .await
+    .expect("Failed to create test user");
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -85,7 +102,7 @@ async fn test_concurrent_member_role_updates_isolated() {
         id: RoomId::new(),
         name: "Test Room".to_string(),
         description: "Test".to_string(),
-        created_by: creator_id.clone(),
+        created_by: creator_id,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -105,8 +122,8 @@ async fn test_concurrent_member_role_updates_isolated() {
     create_test_user(&pool, &user1).await;
     create_test_user(&pool, &user2).await;
 
-    let member1 = make_member(room.id.clone(), user1.clone());
-    let member2 = make_member(room.id.clone(), user2.clone());
+    let member1 = make_member(room.id, user1);
+    let member2 = make_member(room.id, user2);
 
     member_repo
         .add(&member1)
@@ -121,9 +138,9 @@ async fn test_concurrent_member_role_updates_isolated() {
     let barrier = Arc::new(Barrier::new(2));
     let pool1 = pool.clone();
     let pool2 = pool.clone();
-    let room_id = room.id.clone();
-    let user1_clone = user1.clone();
-    let user2_clone = user2.clone();
+    let room_id = room.id;
+    let user1_clone = user1;
+    let user2_clone = user2;
 
     let barrier1 = barrier.clone();
     let handle1 = tokio::spawn(async move {
@@ -136,8 +153,8 @@ async fn test_concurrent_member_role_updates_isolated() {
              WHERE room_id = $2 AND user_id = $3",
         )
         .bind(0xFF_i64)
-        .bind(room_id.as_str())
-        .bind(user1_clone.as_str())
+        .bind(room_id)
+        .bind(user1_clone)
         .execute(&mut *tx)
         .await
         .expect("Failed to update user1");
@@ -148,7 +165,7 @@ async fn test_concurrent_member_role_updates_isolated() {
     });
 
     let barrier2 = barrier.clone();
-    let room_id2 = room.id.clone();
+    let room_id2 = room.id;
     let handle2 = tokio::spawn(async move {
         barrier2.wait().await;
 
@@ -159,8 +176,8 @@ async fn test_concurrent_member_role_updates_isolated() {
              WHERE room_id = $2 AND user_id = $3",
         )
         .bind(0xFF_i64)
-        .bind(room_id2.as_str())
-        .bind(user2_clone.as_str())
+        .bind(room_id2)
+        .bind(user2_clone)
         .execute(&mut *tx)
         .await
         .expect("Failed to update user2");
@@ -202,7 +219,7 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         id: RoomId::new(),
         name: "Test Room".to_string(),
         description: "Test".to_string(),
-        created_by: creator_id.clone(),
+        created_by: creator_id,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -219,12 +236,12 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
 
     // Transaction 1: Count members, then re-count
     let pool1 = pool.clone();
-    let room_id1 = room.id.clone();
+    let room_id1 = room.id;
     let handle1 = tokio::spawn(async move {
         let mut tx = pool1.begin().await.expect("Failed to begin transaction");
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room_id1.as_str())
+            .bind(room_id1)
             .fetch_one(&mut *tx)
             .await
             .expect("Failed to count");
@@ -235,7 +252,7 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
 
         let count2: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-                .bind(room_id1.as_str())
+                .bind(room_id1)
                 .fetch_one(&mut *tx)
                 .await
                 .expect("Failed to count");
@@ -248,7 +265,7 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let pool2 = pool.clone();
-    let room_id2 = room.id.clone();
+    let room_id2 = room.id;
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
     let handle2 = tokio::spawn(async move {

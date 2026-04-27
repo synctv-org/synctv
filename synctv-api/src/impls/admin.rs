@@ -11,9 +11,10 @@ use sqlx::Row;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use synctv_core::models::{
-    MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy, PlaylistId,
-    PlaylistListQuery as CorePlaylistListQuery, PlaylistListSortBy as CorePlaylistListSortBy,
-    RoomId, SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
+    BanRecordId, MediaId, MediaListQuery as CoreMediaListQuery,
+    MediaListSortBy as CoreMediaListSortBy, PlaylistId, PlaylistListQuery as CorePlaylistListQuery,
+    PlaylistListSortBy as CorePlaylistListSortBy, ReviewRequestId, RoomId,
+    SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
@@ -69,7 +70,7 @@ struct ReservedRoomOwnerInactiveFanout {
     reservation: Option<crate::impls::ClusterEventPublishReservation>,
 }
 
-pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: &str = "mgmt_local01";
+pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
 
 fn page_i32_to_usize(value: i32) -> usize {
     usize::try_from(value.max(1)).unwrap_or(usize::MAX)
@@ -157,7 +158,10 @@ fn live_streaming_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Live streaming is not available on this server.".to_string())
 }
 
-fn parse_batch_user_ids(user_ids: &[String]) -> Result<Vec<UserId>, ApiError> {
+fn parse_batch_user_ids(
+    user_ids: &[String],
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<Vec<UserId>, ApiError> {
     if user_ids.is_empty() {
         return Err(ApiError::InvalidInput(
             "user_ids cannot be empty".to_string(),
@@ -173,7 +177,7 @@ fn parse_batch_user_ids(user_ids: &[String]) -> Result<Vec<UserId>, ApiError> {
 
     user_ids
         .iter()
-        .map(|user_id| crate::impls::parse_user_id_param(user_id, "user_ids"))
+        .map(|user_id| crate::impls::parse_user_id_param(user_id, "user_ids", public_id_codec))
         .collect()
 }
 
@@ -183,8 +187,6 @@ struct AdminActor {
 }
 
 struct DynamicPlaylistPlaybackRequest<'a> {
-    user_id: &'a str,
-    room_id: &'a str,
     room_id_model: &'a RoomId,
     user_id_model: &'a UserId,
     playlist_id: &'a PlaylistId,
@@ -214,7 +216,7 @@ pub async fn validate_admin_auth(
 ) -> Result<ValidatedAdmin, ApiError> {
     let user = user_service.get_user(&user_id).await.map_err(|e| {
         tracing::debug!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             error = %e,
             "Admin auth rejected: failed to look up user"
         );
@@ -223,7 +225,7 @@ pub async fn validate_admin_auth(
 
     if user.is_deleted() || user.is_banned || user.status == UserStatus::Banned {
         tracing::debug!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             status = ?user.status,
             deleted = user.is_deleted(),
             "Admin auth rejected: user is deleted or not in an active status"
@@ -236,7 +238,7 @@ pub async fn validate_admin_auth(
     // Check password version
     if token_pv < user.password_version {
         tracing::debug!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             token_pv = token_pv,
             current_pv = user.password_version,
             "Admin auth rejected: token password version outdated"
@@ -277,6 +279,7 @@ pub struct AdminApiImpl {
     pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub request_executor: Option<Arc<RequestExecutor>>,
 }
 
@@ -289,99 +292,154 @@ fn optional_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
     value.map_or(0, |timestamp| timestamp.timestamp())
 }
 
+fn encode_optional_user_id(
+    public_id_codec: &crate::PublicIdCodec,
+    id: Option<UserId>,
+) -> Result<String, ApiError> {
+    id.map(|id| {
+        public_id_codec
+            .encode_user_id(id)
+            .map_err(ApiError::InvalidInput)
+    })
+    .transpose()
+    .map(std::option::Option::unwrap_or_default)
+}
+
+fn encode_optional_room_id(
+    public_id_codec: &crate::PublicIdCodec,
+    id: Option<RoomId>,
+) -> Result<String, ApiError> {
+    id.map(|id| {
+        public_id_codec
+            .encode_room_id(id)
+            .map_err(ApiError::InvalidInput)
+    })
+    .transpose()
+    .map(std::option::Option::unwrap_or_default)
+}
+
 fn user_registration_review_row_to_proto(
     row: &sqlx::postgres::PgRow,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::admin::UserRegistrationReview, ApiError> {
+    let id: UserId = row.try_get("id")?;
     let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
     let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
-    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let reviewed_by: Option<UserId> = row.try_get("reviewed_by")?;
     let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
     let status: i16 = row.try_get("status")?;
 
     Ok(crate::proto::admin::UserRegistrationReview {
-        id: row.try_get("id")?,
+        id: public_id_codec
+            .encode_user_id(id)
+            .map_err(ApiError::InvalidInput)?,
         username: row.try_get("username")?,
         email: row.try_get("email")?,
         signup_method: row.try_get::<i16, _>("signup_method").map(i32::from)?,
         status: i32::from(status),
         requested_at: requested_at.timestamp(),
         reviewed_at: optional_timestamp(reviewed_at),
-        reviewed_by: reviewed_by.unwrap_or_default(),
+        reviewed_by: encode_optional_user_id(public_id_codec, reviewed_by)?,
         rejection_reason: rejection_reason.unwrap_or_default(),
     })
 }
 
 fn room_creation_review_row_to_proto(
     row: &sqlx::postgres::PgRow,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::admin::RoomCreationReview, ApiError> {
+    let id: RoomId = row.try_get("id")?;
     let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
     let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
-    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let requested_by: UserId = row.try_get("requested_by")?;
+    let reviewed_by: Option<UserId> = row.try_get("reviewed_by")?;
     let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
     let status: i16 = row.try_get("status")?;
 
     Ok(crate::proto::admin::RoomCreationReview {
-        id: row.try_get("id")?,
-        requested_by: row.try_get("requested_by")?,
+        id: public_id_codec
+            .encode_room_id(id)
+            .map_err(ApiError::InvalidInput)?,
+        requested_by: public_id_codec
+            .encode_user_id(requested_by)
+            .map_err(ApiError::InvalidInput)?,
         requested_by_username: row.try_get("requested_by_username")?,
         name: row.try_get("name")?,
         description: row.try_get("description")?,
         status: i32::from(status),
         requested_at: requested_at.timestamp(),
         reviewed_at: optional_timestamp(reviewed_at),
-        reviewed_by: reviewed_by.unwrap_or_default(),
+        reviewed_by: encode_optional_user_id(public_id_codec, reviewed_by)?,
         rejection_reason: rejection_reason.unwrap_or_default(),
     })
 }
 
 fn room_join_review_row_to_proto(
     row: &sqlx::postgres::PgRow,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::admin::RoomJoinReview, ApiError> {
+    let id: ReviewRequestId = row.try_get("id")?;
     let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
     let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
-    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let room_id: RoomId = row.try_get("room_id")?;
+    let user_id: UserId = row.try_get("user_id")?;
+    let reviewed_by: Option<UserId> = row.try_get("reviewed_by")?;
     let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
     let status: i16 = row.try_get("status")?;
     let requested_role: i32 = row.try_get("requested_role")?;
 
     Ok(crate::proto::admin::RoomJoinReview {
-        id: row.try_get("id")?,
-        room_id: row.try_get("room_id")?,
+        id: public_id_codec
+            .encode_review_request_id(id)
+            .map_err(ApiError::InvalidInput)?,
+        room_id: public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::InvalidInput)?,
         room_name: row.try_get("room_name")?,
-        user_id: row.try_get("user_id")?,
+        user_id: public_id_codec
+            .encode_user_id(user_id)
+            .map_err(ApiError::InvalidInput)?,
         username: row.try_get("username")?,
         requested_role,
         status: i32::from(status),
         requested_at: requested_at.timestamp(),
         reviewed_at: optional_timestamp(reviewed_at),
-        reviewed_by: reviewed_by.unwrap_or_default(),
+        reviewed_by: encode_optional_user_id(public_id_codec, reviewed_by)?,
         rejection_reason: rejection_reason.unwrap_or_default(),
     })
 }
 
 fn ban_row_to_proto(
     row: &sqlx::postgres::PgRow,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::admin::BanRecord, ApiError> {
+    let id: BanRecordId = row.try_get("id")?;
     let starts_at: chrono::DateTime<chrono::Utc> = row.try_get("starts_at")?;
     let ends_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("ends_at")?;
     let revoked_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("revoked_at")?;
     let target_type: i32 = row.try_get("target_type")?;
     let is_active: bool = row.try_get("is_active")?;
+    let user_id: Option<UserId> = row.try_get("user_id")?;
+    let room_id: Option<RoomId> = row.try_get("room_id")?;
+    let banned_by: Option<UserId> = row.try_get("banned_by")?;
+    let revoked_by: Option<UserId> = row.try_get("revoked_by")?;
 
     Ok(crate::proto::admin::BanRecord {
-        id: row.try_get("id")?,
+        id: public_id_codec
+            .encode_ban_record_id(id)
+            .map_err(ApiError::InvalidInput)?,
         target_type,
-        user_id: row.try_get("user_id")?,
+        user_id: encode_optional_user_id(public_id_codec, user_id)?,
         username: row.try_get("username")?,
-        room_id: row.try_get("room_id")?,
+        room_id: encode_optional_room_id(public_id_codec, room_id)?,
         room_name: row.try_get("room_name")?,
-        banned_by: row.try_get("banned_by")?,
+        banned_by: encode_optional_user_id(public_id_codec, banned_by)?,
         banned_by_username: row.try_get("banned_by_username")?,
         reason: row.try_get("reason")?,
         starts_at: starts_at.timestamp(),
         ends_at: optional_timestamp(ends_at),
         revoked_at: optional_timestamp(revoked_at),
-        revoked_by: row.try_get("revoked_by")?,
+        revoked_by: encode_optional_user_id(public_id_codec, revoked_by)?,
         is_active,
     })
 }
@@ -538,6 +596,7 @@ impl AdminApiImpl {
             member_count,
             creator_username.as_deref(),
             creator_status,
+            &self.public_id_codec,
         ))
     }
 
@@ -726,7 +785,7 @@ impl AdminApiImpl {
     }
 
     async fn load_admin_actor(&self, admin_user_id: &UserId) -> Result<AdminActor, ApiError> {
-        if admin_user_id.as_str() == LOCAL_MANAGEMENT_ACTOR_USER_ID {
+        if *admin_user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
             return Ok(AdminActor {
                 username: "local-management".to_string(),
                 role: UserRole::Root,
@@ -755,7 +814,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<AuthorizedAdminActor, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        AuthorizedAdminActor::new(admin_user_id.clone(), actor.username, actor.role)
+        AuthorizedAdminActor::new(*admin_user_id, actor.username, actor.role)
             .map_err(ApiError::from)
     }
 
@@ -797,21 +856,29 @@ impl AdminApiImpl {
 
     async fn build_static_media_playback_result(
         &self,
-        user_id: &str,
-        room_id: &str,
+        user_id: &UserId,
+        room_id: &RoomId,
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id)
+            .expect("positive user id must encode as public sqid");
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id)
+            .expect("positive room id must encode as public sqid");
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
             sign_local_bilibili_danmaku_urls(
                 &mut embedded_result,
-                user_id,
+                &public_user_id,
                 Some(&signing_key),
                 None,
             );
-            let mut snapshot = playback_snapshot_to_proto(&embedded_result);
+            let mut snapshot = playback_snapshot_to_proto(&embedded_result, &self.public_id_codec);
             snapshot.version = static_playback_snapshot_version(&media);
             snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
             return Ok(snapshot);
@@ -831,13 +898,15 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
-            .with_user_id(user_id)
-            .with_room_id(room_id)
-            .with_media_id(media.id.as_str())
+            .with_user_id(*user_id)
+            .with_public_user_id(public_user_id.clone())
+            .with_room_id(*room_id)
+            .with_public_room_id(public_room_id)
+            .with_media_id(media.id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
         if let Some(creator_id) = media.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+            ctx = ctx.with_credential_owner_id(*creator_id);
         }
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -861,18 +930,19 @@ impl AdminApiImpl {
             .and_then(|info| info.expires_at);
         let live_danmaku = bilibili_live_danmaku_for_static_media(
             &media,
-            user_id,
+            &public_user_id,
+            &self.public_id_codec,
             Some(&signing_key),
             default_mode_expires_at,
         );
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            media.playlist_id.clone(),
-            media.room_id.clone(),
+            media.playlist_id,
+            media.room_id,
             media.name.clone(),
             media.position,
         )
-        .id(media.id.clone())
+        .id(media.id)
         .default_mode(provider_result.default_mode.clone());
 
         for (mode_name, provider_info) in provider_result.playback_infos {
@@ -891,11 +961,11 @@ impl AdminApiImpl {
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
         sign_local_bilibili_danmaku_urls(
             &mut full_result,
-            user_id,
+            &public_user_id,
             Some(&signing_key),
             default_mode_expires_at,
         );
-        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         let credential_dependencies = provider
             .credential_dependencies(&ctx, &media.source_config)
             .map_err(ApiError::from)?;
@@ -920,8 +990,6 @@ impl AdminApiImpl {
         request: DynamicPlaylistPlaybackRequest<'_>,
     ) -> Result<crate::proto::client::PlaybackSnapshot, ApiError> {
         let DynamicPlaylistPlaybackRequest {
-            user_id,
-            room_id,
             room_id_model,
             user_id_model,
             playlist_id,
@@ -932,12 +1000,7 @@ impl AdminApiImpl {
         let item = self
             .room_service
             .media_service()
-            .resolve_dynamic_playlist_item(
-                room_id_model.clone(),
-                user_id_model.clone(),
-                playlist_id,
-                target,
-            )
+            .resolve_dynamic_playlist_item(*room_id_model, *user_id_model, playlist_id, target)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Dynamic playlist item not found".to_string()))?;
@@ -970,13 +1033,23 @@ impl AdminApiImpl {
 
         let signing_key =
             synctv_core::service::ProxySigningKey::derive_from(self.config.jwt.secret.as_bytes());
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id_model)
+            .expect("positive user id must encode as public sqid");
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id_model)
+            .expect("positive room id must encode as public sqid");
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
-            .with_user_id(user_id)
-            .with_room_id(room_id)
+            .with_user_id(*user_id_model)
+            .with_public_user_id(public_user_id)
+            .with_room_id(*room_id_model)
+            .with_public_room_id(public_room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_signing_key(&signing_key);
         if let Some(creator_id) = playlist.creator_id.as_ref() {
-            ctx = ctx.with_credential_owner_id(creator_id.as_str());
+            ctx = ctx.with_credential_owner_id(*creator_id);
         }
         if let Some(provider_instance_name) = bound_instance {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -996,8 +1069,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            Some(playlist_id.clone()),
-            room_id_model.clone(),
+            Some(*playlist_id),
+            *room_id_model,
             item.name.clone(),
             0.0,
         )
@@ -1018,7 +1091,7 @@ impl AdminApiImpl {
             )
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-        let mut snapshot = playback_snapshot_to_proto(&full_result);
+        let mut snapshot = playback_snapshot_to_proto(&full_result, &self.public_id_codec);
         let playlist_source_config = playlist.source_config.as_ref().ok_or_else(|| {
             ApiError::Internal("Dynamic playlist missing source_config".to_string())
         })?;
@@ -1058,8 +1131,8 @@ impl AdminApiImpl {
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
             return self
                 .build_static_media_playback_result(
-                    user_id.as_str(),
-                    room_id.as_str(),
+                    user_id,
+                    room_id,
                     media,
                     playback_client_profile,
                 )
@@ -1069,8 +1142,6 @@ impl AdminApiImpl {
         if let Some(ref playlist_id) = state.playing_playlist_id {
             return self
                 .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
-                    user_id: user_id.as_str(),
-                    room_id: room_id.as_str(),
                     room_id_model: room_id,
                     user_id_model: user_id,
                     playlist_id,
@@ -1083,7 +1154,10 @@ impl AdminApiImpl {
         Ok(crate::proto::client::PlaybackSnapshot {
             media_id: String::new(),
             playlist_id: String::new(),
-            room_id: room_id.as_str().to_string(),
+            room_id: self
+                .public_id_codec
+                .encode_room_id(*room_id)
+                .expect("positive room id must encode as public sqid"),
             name: String::new(),
             position: 0.0,
             playback_infos: std::collections::HashMap::new(),
@@ -1134,7 +1208,7 @@ impl AdminApiImpl {
             .get_room(room_id)
             .await
             .map_err(ApiError::from)?;
-        candidate_ids.push(room.created_by.clone());
+        candidate_ids.push(room.created_by);
 
         for member in self
             .room_service
@@ -1150,7 +1224,7 @@ impl AdminApiImpl {
 
         let mut seen = std::collections::HashSet::new();
         for candidate_id in candidate_ids {
-            if !seen.insert(candidate_id.as_str().to_string()) {
+            if !seen.insert(candidate_id.to_string()) {
                 continue;
             }
 
@@ -1183,13 +1257,13 @@ impl AdminApiImpl {
         room_id: &RoomId,
         state: &synctv_core::models::RoomPlaybackState,
     ) -> Result<UserId, ApiError> {
-        if admin_user_id.as_str() == LOCAL_MANAGEMENT_ACTOR_USER_ID {
+        if *admin_user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
             return self
                 .resolve_management_playback_snapshot_user_id(room_id, state)
                 .await;
         }
 
-        Ok(admin_user_id.clone())
+        Ok(*admin_user_id)
     }
 
     fn serialize_admin_settings_group(
@@ -1276,6 +1350,7 @@ impl AdminApiImpl {
         publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
         config: Arc<synctv_core::Config>,
         audit_service: Arc<AuditService>,
+        public_id_codec: Arc<crate::PublicIdCodec>,
     ) -> Self {
         let cluster_fanout = default_cluster_fanout_service(None, config.cluster_runtime_enabled());
         let room_settings_fanout =
@@ -1319,6 +1394,7 @@ impl AdminApiImpl {
             realtime_event_service: None,
             audit_service,
             provider_stores: None,
+            public_id_codec,
             request_executor: None,
         }
     }
@@ -1402,13 +1478,13 @@ impl AdminApiImpl {
     ) {
         let admin_username = match self.load_admin_actor(admin_user_id).await {
             Ok(actor) => actor.username,
-            Err(_) => admin_user_id.as_str().to_string(),
+            Err(_) => admin_user_id.to_string(),
         };
 
         if let Err(e) = self
             .audit_service
             .log(
-                admin_user_id.as_str().to_string(),
+                admin_user_id.to_string(),
                 admin_username.clone(),
                 action,
                 target_type,
@@ -1421,7 +1497,7 @@ impl AdminApiImpl {
         {
             tracing::error!(
                 error = %e,
-                admin_user_id = %admin_user_id.as_str(),
+                admin_user_id = %admin_user_id,
                 admin_username = %admin_username,
                 "AUDIT LOG FAILURE: failed to record admin action. Manual review required.",
             );
@@ -1500,7 +1576,7 @@ impl AdminApiImpl {
         // Batch-fetch creator usernames for all rooms
         let creator_ids: Vec<synctv_core::models::UserId> = rooms
             .iter()
-            .map(|r| r.created_by.clone())
+            .map(|r| r.created_by)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -1512,7 +1588,7 @@ impl AdminApiImpl {
         let creator_status_map = load_creator_status_map(&self.user_service, &creator_ids).await?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
-        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)
@@ -1520,21 +1596,28 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
-            .get_room_settings_batch(&room_id_strs)
+            .get_room_settings_batch(&room_ids)
             .await
             .unwrap_or_default();
 
         let room_list: Vec<_> = rooms
             .into_iter()
             .map(|r| {
-                let member_count = member_counts.get(r.id.as_str()).copied();
+                let member_count = member_counts.get(&r.id).copied();
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
                 let creator_status = creator_status_map
                     .get(&r.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Banned);
-                let settings = room_settings_map.get(r.id.as_str());
-                admin_room_to_proto(&r, settings, member_count, creator_username, creator_status)
+                let settings = room_settings_map.get(&r.id);
+                admin_room_to_proto(
+                    &r,
+                    settings,
+                    member_count,
+                    creator_username,
+                    creator_status,
+                    &self.public_id_codec,
+                )
             })
             .collect();
 
@@ -1549,7 +1632,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetRoomRequest,
     ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
         let (room, settings) = self
             .room_service
             .get_room_with_settings(&rid)
@@ -1595,7 +1678,7 @@ impl AdminApiImpl {
 
         let (room, _member) = self
             .room_service
-            .admin_create_room(name, description, admin_user_id.clone(), password, settings)
+            .admin_create_room(name, description, *admin_user_id, password, settings)
             .await
             .map_err(ApiError::from)?;
 
@@ -1615,6 +1698,7 @@ impl AdminApiImpl {
                     .await
                     .map(Some)
                     .map_err(ApiError::from)?,
+                &self.public_id_codec,
             )),
         })
     }
@@ -1626,7 +1710,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let cluster_event = self.room_lifecycle_fanout.reserve_room_deleted().await?;
 
@@ -1648,8 +1732,8 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomDeleted,
             synctv_core::service::AuditTargetType::Room,
-            Some(rid.as_str().to_string()),
-            serde_json::json!({ "room_id": rid.as_str() }),
+            Some(rid.to_string()),
+            serde_json::json!({ "room_id": rid.to_string() }),
             ctx,
         )
         .await;
@@ -1664,7 +1748,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let room_id = crate::impls::proto_validated_room_id(req.room_id.clone());
+        let room_id =
+            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
         let new_password = if req.new_password.is_empty() {
             None
         } else {
@@ -1672,10 +1757,10 @@ impl AdminApiImpl {
         };
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
         let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
-        let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let admin_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
         let snapshot = self
             .room_service
             .admin_set_room_password_as(
@@ -1702,9 +1787,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomPasswordUpdated,
             synctv_core::service::AuditTargetType::Room,
-            Some(room_id.as_str().to_string()),
+            Some(room_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id.to_string(),
                 "password_set": new_password.is_some(),
             }),
             ctx,
@@ -1720,7 +1805,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
         let role = match synctv_proto::common::RoomMemberRole::try_from(req.role) {
             Ok(synctv_proto::common::RoomMemberRole::Guest) => {
                 Some(synctv_core::models::RoomRole::Guest)
@@ -1780,7 +1865,9 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let proto_members = map_slice_preserve_order(&members, admin_room_member_to_proto);
+        let proto_members = map_slice_preserve_order(&members, |member| {
+            admin_room_member_to_proto(member, &self.public_id_codec)
+        });
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
@@ -1802,22 +1889,22 @@ impl AdminApiImpl {
             notify,
         } = req;
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
             proto_role_to_room_role(role)?
         };
-        let changed_by = admin_user_id.clone();
+        let changed_by = *admin_user_id;
 
         let member = self
             .room_service
             .admin_add_member(
-                rid.clone(),
-                admin_user_id.clone(),
+                rid,
+                *admin_user_id,
                 &actor.username,
-                target_uid.clone(),
+                target_uid,
                 role,
                 notify,
             )
@@ -1832,14 +1919,14 @@ impl AdminApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id.clone(),
-            user_id: member.user_id.clone(),
+            room_id: member.room_id,
+            user_id: member.user_id,
             username,
             role: member.role,
             status: member.status,
@@ -1860,9 +1947,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberStatusUpdated,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "new_status": "active",
                 "role": role.to_string(),
                 "notify": notify,
@@ -1872,33 +1959,36 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::AddMemberResponse {
-            member: Some(admin_room_member_to_proto(&member_with_user)),
+            member: Some(admin_room_member_to_proto(
+                &member_with_user,
+                &self.public_id_codec,
+            )),
         })
     }
 
     async fn approve_room_join_request(
         &self,
         room_id: &str,
-        request_id: &str,
+        request_id: ReviewRequestId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id.to_string());
-        let changed_by = admin_user_id.clone();
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let changed_by = *admin_user_id;
 
         let member = self
             .room_service
             .admin_approve_join_request(
-                rid.clone(),
-                admin_user_id.clone(),
-                (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
+                rid,
+                *admin_user_id,
+                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
                 request_id,
             )
             .await
             .map_err(ApiError::from)?;
-        let target_uid = member.user_id.clone();
+        let target_uid = member.user_id;
 
         self.membership_event_fanout
             .publish_permission_changed(&rid, &target_uid, &changed_by, None)
@@ -1908,14 +1998,14 @@ impl AdminApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id.clone(),
-            user_id: member.user_id.clone(),
+            room_id: member.room_id,
+            user_id: member.user_id,
             username,
             role: member.role,
             status: member.status,
@@ -1936,9 +2026,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberStatusUpdated,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "request_id": request_id,
                 "previous_review_status": "pending",
                 "new_review_status": "approved",
@@ -1947,28 +2037,31 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(admin_room_member_to_proto(&member_with_user))
+        Ok(admin_room_member_to_proto(
+            &member_with_user,
+            &self.public_id_codec,
+        ))
     }
 
     async fn reject_room_join_request(
         &self,
         room_id: &str,
-        request_id: &str,
+        request_id: ReviewRequestId,
         reason: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<bool, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id.to_string());
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
-        let changed_by = admin_user_id.clone();
+        let changed_by = *admin_user_id;
 
         let target_uid = self
             .room_service
             .admin_reject_join_request(
-                rid.clone(),
-                admin_user_id.clone(),
-                (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
+                rid,
+                *admin_user_id,
+                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
                 request_id,
                 reason_for_service,
@@ -1984,9 +2077,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberStatusUpdated,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "request_id": request_id,
                 "previous_review_status": "pending",
                 "new_review_status": "rejected",
@@ -2015,8 +2108,8 @@ impl AdminApiImpl {
             admin_added_permissions,
             admin_removed_permissions,
         } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             None
         } else {
@@ -2047,10 +2140,10 @@ impl AdminApiImpl {
             .room_service
             .member_service()
             .admin_update_member(synctv_core::service::member::AdminMemberUpdate {
-                room_id: rid.clone(),
-                actor_id: admin_user_id.clone(),
+                room_id: rid,
+                actor_id: *admin_user_id,
                 actor_username: admin_username,
-                target_user_id: target_uid.clone(),
+                target_user_id: target_uid,
                 role,
                 added_permissions,
                 removed_permissions,
@@ -2068,15 +2161,15 @@ impl AdminApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
 
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: updated_member.room_id.clone(),
-            user_id: updated_member.user_id.clone(),
+            room_id: updated_member.room_id,
+            user_id: updated_member.user_id,
             username,
             role: updated_member.role,
             status: updated_member.status,
@@ -2093,23 +2186,13 @@ impl AdminApiImpl {
             banned_reason: updated_member.banned_reason,
         };
 
-        let room_settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let role_default = self
-            .room_service
-            .permission_service()
-            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
-
         self.log_admin_action(
             admin_user_id,
             synctv_core::service::AuditAction::MemberPermissionUpdated,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "role": role
                     .map(crate::impls::client::room_role_to_proto)
                     .unwrap_or_default(),
@@ -2123,25 +2206,10 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateMemberPermissionsResponse {
-            member: Some(synctv_proto::common::RoomMember {
-                room_id: member_with_user.room_id.as_str().to_string(),
-                user_id: member_with_user.user_id.as_str().to_string(),
-                username: member_with_user.username.clone(),
-                role: crate::impls::client::room_role_to_proto(member_with_user.role),
-                permissions: member_with_user.effective_permissions(role_default).0,
-                status: member_status_to_proto(member_with_user.status),
-                added_permissions: member_with_user.added_permissions,
-                removed_permissions: member_with_user.removed_permissions,
-                admin_added_permissions: member_with_user.admin_added_permissions,
-                admin_removed_permissions: member_with_user.admin_removed_permissions,
-                joined_at: member_with_user.joined_at.timestamp(),
-                is_online: member_with_user.is_online,
-                is_banned: member_with_user.is_banned,
-                banned_at: member_with_user
-                    .banned_at
-                    .map_or(0, |value| value.timestamp()),
-                banned_reason: member_with_user.banned_reason.clone().unwrap_or_default(),
-            }),
+            member: Some(admin_room_member_to_proto(
+                &member_with_user,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -2153,8 +2221,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::KickMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let crate::proto::admin::KickMemberRequest { room_id, user_id } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
         let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
         let permission_fanout = self
             .membership_event_fanout
@@ -2168,12 +2236,7 @@ impl AdminApiImpl {
 
         self.room_service
             .member_service()
-            .admin_kick_member(
-                rid.clone(),
-                admin_user_id.clone(),
-                &admin_username,
-                target_uid.clone(),
-            )
+            .admin_kick_member(rid, *admin_user_id, &admin_username, target_uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -2197,9 +2260,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberKicked,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "mode": "admin_override",
             }),
             ctx,
@@ -2222,15 +2285,15 @@ impl AdminApiImpl {
             reason,
         } = req;
 
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
         let reason = if reason.is_empty() {
             None
         } else {
             Some(reason)
         };
-        let persisted_banned_by = (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID)
-            .then(|| admin_user_id.clone());
+        let persisted_banned_by =
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
         let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
         let permission_fanout = self
             .membership_event_fanout
@@ -2245,10 +2308,10 @@ impl AdminApiImpl {
         self.room_service
             .member_service()
             .admin_ban_member(
-                rid.clone(),
-                admin_user_id.clone(),
+                rid,
+                *admin_user_id,
                 &admin_username,
-                target_uid.clone(),
+                target_uid,
                 persisted_banned_by,
                 reason.clone(),
             )
@@ -2275,9 +2338,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberBanned,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "reason": reason,
                 "mode": "admin_override",
             }),
@@ -2296,8 +2359,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UnbanMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let crate::proto::admin::UnbanMemberRequest { room_id, user_id } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id);
-        let target_uid = crate::impls::proto_validated_user_id(user_id);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
         let permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -2310,12 +2373,7 @@ impl AdminApiImpl {
 
         self.room_service
             .member_service()
-            .admin_unban_member(
-                rid.clone(),
-                admin_user_id.clone(),
-                &admin_username,
-                target_uid.clone(),
-            )
+            .admin_unban_member(rid, *admin_user_id, &admin_username, target_uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -2332,9 +2390,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::MemberUnbanned,
             synctv_core::service::AuditTargetType::Member,
-            Some(target_uid.as_str().to_string()),
+            Some(target_uid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "mode": "admin_override",
             }),
             ctx,
@@ -2417,7 +2475,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let user_list: Vec<_> = users.into_iter().map(|u| admin_user_to_proto(&u)).collect();
+        let user_list: Vec<_> = users
+            .into_iter()
+            .map(|u| admin_user_to_proto(&u, &self.public_id_codec))
+            .collect();
 
         Ok(crate::proto::admin::ListUsersResponse {
             users: user_list,
@@ -2430,7 +2491,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetUserRequest,
     ) -> Result<crate::proto::admin::GetUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
         let user = self
             .user_service
             .get_user(&uid)
@@ -2438,7 +2499,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::GetUserResponse {
-            user: Some(admin_user_to_proto(&user)),
+            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
         })
     }
 
@@ -2450,7 +2511,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserRoleResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
         let user = self
             .user_service
             .get_user(&uid)
@@ -2512,9 +2573,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserRoleUpdated,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "target_username": updated_user.username,
                 "new_role": format!("{new_role:?}"),
                 "caller_role": format!("{caller_role:?}"),
@@ -2524,7 +2585,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateUserRoleResponse {
-            user: Some(admin_user_to_proto(&updated_user)),
+            user: Some(admin_user_to_proto(&updated_user, &self.public_id_codec)),
         })
     }
 
@@ -2537,7 +2598,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
 
         // Fetch target user to check role hierarchy
         let target_user = self
@@ -2570,7 +2631,7 @@ impl AdminApiImpl {
             let mut details_map = serde_json::Map::new();
             details_map.insert(
                 "target_user_id".to_string(),
-                serde_json::Value::String(uid.as_str().to_string()),
+                serde_json::Value::String(uid.to_string()),
             );
             details_map.insert(
                 "target_username".to_string(),
@@ -2583,7 +2644,7 @@ impl AdminApiImpl {
                 &caller_user_id,
                 synctv_core::service::AuditAction::UserPasswordUpdated,
                 synctv_core::service::AuditTargetType::User,
-                Some(uid.as_str().to_string()),
+                Some(uid.to_string()),
                 serde_json::Value::Object(details_map),
                 ctx,
             )
@@ -2785,7 +2846,7 @@ impl AdminApiImpl {
         // Delegate to UserService which handles validation, hashing, creation,
         // and username cache population atomically.
         let initial_banned_by = (target_status == Some(UserStatus::Banned)
-            && admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+            && *admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
             .then_some(admin_user_id);
         let user = self
             .user_service
@@ -2805,14 +2866,14 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserCreated,
             synctv_core::service::AuditTargetType::User,
-            Some(user.id.as_str().to_string()),
+            Some(user.id.to_string()),
             serde_json::json!({"reason": "User created via admin panel"}),
             ctx,
         )
         .await;
 
         Ok(crate::proto::admin::CreateUserResponse {
-            user: Some(admin_user_to_proto(&user)),
+            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
         })
     }
 
@@ -2823,7 +2884,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
         let owned_room_ids = list_owned_room_ids(&self.room_service, &uid)
             .await
             .map_err(ApiError::from)?;
@@ -2855,8 +2916,8 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserDeleted,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
-            serde_json::json!({ "target_user_id": uid.as_str() }),
+            Some(uid.to_string()),
+            serde_json::json!({ "target_user_id": uid.to_string() }),
             ctx,
         )
         .await;
@@ -2872,7 +2933,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
 
         // Apply the same validation rules as client-facing set_username:
         // trim, check length, charset, and leading character restrictions.
@@ -2922,9 +2983,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserUsernameUpdated,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "old_username": old_username,
                 "new_username": updated.username,
             }),
@@ -2933,7 +2994,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateUserUsernameResponse {
-            user: Some(admin_user_to_proto(&updated)),
+            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
         })
     }
 
@@ -2945,7 +3006,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
         let updated = self
             .ban_user_with_cleanup(&uid, admin_user_id, caller_role)
             .await?;
@@ -2955,9 +3016,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserBanned,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "target_username": updated.username,
                 "reason": req.reason,
                 "caller_role": format!("{caller_role:?}"),
@@ -2967,7 +3028,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::BanUserResponse {
-            user: Some(admin_user_to_proto(&updated)),
+            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
         })
     }
 
@@ -2978,7 +3039,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
         let user = self
             .user_service
             .get_user(&uid)
@@ -3000,9 +3061,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserUnbanned,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "target_username": updated.username,
             }),
             ctx,
@@ -3010,13 +3071,13 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UnbanUserResponse {
-            user: Some(admin_user_to_proto(&updated)),
+            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
         })
     }
 
     async fn load_user_registration_review(
         &self,
-        request_id: &str,
+        request_id: UserId,
     ) -> Result<crate::proto::admin::UserRegistrationReview, ApiError> {
         let row = sqlx::query(
             r"
@@ -3030,12 +3091,12 @@ impl AdminApiImpl {
         .fetch_optional(self.user_service.pool())
         .await?
         .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
-        user_registration_review_row_to_proto(&row)
+        user_registration_review_row_to_proto(&row, &self.public_id_codec)
     }
 
     async fn load_room_creation_review(
         &self,
-        request_id: &str,
+        request_id: RoomId,
     ) -> Result<crate::proto::admin::RoomCreationReview, ApiError> {
         let row = sqlx::query(
             r"
@@ -3051,12 +3112,12 @@ impl AdminApiImpl {
         .fetch_optional(self.user_service.pool())
         .await?
         .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
-        room_creation_review_row_to_proto(&row)
+        room_creation_review_row_to_proto(&row, &self.public_id_codec)
     }
 
     async fn load_room_join_review(
         &self,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<crate::proto::admin::RoomJoinReview, ApiError> {
         let row = sqlx::query(
             r"
@@ -3073,12 +3134,12 @@ impl AdminApiImpl {
         .fetch_optional(self.user_service.pool())
         .await?
         .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
-        room_join_review_row_to_proto(&row)
+        room_join_review_row_to_proto(&row, &self.public_id_codec)
     }
 
     async fn load_join_review_target(
         &self,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<(RoomId, UserId), ApiError> {
         let row = sqlx::query("SELECT room_id, user_id FROM room_join_requests WHERE id = $1")
             .bind(request_id)
@@ -3086,12 +3147,7 @@ impl AdminApiImpl {
             .await?
             .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
 
-        let room_id: String = row.try_get("room_id")?;
-        let user_id: String = row.try_get("user_id")?;
-        Ok((
-            crate::impls::proto_validated_room_id(room_id),
-            crate::impls::proto_validated_user_id(user_id),
-        ))
+        Ok((row.try_get("room_id")?, row.try_get("user_id")?))
     }
 
     pub async fn list_user_registration_reviews(
@@ -3142,7 +3198,7 @@ impl AdminApiImpl {
         .await?;
         let reviews = rows
             .iter()
-            .map(user_registration_review_row_to_proto)
+            .map(|row| user_registration_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListUserRegistrationReviewsResponse {
             reviews,
@@ -3157,12 +3213,13 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveUserRegistrationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let request_id = req.request_id.clone();
+        let user_request_id =
+            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec);
         let user = self
-            .approve_user_registration_request(&request_id, admin_user_id, ctx)
+            .approve_user_registration_request(user_request_id, admin_user_id, ctx)
             .await?;
         Ok(crate::proto::admin::ApproveUserRegistrationReviewResponse {
-            review: Some(self.load_user_registration_review(&request_id).await?),
+            review: Some(self.load_user_registration_review(user_request_id).await?),
             user: Some(user),
         })
     }
@@ -3174,9 +3231,10 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::RejectUserRegistrationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let request_id = req.request_id.clone();
+        let user_request_id =
+            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec);
         let reviewed_by =
-            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let result = sqlx::query(
             r"
             UPDATE user_registration_requests
@@ -3184,11 +3242,11 @@ impl AdminApiImpl {
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
         )
-        .bind(request_id.as_str())
-        .bind(synctv_core::models::ReviewStatus::Rejected.as_i16())
-        .bind(reviewed_by.map(UserId::as_str))
+        .bind(user_request_id)
+        .bind(synctv_core::models::ReviewStatus::Rejected)
+        .bind(reviewed_by.copied())
         .bind(req.reason.as_str())
-        .bind(synctv_core::models::ReviewStatus::Pending.as_i16())
+        .bind(synctv_core::models::ReviewStatus::Pending)
         .execute(self.user_service.pool())
         .await?;
         if result.rows_affected() == 0 {
@@ -3196,7 +3254,7 @@ impl AdminApiImpl {
         }
 
         Ok(crate::proto::admin::RejectUserRegistrationReviewResponse {
-            review: Some(self.load_user_registration_review(&request_id).await?),
+            review: Some(self.load_user_registration_review(user_request_id).await?),
             success: true,
         })
     }
@@ -3216,18 +3274,27 @@ impl AdminApiImpl {
         } else {
             req.status
         };
+        let requested_by_filter = if req.requested_by.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_user_id_param(
+                &req.requested_by,
+                "requested_by",
+                &self.public_id_codec,
+            )?)
+        };
 
         let total = sqlx::query_scalar::<_, i64>(
             r"
             SELECT COUNT(*)
             FROM room_creation_requests
             WHERE status = $1
-              AND ($2 = '' OR requested_by = $2)
+              AND ($2::bigint IS NULL OR requested_by = $2)
               AND ($3 = '' OR name ILIKE ('%' || $3 || '%') OR description ILIKE ('%' || $3 || '%'))
             ",
         )
         .bind(status)
-        .bind(req.requested_by.as_str())
+        .bind(requested_by_filter)
         .bind(req.search.as_str())
         .fetch_one(self.user_service.pool())
         .await?;
@@ -3240,14 +3307,14 @@ impl AdminApiImpl {
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
             WHERE rcr.status = $1
-              AND ($2 = '' OR rcr.requested_by = $2)
+              AND ($2::bigint IS NULL OR rcr.requested_by = $2)
               AND ($3 = '' OR rcr.name ILIKE ('%' || $3 || '%') OR rcr.description ILIKE ('%' || $3 || '%'))
             ORDER BY rcr.requested_at DESC, rcr.id DESC
             LIMIT $4 OFFSET $5
             ",
         )
         .bind(status)
-        .bind(req.requested_by.as_str())
+        .bind(requested_by_filter)
         .bind(req.search.as_str())
         .bind(usize_to_i64_saturating(page_size))
         .bind(usize_to_i64_saturating(offset))
@@ -3255,7 +3322,7 @@ impl AdminApiImpl {
         .await?;
         let reviews = rows
             .iter()
-            .map(room_creation_review_row_to_proto)
+            .map(|row| room_creation_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListRoomCreationReviewsResponse {
             reviews,
@@ -3270,12 +3337,13 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveRoomCreationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let request_id = req.request_id.clone();
+        let room_request_id =
+            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec);
         let room = self
-            .approve_room_creation_request(&request_id, admin_user_id, ctx)
+            .approve_room_creation_request(room_request_id, admin_user_id, ctx)
             .await?;
         Ok(crate::proto::admin::ApproveRoomCreationReviewResponse {
-            review: Some(self.load_room_creation_review(&request_id).await?),
+            review: Some(self.load_room_creation_review(room_request_id).await?),
             room: Some(room),
         })
     }
@@ -3287,19 +3355,20 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::RejectRoomCreationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let request_id = req.request_id.clone();
+        let room_request_id =
+            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec);
         let reviewed_by =
-            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         self.room_service
             .reject_room(
-                crate::impls::proto_validated_room_id(request_id.clone()),
+                room_request_id,
                 reviewed_by,
                 normalize_non_empty_filter(&req.reason),
             )
             .await
             .map_err(ApiError::from)?;
         Ok(crate::proto::admin::RejectRoomCreationReviewResponse {
-            review: Some(self.load_room_creation_review(&request_id).await?),
+            review: Some(self.load_room_creation_review(room_request_id).await?),
             success: true,
         })
     }
@@ -3319,19 +3388,37 @@ impl AdminApiImpl {
         } else {
             req.status
         };
+        let room_id_filter = if req.room_id.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_room_id_param(
+                &req.room_id,
+                "room_id",
+                &self.public_id_codec,
+            )?)
+        };
+        let user_id_filter = if req.user_id.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_user_id_param(
+                &req.user_id,
+                "user_id",
+                &self.public_id_codec,
+            )?)
+        };
 
         let total = sqlx::query_scalar::<_, i64>(
             r"
             SELECT COUNT(*)
             FROM room_join_requests
             WHERE status = $1
-              AND ($2 = '' OR room_id = $2)
-              AND ($3 = '' OR user_id = $3)
+              AND ($2::bigint IS NULL OR room_id = $2)
+              AND ($3::bigint IS NULL OR user_id = $3)
             ",
         )
         .bind(status)
-        .bind(req.room_id.as_str())
-        .bind(req.user_id.as_str())
+        .bind(room_id_filter)
+        .bind(user_id_filter)
         .fetch_one(self.user_service.pool())
         .await?;
 
@@ -3344,22 +3431,22 @@ impl AdminApiImpl {
             LEFT JOIN rooms r ON r.id = rjr.room_id
             LEFT JOIN users u ON u.id = rjr.user_id
             WHERE rjr.status = $1
-              AND ($2 = '' OR rjr.room_id = $2)
-              AND ($3 = '' OR rjr.user_id = $3)
+              AND ($2::bigint IS NULL OR rjr.room_id = $2)
+              AND ($3::bigint IS NULL OR rjr.user_id = $3)
             ORDER BY rjr.requested_at DESC, rjr.id DESC
             LIMIT $4 OFFSET $5
             ",
         )
         .bind(status)
-        .bind(req.room_id.as_str())
-        .bind(req.user_id.as_str())
+        .bind(room_id_filter)
+        .bind(user_id_filter)
         .bind(usize_to_i64_saturating(page_size))
         .bind(usize_to_i64_saturating(offset))
         .fetch_all(self.user_service.pool())
         .await?;
         let reviews = rows
             .iter()
-            .map(room_join_review_row_to_proto)
+            .map(|row| room_join_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListRoomJoinReviewsResponse {
             reviews,
@@ -3375,13 +3462,20 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ApproveRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let request_id = req.request_id.clone();
-        let (room_id, _) = self.load_join_review_target(&request_id).await?;
+        let request_id = self
+            .public_id_codec
+            .decode_review_request_id(&req.request_id)
+            .map_err(ApiError::InvalidInput)?;
+        let (room_id, _) = self.load_join_review_target(request_id).await?;
+        let room_id_str = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::InvalidInput)?;
         let member = self
-            .approve_room_join_request(room_id.as_str(), request_id.as_str(), admin_user_id, ctx)
+            .approve_room_join_request(&room_id_str, request_id, admin_user_id, ctx)
             .await?;
         Ok(crate::proto::admin::ApproveRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(&request_id).await?),
+            review: Some(self.load_room_join_review(request_id).await?),
             member: Some(member),
         })
     }
@@ -3394,18 +3488,25 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::RejectRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let request_id = req.request_id.clone();
-        let (room_id, _) = self.load_join_review_target(&request_id).await?;
+        let request_id = self
+            .public_id_codec
+            .decode_review_request_id(&req.request_id)
+            .map_err(ApiError::InvalidInput)?;
+        let (room_id, _) = self.load_join_review_target(request_id).await?;
+        let room_id_str = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::InvalidInput)?;
         self.reject_room_join_request(
-            room_id.as_str(),
-            request_id.as_str(),
+            &room_id_str,
+            request_id,
             req.reason.as_str(),
             admin_user_id,
             ctx,
         )
         .await?;
         Ok(crate::proto::admin::RejectRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(&request_id).await?),
+            review: Some(self.load_room_join_review(request_id).await?),
             success: true,
         })
     }
@@ -3422,14 +3523,32 @@ impl AdminApiImpl {
         let offset = page.saturating_sub(1).saturating_mul(page_size);
 
         let pool = self.user_service.pool();
+        let user_id_filter = if req.user_id.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_user_id_param(
+                &req.user_id,
+                "user_id",
+                &self.public_id_codec,
+            )?)
+        };
+        let room_id_filter = if req.room_id.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_room_id_param(
+                &req.room_id,
+                "room_id",
+                &self.public_id_codec,
+            )?)
+        };
         let total = sqlx::query_scalar::<_, i64>(
             r"
             SELECT COUNT(*) FROM (
-                SELECT 1::int4 AS target_type, user_id, ''::text AS room_id,
+                SELECT 1::int4 AS target_type, user_id, NULL::bigint AS room_id,
                        revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM user_bans
                 UNION ALL
-                SELECT 2::int4 AS target_type, ''::text AS user_id, room_id,
+                SELECT 2::int4 AS target_type, NULL::bigint AS user_id, room_id,
                        revoked_at IS NULL AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM room_bans
                 UNION ALL
@@ -3439,14 +3558,14 @@ impl AdminApiImpl {
             ) bans
             WHERE ($1 = 0 OR target_type = $1)
               AND ($2::bool IS NULL OR is_active = $2)
-              AND ($3 = '' OR user_id = $3)
-              AND ($4 = '' OR room_id = $4)
+              AND ($3::bigint IS NULL OR user_id = $3)
+              AND ($4::bigint IS NULL OR room_id = $4)
             ",
         )
         .bind(req.target_type)
         .bind(req.active)
-        .bind(req.user_id.as_str())
-        .bind(req.room_id.as_str())
+        .bind(user_id_filter)
+        .bind(room_id_filter)
         .fetch_one(pool)
         .await?;
 
@@ -3454,27 +3573,27 @@ impl AdminApiImpl {
             r"
             SELECT * FROM (
                 SELECT ub.id, 1::int4 AS target_type, ub.user_id, COALESCE(u.username, '') AS username,
-                       ''::text AS room_id, ''::text AS room_name, COALESCE(ub.banned_by, '') AS banned_by,
+                       NULL::bigint AS room_id, ''::text AS room_name, ub.banned_by,
                        COALESCE(actor.username, '') AS banned_by_username, COALESCE(ub.reason, '') AS reason,
-                       ub.starts_at, ub.ends_at, ub.revoked_at, COALESCE(ub.revoked_by, '') AS revoked_by,
+                       ub.starts_at, ub.ends_at, ub.revoked_at, ub.revoked_by,
                        ub.revoked_at IS NULL AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM user_bans ub
                 LEFT JOIN users u ON u.id = ub.user_id
                 LEFT JOIN users actor ON actor.id = ub.banned_by
                 UNION ALL
-                SELECT rb.id, 2::int4 AS target_type, ''::text AS user_id, ''::text AS username,
-                       rb.room_id, COALESCE(r.name, '') AS room_name, COALESCE(rb.banned_by, '') AS banned_by,
+                SELECT rb.id, 2::int4 AS target_type, NULL::bigint AS user_id, ''::text AS username,
+                       rb.room_id, COALESCE(r.name, '') AS room_name, rb.banned_by,
                        COALESCE(actor.username, '') AS banned_by_username, COALESCE(rb.reason, '') AS reason,
-                       rb.starts_at, rb.ends_at, rb.revoked_at, COALESCE(rb.revoked_by, '') AS revoked_by,
+                       rb.starts_at, rb.ends_at, rb.revoked_at, rb.revoked_by,
                        rb.revoked_at IS NULL AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM room_bans rb
                 LEFT JOIN rooms r ON r.id = rb.room_id
                 LEFT JOIN users actor ON actor.id = rb.banned_by
                 UNION ALL
                 SELECT rmb.id, 3::int4 AS target_type, rmb.user_id, COALESCE(u.username, '') AS username,
-                       rmb.room_id, COALESCE(r.name, '') AS room_name, COALESCE(rmb.banned_by, '') AS banned_by,
+                       rmb.room_id, COALESCE(r.name, '') AS room_name, rmb.banned_by,
                        COALESCE(actor.username, '') AS banned_by_username, COALESCE(rmb.reason, '') AS reason,
-                       rmb.starts_at, rmb.ends_at, rmb.revoked_at, COALESCE(rmb.revoked_by, '') AS revoked_by,
+                       rmb.starts_at, rmb.ends_at, rmb.revoked_at, rmb.revoked_by,
                        rmb.revoked_at IS NULL AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP) AS is_active
                 FROM room_member_bans rmb
                 LEFT JOIN users u ON u.id = rmb.user_id
@@ -3483,16 +3602,16 @@ impl AdminApiImpl {
             ) bans
             WHERE ($1 = 0 OR target_type = $1)
               AND ($2::bool IS NULL OR is_active = $2)
-              AND ($3 = '' OR user_id = $3)
-              AND ($4 = '' OR room_id = $4)
+              AND ($3::bigint IS NULL OR user_id = $3)
+              AND ($4::bigint IS NULL OR room_id = $4)
             ORDER BY starts_at DESC, id DESC
             LIMIT $5 OFFSET $6
             ",
         )
         .bind(req.target_type)
         .bind(req.active)
-        .bind(req.user_id.as_str())
-        .bind(req.room_id.as_str())
+        .bind(user_id_filter)
+        .bind(room_id_filter)
         .bind(usize_to_i64_saturating(page_size))
         .bind(usize_to_i64_saturating(offset))
         .fetch_all(pool)
@@ -3500,7 +3619,7 @@ impl AdminApiImpl {
 
         let bans = rows
             .iter()
-            .map(ban_row_to_proto)
+            .map(|row| ban_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::admin::ListBanRecordsResponse {
             bans,
@@ -3510,14 +3629,13 @@ impl AdminApiImpl {
 
     async fn approve_user_registration_request(
         &self,
-        request_id: &str,
+        request_id: UserId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AdminUser, ApiError> {
-        let request_id = crate::impls::proto_validated_user_id(request_id.to_string());
         self.require_admin_actor(admin_user_id).await?;
         let persisted_reviewed_by =
-            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let updated = self
             .user_service
             .approve_registration_request(&request_id, persisted_reviewed_by)
@@ -3529,10 +3647,10 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserApproved,
             synctv_core::service::AuditTargetType::User,
-            Some(updated.id.as_str().to_string()),
+            Some(updated.id.to_string()),
             serde_json::json!({
-                "request_id": request_id.as_str(),
-                "target_user_id": updated.id.as_str(),
+                "request_id": request_id.to_string(),
+                "target_user_id": updated.id.to_string(),
                 "target_username": updated.username,
                 "previous_review_status": "pending",
                 "new_review_status": "approved",
@@ -3541,7 +3659,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(admin_user_to_proto(&updated))
+        Ok(admin_user_to_proto(&updated, &self.public_id_codec))
     }
 
     pub async fn get_user_rooms(
@@ -3550,7 +3668,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetUserRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone());
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
         let page = u32::try_from(req.page).unwrap_or(1);
         let page_size = u32::try_from(req.page_size).unwrap_or(50).min(100);
         let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
@@ -3597,7 +3715,7 @@ impl AdminApiImpl {
         // Batch-fetch creator usernames for all rooms in a single query.
         let creator_ids: Vec<synctv_core::models::UserId> = rooms
             .iter()
-            .map(|r| r.created_by.clone())
+            .map(|r| r.created_by)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -3610,7 +3728,7 @@ impl AdminApiImpl {
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> =
             rooms.iter().map(|room| &room.id).collect();
-        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)
@@ -3618,7 +3736,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
-            .get_room_settings_batch(&room_id_strs)
+            .get_room_settings_batch(&room_ids)
             .await
             .unwrap_or_default();
         let admin_rooms: Vec<crate::proto::admin::AdminRoom> = rooms
@@ -3629,13 +3747,14 @@ impl AdminApiImpl {
                     .get(&room.created_by)
                     .copied()
                     .unwrap_or(UserStatus::Banned);
-                let settings = room_settings_map.get(room.id.as_str());
+                let settings = room_settings_map.get(&room.id);
                 admin_room_to_proto(
                     room,
                     settings,
-                    member_counts.get(room.id.as_str()).copied(),
+                    member_counts.get(&room.id).copied(),
                     creator_username,
                     creator_status,
+                    &self.public_id_codec,
                 )
             })
             .collect();
@@ -3653,7 +3772,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
         let room = self
             .room_service
             .get_room(&rid)
@@ -3684,9 +3803,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomBanned,
             synctv_core::service::AuditTargetType::Room,
-            Some(rid.as_str().to_string()),
+            Some(rid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "room_name": room.name,
                 "reason": req.reason,
             }),
@@ -3706,7 +3825,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
         let room = self
             .room_service
             .get_room(&rid)
@@ -3728,9 +3847,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomUnbanned,
             synctv_core::service::AuditTargetType::Room,
-            Some(rid.as_str().to_string()),
+            Some(rid.to_string()),
             serde_json::json!({
-                "room_id": rid.as_str(),
+                "room_id": rid.to_string(),
                 "room_name": room.name,
             }),
             ctx,
@@ -3744,17 +3863,16 @@ impl AdminApiImpl {
 
     async fn approve_room_creation_request(
         &self,
-        request_id: &str,
+        request_id: RoomId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AdminRoom, ApiError> {
-        let request_id = crate::impls::proto_validated_room_id(request_id.to_string());
         self.require_admin_actor(admin_user_id).await?;
         let persisted_reviewed_by =
-            (admin_user_id.as_str() != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let room = self
             .room_service
-            .approve_pending_room(request_id.clone(), persisted_reviewed_by)
+            .approve_pending_room(request_id, persisted_reviewed_by)
             .await
             .map_err(ApiError::from)?;
 
@@ -3763,10 +3881,10 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::RoomApproved,
             synctv_core::service::AuditTargetType::Room,
-            Some(room.id.as_str().to_string()),
+            Some(room.id.to_string()),
             serde_json::json!({
-                "request_id": request_id.as_str(),
-                "room_id": room.id.as_str(),
+                "request_id": request_id.to_string(),
+                "room_id": room.id.to_string(),
                 "room_name": room.name,
             }),
             ctx,
@@ -3781,7 +3899,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetRoomSettingsRequest,
     ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
         let (settings, version) = self
             .room_service
             .get_room_settings_with_version(&rid)
@@ -3801,7 +3919,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone());
+        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -3814,10 +3932,10 @@ impl AdminApiImpl {
         let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
 
         // Look up admin username for cluster event
-        let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let admin_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
 
         self.room_settings_fanout.publish_settings_changed(
             room_settings_fanout,
@@ -3848,7 +3966,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
         let default_settings = synctv_core::models::RoomSettings::default();
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
         let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
@@ -3864,10 +3982,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
         // Look up admin username for cluster event
-        let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let admin_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
 
         let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
         self.room_settings_fanout.publish_settings_changed(
@@ -3895,7 +4013,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -3921,9 +4039,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserRoleUpdated,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "target_username": updated.username,
                 "new_role": "Admin",
             }),
@@ -3932,7 +4050,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::AddAdminResponse {
-            user: Some(admin_user_to_proto(&updated)),
+            user: Some(admin_user_to_proto(&updated, &self.public_id_codec)),
         })
     }
 
@@ -3943,7 +4061,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -3972,9 +4090,9 @@ impl AdminApiImpl {
             admin_user_id,
             synctv_core::service::AuditAction::UserRoleUpdated,
             synctv_core::service::AuditTargetType::User,
-            Some(uid.as_str().to_string()),
+            Some(uid.to_string()),
             serde_json::json!({
-                "target_user_id": uid.as_str(),
+                "target_user_id": uid.to_string(),
                 "target_username": target_username,
                 "new_role": "User",
             }),
@@ -4032,7 +4150,10 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let admins: Vec<_> = users.into_iter().map(|u| admin_user_to_proto(&u)).collect();
+        let admins: Vec<_> = users
+            .into_iter()
+            .map(|u| admin_user_to_proto(&u, &self.public_id_codec))
+            .collect();
 
         Ok(crate::proto::admin::ListAdminsResponse { admins })
     }
@@ -4133,8 +4254,22 @@ impl AdminApiImpl {
         let active_publishers = registry.list_active_publishers().await.map_err(|error| {
             ApiError::Internal(format!("Failed to list active streams: {error}"))
         })?;
-        let room_id = normalize_non_empty_filter(&req.room_id);
-        let user_filter = normalize_non_empty_filter(&req.user_id);
+        let room_id = normalize_non_empty_filter(&req.room_id)
+            .map(|room_id| {
+                self.public_id_codec
+                    .decode_room_id(&room_id)
+                    .map(|id| id.to_string())
+                    .map_err(ApiError::InvalidInput)
+            })
+            .transpose()?;
+        let user_filter = normalize_non_empty_filter(&req.user_id)
+            .map(|user_id| {
+                self.public_id_codec
+                    .decode_user_id(&user_id)
+                    .map(|id| id.to_string())
+                    .map_err(ApiError::InvalidInput)
+            })
+            .transpose()?;
         let node_filter = normalize_non_empty_filter(&req.node_id);
         let search =
             normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase());
@@ -4150,20 +4285,49 @@ impl AdminApiImpl {
                     continue;
                 }
             }
+            if let Some(filter_user) = user_filter.as_deref() {
+                if active_publisher.publisher.user_id != filter_user {
+                    continue;
+                }
+            }
 
             let stream = crate::proto::admin::ActiveStreamInfo {
-                room_id: active_publisher.room_id,
-                media_id: active_publisher.media_id,
-                user_id: active_publisher.publisher.user_id,
+                room_id: self
+                    .public_id_codec
+                    .encode_room_id(active_publisher.room_id.parse::<RoomId>().map_err(
+                        |error| {
+                            ApiError::Internal(format!("Invalid active publisher room id: {error}"))
+                        },
+                    )?)
+                    .map_err(ApiError::Internal)?,
+                media_id: self
+                    .public_id_codec
+                    .encode_media_id(active_publisher.media_id.parse::<MediaId>().map_err(
+                        |error| {
+                            ApiError::Internal(format!(
+                                "Invalid active publisher media id: {error}"
+                            ))
+                        },
+                    )?)
+                    .map_err(ApiError::Internal)?,
+                user_id: self
+                    .public_id_codec
+                    .encode_user_id(
+                        active_publisher
+                            .publisher
+                            .user_id
+                            .parse::<UserId>()
+                            .map_err(|error| {
+                                ApiError::Internal(format!(
+                                    "Invalid active publisher user id: {error}"
+                                ))
+                            })?,
+                    )
+                    .map_err(ApiError::Internal)?,
                 node_id: active_publisher.publisher.node_id,
                 started_at: active_publisher.publisher.started_at.timestamp(),
             };
 
-            if let Some(filter_user) = user_filter.as_deref() {
-                if stream.user_id != filter_user {
-                    continue;
-                }
-            }
             if let Some(filter_node) = node_filter.as_deref() {
                 if stream.node_id != filter_node {
                     continue;
@@ -4202,8 +4366,16 @@ impl AdminApiImpl {
     ) -> Result<(), ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let room_id = req.room_id;
-        let media_id = req.media_id;
+        let room_id = self
+            .public_id_codec
+            .decode_room_id(&req.room_id)
+            .map_err(ApiError::InvalidInput)?;
+        let media_id = self
+            .public_id_codec
+            .decode_media_id(&req.media_id)
+            .map_err(ApiError::InvalidInput)?;
+        let room_id_key = room_id.to_string();
+        let media_id_key = media_id.to_string();
         let reason = req.reason;
         let infrastructure = self
             .live_streaming_infrastructure
@@ -4214,13 +4386,13 @@ impl AdminApiImpl {
             room_id = %room_id,
             media_id = %media_id,
             reason = %reason,
-            admin_user_id = %admin_user_id.as_str(),
+            admin_user_id = %admin_user_id,
             "Admin kicking stream"
         );
 
         if !infrastructure
             .registry()
-            .is_stream_active(&room_id, &media_id)
+            .is_stream_active(&room_id_key, &media_id_key)
             .await
             .map_err(|error| {
                 ApiError::Internal(format!("Failed to check active stream: {error}"))
@@ -4230,23 +4402,23 @@ impl AdminApiImpl {
         }
 
         infrastructure
-            .kick_stream(&room_id, &media_id)
+            .kick_stream(&room_id_key, &media_id_key)
             .await
             .map_err(|error| ApiError::Internal(format!("Failed to kick stream: {error}")))?;
 
         // Audit log: kick_stream is a critical operation
         {
-            let admin_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-                |_| admin_user_id.as_str().to_string(),
-                |actor| actor.username,
-            );
+            let admin_username = self
+                .load_admin_actor(admin_user_id)
+                .await
+                .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
             if let Err(e) = self
                 .audit_service
                 .log_stream_kicked(
-                    admin_user_id.as_str().to_string(),
+                    admin_user_id.to_string(),
                     admin_username.clone(),
-                    room_id.clone(),
-                    media_id.clone(),
+                    req.room_id.clone(),
+                    req.media_id.clone(),
                     if reason.is_empty() {
                         None
                     } else {
@@ -4259,7 +4431,7 @@ impl AdminApiImpl {
             {
                 tracing::error!(
                     error = %e,
-                    admin_user_id = %admin_user_id.as_str(),
+                    admin_user_id = %admin_user_id,
                     admin_username = %admin_username,
                     room_id = %room_id,
                     media_id = %media_id,
@@ -4292,8 +4464,8 @@ impl AdminApiImpl {
         tracing::info!(
             room_id,
             media_id,
-            actor_user_id = %actor_user_id.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
+            actor_user_id = %actor_user_id,
+            admin_user_id = %admin_user_id,
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
             "Admin created publish key for actor user"
@@ -4316,19 +4488,20 @@ impl AdminApiImpl {
         req: crate::proto::client::ListRoomStreamsRequest,
     ) -> Result<crate::proto::client::ListRoomStreamsResponse, ApiError> {
         let req = crate::impls::client::stream::build_room_streams_request(req)?;
-        let _rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         if self.live_streaming_infrastructure.is_none() {
             return Err(crate::impls::client::stream::live_streaming_unavailable_error());
         }
 
         let media_ids = self
             .realtime_lifecycle
-            .active_room_stream_media_ids(room_id)
+            .active_room_stream_media_ids(&rid)
             .await;
 
         Ok(crate::impls::client::stream::build_room_streams_response(
-            media_ids, &req,
+            media_ids,
+            &req,
+            &self.public_id_codec,
         ))
     }
 
@@ -4339,29 +4512,29 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let target = crate::impls::client::build_start_playback_request(req)?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
+        let target =
+            crate::impls::client::build_start_playback_request(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         self.room_service
             .admin_start_playback_as(
-                rid.clone(),
+                rid,
                 &actor,
-                target.media_id.clone(),
-                target.playlist_id.clone(),
+                target.media_id,
+                target.playlist_id,
                 target.target,
             )
             .await
             .map_err(ApiError::from)?;
 
-        self.room_service.touch_room_activity(rid.clone()).await;
+        self.room_service.touch_room_activity(rid).await;
 
         tracing::info!(
-            room_id = %rid.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
-            media_id = target.media_id.as_ref().map_or("", synctv_core::models::MediaId::as_str),
-            playlist_id = target.playlist_id.as_ref().map_or("", synctv_core::models::PlaylistId::as_str),
+            room_id = %rid,
+            admin_user_id = %admin_user_id,
+            media_id = target.media_id.as_ref().map_or_else(String::new, ToString::to_string),
+            playlist_id = target.playlist_id.as_ref().map_or_else(String::new, ToString::to_string),
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
             "Admin started playback"
@@ -4376,18 +4549,17 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         self.room_service
-            .admin_stop_playback_as(rid.clone(), &actor)
+            .admin_stop_playback_as(rid, &actor)
             .await
             .map_err(ApiError::from)?;
 
         tracing::info!(
-            room_id = %rid.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
+            room_id = %rid,
+            admin_user_id = %admin_user_id,
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
             "Admin stopped playback"
@@ -4402,8 +4574,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         playback_client_profile: Option<crate::proto::client::PlaybackClientProfile>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let playback_client_profile =
             playback_client_profile_from_proto(playback_client_profile.as_ref());
 
@@ -4430,9 +4601,9 @@ impl AdminApiImpl {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
                     tracing::warn!(
-                        room_id = %rid.as_str(),
-                        admin_user_id = %admin_user_id.as_str(),
-                        signing_user_id = %snapshot_user_id.as_str(),
+                        room_id = %rid,
+                        admin_user_id = %admin_user_id,
+                        signing_user_id = %snapshot_user_id,
                         error = %error,
                         "Admin playback snapshot generation failed; returning playback state only"
                     );
@@ -4441,8 +4612,8 @@ impl AdminApiImpl {
             },
             Err(error) => {
                 tracing::warn!(
-                    room_id = %rid.as_str(),
-                    admin_user_id = %admin_user_id.as_str(),
+                    room_id = %rid,
+                    admin_user_id = %admin_user_id,
                     error = %error,
                     "Admin playback snapshot generation failed; returning playback state only"
                 );
@@ -4451,7 +4622,7 @@ impl AdminApiImpl {
         };
 
         Ok(crate::proto::client::GetPlaybackResponse {
-            playback_state: Some(playback_state_to_proto(&state)),
+            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
             playback_snapshot,
         })
     }
@@ -4463,9 +4634,9 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let command = crate::impls::client::build_update_playback_request(req)?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
+        let command =
+            crate::impls::client::build_update_playback_request(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         match command {
@@ -4475,7 +4646,7 @@ impl AdminApiImpl {
                 target,
             } => {
                 self.room_service
-                    .admin_start_playback_as(rid.clone(), &actor, media_id, playlist_id, target)
+                    .admin_start_playback_as(rid, &actor, media_id, playlist_id, target)
                     .await
             }
             crate::impls::client::PlaybackUpdateCommand::Patch {
@@ -4485,24 +4656,17 @@ impl AdminApiImpl {
                 version,
             } => {
                 self.room_service
-                    .admin_update_playback_as(
-                        rid.clone(),
-                        &actor,
-                        playing,
-                        position,
-                        speed,
-                        version,
-                    )
+                    .admin_update_playback_as(rid, &actor, playing, position, speed, version)
                     .await
             }
         }
         .map_err(ApiError::from)?;
 
-        self.room_service.touch_room_activity(rid.clone()).await;
+        self.room_service.touch_room_activity(rid).await;
 
         tracing::info!(
-            room_id = %rid.as_str(),
-            admin_user_id = %admin_user_id.as_str(),
+            room_id = %rid,
+            admin_user_id = %admin_user_id,
             ip_address = ctx.ip_address.as_deref().unwrap_or(""),
             user_agent = ctx.user_agent.as_deref().unwrap_or(""),
             "Admin updated playback"
@@ -4517,9 +4681,12 @@ impl AdminApiImpl {
         playlist_id: &str,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let pid = crate::impls::parse_playlist_id_param(playlist_id, "playlist_id")?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
+        let pid = crate::impls::parse_playlist_id_param(
+            playlist_id,
+            "playlist_id",
+            &self.public_id_codec,
+        )?;
 
         self.require_admin_actor(admin_user_id).await?;
 
@@ -4553,7 +4720,11 @@ impl AdminApiImpl {
         );
 
         Ok(crate::proto::client::GetPlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, media_count)),
+            playlist: Some(playlist_to_proto(
+                &playlist,
+                media_count,
+                &self.public_id_codec,
+            )),
             child_folder_count,
             media_count,
         })
@@ -4567,8 +4738,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
 
         self.require_admin_actor(admin_user_id).await?;
 
@@ -4581,7 +4751,10 @@ impl AdminApiImpl {
         let parent_id = if req.parent_id.is_empty() {
             None
         } else {
-            let parent_id = crate::impls::proto_validated_playlist_id(req.parent_id.clone());
+            let parent_id = crate::impls::proto_validated_playlist_id(
+                req.parent_id.clone(),
+                &self.public_id_codec,
+            );
             let parent = self
                 .room_service
                 .playlist_service()
@@ -4628,7 +4801,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let playlist_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
+        let playlist_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
         let counts = self
             .room_service
             .media_service()
@@ -4639,10 +4812,14 @@ impl AdminApiImpl {
         let playlists = playlists
             .iter()
             .map(|entry| {
-                let item_count = i64_to_i32_saturating(
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                );
-                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+                let item_count =
+                    i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
+                playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                    &self.public_id_codec,
+                )
             })
             .collect();
 
@@ -4655,10 +4832,13 @@ impl AdminApiImpl {
         req: crate::proto::client::CreatePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         self.require_admin_actor(admin_user_id).await?;
-        let service_req = crate::impls::client::playlist::build_create_playlist_request(&rid, req)?;
+        let service_req = crate::impls::client::playlist::build_create_playlist_request(
+            &rid,
+            req,
+            &self.public_id_codec,
+        )?;
 
         let playlist_cluster_event = self.playlist_fanout.reserve_created().await?;
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -4666,14 +4846,14 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_create_playlist(rid.clone(), admin_user_id.clone(), service_req)
+            .admin_create_playlist(rid, *admin_user_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
-        let actor_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let actor_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
         self.playlist_fanout.publish_created(
             playlist_cluster_event,
             &rid,
@@ -4692,7 +4872,11 @@ impl AdminApiImpl {
             .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::CreatePlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
+            playlist: Some(playlist_to_proto(
+                &playlist,
+                item_count,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -4702,10 +4886,12 @@ impl AdminApiImpl {
         req: crate::proto::client::UpdatePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         self.require_admin_actor(admin_user_id).await?;
-        let service_req = crate::impls::client::playlist::build_update_playlist_request(req)?;
+        let service_req = crate::impls::client::playlist::build_update_playlist_request(
+            req,
+            &self.public_id_codec,
+        )?;
 
         let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -4713,14 +4899,14 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_set_playlist(rid.clone(), admin_user_id.clone(), service_req)
+            .admin_set_playlist(rid, *admin_user_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
-        let actor_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let actor_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
         self.playlist_fanout.publish_updated(
             playlist_cluster_event,
             &rid,
@@ -4739,7 +4925,11 @@ impl AdminApiImpl {
             .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
+            playlist: Some(playlist_to_proto(
+                &playlist,
+                item_count,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -4749,10 +4939,12 @@ impl AdminApiImpl {
         req: crate::proto::client::MovePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         self.require_admin_actor(admin_user_id).await?;
-        let service_req = crate::impls::client::playlist::build_move_playlist_request(req)?;
+        let service_req = crate::impls::client::playlist::build_move_playlist_request(
+            req,
+            &self.public_id_codec,
+        )?;
 
         let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -4760,14 +4952,14 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .admin_move_playlist(rid.clone(), admin_user_id.clone(), service_req)
+            .admin_move_playlist(rid, *admin_user_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
-        let actor_username = self.load_admin_actor(admin_user_id).await.map_or_else(
-            |_| admin_user_id.as_str().to_string(),
-            |actor| actor.username,
-        );
+        let actor_username = self
+            .load_admin_actor(admin_user_id)
+            .await
+            .map_or_else(|_| admin_user_id.to_string(), |actor| actor.username);
         self.playlist_fanout.publish_updated(
             playlist_cluster_event,
             &rid,
@@ -4786,7 +4978,11 @@ impl AdminApiImpl {
             .map_or(0, i64_to_i32_saturating);
 
         Ok(crate::proto::client::MovePlaylistResponse {
-            playlist: Some(playlist_to_proto(&playlist, item_count)),
+            playlist: Some(playlist_to_proto(
+                &playlist,
+                item_count,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -4796,17 +4992,18 @@ impl AdminApiImpl {
         req: crate::proto::client::DeletePlaylistRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
-        let (playlist_id, force) =
-            crate::impls::client::playlist::build_delete_playlist_request(req)?;
+        let (playlist_id, force) = crate::impls::client::playlist::build_delete_playlist_request(
+            req,
+            &self.public_id_codec,
+        )?;
         let (result, (media_cluster_events, playlist_cluster_events)) = self
             .room_service
             .admin_delete_entries_as_with_precommit(
-                rid.clone(),
+                rid,
                 &actor,
                 synctv_core::service::room::DeleteEntriesRequest {
                     playlist_ids: vec![playlist_id],
@@ -4868,7 +5065,7 @@ impl AdminApiImpl {
 
         for media_id in &result.deleted_media_ids {
             self.realtime_lifecycle
-                .kick_stream(room_id, media_id.as_str(), "media_deleted")
+                .kick_stream(&rid, media_id, "media_deleted")
                 .await;
         }
 
@@ -4883,14 +5080,16 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
 
         self.require_admin_actor(admin_user_id).await?;
 
-        let Some(playlist_id) = (!req.playlist_id.is_empty())
-            .then(|| crate::impls::proto_validated_playlist_id(req.playlist_id.clone()))
-        else {
+        let Some(playlist_id) = (!req.playlist_id.is_empty()).then(|| {
+            crate::impls::proto_validated_playlist_id(
+                req.playlist_id.clone(),
+                &self.public_id_codec,
+            )
+        }) else {
             if !req.target.is_empty() {
                 return Err(ApiError::InvalidInput(
                     "target must be empty when browsing the room root".to_string(),
@@ -4979,8 +5178,7 @@ impl AdminApiImpl {
                     .map_err(ApiError::from)?;
                 (Vec::new(), media)
             };
-            let folder_ids: Vec<&str> =
-                playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
+            let folder_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
             let counts = self
                 .room_service
                 .media_service()
@@ -4988,13 +5186,21 @@ impl AdminApiImpl {
                 .await
                 .unwrap_or_default();
             let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
-                let item_count = i64_to_i32_saturating(
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
-                );
-                playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+                let item_count =
+                    i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
+                playlist_to_proto_with_availability(
+                    &entry.playlist,
+                    item_count,
+                    entry.is_available,
+                    &self.public_id_codec,
+                )
             });
             let proto_media = map_slice_preserve_order(&media, |entry| {
-                media_to_proto_with_availability(&entry.media, entry.is_available)
+                media_to_proto_with_availability(
+                    &entry.media,
+                    entry.is_available,
+                    &self.public_id_codec,
+                )
             });
 
             let mut response = crate::proto::client::ListPlaylistItemsResponse {
@@ -5033,7 +5239,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let mut current_path = static_path
             .iter()
-            .map(playlist_path_node_to_proto)
+            .map(|playlist| playlist_path_node_to_proto(playlist, &self.public_id_codec))
             .collect::<Vec<_>>();
 
         if playlist.is_dynamic() {
@@ -5061,8 +5267,8 @@ impl AdminApiImpl {
                 .room_service
                 .media_service()
                 .admin_list_dynamic_playlist_items(
-                    rid.clone(),
-                    admin_user_id.clone(),
+                    rid,
+                    *admin_user_id,
                     &playlist_id,
                     (!req.target.is_empty()).then_some(req.target.as_slice()),
                     DynamicListQuery {
@@ -5102,7 +5308,7 @@ impl AdminApiImpl {
                 .media_service()
                 .admin_get_dynamic_playlist_browse_path(
                     rid,
-                    admin_user_id.clone(),
+                    *admin_user_id,
                     &playlist_id,
                     (!req.target.is_empty()).then_some(req.target.as_slice()),
                 )
@@ -5220,7 +5426,7 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?;
             (Vec::new(), media)
         };
-        let folder_ids: Vec<&str> = playlists.iter().map(|pl| pl.playlist.id.as_str()).collect();
+        let folder_ids: Vec<_> = playlists.iter().map(|pl| pl.playlist.id).collect();
         let counts = self
             .room_service
             .media_service()
@@ -5229,11 +5435,20 @@ impl AdminApiImpl {
             .unwrap_or_default();
         let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
             let item_count =
-                i64_to_i32_saturating(counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0));
-            playlist_to_proto_with_availability(&entry.playlist, item_count, entry.is_available)
+                i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
+            playlist_to_proto_with_availability(
+                &entry.playlist,
+                item_count,
+                entry.is_available,
+                &self.public_id_codec,
+            )
         });
         let proto_media = map_slice_preserve_order(&media, |entry| {
-            media_to_proto_with_availability(&entry.media, entry.is_available)
+            media_to_proto_with_availability(
+                &entry.media,
+                entry.is_available,
+                &self.public_id_codec,
+            )
         });
 
         let mut response = crate::proto::client::ListPlaylistItemsResponse {
@@ -5257,11 +5472,14 @@ impl AdminApiImpl {
         req: crate::proto::client::AddMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let service_req = crate::impls::client::media::build_add_media_request(req)?;
+        let rid = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|e| ApiError::InvalidInput(e.clone()))?;
+        let service_req =
+            crate::impls::client::media::build_add_media_request(req, &self.public_id_codec)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let playlist_id = service_req.playlist_id.clone();
+        let playlist_id = service_req.playlist_id;
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
@@ -5290,12 +5508,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_add_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                &actor.username,
-                service_req,
-            )
+            .admin_add_media(rid, *admin_user_id, &actor.username, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -5313,7 +5526,10 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
         Ok(crate::proto::client::AddMediaResponse {
-            media: Some(crate::impls::client::convert::media_to_proto(&media)),
+            media: Some(crate::impls::client::convert::media_to_proto(
+                &media,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -5323,9 +5539,12 @@ impl AdminApiImpl {
         req: crate::proto::client::EditMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let service_req = crate::impls::client::media::build_edit_media_request(req)?;
+        let rid = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|e| ApiError::InvalidInput(e.clone()))?;
+        let service_req =
+            crate::impls::client::media::build_edit_media_request(req, &self.public_id_codec)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
 
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -5334,12 +5553,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_edit_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                &actor.username,
-                service_req,
-            )
+            .admin_edit_media(rid, *admin_user_id, &actor.username, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -5357,7 +5571,10 @@ impl AdminApiImpl {
         self.publish_room_cache_invalidation(cache_invalidation, &rid);
 
         Ok(crate::proto::client::EditMediaResponse {
-            media: Some(crate::impls::client::convert::media_to_proto(&media)),
+            media: Some(crate::impls::client::convert::media_to_proto(
+                &media,
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -5367,8 +5584,10 @@ impl AdminApiImpl {
         req: crate::proto::client::DeleteMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        let rid = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|e| ApiError::InvalidInput(e.clone()))?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         let cache_invalidation = self.reserve_room_cache_invalidation().await?;
@@ -5376,10 +5595,11 @@ impl AdminApiImpl {
         let (result, media_cluster_events) = self
             .room_service
             .admin_delete_entries_as_with_precommit(
-                rid.clone(),
+                rid,
                 &actor,
                 crate::impls::client::media::build_delete_entries_request(
                     crate::impls::client::media::build_delete_media_request(req)?,
+                    &self.public_id_codec,
                 )?
                 .0,
                 |plan| async move {
@@ -5408,7 +5628,7 @@ impl AdminApiImpl {
 
         for media_id in &result.deleted_media_ids {
             self.realtime_lifecycle
-                .kick_stream(room_id, media_id.as_str(), "media_deleted")
+                .kick_stream(&rid, media_id, "media_deleted")
                 .await;
         }
 
@@ -5421,9 +5641,12 @@ impl AdminApiImpl {
         req: crate::proto::client::MoveMediaRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::client::MoveMediaResponse, ApiError> {
-        let rid = crate::room_id_validation::parse_room_id(room_id)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let service_req = crate::impls::client::media::build_move_media_request(req)?;
+        let rid = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|e| ApiError::InvalidInput(e.clone()))?;
+        let service_req =
+            crate::impls::client::media::build_move_media_request(req, &self.public_id_codec)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
 
         let media_fanout_plan = build_move_media_fanout_plan(
@@ -5438,12 +5661,7 @@ impl AdminApiImpl {
         let media = self
             .room_service
             .media_service()
-            .admin_move_media(
-                rid.clone(),
-                admin_user_id.clone(),
-                &actor.username,
-                service_req,
-            )
+            .admin_move_media(rid, *admin_user_id, &actor.username, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -5460,7 +5678,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_saturating(media.len()),
-            media: media_list_to_proto(&media),
+            media: media_list_to_proto(&media, &self.public_id_codec),
         })
     }
 
@@ -5479,7 +5697,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchBanUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let parsed_user_ids = parse_batch_user_ids(&req.user_ids)?;
+        let parsed_user_ids = parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
 
         // Pre-filter: check role hierarchy for each target user before delegating
         // to the service layer. Users that violate hierarchy are skipped with an error.
@@ -5568,7 +5786,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchDeleteUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let parsed_user_ids = parse_batch_user_ids(&req.user_ids)?;
+        let parsed_user_ids = parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
 
         // Pre-filter: check role hierarchy for each target user before delegating
         // to the service layer. Users that violate hierarchy are skipped with an error.
@@ -5713,7 +5931,7 @@ impl AdminApiImpl {
         let mut failed = 0i32;
 
         for room_id in &req.room_ids {
-            let rid = RoomId::from_string(room_id.clone());
+            let rid = crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec);
             let result = async {
                 let room = self
                     .room_service
@@ -5801,7 +6019,7 @@ impl AdminApiImpl {
         let mut failed = 0i32;
 
         for room_id in &req.room_ids {
-            let rid = RoomId::from_string(room_id.clone());
+            let rid = crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec);
             let result = async {
                 let cluster_event = self.room_lifecycle_fanout.reserve_room_deleted().await?;
                 self.room_service
@@ -5866,8 +6084,8 @@ impl AdminApiImpl {
 #[cfg(test)]
 async fn active_room_stream_media_ids_for_infra(
     live_streaming_infrastructure: Option<&Arc<LiveStreamingInfrastructure>>,
-    room_id: &str,
-) -> Vec<String> {
+    room_id: &RoomId,
+) -> Vec<MediaId> {
     let connection_service: Arc<dyn RealtimeConnectionService> =
         Arc::new(synctv_cluster::sync::ConnectionManager::new(
             synctv_cluster::sync::ConnectionLimits::default(),
@@ -5964,13 +6182,18 @@ fn admin_room_to_proto(
     member_count: Option<i32>,
     creator_username: Option<&str>,
     creator_status: UserStatus,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::admin::AdminRoom {
     let room_settings = settings.cloned().unwrap_or_default();
     crate::proto::admin::AdminRoom {
-        id: room.id.to_string(),
+        id: public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id must be encodable"),
         name: room.name.clone(),
         description: room.description.clone(),
-        creator_id: room.created_by.to_string(),
+        creator_id: public_id_codec
+            .encode_user_id(room.created_by)
+            .expect("room creator id must be encodable"),
         creator_username: creator_username.unwrap_or("").to_string(),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
         settings: serde_json::to_vec(&room_settings).unwrap_or_default(),
@@ -5985,10 +6208,15 @@ fn admin_room_to_proto(
 
 fn admin_room_member_to_proto(
     member: &synctv_core::models::RoomMemberWithUser,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
-        room_id: member.room_id.to_string(),
-        user_id: member.user_id.to_string(),
+        room_id: public_id_codec
+            .encode_room_id(member.room_id)
+            .expect("room member room id must be encodable"),
+        user_id: public_id_codec
+            .encode_user_id(member.user_id)
+            .expect("room member user id must be encodable"),
         username: member.username.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
         permissions: member.effective_permissions(member.role.permissions()).0,
@@ -6005,7 +6233,10 @@ fn admin_room_member_to_proto(
     }
 }
 
-fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin::AdminUser {
+fn admin_user_to_proto(
+    user: &synctv_core::models::User,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::admin::AdminUser {
     let role = match user.role {
         synctv_core::models::UserRole::Root => synctv_proto::common::UserRole::Root as i32,
         synctv_core::models::UserRole::Admin => synctv_proto::common::UserRole::Admin as i32,
@@ -6018,7 +6249,9 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
     };
 
     crate::proto::admin::AdminUser {
-        id: user.id.to_string(),
+        id: public_id_codec
+            .encode_user_id(user.id)
+            .expect("positive user ID must encode"),
         username: user.username.clone(),
         email: user.email.clone().unwrap_or_default(),
         role,
@@ -6027,11 +6260,11 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
         updated_at: user.updated_at.timestamp(),
         is_banned: user.is_banned,
         banned_at: user.banned_at.map_or(0, |value| value.timestamp()),
-        banned_by: user
-            .banned_by
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
+        banned_by: user.banned_by.as_ref().map_or_else(String::new, |id| {
+            public_id_codec
+                .encode_user_id(*id)
+                .expect("positive user ID must encode")
+        }),
         banned_reason: user.banned_reason.clone().unwrap_or_default(),
     }
 }
@@ -6149,9 +6382,9 @@ mod tests {
             _reservation: Option<crate::impls::ClusterEventPublishReservation>,
         ) -> Result<(), ApiError> {
             self.push(MembershipEventFanoutCall::PublishPermissionChanged {
-                room_id: room_id.as_str().to_string(),
-                target_user_id: target_user_id.as_str().to_string(),
-                changed_by: changed_by.as_str().to_string(),
+                room_id: room_id.to_string(),
+                target_user_id: target_user_id.to_string(),
+                changed_by: changed_by.to_string(),
             });
             Ok(())
         }
@@ -6170,19 +6403,44 @@ mod tests {
             _reservation: Option<crate::impls::ClusterEventPublishReservation>,
         ) -> Result<(), ApiError> {
             self.push(MembershipEventFanoutCall::PublishUserLeft {
-                room_id: room_id.as_str().to_string(),
-                user_id: user_id.as_str().to_string(),
+                room_id: room_id.to_string(),
+                user_id: user_id.to_string(),
             });
             Ok(())
         }
     }
 
     #[test]
-    fn local_management_actor_id_fits_fixed_width_audit_columns() {
-        assert!(
-            LOCAL_MANAGEMENT_ACTOR_USER_ID.len() <= 12,
-            "local management actor id must fit audit_logs.actor_id CHAR(12)"
-        );
+    fn local_management_actor_id_is_reserved_numeric_actor() {
+        assert_eq!(LOCAL_MANAGEMENT_ACTOR_USER_ID.as_i64(), i64::MAX);
+    }
+
+    fn public_room_id(admin_api: &AdminApiImpl, id: RoomId) -> String {
+        admin_api
+            .public_id_codec
+            .encode_room_id(id)
+            .expect("test room id should encode")
+    }
+
+    fn public_user_id(admin_api: &AdminApiImpl, id: UserId) -> String {
+        admin_api
+            .public_id_codec
+            .encode_user_id(id)
+            .expect("test user id should encode")
+    }
+
+    fn public_media_id(admin_api: &AdminApiImpl, id: synctv_core::models::MediaId) -> String {
+        admin_api
+            .public_id_codec
+            .encode_media_id(id)
+            .expect("test media id should encode")
+    }
+
+    fn public_playlist_id(admin_api: &AdminApiImpl, id: PlaylistId) -> String {
+        admin_api
+            .public_id_codec
+            .encode_playlist_id(id)
+            .expect("test playlist id should encode")
     }
 
     #[test]
@@ -6315,7 +6573,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let banned_admin = user_repo
             .create(&banned_admin)
             .await
             .expect("create banned admin");
@@ -6324,7 +6582,7 @@ mod tests {
             .await
             .expect("ban admin");
 
-        let err = validate_admin_auth(&user_service, banned_admin.id.clone(), 0, 0)
+        let err = validate_admin_auth(&user_service, banned_admin.id, 0, 0)
             .await
             .err()
             .expect("banned admin must not pass admin auth");
@@ -6391,6 +6649,7 @@ mod tests {
                 Some(publish_key_service),
                 config,
                 audit_service,
+                Arc::new(crate::PublicIdCodec::default_for_tests()),
             )
             .with_cluster_fanout_service(crate::cluster_fanout::default_cluster_fanout_service(
                 Some(redis_publish_tx),
@@ -6481,6 +6740,7 @@ mod tests {
                 Some(publish_key_service),
                 config,
                 audit_service,
+                Arc::new(crate::PublicIdCodec::default_for_tests()),
             )
             .with_cluster_fanout_service(crate::cluster_fanout::default_cluster_fanout_service(
                 Some(redis_publish_tx),
@@ -6502,7 +6762,7 @@ mod tests {
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room for user lifecycle test".to_string(),
-                owner_id.clone(),
+                *owner_id,
                 None,
                 None,
             )
@@ -6512,7 +6772,7 @@ mod tests {
 
         admin_api
             .room_service
-            .join_room(room.id.clone(), member_id.clone(), None)
+            .join_room(room.id, *member_id, None)
             .await
             .expect("member should join room");
 
@@ -6591,15 +6851,15 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room for add member fanout test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -6613,8 +6873,8 @@ mod tests {
         let response = admin_api
             .add_member(
                 crate::proto::admin::AddMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     role: synctv_proto::common::RoomMemberRole::Member as i32,
                     notify: false,
                 },
@@ -6626,14 +6886,14 @@ mod tests {
 
         assert_eq!(
             response.member.expect("member should be returned").user_id,
-            target.id.as_str()
+            public_user_id(&admin_api, target.id)
         );
         assert_eq!(
             fanout.take_calls(),
             vec![MembershipEventFanoutCall::PublishPermissionChanged {
-                room_id: room.id.as_str().to_string(),
-                target_user_id: target.id.as_str().to_string(),
-                changed_by: global_admin.id.as_str().to_string(),
+                room_id: room.id.to_string(),
+                target_user_id: target.id.to_string(),
+                changed_by: global_admin.id.to_string(),
             }]
         );
     }
@@ -6710,8 +6970,8 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -6721,8 +6981,8 @@ mod tests {
         let response = admin_api
             .update_member_permissions(
                 crate::proto::admin::UpdateMemberPermissionsRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     role: synctv_proto::common::RoomMemberRole::Member as i32,
                     added_permissions: 0b100,
                     removed_permissions: 0b010,
@@ -6737,16 +6997,16 @@ mod tests {
 
         assert_eq!(
             response.member.expect("member should be returned").user_id,
-            target.id.as_str()
+            public_user_id(&admin_api, target.id)
         );
         assert_eq!(
             fanout.take_calls(),
             vec![
                 MembershipEventFanoutCall::ReservePermissionChanged,
                 MembershipEventFanoutCall::PublishPermissionChanged {
-                    room_id: room.id.as_str().to_string(),
-                    target_user_id: target.id.as_str().to_string(),
-                    changed_by: global_admin.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    target_user_id: target.id.to_string(),
+                    changed_by: global_admin.id.to_string(),
                 },
             ]
         );
@@ -6824,8 +7084,8 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
@@ -6835,8 +7095,8 @@ mod tests {
         let response = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -6850,9 +7110,9 @@ mod tests {
             vec![
                 MembershipEventFanoutCall::ReservePermissionChanged,
                 MembershipEventFanoutCall::PublishPermissionChanged {
-                    room_id: room.id.as_str().to_string(),
-                    target_user_id: target.id.as_str().to_string(),
-                    changed_by: global_admin.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    target_user_id: target.id.to_string(),
+                    changed_by: global_admin.id.to_string(),
                 },
             ]
         );
@@ -6896,7 +7156,7 @@ mod tests {
             id: RoomId::new(),
             name: "room-ban-test".to_string(),
             description: "room for admin ban test".to_string(),
-            created_by: created_by.clone(),
+            created_by: *created_by,
             status: RoomStatus::Active,
             is_banned: false,
             closed_at: None,
@@ -6911,10 +7171,10 @@ mod tests {
     fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         let now = chrono::Utc::now();
         synctv_core::models::Room {
-            id: RoomId::from_string("admin_room_1".to_string()),
+            id: RoomId::from(101),
             name: "Admin Test Room".to_string(),
             description: "Room for admin tests".to_string(),
-            created_by: UserId::from_string("creator_1".to_string()),
+            created_by: UserId::from(102),
             status,
             is_banned: false,
             closed_at: None,
@@ -6929,18 +7189,23 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_basic() {
         let room = make_test_room(RoomStatus::Active);
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let proto = admin_room_to_proto(
             &room,
             None,
             Some(10),
             Some("creator_user"),
             UserStatus::Active,
+            &public_id_codec,
         );
 
-        assert_eq!(proto.id, "admin_room_1");
+        assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
         assert_eq!(proto.name, "Admin Test Room");
         assert_eq!(proto.description, "Room for admin tests");
-        assert_eq!(proto.creator_id, "creator_1");
+        assert_eq!(
+            proto.creator_id,
+            public_id_codec.encode_user_id(room.created_by).unwrap()
+        );
         assert_eq!(proto.creator_username, "creator_user");
         assert_eq!(
             proto.creator_status,
@@ -6953,8 +7218,16 @@ mod tests {
     #[test]
     fn test_admin_room_to_proto_banned() {
         let mut room = make_test_room(RoomStatus::Active);
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         room.is_banned = true;
-        let proto = admin_room_to_proto(&room, None, None, None, UserStatus::Banned);
+        let proto = admin_room_to_proto(
+            &room,
+            None,
+            None,
+            None,
+            UserStatus::Banned,
+            &public_id_codec,
+        );
         assert!(proto.is_banned);
         assert_eq!(proto.member_count, 0);
         assert_eq!(
@@ -6967,7 +7240,15 @@ mod tests {
     fn test_admin_room_to_proto_different_statuses() {
         for status in [RoomStatus::Active, RoomStatus::Closed] {
             let room = make_test_room(status);
-            let proto = admin_room_to_proto(&room, None, None, None, UserStatus::Active);
+            let public_id_codec = crate::PublicIdCodec::default_for_tests();
+            let proto = admin_room_to_proto(
+                &room,
+                None,
+                None,
+                None,
+                UserStatus::Active,
+                &public_id_codec,
+            );
             assert_eq!(
                 proto.status,
                 synctv_proto::common::RoomStatus::from(status) as i32
@@ -7015,17 +7296,23 @@ mod tests {
     #[tokio::test]
     async fn test_active_room_stream_media_ids_unions_local_and_registry_streams() {
         let tracker = Arc::new(StreamTracker::new());
+        let room_id = RoomId::from(101);
+        let local_media_id = MediaId::from(201);
+        let shared_media_id = MediaId::from(202);
+        let remote_media_id = MediaId::from(203);
+        let other_room_id = RoomId::from(102);
+        let other_media_id = MediaId::from(204);
         tracker.insert(
             "user-local".to_string(),
-            "room-1".to_string(),
-            "local-media".to_string(),
+            room_id.to_string(),
+            local_media_id.to_string(),
             "rtmp-room",
             "rtmp-stream",
         );
         tracker.insert(
             "user-overlap".to_string(),
-            "room-1".to_string(),
-            "shared-media".to_string(),
+            room_id.to_string(),
+            shared_media_id.to_string(),
             "rtmp-room-2",
             "rtmp-stream-2",
         );
@@ -7033,8 +7320,8 @@ mod tests {
         let registry = synctv_livestream::relay::local_stream_registry();
         registry
             .try_register_publisher(
-                "room-1",
-                "shared-media",
+                &room_id.to_string(),
+                &shared_media_id.to_string(),
                 "node-a",
                 "user-overlap",
                 "127.0.0.1:50051",
@@ -7043,8 +7330,8 @@ mod tests {
             .expect("shared publisher should register");
         registry
             .try_register_publisher(
-                "room-1",
-                "remote-media",
+                &room_id.to_string(),
+                &remote_media_id.to_string(),
                 "node-b",
                 "user-remote",
                 "127.0.0.1:50052",
@@ -7053,8 +7340,8 @@ mod tests {
             .expect("remote publisher should register");
         registry
             .try_register_publisher(
-                "other-room",
-                "other-media",
+                &other_room_id.to_string(),
+                &other_media_id.to_string(),
                 "node-c",
                 "user-other",
                 "127.0.0.1:50053",
@@ -7083,15 +7370,11 @@ mod tests {
             tracker,
         ));
 
-        let media_ids = active_room_stream_media_ids_for_infra(Some(&infra), "room-1").await;
+        let media_ids = active_room_stream_media_ids_for_infra(Some(&infra), &room_id).await;
 
         assert_eq!(
             media_ids,
-            vec![
-                "local-media".to_string(),
-                "remote-media".to_string(),
-                "shared-media".to_string()
-            ]
+            vec![local_media_id, shared_media_id, remote_media_id]
         );
     }
 
@@ -7103,7 +7386,7 @@ mod tests {
         connection_service.start();
 
         let (publish_tx, mut publish_rx) = mpsc::channel(4);
-        let user_id = UserId::from_string("user-force-disconnect".to_string());
+        let user_id = UserId::from(110_001);
         let realtime_lifecycle = default_realtime_lifecycle_service(
             connection_service,
             None,
@@ -7133,7 +7416,7 @@ mod tests {
 
     fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
         synctv_core::models::User {
-            id: UserId::from_string("admin_user_1".to_string()),
+            id: UserId::from(103),
             username: "admin_test".to_string(),
             email: Some("admin@test.com".to_string()),
             password_hash: "hash".to_string(),
@@ -7156,6 +7439,7 @@ mod tests {
 
     #[test]
     fn test_admin_user_to_proto_all_roles() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         for (role, expected) in [
             (UserRole::Root, synctv_proto::common::UserRole::Root as i32),
             (
@@ -7165,13 +7449,14 @@ mod tests {
             (UserRole::User, synctv_proto::common::UserRole::User as i32),
         ] {
             let user = make_test_user(role, UserStatus::Active);
-            let proto = admin_user_to_proto(&user);
+            let proto = admin_user_to_proto(&user, &public_id_codec);
             assert_eq!(proto.role, expected);
         }
     }
 
     #[test]
     fn test_admin_user_to_proto_all_statuses() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         for (status, expected) in [
             (
                 UserStatus::Active,
@@ -7183,26 +7468,28 @@ mod tests {
             ),
         ] {
             let user = make_test_user(UserRole::User, status);
-            let proto = admin_user_to_proto(&user);
+            let proto = admin_user_to_proto(&user, &public_id_codec);
             assert_eq!(proto.status, expected);
         }
     }
 
     #[test]
     fn test_admin_user_to_proto_fields() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let user = make_test_user(UserRole::Admin, UserStatus::Active);
-        let proto = admin_user_to_proto(&user);
+        let proto = admin_user_to_proto(&user, &public_id_codec);
 
-        assert_eq!(proto.id, "admin_user_1");
+        assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
         assert_eq!(proto.username, "admin_test");
         assert_eq!(proto.email, "admin@test.com");
     }
 
     #[test]
     fn test_admin_user_to_proto_no_email() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let mut user = make_test_user(UserRole::User, UserStatus::Active);
         user.email = None;
-        let proto = admin_user_to_proto(&user);
+        let proto = admin_user_to_proto(&user, &public_id_codec);
         assert_eq!(proto.email, "");
     }
 
@@ -7256,8 +7543,8 @@ mod tests {
 
     fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         synctv_core::models::RoomMemberWithUser {
-            room_id: RoomId::from_string("room1".to_string()),
-            user_id: UserId::from_string("user1".to_string()),
+            room_id: RoomId::from(110_002),
+            user_id: UserId::from(110_003),
             username: "testmember".to_string(),
             role,
             status: MemberStatus::Active,
@@ -7278,10 +7565,17 @@ mod tests {
     #[test]
     fn test_admin_room_member_to_proto() {
         let member = make_test_member(RoomRole::Admin);
-        let proto = admin_room_member_to_proto(&member);
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let proto = admin_room_member_to_proto(&member, &public_id_codec);
 
-        assert_eq!(proto.room_id, "room1");
-        assert_eq!(proto.user_id, "user1");
+        assert_eq!(
+            proto.room_id,
+            public_id_codec.encode_room_id(member.room_id).unwrap()
+        );
+        assert_eq!(
+            proto.user_id,
+            public_id_codec.encode_user_id(member.user_id).unwrap()
+        );
         assert_eq!(proto.username, "testmember");
         assert_eq!(
             proto.role,
@@ -7297,7 +7591,8 @@ mod tests {
         member.removed_permissions = 0x55;
         member.admin_added_permissions = 0xCC;
         member.admin_removed_permissions = 0x33;
-        let proto = admin_room_member_to_proto(&member);
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let proto = admin_room_member_to_proto(&member, &public_id_codec);
 
         assert_eq!(proto.added_permissions, 0xAA);
         assert_eq!(proto.removed_permissions, 0x55);
@@ -7531,7 +7826,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let admin_user = user_repo
             .create(&admin_user)
             .await
             .expect("create admin user");
@@ -7683,11 +7978,11 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("target user should be created");
-        user_repo
+        let other_owner = user_repo
             .create(&other_owner)
             .await
             .expect("other owner should be created");
@@ -7697,7 +7992,7 @@ mod tests {
             .create_room(
                 "Beta Owned Room".to_string(),
                 "owned room".to_string(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -7709,7 +8004,7 @@ mod tests {
             .create_room(
                 "Alpha Joined Room".to_string(),
                 "joined room".to_string(),
-                other_owner.id.clone(),
+                other_owner.id,
                 None,
                 None,
             )
@@ -7718,13 +8013,13 @@ mod tests {
             .0;
         admin_api
             .room_service
-            .join_room(joined_room.id.clone(), target_user.id.clone(), None)
+            .join_room(joined_room.id, target_user.id, None)
             .await
             .expect("target user should join related room");
 
         let response = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
-                user_id: target_user.id.as_str().to_string(),
+                user_id: target_user.id.to_string(),
                 page: 1,
                 page_size: 1,
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -7739,11 +8034,14 @@ mod tests {
         assert_eq!(response.total, 2);
         assert_eq!(response.rooms.len(), 1);
         assert_eq!(response.rooms[0].name, "Alpha Joined Room");
-        assert_eq!(response.rooms[0].id, joined_room.id.as_str());
+        assert_eq!(
+            response.rooms[0].id,
+            public_room_id(&admin_api, joined_room.id)
+        );
 
         let page2 = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
-                user_id: target_user.id.as_str().to_string(),
+                user_id: target_user.id.to_string(),
                 page: 2,
                 page_size: 1,
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -7758,7 +8056,7 @@ mod tests {
         assert_eq!(page2.total, 2);
         assert_eq!(page2.rooms.len(), 1);
         assert_eq!(page2.rooms[0].name, "Beta Owned Room");
-        assert_eq!(page2.rooms[0].id, owned_room.id.as_str());
+        assert_eq!(page2.rooms[0].id, public_room_id(&admin_api, owned_room.id));
     }
 
     // These verify the role hierarchy rules enforced by update_user_password:
@@ -7988,11 +8286,11 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo.create(&target_user).await.expect("create user");
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo.create(&target_user).await.expect("create user");
 
         let request = crate::proto::admin::DeleteUserRequest {
-            user_id: target_user.id.as_str().to_string(),
+            user_id: target_user.id.to_string(),
         };
         let ctx = RequestContext::default();
         let (admin_api, mut redis_publish_rx) = admin_api;
@@ -8124,8 +8422,8 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -8183,7 +8481,7 @@ mod tests {
         admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -8280,8 +8578,8 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -8291,7 +8589,7 @@ mod tests {
             .create_room(
                 "victim owned room".to_string(),
                 "will be deleted with owner".to_string(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -8302,7 +8600,7 @@ mod tests {
         admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -8403,8 +8701,8 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -8438,7 +8736,7 @@ mod tests {
         let response = admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -8555,12 +8853,12 @@ mod tests {
             version: 0,
         };
 
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
-        user_repo
+        let room_owner = user_repo
             .create(&room_owner)
             .await
             .expect("create room owner");
@@ -8570,7 +8868,7 @@ mod tests {
             .create_room(
                 "ban-playback-room".to_string(),
                 String::new(),
-                room_owner.id.clone(),
+                room_owner.id,
                 None,
                 None,
             )
@@ -8578,31 +8876,19 @@ mod tests {
             .expect("create room")
             .0;
 
-        let media = create_room_media(
-            &pool,
-            room.id.clone(),
-            target_user.id.clone(),
-            "banned-media",
-        )
-        .await;
+        let media = create_room_media(&pool, room.id, target_user.id, "banned-media").await;
 
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                room_owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("start playback");
 
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -8702,12 +8988,12 @@ mod tests {
             version: 0,
         };
 
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
-        user_repo
+        let member_user = user_repo
             .create(&member_user)
             .await
             .expect("create member user");
@@ -8717,19 +9003,19 @@ mod tests {
         let mut disconnect_rx = admin_api.connection_service.subscribe_disconnect();
         admin_api
             .connection_service
-            .register("owned-room-conn".to_string(), member_user.id.clone())
+            .register("owned-room-conn".to_string(), member_user.id)
             .await
             .expect("register connection");
         admin_api
             .connection_service
-            .join_room("owned-room-conn", room.id.clone())
+            .join_room("owned-room-conn", room.id)
             .await
             .expect("join room connection");
 
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -8810,8 +9096,8 @@ mod tests {
             version: 0,
         };
 
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -8821,7 +9107,7 @@ mod tests {
             .create_room(
                 "owned-room-event".to_string(),
                 String::new(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -8832,7 +9118,7 @@ mod tests {
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -8938,12 +9224,12 @@ mod tests {
             version: 0,
         };
 
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
-        user_repo
+        let room_owner = user_repo
             .create(&room_owner)
             .await
             .expect("create room owner");
@@ -8953,7 +9239,7 @@ mod tests {
             .create_room(
                 "batch-ban-playback-room".to_string(),
                 String::new(),
-                room_owner.id.clone(),
+                room_owner.id,
                 None,
                 None,
             )
@@ -8961,31 +9247,19 @@ mod tests {
             .expect("create room")
             .0;
 
-        let media = create_room_media(
-            &pool,
-            room.id.clone(),
-            target_user.id.clone(),
-            "batch-banned-media",
-        )
-        .await;
+        let media = create_room_media(&pool, room.id, target_user.id, "batch-banned-media").await;
 
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                room_owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("start playback");
 
         let response = admin_api
             .batch_ban_users(
                 crate::proto::admin::BatchBanUsersRequest {
-                    user_ids: vec![target_user.id.as_str().to_string()],
+                    user_ids: vec![target_user.id.to_string()],
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9068,8 +9342,8 @@ mod tests {
             version: 0,
         };
 
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -9079,7 +9353,7 @@ mod tests {
             .create_room(
                 "batch-owned-room-event".to_string(),
                 String::new(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -9090,7 +9364,7 @@ mod tests {
         let response = admin_api
             .batch_ban_users(
                 crate::proto::admin::BatchBanUsersRequest {
-                    user_ids: vec![target_user.id.as_str().to_string()],
+                    user_ids: vec![target_user.id.to_string()],
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9132,12 +9406,19 @@ mod tests {
 
     #[test]
     fn test_parse_batch_user_ids_trims_and_preserves_order() {
-        let parsed =
-            parse_batch_user_ids(&["  AbC123xYz890  ".to_string(), "987zyxWVutSR".to_string()])
-                .expect("batch ids should parse");
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let first = UserId::from(901);
+        let second = UserId::from(902);
+        let parsed = parse_batch_user_ids(
+            &[
+                format!("  {}  ", public_id_codec.encode_user_id(first).unwrap()),
+                public_id_codec.encode_user_id(second).unwrap(),
+            ],
+            &public_id_codec,
+        )
+        .expect("batch ids should parse");
 
-        let ids: Vec<_> = parsed.into_iter().map(|id| id.to_string()).collect();
-        assert_eq!(ids, vec!["AbC123xYz890", "987zyxWVutSR"]);
+        assert_eq!(parsed, vec![first, second]);
     }
 
     #[tokio::test]
@@ -9212,16 +9493,16 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let response = admin_api
             .update_member_permissions(
                 crate::proto::admin::UpdateMemberPermissionsRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     role: synctv_proto::common::RoomMemberRole::Admin as i32,
                     added_permissions: 0,
                     removed_permissions: 0,
@@ -9235,7 +9516,7 @@ mod tests {
             .expect("global admin should update member permissions without room creator identity");
 
         let member = response.member.expect("updated member response");
-        assert_eq!(member.user_id, target.id.as_str());
+        assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
         assert_eq!(
             member.role,
             synctv_proto::common::RoomMemberRole::Admin as i32
@@ -9326,16 +9607,16 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let response = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9428,16 +9709,16 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let response = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &global_admin.id,
@@ -9538,16 +9819,16 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let err = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9651,16 +9932,16 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
 
         let err = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &global_admin.id,
@@ -9753,31 +10034,26 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
         admin_api
             .room_service
             .member_service()
-            .ban_member(
-                room.id.clone(),
-                owner.id.clone(),
-                target.id.clone(),
-                Some("temporary".to_string()),
-            )
+            .ban_member(room.id, owner.id, target.id, Some("temporary".to_string()))
             .await
             .expect("owner should be able to seed a banned membership");
 
         let response = admin_api
             .unban_member(
                 crate::proto::admin::UnbanMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9846,17 +10122,17 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
-        user_repo.create(&target).await.expect("create target");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
 
         let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
 
         let response = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.as_str().to_string(),
-                    user_id: target.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
+                    user_id: target.id.to_string(),
                     reason: "local-management-ban".to_string(),
                 },
                 &management_actor,
@@ -9935,42 +10211,44 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room stream info test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "stream-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
+        let registry_room_id = room.id.to_string();
+        let registry_media_id = media.id.to_string();
+        let registry_owner_id = owner.id.to_string();
 
         infra
             .registry()
             .try_register_publisher(
-                room.id.as_str(),
-                media.id.as_str(),
+                &registry_room_id,
+                &registry_media_id,
                 "node-a",
-                owner.id.as_str(),
+                &registry_owner_id,
                 "127.0.0.1:50051",
             )
             .await
             .expect("publisher should register");
 
         let response = admin_api
-            .get_stream_info(room.id.as_str(), media.id.as_str())
+            .get_stream_info(&registry_room_id, &registry_media_id)
             .await
             .expect("global admin should inspect stream info without room membership");
         assert!(response.active);
         let publisher = response.publisher.expect("publisher info");
-        assert_eq!(publisher.user_id, owner.id.as_str());
+        assert_eq!(publisher.user_id, public_user_id(&admin_api, owner.id));
     }
 
     #[tokio::test]
@@ -10025,30 +10303,40 @@ mod tests {
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room stream list test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "stream-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
+        let registry_room_id = room.id.to_string();
+        let registry_media_id = media.id.to_string();
+        let registry_owner_id = owner.id.to_string();
+        let encoded_room_id = admin_api
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let encoded_media_id = admin_api
+            .public_id_codec
+            .encode_media_id(media.id)
+            .expect("media id should encode");
 
         infra
             .registry()
             .try_register_publisher(
-                room.id.as_str(),
-                media.id.as_str(),
+                &registry_room_id,
+                &registry_media_id,
                 "node-a",
-                owner.id.as_str(),
+                &registry_owner_id,
                 "127.0.0.1:50051",
             )
             .await
@@ -10056,7 +10344,7 @@ mod tests {
 
         let response = admin_api
             .list_room_streams(
-                room.id.as_str(),
+                &encoded_room_id,
                 crate::proto::client::ListRoomStreamsRequest {
                     page: 1,
                     page_size: 50,
@@ -10069,30 +10357,35 @@ mod tests {
             .expect("global admin should list room streams without room membership");
         assert_eq!(response.total, 1);
         assert_eq!(response.streams.len(), 1);
-        assert_eq!(response.streams[0].media_id, media.id.as_str());
+        assert_eq!(response.streams[0].media_id, encoded_media_id);
         assert!(response.streams[0].active);
     }
 
     #[test]
     fn build_room_stream_list_response_applies_search_sort_and_pagination() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let media_ids = vec![MediaId::from(301), MediaId::from(302), MediaId::from(303)];
+        let mut expected_ids = media_ids
+            .iter()
+            .map(|media_id| public_id_codec.encode_media_id(*media_id).unwrap())
+            .collect::<Vec<_>>();
+        expected_ids.sort_unstable();
+        expected_ids.reverse();
         let response = crate::impls::client::stream::build_room_streams_response(
-            vec![
-                "beta-02".to_string(),
-                "alpha-01".to_string(),
-                "beta-01".to_string(),
-            ],
+            media_ids,
             &crate::proto::client::ListRoomStreamsRequest {
                 page: 2,
                 page_size: 1,
-                search: "beta".to_string(),
+                search: String::new(),
                 sort_by: crate::proto::client::RoomStreamListSortBy::MediaId as i32,
                 sort_direction: crate::proto::client::SortDirection::Desc as i32,
             },
+            &public_id_codec,
         );
 
-        assert_eq!(response.total, 2);
+        assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);
-        assert_eq!(response.streams[0].media_id, "beta-01");
+        assert_eq!(response.streams[0].media_id, expected_ids[1]);
         assert!(response.streams[0].active);
     }
 
@@ -10144,31 +10437,38 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room publish key test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "stream-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "stream-media").await;
+        let public_room_id = admin_api
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("room id should encode");
+        let public_media_id = admin_api
+            .public_id_codec
+            .encode_media_id(media.id)
+            .expect("media id should encode");
 
         let response = admin_api
             .create_publish_key_for_actor(
-                room.id.as_str(),
-                media.id.as_str(),
+                &public_room_id,
+                &public_media_id,
                 &owner.id,
                 &global_admin.id,
                 &RequestContext::default(),
@@ -10184,10 +10484,10 @@ mod tests {
             .await
             .expect("generated publish key should be valid for the target stream");
 
-        assert_eq!(claims.user_id, owner.id.as_str());
+        assert_eq!(claims.user_id, owner.id.to_string());
         assert!(!response.publish_key.is_empty());
-        assert!(response.rtmp_url.contains(room.id.as_str()));
-        assert!(response.stream_key.contains(media.id.as_str()));
+        assert!(response.rtmp_url.contains(&public_room_id));
+        assert!(response.stream_key.contains(&public_media_id));
     }
 
     #[tokio::test]
@@ -10238,32 +10538,31 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room playback start test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "playback-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
         admin_api
             .start_playback(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::StartPlaybackRequest {
-                    media_id: media.id.as_str().to_string(),
+                    media_id: public_media_id(&admin_api, media.id),
                     playlist_id: String::new(),
                     target: Vec::new(),
                 },
@@ -10330,43 +10629,36 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room playback stop test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "playback-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("owner should be able to seed playback state");
 
         admin_api
             .stop_playback(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 &global_admin.id,
                 &RequestContext::default(),
             )
@@ -10431,42 +10723,35 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room playback get test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
             .await
             .expect("room should be created")
             .0;
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "playback-media").await;
+        let media = create_room_media(&pool, room.id, owner.id, "playback-media").await;
 
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("owner should be able to seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id, None)
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
             .await
             .expect("global admin should get playback without room membership");
 
@@ -10474,13 +10759,16 @@ mod tests {
             .playback_state
             .expect("playback state should be present");
         assert!(state.is_playing);
-        assert_eq!(state.playing_media_id, media.id.as_str());
+        assert_eq!(
+            state.playing_media_id,
+            public_media_id(&admin_api, media.id)
+        );
 
         let result = response
             .playback_snapshot
             .expect("playback snapshot should be present");
-        assert_eq!(result.media_id, media.id.as_str());
-        assert_eq!(result.room_id, room.id.as_str());
+        assert_eq!(result.media_id, public_media_id(&admin_api, media.id));
+        assert_eq!(result.room_id, public_room_id(&admin_api, room.id));
         assert_eq!(result.name, media.name);
     }
 
@@ -10533,18 +10821,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room playback degrade test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -10554,8 +10842,8 @@ mod tests {
 
         let media = synctv_core::models::Media::from_provider(
             None,
-            room.id.clone(),
-            Some(owner.id.clone()),
+            room.id,
+            Some(owner.id),
             "Broken Playback Provider".to_string(),
             serde_json::json!({ "opaque": true }),
             "missing_provider",
@@ -10567,18 +10855,12 @@ mod tests {
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("owner should seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id, None)
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
             .await
             .expect("global admin should get playback state even if snapshot generation fails");
 
@@ -10586,7 +10868,10 @@ mod tests {
             .playback_state
             .expect("playback state should be present");
         assert!(state.is_playing);
-        assert_eq!(state.playing_media_id, media.id.as_str());
+        assert_eq!(
+            state.playing_media_id,
+            public_media_id(&admin_api, media.id)
+        );
         assert!(
             response.playback_snapshot.is_none(),
             "admin playback queries should degrade to state-only responses on snapshot failures"
@@ -10642,18 +10927,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room provider playback get test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -10663,8 +10948,8 @@ mod tests {
 
         let media = synctv_core::models::Media::from_provider(
             None,
-            room.id.clone(),
-            Some(owner.id.clone()),
+            room.id,
+            Some(owner.id),
             "provider-playback-media".to_string(),
             serde_json::json!({
                 "url": "https://example.com/video.mp4",
@@ -10684,18 +10969,12 @@ mod tests {
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("owner should be able to seed playback state");
 
         let response = admin_api
-            .get_playback(room.id.as_str(), &global_admin.id, None)
+            .get_playback(&public_room_id(&admin_api, room.id), &global_admin.id, None)
             .await
             .expect("global admin should get signed provider playback");
 
@@ -10754,14 +11033,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room provider playback get local management test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -10771,8 +11050,8 @@ mod tests {
 
         let media = synctv_core::models::Media::from_provider(
             None,
-            room.id.clone(),
-            Some(owner.id.clone()),
+            room.id,
+            Some(owner.id),
             "provider-playback-media".to_string(),
             serde_json::json!({
                 "url": "https://example.com/video.mp4",
@@ -10792,19 +11071,17 @@ mod tests {
         admin_api
             .room_service
             .playback_service()
-            .switch(
-                room.id.clone(),
-                owner.id.clone(),
-                Some(media.id.clone()),
-                None,
-                Vec::new(),
-            )
+            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
             .await
             .expect("owner should be able to seed playback state");
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let response = admin_api
-            .get_playback(room.id.as_str(), &management_actor, None)
+            .get_playback(
+                &public_room_id(&admin_api, room.id),
+                &management_actor,
+                None,
+            )
             .await
             .expect("local management actor should get signed provider playback");
 
@@ -10826,14 +11103,14 @@ mod tests {
         assert!(
             direct.urls[0]
                 .url
-                .contains(&format!("uid={}", owner.id.as_str())),
+                .contains(&format!("uid={}", public_user_id(&admin_api, owner.id))),
             "local management playback must sign proxy URLs with a real room member, got {}",
             direct.urls[0].url
         );
         assert!(
             !direct.urls[0]
                 .url
-                .contains(LOCAL_MANAGEMENT_ACTOR_USER_ID),
+                .contains(&LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string()),
             "local management playback must not sign proxy URLs with the synthetic management actor"
         );
     }
@@ -10886,18 +11163,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room list playlists test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -10909,10 +11186,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-a".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -10925,7 +11202,7 @@ mod tests {
 
         let response = admin_api
             .list_playlists(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::ListPlaylistsRequest {
                     parent_id: String::new(),
                     page: 1,
@@ -10945,7 +11222,10 @@ mod tests {
 
         assert_eq!(response.total, 1);
         assert_eq!(response.playlists.len(), 1);
-        assert_eq!(response.playlists[0].id, playlist.id.as_str());
+        assert_eq!(
+            response.playlists[0].id,
+            public_playlist_id(&admin_api, playlist.id)
+        );
         assert_eq!(response.playlists[0].name, "playlist-a");
     }
 
@@ -10997,18 +11277,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room get playlist test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11020,10 +11300,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-b".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -11035,12 +11315,19 @@ mod tests {
             .expect("owner should create playlist");
 
         let response = admin_api
-            .get_playlist(room.id.as_str(), playlist.id.as_str(), &global_admin.id)
+            .get_playlist(
+                &public_room_id(&admin_api, room.id),
+                &public_playlist_id(&admin_api, playlist.id),
+                &global_admin.id,
+            )
             .await
             .expect("global admin should get playlist without room membership");
 
         let response_playlist = response.playlist.expect("playlist should be returned");
-        assert_eq!(response_playlist.id, playlist.id.as_str());
+        assert_eq!(
+            response_playlist.id,
+            public_playlist_id(&admin_api, playlist.id)
+        );
         assert_eq!(response_playlist.name, "playlist-b");
         assert_eq!(response.media_count, 0);
     }
@@ -11093,18 +11380,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room create playlist test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11114,7 +11401,7 @@ mod tests {
 
         let response = admin_api
             .create_playlist(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::CreatePlaylistRequest {
                     name: "playlist-create".to_string(),
                     parent_id: String::new(),
@@ -11129,7 +11416,7 @@ mod tests {
 
         let playlist = response.playlist.expect("playlist should be returned");
         assert_eq!(playlist.name, "playlist-create");
-        assert_eq!(playlist.room_id, room.id.as_str());
+        assert_eq!(playlist.room_id, public_room_id(&admin_api, room.id));
     }
 
     #[tokio::test]
@@ -11180,18 +11467,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room update playlist test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11203,10 +11490,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-before".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -11219,9 +11506,9 @@ mod tests {
 
         let response = admin_api
             .update_playlist(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::UpdatePlaylistRequest {
-                    playlist_id: playlist.id.as_str().to_string(),
+                    playlist_id: public_playlist_id(&admin_api, playlist.id),
                     name: "playlist-after".to_string(),
                 },
                 &global_admin.id,
@@ -11230,7 +11517,7 @@ mod tests {
             .expect("global admin should update playlist without room membership");
 
         let updated = response.playlist.expect("playlist should be returned");
-        assert_eq!(updated.id, playlist.id.as_str());
+        assert_eq!(updated.id, public_playlist_id(&admin_api, playlist.id));
         assert_eq!(updated.name, "playlist-after");
     }
 
@@ -11282,18 +11569,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room delete playlist test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11305,10 +11592,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-delete".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -11321,9 +11608,9 @@ mod tests {
 
         let response = admin_api
             .delete_playlist(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::DeletePlaylistRequest {
-                    playlist_id: playlist.id.as_str().to_string(),
+                    playlist_id: public_playlist_id(&admin_api, playlist.id),
                     force: true,
                 },
                 &global_admin.id,
@@ -11389,18 +11676,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room delete playlist cascade test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11412,10 +11699,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-delete-parent".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -11429,12 +11716,12 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "playlist-delete-child".to_string(),
-                    parent_id: Some(parent_playlist.id.clone()),
+                    parent_id: Some(parent_playlist.id),
                     source_provider: None,
                     source_config: None,
                     provider_instance_name: None,
@@ -11446,10 +11733,10 @@ mod tests {
             .room_service
             .media_service()
             .add_media(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::media::AddMediaRequest {
-                    playlist_id: Some(child_playlist.id.clone()),
+                    playlist_id: Some(child_playlist.id),
                     name: "playlist-delete-cascade-media".to_string(),
                     source_provider: "direct_url".to_string(),
                     provider_instance_name: None,
@@ -11463,9 +11750,9 @@ mod tests {
 
         let response = admin_api
             .delete_playlist(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::DeletePlaylistRequest {
-                    playlist_id: parent_playlist.id.as_str().to_string(),
+                    playlist_id: public_playlist_id(&admin_api, parent_playlist.id),
                     force: true,
                 },
                 &global_admin.id,
@@ -11482,13 +11769,13 @@ mod tests {
         while let Ok(request) = redis_publish_rx.try_recv() {
             match request.event {
                 ClusterEvent::PlaylistDeleted { playlist_id, .. } => {
-                    deleted_playlist_ids.push(playlist_id.as_str().to_string());
+                    deleted_playlist_ids.push(playlist_id.to_string());
                 }
                 ClusterEvent::MediaRemoved { media_id, .. } => {
-                    deleted_media_ids.push(media_id.as_str().to_string());
+                    deleted_media_ids.push(media_id.to_string());
                 }
                 ClusterEvent::KickPublisher { media_id, .. } => {
-                    kicked_media_ids.push(media_id.as_str().to_string());
+                    kicked_media_ids.push(media_id.to_string());
                 }
                 ClusterEvent::CacheInvalidate { .. } => {}
                 other => panic!("unexpected admin delete_playlist cascade event: {other:?}"),
@@ -11499,8 +11786,8 @@ mod tests {
         deleted_media_ids.sort_unstable();
         kicked_media_ids.sort_unstable();
         let mut expected_playlist_ids = vec![
-            child_playlist.id.as_str().to_string(),
-            parent_playlist.id.as_str().to_string(),
+            child_playlist.id.to_string(),
+            parent_playlist.id.to_string(),
         ];
         expected_playlist_ids.sort_unstable();
 
@@ -11511,12 +11798,12 @@ mod tests {
         );
         assert_eq!(
             deleted_media_ids,
-            vec![nested_media.id.as_str().to_string()],
+            vec![nested_media.id.to_string()],
             "admin delete_playlist must publish MediaRemoved for media deleted through playlist cascade"
         );
         assert_eq!(
             kicked_media_ids,
-            vec![nested_media.id.as_str().to_string()],
+            vec![nested_media.id.to_string()],
             "admin delete_playlist must kick publishers for media deleted through playlist cascade"
         );
     }
@@ -11569,18 +11856,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room list media test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11588,11 +11875,11 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media = create_room_media(&pool, room.id.clone(), owner.id.clone(), "media-a").await;
+        let media = create_room_media(&pool, room.id, owner.id, "media-a").await;
 
         let response = admin_api
             .list_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
                     target: Vec::new(),
@@ -11612,7 +11899,7 @@ mod tests {
             .expect("global admin should list media without room membership");
 
         assert_eq!(response.media.len(), 1);
-        assert_eq!(response.media[0].id, media.id.as_str());
+        assert_eq!(response.media[0].id, public_media_id(&admin_api, media.id));
     }
 
     #[tokio::test]
@@ -11643,14 +11930,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room settings reset test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11669,11 +11956,11 @@ mod tests {
             .await
             .expect("room settings should be updated");
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let response = admin_api
             .reset_room_settings(
                 crate::proto::admin::ResetRoomSettingsRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                 },
                 &management_actor,
             )
@@ -11681,7 +11968,10 @@ mod tests {
             .expect("local management actor should reset room settings without membership");
 
         let response_room = response.room.expect("response should include room");
-        let room_id = RoomId::from(response_room.id);
+        let room_id = admin_api
+            .public_id_codec
+            .decode_room_id(&response_room.id)
+            .expect("response room id should decode");
         let settings = admin_api
             .room_service
             .get_room_settings(&room_id)
@@ -11720,14 +12010,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room delete test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11735,11 +12025,11 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let response = admin_api
             .delete_room(
                 crate::proto::admin::DeleteRoomRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                 },
                 &management_actor,
                 &RequestContext::default(),
@@ -11799,14 +12089,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room settings admin update test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11830,11 +12120,11 @@ mod tests {
             allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(false),
             ..synctv_core::models::RoomSettings::default()
         };
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .update_room_settings(
                 crate::proto::admin::UpdateRoomSettingsRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     settings: serde_json::to_vec(&updated).expect("serialize settings"),
                 },
                 &management_actor,
@@ -11900,14 +12190,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room settings admin update cache test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -11924,11 +12214,11 @@ mod tests {
             chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
             ..synctv_core::models::RoomSettings::default()
         };
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .update_room_settings(
                 crate::proto::admin::UpdateRoomSettingsRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     settings: serde_json::to_vec(&updated).expect("serialize settings"),
                 },
                 &management_actor,
@@ -11994,14 +12284,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room password admin update test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12009,11 +12299,11 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .update_room_password(
                 crate::proto::admin::UpdateRoomPasswordRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     new_password: "NewPassword123".to_string(),
                 },
                 &management_actor,
@@ -12076,14 +12366,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room password admin cache invalidation test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12091,11 +12381,11 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .update_room_password(
                 crate::proto::admin::UpdateRoomPasswordRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     new_password: "NewPassword123".to_string(),
                 },
                 &management_actor,
@@ -12162,14 +12452,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room settings admin reset test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12188,11 +12478,11 @@ mod tests {
             .await
             .expect("room settings should be updated");
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .reset_room_settings(
                 crate::proto::admin::ResetRoomSettingsRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                 },
                 &management_actor,
             )
@@ -12257,14 +12547,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room settings admin reset cache test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12283,11 +12573,11 @@ mod tests {
             .await
             .expect("room settings should be updated");
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .reset_room_settings(
                 crate::proto::admin::ResetRoomSettingsRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                 },
                 &management_actor,
             )
@@ -12330,7 +12620,7 @@ mod tests {
             ..admin_api
         };
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .create_room(
                 crate::proto::client::CreateRoomRequest {
@@ -12390,13 +12680,13 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
         let room = admin_api
             .room_service
             .create_room(
                 "admin-delete-room-fail-closed".to_string(),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12404,11 +12694,11 @@ mod tests {
             .expect("create room")
             .0;
 
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let err = admin_api
             .delete_room(
                 crate::proto::admin::DeleteRoomRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                 },
                 &management_actor,
                 &RequestContext::default(),
@@ -12459,13 +12749,13 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
         let room = admin_api
             .room_service
             .create_room(
                 "admin-ban-room-fail-closed".to_string(),
                 String::new(),
-                admin_user.id.clone(),
+                admin_user.id,
                 None,
                 None,
             )
@@ -12476,7 +12766,7 @@ mod tests {
         let err = admin_api
             .ban_room(
                 crate::proto::admin::BanRoomRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -12550,8 +12840,8 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -12560,7 +12850,7 @@ mod tests {
             .create_room(
                 "delete-user-owned-room-fail-closed".to_string(),
                 String::new(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -12571,7 +12861,7 @@ mod tests {
         let err = admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -12650,8 +12940,8 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
-        user_repo
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
+        let target_user = user_repo
             .create(&target_user)
             .await
             .expect("create target user");
@@ -12660,7 +12950,7 @@ mod tests {
             .create_room(
                 "ban-user-owned-room-fail-closed".to_string(),
                 String::new(),
-                target_user.id.clone(),
+                target_user.id,
                 None,
                 None,
             )
@@ -12671,7 +12961,7 @@ mod tests {
         let err = admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.as_str().to_string(),
+                    user_id: target_user.id.to_string(),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -12755,18 +13045,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room list media filter test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12778,10 +13068,10 @@ mod tests {
             .room_service
             .playlist_service()
             .create_playlist(
-                room.id.clone(),
-                owner.id.clone(),
+                room.id,
+                owner.id,
                 synctv_core::service::playlist::CreatePlaylistRequest {
-                    room_id: room.id.clone(),
+                    room_id: room.id,
                     name: "Alpha Folder".to_string(),
                     parent_id: None,
                     source_provider: None,
@@ -12792,12 +13082,12 @@ mod tests {
             .await
             .expect("playlist should be created");
 
-        create_room_media(&pool, room.id.clone(), owner.id.clone(), "Alpha Media").await;
-        create_room_media(&pool, room.id.clone(), owner.id.clone(), "Beta Media").await;
+        create_room_media(&pool, room.id, owner.id, "Alpha Media").await;
+        create_room_media(&pool, room.id, owner.id, "Beta Media").await;
 
         let response = admin_api
             .list_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
                     target: Vec::new(),
@@ -12872,18 +13162,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room add media test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -12893,7 +13183,7 @@ mod tests {
 
         let response = admin_api
             .add_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::AddMediaRequest {
                     playlist_id: None,
                     provider: "direct_url".to_string(),
@@ -12911,7 +13201,7 @@ mod tests {
 
         let media = response.media.expect("media should be returned");
         assert_eq!(media.title, "added-media");
-        assert_eq!(media.room_id, room.id.as_str());
+        assert_eq!(media.room_id, public_room_id(&admin_api, room.id));
 
         let mut saw_media_added = false;
         while let Ok(request) = redis_publish_rx.try_recv() {
@@ -12921,7 +13211,7 @@ mod tests {
                     media_title,
                     ..
                 } => {
-                    assert_eq!(media_id.as_str(), media.id);
+                    assert_eq!(public_media_id(&admin_api, media_id), media.id);
                     assert_eq!(media_title, "added-media");
                     saw_media_added = true;
                 }
@@ -12983,18 +13273,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room edit media test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -13002,13 +13292,13 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media = create_room_media(&pool, room.id.clone(), owner.id.clone(), "media-edit").await;
+        let media = create_room_media(&pool, room.id, owner.id, "media-edit").await;
 
         let response = admin_api
             .edit_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::EditMediaRequest {
-                    media_id: media.id.as_str().to_string(),
+                    media_id: public_media_id(&admin_api, media.id),
                     title: "media-edited".to_string(),
                 },
                 &global_admin.id,
@@ -13017,7 +13307,7 @@ mod tests {
             .expect("global admin should edit media without room membership");
 
         let updated = response.media.expect("media should be returned");
-        assert_eq!(updated.id, media.id.as_str());
+        assert_eq!(updated.id, public_media_id(&admin_api, media.id));
         assert_eq!(updated.title, "media-edited");
 
         let mut saw_media_updated = false;
@@ -13028,7 +13318,7 @@ mod tests {
                     media_title,
                     ..
                 } => {
-                    assert_eq!(media_id.as_str(), media.id.as_str());
+                    assert_eq!(media_id.to_string(), media.id.to_string());
                     assert_eq!(media_title, "media-edited");
                     saw_media_updated = true;
                 }
@@ -13070,14 +13360,14 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room management media notification test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -13085,16 +13375,15 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "management-media").await;
-        let management_actor = UserId::from(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string());
+        let media = create_room_media(&pool, room.id, owner.id, "management-media").await;
+        let management_actor = LOCAL_MANAGEMENT_ACTOR_USER_ID;
         let mut notification_rx = admin_api.room_service.notification_service().subscribe();
 
         admin_api
             .edit_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::EditMediaRequest {
-                    media_id: media.id.as_str().to_string(),
+                    media_id: public_media_id(&admin_api, media.id),
                     title: "management-media-updated".to_string(),
                 },
                 &management_actor,
@@ -13113,7 +13402,7 @@ mod tests {
                         media_id,
                         username,
                         ..
-                    } if media_id == media.id.as_str() => break username,
+                    } if media_id == media.id => break username,
                     _ => {}
                 }
             }
@@ -13124,9 +13413,9 @@ mod tests {
 
         admin_api
             .delete_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::DeleteMediaRequest {
-                    media_id: media.id.as_str().to_string(),
+                    media_id: public_media_id(&admin_api, media.id),
                     force: false,
                 },
                 &management_actor,
@@ -13145,7 +13434,7 @@ mod tests {
                         media_id,
                         username,
                         user_id,
-                    } if media_id == media.id.as_str() => break (username, user_id),
+                    } if media_id == media.id => break (username, user_id),
                     _ => {}
                 }
             }
@@ -13204,18 +13493,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room delete media test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -13223,14 +13512,13 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "media-delete").await;
+        let media = create_room_media(&pool, room.id, owner.id, "media-delete").await;
 
         let response = admin_api
             .delete_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::DeleteMediaRequest {
-                    media_id: media.id.as_str().to_string(),
+                    media_id: public_media_id(&admin_api, media.id),
                     force: true,
                 },
                 &global_admin.id,
@@ -13296,18 +13584,18 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
-        user_repo.create(&owner).await.expect("create owner");
+        let owner = user_repo.create(&owner).await.expect("create owner");
 
         let room = admin_api
             .room_service
             .create_room(
                 format!("room-{}", synctv_common::snanoid!(6)),
                 "room move media test".to_string(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -13315,20 +13603,18 @@ mod tests {
             .expect("room should be created")
             .0;
 
-        let media_a =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "media-move-a").await;
-        let media_b =
-            create_room_media(&pool, room.id.clone(), owner.id.clone(), "media-move-b").await;
+        let media_a = create_room_media(&pool, room.id, owner.id, "media-move-a").await;
+        let media_b = create_room_media(&pool, room.id, owner.id, "media-move-b").await;
 
         admin_api
             .move_media(
-                room.id.as_str(),
+                &public_room_id(&admin_api, room.id),
                 crate::proto::client::MoveMediaRequest {
-                    media_ids: vec![media_b.id.as_str().to_string()],
+                    media_ids: vec![public_media_id(&admin_api, media_b.id)],
                     source_playlist_id: None,
                     target_playlist_id: None,
                     all_from_scope: false,
-                    before_media_id: Some(media_a.id.as_str().to_string()),
+                    before_media_id: Some(public_media_id(&admin_api, media_a.id)),
                     after_media_id: None,
                 },
                 &global_admin.id,
@@ -13381,7 +13667,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -13442,7 +13728,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo.create(&admin_user).await.expect("create admin");
+        let admin_user = user_repo.create(&admin_user).await.expect("create admin");
 
         let room = make_test_room_model(&admin_user.id);
         room_repo.create(&room).await.expect("create room");
@@ -13450,7 +13736,7 @@ mod tests {
         admin_api
             .ban_room(
                 crate::proto::admin::BanRoomRequest {
-                    room_id: room.id.as_str().to_string(),
+                    room_id: room.id.to_string(),
                     reason: "moderation".to_string(),
                 },
                 &admin_user.id,

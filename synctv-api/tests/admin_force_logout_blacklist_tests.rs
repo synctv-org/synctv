@@ -80,7 +80,7 @@ async fn test_blacklisted_token_rejected_even_if_valid_signature() {
 async fn test_force_logout_revokes_token_family() {
     let store = create_blacklist_store();
     let user_id = UserId::new();
-    let family_key = format!("family:{}", user_id.as_str());
+    let family_key = format!("family:{user_id}");
 
     // Simulate admin force logout: revoke entire token family
     let revoked_at = chrono::Utc::now().timestamp();
@@ -224,7 +224,7 @@ async fn test_batch_blacklist_for_force_logout() {
 async fn test_token_issued_after_family_revocation_not_blacklisted() {
     let store = create_blacklist_store();
     let user_id = UserId::new();
-    let family_key = format!("family:{}", user_id.as_str());
+    let family_key = format!("family:{user_id}");
 
     // Revoke family at time T1
     let revoked_at = chrono::Utc::now().timestamp();

@@ -5,7 +5,7 @@
 //! Run with: cargo test --test `notification_service_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
 use synctv_core::service::notification::RoomEvent;
 use synctv_core::service::NotificationService;
 
@@ -20,8 +20,8 @@ async fn test_notify_user_joined_event_construction() {
     let service = create_service();
     let mut rx = service.subscribe();
 
-    let room_id = RoomId::from_string("test_room".to_string());
-    let user_id = UserId::from_string("test_user".to_string());
+    let room_id = RoomId::from(1);
+    let user_id = UserId::from(2);
 
     service
         .notify_user_joined(&room_id, &user_id, "alice")
@@ -53,8 +53,8 @@ async fn test_subscribe_receives_events_in_order() {
     let service = create_service();
     let mut rx = service.subscribe();
 
-    let room_id = RoomId::from_string("order_room".to_string());
-    let user_id = UserId::from_string("user1".to_string());
+    let room_id = RoomId::from(3);
+    let user_id = UserId::from(4);
 
     service
         .notify_user_joined(&room_id, &user_id, "alice")
@@ -130,7 +130,7 @@ fn test_event_type_names_all_variants() {
             RoomEvent::MediaAdded {
                 user_id: UserId::new(),
                 username: "test".to_string(),
-                media_id: "m1".to_string(),
+                media_id: MediaId::from(1),
                 title: "Test".to_string(),
                 url: "http://example.com".to_string(),
                 position: 0.0,
@@ -141,7 +141,7 @@ fn test_event_type_names_all_variants() {
             RoomEvent::MediaRemoved {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_id: "m1".to_string(),
+                media_id: MediaId::from(1),
             },
             "media_removed",
         ),
@@ -149,7 +149,7 @@ fn test_event_type_names_all_variants() {
             RoomEvent::PlaylistReordered {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_ids: vec!["m1".to_string()],
+                media_ids: vec![MediaId::from(1)],
             },
             "playlist_reordered",
         ),
@@ -157,7 +157,7 @@ fn test_event_type_names_all_variants() {
             RoomEvent::PlaylistDeleted {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                playlist_id: "pl1".to_string(),
+                playlist_id: PlaylistId::from(1),
             },
             "playlist_deleted",
         ),
@@ -193,14 +193,14 @@ fn test_event_type_names_all_variants() {
         (RoomEvent::RoomDeleted, "room_deleted"),
         (
             RoomEvent::StreamStarted {
-                media_id: "m1".to_string(),
+                media_id: MediaId::from(1),
                 user_id: UserId::new(),
             },
             "stream_started",
         ),
         (
             RoomEvent::StreamStopped {
-                media_id: "m1".to_string(),
+                media_id: MediaId::from(1),
                 user_id: UserId::new(),
             },
             "stream_stopped",
@@ -223,7 +223,7 @@ fn test_serialization_user_joined_uses_tagged_type() {
     // The RoomEvent enum uses #[serde(tag = "type", content = "data")]
     // so serialization should produce {"type":"UserJoined","data":{...}}
     let event = RoomEvent::UserJoined {
-        user_id: UserId::from_string("user123".to_string()),
+        user_id: UserId::from(123),
         username: "testuser".to_string(),
     };
 
@@ -234,7 +234,7 @@ fn test_serialization_user_joined_uses_tagged_type() {
         json.contains(r#""type":"UserJoined""#),
         "JSON should contain \"type\":\"UserJoined\", got: {json}"
     );
-    assert!(json.contains("user123"));
+    assert!(json.contains("123"));
     assert!(json.contains("testuser"));
 }
 
@@ -251,7 +251,7 @@ fn test_serialization_all_variants_produce_valid_json() {
         },
         RoomEvent::RoomDeleted,
         RoomEvent::StreamStarted {
-            media_id: "m1".to_string(),
+            media_id: MediaId::from(1),
             user_id: UserId::new(),
         },
     ];
@@ -270,7 +270,7 @@ fn test_serialization_all_variants_produce_valid_json() {
 #[test]
 fn test_room_event_deserialization_round_trip() {
     let event = RoomEvent::UserJoined {
-        user_id: UserId::from_string("u1".to_string()),
+        user_id: UserId::from(1),
         username: "alice".to_string(),
     };
 
@@ -279,7 +279,7 @@ fn test_room_event_deserialization_round_trip() {
 
     match deserialized {
         RoomEvent::UserJoined { user_id, username } => {
-            assert_eq!(user_id.as_str(), "u1");
+            assert_eq!(user_id, UserId::from(1));
             assert_eq!(username, "alice");
         }
         _ => panic!("Expected UserJoined after round-trip"),

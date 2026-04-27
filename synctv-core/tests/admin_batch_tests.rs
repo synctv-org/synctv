@@ -78,13 +78,8 @@ async fn batch_delete_users_succeeds() {
     let service = create_user_service(pool);
 
     let user_ids = create_test_users(&service, 5, "batch_del").await;
-    let user_id_strs: Vec<String> = user_ids
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-
     // Delete all 5 users
-    let result = service.batch_delete_users(&user_id_strs).await;
+    let result = service.batch_delete_users(&user_ids).await;
     assert!(result.is_ok(), "Batch delete should succeed: {result:?}");
 
     // Verify all users are soft-deleted
@@ -100,11 +95,11 @@ async fn batch_delete_users_exceeds_limit_fails() {
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
-    let user_id_strs: Vec<String> = (0..=BATCH_SIZE_LIMIT)
-        .map(|i| format!("fake_user_{i}"))
+    let user_ids: Vec<UserId> = (0..=BATCH_SIZE_LIMIT)
+        .map(|i| UserId::from(i64::try_from(i + 1).expect("test id fits i64")))
         .collect();
 
-    let result = service.batch_delete_users(&user_id_strs).await;
+    let result = service.batch_delete_users(&user_ids).await;
     assert!(
         result.is_err(),
         "Batch delete should fail when exceeding limit"

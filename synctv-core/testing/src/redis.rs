@@ -75,7 +75,10 @@ struct SharedRedisServer {
     // until the next test run's orphan cleanup removes it.  Using
     // ManuallyDrop prevents the Drop impl from calling `docker rm` when
     // any single nextest worker process exits while others are still running.
-    _container: std::mem::ManuallyDrop<ContainerAsync<Redis>>,
+    //
+    // Workers after the first one attach to the already-created named Docker
+    // container via `docker port`, so they do not have a testcontainers handle.
+    _container: Option<std::mem::ManuallyDrop<ContainerAsync<Redis>>>,
     name: String,
     host: String,
     port: u16,
@@ -486,6 +489,11 @@ fn startup_error_is_retriable(err: &str) -> bool {
     err.contains("marked for removal") || err.contains("no such container")
 }
 
+fn startup_error_is_named_container_conflict(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("already in use by container") || err.contains("conflict")
+}
+
 fn docker_rm_force_with_program(program: &str, container_ref: &str) -> Result<(), String> {
     let args = ["rm", "-v", "-f", container_ref];
     let output = Command::new(program).args(args).output().map_err(|err| {
@@ -597,6 +605,127 @@ fn cleanup_orphaned_run_lock_files(prefix: &str) {
 
         let _ = std::fs::remove_file(path);
     }
+}
+
+fn docker_named_container_belongs_to_current_run(container_name: &str) -> bool {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            container_name,
+            "--format",
+            &format!("{{{{index .Config.Labels \"{TEST_RUN_LABEL}\"}}}}"),
+        ])
+        .output();
+
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim() == current_test_run_id()
+}
+
+fn docker_port_line_candidates(line: &str) -> Vec<(String, u16)> {
+    let Some((raw_host, raw_port)) = line.trim().rsplit_once(':') else {
+        return Vec::new();
+    };
+    let Ok(port) = raw_port.parse::<u16>() else {
+        return Vec::new();
+    };
+    let host = raw_host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(raw_host);
+
+    let mut candidates = Vec::new();
+    match host {
+        "0.0.0.0" => {
+            push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
+            if let Some(local_ipv4) = detect_primary_ipv4_address() {
+                push_candidate(&mut candidates, local_ipv4, port);
+            }
+        }
+        "::" => {
+            push_candidate(&mut candidates, "::1".to_string(), port);
+            push_candidate(&mut candidates, "127.0.0.1".to_string(), port);
+            if let Some(local_ipv4) = detect_primary_ipv4_address() {
+                push_candidate(&mut candidates, local_ipv4, port);
+            }
+        }
+        "" => {}
+        _ => push_candidate(&mut candidates, host.to_string(), port),
+    }
+    candidates
+}
+
+fn docker_port_candidates(container_name: &str, internal_port: u16) -> Option<Vec<(String, u16)>> {
+    let output = Command::new("docker")
+        .args(["port", container_name, &format!("{internal_port}/tcp")])
+        .output();
+
+    let Ok(output) = output else {
+        return None;
+    };
+    if !output.status.success() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        for (host, port) in docker_port_line_candidates(line) {
+            push_candidate(&mut candidates, host, port);
+        }
+    }
+
+    if candidates.is_empty() {
+        None
+    } else {
+        Some(candidates)
+    }
+}
+
+async fn resolve_existing_named_redis_endpoint(container_name: &str) -> Option<(String, u16)> {
+    if !docker_named_container_belongs_to_current_run(container_name) {
+        return None;
+    }
+
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("docker port has not returned a Redis endpoint yet");
+
+    while std::time::Instant::now() < deadline {
+        if let Some(candidates) = docker_port_candidates(container_name, 6379) {
+            for (host, port) in &candidates {
+                let redis_url = redis_connection_url(host, *port);
+                match redis::Client::open(redis_url.clone()) {
+                    Ok(client) => match client.get_multiplexed_async_connection().await {
+                        Ok(mut conn) => {
+                            let ping_result: redis::RedisResult<String> =
+                                redis::cmd("PING").query_async(&mut conn).await;
+                            if ping_result.is_ok() {
+                                return Some((host.clone(), *port));
+                            }
+                            last_error = format!("ping failed for {redis_url}: {ping_result:?}");
+                        }
+                        Err(err) => {
+                            last_error = format!("connect failed for {redis_url}: {err}");
+                        }
+                    },
+                    Err(err) => {
+                        last_error = format!("client open failed for {redis_url}: {err}");
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    panic!(
+        "Existing Redis container {container_name} did not become reachable within {:?}: {last_error}",
+        docker_startup_timeout()
+    );
 }
 
 impl SharedRedisServer {
@@ -742,50 +871,63 @@ async fn init_shared_redis_server() -> SharedRedisServer {
     // workers – which is far too low for the 20+ ignored Docker tests that run
     // in parallel.
     let active_slot = acquire_docker_active_slot("redis-active").await;
-    let container = {
+    let (container, host, port) = {
         let _redis_process_lock = acquire_docker_start_slot("redis-start").await;
-        let start_deadline = std::time::Instant::now() + docker_startup_timeout();
-        let mut last_start_error;
-        loop {
-            match tokio::time::timeout(
-                docker_startup_timeout(),
-                named_redis_request(&container_name).start(),
-            )
-            .await
-            {
-                Ok(Ok(c)) => break c,
-                Ok(Err(e)) => {
-                    let err_str = format!("{e}");
-                    // Retry known Docker container lifecycle races while a named
-                    // shared container is being cleaned up or recreated.
-                    if startup_error_is_retriable(&err_str) {
-                        last_start_error = err_str;
-                        assert!(
-                            std::time::Instant::now() < start_deadline,
-                            "Failed to start Redis after retries: {last_start_error}"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
+        if let Some((host, port)) = resolve_existing_named_redis_endpoint(&container_name).await {
+            (None, host, port)
+        } else {
+            let start_deadline = std::time::Instant::now() + docker_startup_timeout();
+            let mut last_start_error;
+            loop {
+                match tokio::time::timeout(
+                    docker_startup_timeout(),
+                    named_redis_request(&container_name).start(),
+                )
+                .await
+                {
+                    Ok(Ok(c)) => {
+                        let (host, port) = resolve_host_port(&c, 6379).await;
+                        break (Some(std::mem::ManuallyDrop::new(c)), host, port);
                     }
-                    panic!("Failed to start Redis: {e}");
-                }
-                Err(elapsed) => {
-                    panic!(
+                    Ok(Err(e)) => {
+                        let err_str = format!("{e}");
+                        if startup_error_is_named_container_conflict(&err_str) {
+                            if let Some((host, port)) =
+                                resolve_existing_named_redis_endpoint(&container_name).await
+                            {
+                                break (None, host, port);
+                            }
+                        }
+                        // Retry known Docker container lifecycle races while a named
+                        // shared container is being cleaned up or recreated.
+                        if startup_error_is_retriable(&err_str) {
+                            last_start_error = err_str;
+                            assert!(
+                                std::time::Instant::now() < start_deadline,
+                                "Failed to start Redis after retries: {last_start_error}"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                        panic!("Failed to start Redis: {e}");
+                    }
+                    Err(elapsed) => {
+                        panic!(
                         "Docker container startup timed out after {:?}: {elapsed} (is Docker running?)",
                         docker_startup_timeout(),
                     );
+                    }
                 }
             }
         }
     };
-    let (host, port) = resolve_host_port(&container, 6379).await;
     let client = redis::Client::open(redis_connection_url(&host, port))
         .expect("Failed to create Redis client");
     wait_for_redis_ready(&client).await;
     drop(active_slot);
 
     SharedRedisServer {
-        _container: std::mem::ManuallyDrop::new(container),
+        _container: container,
         name: container_name,
         host,
         port,
@@ -864,7 +1006,7 @@ pub async fn start_dedicated_redis() -> (RedisContainer, RedisConnectionManager)
         .expect("Failed to create Redis connection manager");
 
     let shared = Arc::new(SharedRedisServer {
-        _container: std::mem::ManuallyDrop::new(container),
+        _container: Some(std::mem::ManuallyDrop::new(container)),
         name: container_name,
         host,
         port,

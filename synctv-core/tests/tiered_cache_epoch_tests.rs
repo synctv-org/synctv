@@ -28,9 +28,10 @@ impl Display for TestId {
 }
 
 impl CacheKey for TestId {
-    fn as_str(&self) -> &str {
-        &self.0
+    fn cache_key(&self) -> String {
+        self.0.clone()
     }
+
     fn from_id(id: &str) -> Self {
         Self(id.to_string())
     }

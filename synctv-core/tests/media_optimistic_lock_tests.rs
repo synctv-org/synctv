@@ -68,7 +68,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
                 id: RoomId::new(),
                 name: format!("OptLock Room {suffix}"),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -85,8 +85,8 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let root_playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: String::new(),
             parent_id: None,
             position: 0.0,
@@ -112,8 +112,8 @@ async fn setup_test_context(suffix: &str) -> TestContext {
 fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: i32) -> Media {
     Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist_id.clone()),
-        room_id: room_id.clone(),
+        playlist_id: Some(*playlist_id),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
         position: f64::from(position),
@@ -440,7 +440,7 @@ async fn test_version_returned_in_read_operations() {
     );
 
     // get_by_ids should return correct version
-    let by_ids = media_repo.get_by_ids(&[media.id.clone()]).await.unwrap();
+    let by_ids = media_repo.get_by_ids(&[media.id]).await.unwrap();
     assert_eq!(by_ids.len(), 1);
     assert_eq!(by_ids[0].version, 1, "get_by_ids should return version 1");
 }

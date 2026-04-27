@@ -245,7 +245,7 @@ impl SecurityPipeline {
         // for this user are served from the cache.
         if let Some(cache) = &self.user_cache {
             let cached_user = crate::cache::user_cache::CachedUser::with_security_state(
-                user.id.as_str().to_string(),
+                user.id,
                 user.username.clone(),
                 user.role,
                 UserStatus::Active,
@@ -259,7 +259,7 @@ impl SecurityPipeline {
             if let Err(e) = cache.set(&user_id, cached_user).await {
                 tracing::warn!(
                     error = %e,
-                    user_id = %user_id.as_str(),
+                    user_id = %user_id,
                     "Failed to populate user cache after DB lookup in SecurityPipeline"
                 );
             }

@@ -136,7 +136,7 @@ impl ChatService {
         }
 
         // Rate limiting: use configured chat_per_second from RateLimitConfig
-        let rate_key = format!("chat:rate:{}:{}", room_id.as_str(), user_id.as_str());
+        let rate_key = format!("chat:rate:{room_id}:{user_id}");
         if let Err(e) = self
             .rate_limiter
             .check_rate_limit_with_control(
@@ -177,14 +177,14 @@ impl ChatService {
             .map_err(|e| Error::InvalidInput(format!("Content filter error: {e}")))?;
 
         // Create message
-        let message = ChatMessage::new(room_id.clone(), user_id.clone(), filtered_content.clone());
+        let message = ChatMessage::new(room_id, user_id, filtered_content.clone());
 
         // Persist to database
         let created_message = self.chat_repository.create(&message).await?;
 
         info!(
-            room_id = room_id.as_str(),
-            user_id = user_id.as_str(),
+            room_id = %room_id,
+            user_id = %user_id,
             message_id = %created_message.id,
             "Chat message sent"
         );
@@ -192,14 +192,14 @@ impl ChatService {
         // Broadcast chat message to room members
         if let Err(e) = self.notification_service.notify_chat_message(
             &room_id,
-            &created_message.id,
+            &created_message.id.to_string(),
             &user_id,
             &username,
             &filtered_content,
         ) {
             error!(
-                room_id = room_id.as_str(),
-                user_id = user_id.as_str(),
+                room_id = %room_id,
+                user_id = %user_id,
                 message_id = %created_message.id,
                 error = %e,
                 "Failed to publish chat message room event"
@@ -227,9 +227,9 @@ impl ChatService {
     pub async fn get_history(
         &self,
         room_id: &RoomId,
-        cursor: Option<(chrono::DateTime<Utc>, &str)>,
+        cursor: Option<(chrono::DateTime<Utc>, i64)>,
         limit: i32,
-    ) -> Result<(Vec<ChatMessage>, Option<(chrono::DateTime<Utc>, String)>)> {
+    ) -> Result<(Vec<ChatMessage>, Option<(chrono::DateTime<Utc>, i64)>)> {
         self.chat_repository
             .list_by_room_cursor(room_id, cursor, limit)
             .await
@@ -243,7 +243,7 @@ impl ChatService {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn delete_message(&self, message_id: &str, user_id: &UserId) -> Result<bool> {
+    pub async fn delete_message(&self, message_id: i64, user_id: &UserId) -> Result<bool> {
         // Get the message to check ownership
         let message = self
             .chat_repository
@@ -310,7 +310,7 @@ impl ChatService {
         }
 
         // Rate limiting: use configured danmaku_per_second from RateLimitConfig
-        let rate_key = format!("danmaku:rate:{}:{}", room_id.as_str(), user_id.as_str());
+        let rate_key = format!("danmaku:rate:{room_id}:{user_id}");
         if let Err(e) = self
             .rate_limiter
             .check_rate_limit_with_control(
@@ -368,8 +368,8 @@ impl ChatService {
 
         // Log before moving values
         info!(
-            room_id = room_id.as_str(),
-            user_id = user_id.as_str(),
+            room_id = %room_id,
+            user_id = %user_id,
             "Danmaku sent"
         );
 
@@ -378,8 +378,8 @@ impl ChatService {
 
         // Create danmaku message
         let danmaku = DanmakuMessage::new(
-            room_id.clone(),
-            user_id.clone(),
+            room_id,
+            user_id,
             filtered_content.clone(),
             request.color,
             request.position,
@@ -394,8 +394,8 @@ impl ChatService {
             position_str,
         ) {
             error!(
-                room_id = room_id.as_str(),
-                user_id = user_id.as_str(),
+                room_id = %room_id,
+                user_id = %user_id,
                 error = %e,
                 "Failed to publish danmaku room event"
             );
@@ -426,7 +426,7 @@ impl ChatService {
 
         if deleted > 0 {
             debug!(
-                room_id = room_id.as_str(),
+                room_id = %room_id,
                 deleted = deleted,
                 max_messages = max_messages,
                 "Cleaned up old chat messages"

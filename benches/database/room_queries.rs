@@ -7,8 +7,12 @@
 //! If the database is not available, benchmarks will be skipped gracefully.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use synctv_core::models::RoomId;
 use std::time::Duration;
+use synctv_core::models::RoomId;
+
+fn bench_room_id(offset: i64) -> RoomId {
+    RoomId::from(2_000_000 + offset)
+}
 
 /// Benchmark: Room ID generation and hashing (in-process, no DB required)
 fn bench_room_id_operations(c: &mut Criterion) {
@@ -21,16 +25,16 @@ fn bench_room_id_operations(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("room_id_from_string", |b| {
+    group.bench_function("room_id_from_numeric", |b| {
         b.iter(|| {
-            let id = RoomId::from_string(black_box("test_room_id".to_string()));
+            let id = RoomId::from(black_box(2_000_001_i64));
             black_box(id);
         })
     });
 
     group.bench_function("room_id_comparison", |b| {
-        let id1 = RoomId::from_string("room_a".to_string());
-        let id2 = RoomId::from_string("room_b".to_string());
+        let id1 = bench_room_id(1);
+        let id2 = bench_room_id(2);
         b.iter(|| {
             let result = black_box(&id1) == black_box(&id2);
             black_box(result);
@@ -46,7 +50,7 @@ fn bench_room_id_operations(c: &mut Criterion) {
 fn bench_list_rooms_paginated(c: &mut Criterion) {
     // Pre-generate room IDs
     let room_ids: Vec<RoomId> = (0..500)
-        .map(|i| RoomId::from_string(format!("room_{i:04}")))
+        .map(|i| bench_room_id(i64::from(i)))
         .collect();
 
     let mut group = c.benchmark_group("list_rooms_paginated");
@@ -80,7 +84,7 @@ fn bench_search_rooms_by_name(c: &mut Criterion) {
     let rooms: Vec<(RoomId, String)> = (0..1000)
         .map(|i| {
             (
-                RoomId::from_string(format!("room_{i:04}")),
+                bench_room_id(i64::from(i)),
                 format!("Movie Night {i}"),
             )
         })

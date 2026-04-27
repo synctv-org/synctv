@@ -152,10 +152,10 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         let request = PublishRequest {
             event: ClusterEvent::PermissionChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                target_user_id: target_user_id.clone(),
+                room_id: *room_id,
+                target_user_id: *target_user_id,
                 target_username,
-                changed_by: changed_by.clone(),
+                changed_by: *changed_by,
                 changed_by_username,
                 new_permissions,
                 role,
@@ -186,8 +186,8 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
             })
             .inspect_err(|error| {
                 tracing::warn!(
-                    room_id = %room_id.as_str(),
-                    target_user_id = %target_user_id.as_str(),
+                    room_id = %room_id,
+                    target_user_id = %target_user_id,
                     error = %error.message(),
                     "Permission change fanout failed"
                 );
@@ -216,8 +216,8 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         let request = PublishRequest {
             event: ClusterEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: user_id.clone(),
+                room_id: *room_id,
+                user_id: *user_id,
                 username,
                 timestamp: chrono::Utc::now(),
             },
@@ -299,7 +299,7 @@ mod tests {
             self.local_events
                 .lock()
                 .expect("recorded local events mutex should not be poisoned")
-                .push((room_id.as_str().to_string(), event.clone()));
+                .push((room_id.to_string(), event.clone()));
             1
         }
 
@@ -321,11 +321,17 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-membership-fanout".to_string())
+        RoomId::from(102_001)
     }
 
     fn user_id(value: &str) -> UserId {
-        UserId::from_string(value.to_string())
+        let id = match value {
+            "target" => 102_002,
+            "actor" => 102_003,
+            "self-joiner" => 102_004,
+            _ => 102_099,
+        };
+        UserId::from(id)
     }
 
     fn test_services() -> (Arc<RoomService>, Arc<UserService>) {

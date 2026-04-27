@@ -1,14 +1,14 @@
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
-use crate::models::PageParams;
+use crate::models::{PageParams, UserId};
 use crate::Result;
 
 /// Audit log entry as read from the database
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AuditLogRow {
     pub id: i64,
-    pub actor_id: Option<String>,
+    pub actor_id: Option<UserId>,
     pub actor_username: Option<String>,
     pub action: String,
     pub target_type: Option<String>,
@@ -22,7 +22,7 @@ pub struct AuditLogRow {
 /// Query parameters for listing audit logs
 #[derive(Debug, Clone, Default)]
 pub struct AuditLogQuery {
-    pub actor_id: Option<String>,
+    pub actor_id: Option<UserId>,
     pub action: Option<String>,
     pub target_type: Option<String>,
     pub target_id: Option<String>,

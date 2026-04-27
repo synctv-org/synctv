@@ -54,7 +54,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: "test".to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -220,8 +220,8 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
     let playlist_b = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room_b.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room_b.id,
+            creator_id: Some(owner.id),
             name: "Room B Playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -238,9 +238,9 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
     let media_b = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist_b.id.clone()),
-            room_id: room_b.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist_b.id),
+            room_id: room_b.id,
+            creator_id: Some(owner.id),
             name: "Room B Media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
@@ -254,7 +254,7 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
         .unwrap();
 
     let mut state = playback_repo.create_or_get(&room_a.id).await.unwrap();
-    state.playing_media_id = Some(media_b.id.clone());
+    state.playing_media_id = Some(media_b.id);
     state.playing_playlist_id = None;
     state.target = Vec::new();
 
@@ -287,8 +287,8 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Room Delete Media Playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -305,9 +305,9 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
     let media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Room Delete Media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
@@ -321,7 +321,7 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
         .unwrap();
 
     let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
-    state.playing_media_id = Some(media.id.clone());
+    state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
     state.target = Vec::new();
     let _updated = playback_repo.update(&state).await.unwrap();
@@ -359,8 +359,8 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Room Delete Playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -377,9 +377,9 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
     let _media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Room Playlist Media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
@@ -394,7 +394,7 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
 
     let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
     state.playing_media_id = None;
-    state.playing_playlist_id = Some(playlist.id.clone());
+    state.playing_playlist_id = Some(playlist.id);
     state.target = br#"{"relative_path":"/currently-playing.mp4"}"#.to_vec();
     let _updated = playback_repo.update(&state).await.unwrap();
 

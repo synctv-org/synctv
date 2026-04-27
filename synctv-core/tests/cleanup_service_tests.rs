@@ -167,8 +167,8 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
     let room_owner = create_test_user(&pool).await;
     let deleted_user = create_test_user(&pool).await;
 
-    let deleted_owned_room = create_test_room(deleted_user.id.clone(), None);
-    let surviving_room = create_test_room(room_owner.id.clone(), None);
+    let deleted_owned_room = create_test_room(deleted_user.id, None);
+    let surviving_room = create_test_room(room_owner.id, None);
 
     let room_repo = RoomRepository::new(pool.clone());
     room_repo
@@ -186,7 +186,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
     )
-    .bind(deleted_user.id.as_str())
+    .bind(deleted_user.id)
     .bind(forty_days_ago)
     .execute(&pool)
     .await
@@ -197,7 +197,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1",
     )
-    .bind(deleted_owned_room.id.as_str())
+    .bind(deleted_owned_room.id)
     .bind(forty_days_ago)
     .execute(&pool)
     .await
@@ -207,8 +207,8 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
         "INSERT INTO room_members (room_id, user_id, role, joined_at, left_at, version)
          VALUES ($1, $2, $3, $4, $5, 0)",
     )
-    .bind(surviving_room.id.as_str())
-    .bind(deleted_user.id.as_str())
+    .bind(surviving_room.id)
+    .bind(deleted_user.id)
     .bind(3_i16)
     .bind(forty_days_ago)
     .bind(forty_days_ago)
@@ -244,7 +244,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
 
     let user_still_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(deleted_user.id.as_str())
+            .bind(deleted_user.id)
             .fetch_one(&pool)
             .await
             .expect("Failed to query deleted user");
@@ -255,7 +255,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
 
     let membership_still_exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM room_members WHERE user_id = $1)")
-            .bind(deleted_user.id.as_str())
+            .bind(deleted_user.id)
             .fetch_one(&pool)
             .await
             .expect("Failed to query historical memberships");
@@ -300,7 +300,7 @@ async fn create_test_user(pool: &PgPool) -> User {
 fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>>) -> Room {
     let now = Utc::now();
     Room {
-        id: RoomId(synctv_common::snanoid!(12)),
+        id: RoomId::new(),
         name: "Test Room".to_string(),
         description: String::new(),
         created_by,
@@ -322,7 +322,7 @@ async fn test_room_ttl_new_room_not_expired() {
     let (_container, pool) = create_test_pool().await;
 
     let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id.clone(), None);
+    let room = create_test_room(user.id, None);
 
     let room_repo = RoomRepository::new(pool.clone());
     let _ = room_repo
@@ -363,7 +363,7 @@ async fn test_room_ttl_old_room_is_expired() {
 
     let two_hours_ago = Utc::now() - Duration::hours(2);
     let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id.clone(), Some(two_hours_ago));
+    let room = create_test_room(user.id, Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
     let _ = room_repo
@@ -388,7 +388,7 @@ async fn test_room_ttl_old_room_is_expired() {
         "SELECT id, name, description, created_by, closed_at, false AS is_banned, created_at, updated_at, deleted_at, version, last_activity_at
          FROM rooms WHERE id = $1"
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_optional(&pool)
     .await
     .expect("Failed to find room");
@@ -405,7 +405,7 @@ async fn test_room_ttl_skips_already_soft_deleted() {
 
     let two_hours_ago = Utc::now() - Duration::hours(2);
     let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id.clone(), Some(two_hours_ago));
+    let room = create_test_room(user.id, Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
     let _ = room_repo
@@ -416,7 +416,7 @@ async fn test_room_ttl_skips_already_soft_deleted() {
     // Manually soft-delete the room (simulating it was deleted earlier)
     sqlx::query("UPDATE rooms SET deleted_at = $1 WHERE id = $2")
         .bind(Utc::now())
-        .bind(room.id.as_str())
+        .bind(room.id)
         .execute(&pool)
         .await
         .expect("Failed to soft-delete room");
@@ -445,7 +445,7 @@ async fn test_room_ttl_zero_disables_expiration() {
 
     let two_days_ago = Utc::now() - Duration::days(2);
     let user = create_test_user(&pool).await;
-    let room = create_test_room(user.id.clone(), Some(two_days_ago));
+    let room = create_test_room(user.id, Some(two_days_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
     let _ = room_repo

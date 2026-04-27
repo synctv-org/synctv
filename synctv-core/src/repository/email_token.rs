@@ -50,8 +50,8 @@ impl EmailTokenRepository {
             ",
         )
         .bind(Self::hash_token(token))
-        .bind(user_id.as_str())
-        .bind(token_type.as_i16())
+        .bind(user_id)
+        .bind(i16::from(token_type))
         .bind(expires_at)
         .fetch_one(&self.pool)
         .await
@@ -70,9 +70,9 @@ impl EmailTokenRepository {
     ) -> Result<EmailToken> {
         let mut tx = self.pool.begin().await.map_err(Error::Database)?;
 
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), $2)")
-            .bind(user_id.as_str())
-            .bind(i32::from(token_type.as_i16()))
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text), $2)")
+            .bind(user_id)
+            .bind(i32::from(i16::from(token_type)))
             .execute(&mut *tx)
             .await
             .map_err(Error::Database)?;
@@ -85,8 +85,8 @@ impl EmailTokenRepository {
               AND used_at IS NULL
             ",
         )
-        .bind(user_id.as_str())
-        .bind(token_type.as_i16())
+        .bind(user_id)
+        .bind(i16::from(token_type))
         .execute(&mut *tx)
         .await
         .map_err(Error::Database)?;
@@ -99,8 +99,8 @@ impl EmailTokenRepository {
             ",
         )
         .bind(Self::hash_token(token))
-        .bind(user_id.as_str())
-        .bind(token_type.as_i16())
+        .bind(user_id)
+        .bind(i16::from(token_type))
         .bind(expires_at)
         .fetch_one(&mut *tx)
         .await
@@ -181,7 +181,7 @@ impl EmailTokenRepository {
             ",
         )
         .bind(token_hash)
-        .bind(token_type.as_i16())
+        .bind(i16::from(token_type))
         .fetch_optional(&self.pool)
         .await?;
 
@@ -212,8 +212,8 @@ impl EmailTokenRepository {
             ",
         )
         .bind(token_hash)
-        .bind(token_type.as_i16())
-        .bind(expected_user_id.as_str())
+        .bind(i16::from(token_type))
+        .bind(expected_user_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -232,8 +232,8 @@ impl EmailTokenRepository {
             WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL
             ",
         )
-        .bind(user_id.as_str())
-        .bind(token_type.as_i16())
+        .bind(user_id)
+        .bind(i16::from(token_type))
         .execute(&self.pool)
         .await
         .map_err(Error::Database)?;
@@ -258,8 +258,8 @@ impl EmailTokenRepository {
             ",
         )
         .bind(Self::hash_token(token))
-        .bind(user_id.as_str())
-        .bind(token_type.as_i16())
+        .bind(user_id)
+        .bind(i16::from(token_type))
         .execute(&self.pool)
         .await
         .map_err(Error::Database)?;

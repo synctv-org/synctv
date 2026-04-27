@@ -65,8 +65,8 @@ mod tests {
 
     #[test]
     fn test_playback_state_new() {
-        let room_id = RoomId::from_string("test_room_01".to_string());
-        let state = RoomPlaybackState::new(room_id.clone());
+        let room_id = RoomId::from(70_001);
+        let state = RoomPlaybackState::new(room_id);
 
         assert_eq!(state.room_id, room_id);
         assert!(state.playing_media_id.is_none());
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_playback_state_serialization_roundtrip() {
-        let room_id = RoomId::from_string("test_room_02".to_string());
+        let room_id = RoomId::from(70_002);
         let state = RoomPlaybackState::new(room_id);
 
         let json = serde_json::to_string(&state).expect("serialize");

@@ -17,11 +17,11 @@ use crate::models::RoomId;
 use crate::Result;
 
 impl CacheKey for RoomId {
-    fn as_str(&self) -> &str {
-        self.as_str()
+    fn cache_key(&self) -> String {
+        self.to_string()
     }
     fn from_id(id: &str) -> Self {
-        Self(id.to_string())
+        id.parse().expect("valid numeric cache key")
     }
 }
 
@@ -202,9 +202,9 @@ impl CachedRoom {
 impl From<&crate::models::Room> for CachedRoom {
     fn from(room: &crate::models::Room) -> Self {
         Self {
-            id: room.id.as_str().to_string(),
+            id: room.id.to_string(),
             name: room.name.clone(),
-            owner_id: room.created_by.as_str().to_string(),
+            owner_id: room.created_by.to_string(),
             is_public: false, // determined by room settings, not the Room model
             status: room.status,
             is_banned: room.is_banned,
@@ -326,7 +326,18 @@ mod tests {
     use super::*;
 
     fn create_test_room_id(id: &str) -> RoomId {
-        RoomId(id.to_string())
+        RoomId::from(match id {
+            "r1" => 1,
+            "r2" => 2,
+            "room1" => 11,
+            "room2" => 12,
+            "room3" => 13,
+            "room_closed" => 14,
+            "room_banned" => 15,
+            "room_deleted" => 16,
+            "r_from_room" => 3,
+            _ => 4,
+        })
     }
 
     fn create_test_room(id: &str, name: &str, owner_id: &str) -> CachedRoom {
@@ -392,10 +403,7 @@ mod tests {
             .unwrap();
 
         // Batch lookup
-        let result = cache
-            .get_batch(&[room1.clone(), room2.clone(), room3.clone()])
-            .await
-            .unwrap();
+        let result = cache.get_batch(&[room1, room2, room3]).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -529,10 +537,10 @@ mod tests {
 
         let now = chrono::Utc::now();
         let room = Room {
-            id: crate::models::RoomId("r_from_room".to_string()),
+            id: crate::models::RoomId::from(3),
             name: "From Room".to_string(),
             description: "A room for testing From impl".to_string(),
-            created_by: UserId::from_string("creator1".to_string()),
+            created_by: UserId::from(1),
             status: RoomStatus::Closed,
             is_banned: true,
             closed_at: Some(now),
@@ -545,9 +553,9 @@ mod tests {
 
         let cached: CachedRoom = CachedRoom::from(&room);
 
-        assert_eq!(cached.id(), "r_from_room");
+        assert_eq!(cached.id(), "3");
         assert_eq!(cached.name(), "From Room");
-        assert_eq!(cached.owner_id(), "creator1");
+        assert_eq!(cached.owner_id(), "1");
         assert!(!cached.is_public()); // default false for from()
         assert_eq!(cached.status(), RoomStatus::Closed);
         assert!(cached.is_banned());

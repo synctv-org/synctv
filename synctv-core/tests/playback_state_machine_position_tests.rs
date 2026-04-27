@@ -26,7 +26,7 @@ async fn test_position_preserved_on_pause() {
         .create_room(
             "Position Pause Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -35,16 +35,16 @@ async fn test_position_preserved_on_pause() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 120.0)
+        .seek(room.id, owner.id, 120.0)
         .await
         .unwrap();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
 
@@ -68,7 +68,7 @@ async fn test_position_reset_on_media_switch() {
         .create_room(
             "Position Switch Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -78,8 +78,8 @@ async fn test_position_reset_on_media_switch() {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -93,18 +93,12 @@ async fn test_position_reset_on_media_switch() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 150.0)
+        .seek(room.id, owner.id, 150.0)
         .await
         .unwrap();
 
     let state = playback_service
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 

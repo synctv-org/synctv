@@ -58,7 +58,7 @@ pub enum Amf0ValueType {
 //         }
 
 //         let obj = Amf0Object {
-//             key: key,
+//             key,
 //             value: val,
 //         };
 //         self.properties.push(obj);

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::models::UserId;
 use crate::service::RemoteProviderManager;
 
 /// Bilibili `MediaProvider`
@@ -420,7 +421,7 @@ fn playback_cache_entry(
 
 async fn resolve_optional_bilibili_cookies(
     ctx: &ProviderContext<'_>,
-    credential_owner_id: &str,
+    credential_owner_id: UserId,
 ) -> Result<(HashMap<String, String>, String), ProviderError> {
     let Some(repo) = ctx.credential_repo else {
         return Ok((HashMap::new(), "anon".to_string()));
@@ -447,7 +448,7 @@ async fn resolve_optional_bilibili_cookies(
             format!(
                 "auth:{credential_owner_id}:{server_id}:{}",
                 super::credential_resolver::credential_revision(
-                    &credential.id,
+                    credential.id,
                     credential.updated_at
                 )
             ),
@@ -498,12 +499,12 @@ impl MediaProvider for BilibiliProvider {
                 )
             })?
         } else {
-            _ctx.user_id.ok_or_else(|| {
+            _ctx.user_id().ok_or_else(|| {
                 ProviderError::Internal("user_id not available in ProviderContext".to_string())
             })?
         };
         let (cookies, credential_cache_partition) =
-            resolve_optional_bilibili_cookies(_ctx, credential_owner_id).await?;
+            resolve_optional_bilibili_cookies(_ctx, *credential_owner_id).await?;
 
         // Cache by content identity plus the exact credential binding that resolved it.
         let (cache_key, cache_ttl) = playback_cache_entry(&config, &credential_cache_partition);
@@ -635,14 +636,14 @@ impl MediaProvider for BilibiliProvider {
                 )
             })?
         } else {
-            ctx.user_id.ok_or_else(|| {
+            ctx.user_id().ok_or_else(|| {
                 ProviderError::Internal("user_id not available in ProviderContext".to_string())
             })?
         };
 
         Ok(vec![ProviderCredentialDependency::new(
             Self::NAME,
-            credential_owner_id,
+            credential_owner_id.to_string(),
             bilibili_credential_server_id(),
         )])
     }
@@ -823,8 +824,6 @@ impl BilibiliProvider {
         &self,
         ctx: &super::proxy::ProxyRequestContext<'_>,
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
-        use crate::models::{MediaId, RoomId};
-
         // Parse `{room_id}/{media_id}/danmu`
         let parts: Vec<&str> = ctx.sub_path.splitn(3, '/').collect();
         let (room_id_str, media_id_str) = match parts.as_slice() {
@@ -832,8 +831,16 @@ impl BilibiliProvider {
             _ => return Err(ProviderError::NotFound),
         };
 
-        let room_id = RoomId::from_string(room_id_str.to_string());
-        let media_id = MediaId::from_string(media_id_str.to_string());
+        let room_id = super::proxy::parse_proxy_room_id(
+            &ctx.services.public_id_codec,
+            room_id_str,
+            "danmaku proxy path",
+        )?;
+        let media_id = super::proxy::parse_proxy_media_id(
+            &ctx.services.public_id_codec,
+            media_id_str,
+            "danmaku proxy path",
+        )?;
 
         // Check room membership and get media
         let media = ctx
@@ -863,24 +870,26 @@ impl BilibiliProvider {
                 let cookies = {
                     let repo = &ctx.services.credential_repo;
                     let credential_owner_id = if *shared {
-                        media
-                            .creator_id
-                            .as_ref()
-                            .map(crate::models::UserId::as_str)
-                            .ok_or_else(|| {
-                                ProviderError::Internal(
-                                    "media creator_id is required for shared Bilibili danmaku"
-                                        .to_string(),
-                                )
-                            })?
+                        media.creator_id.as_ref().copied().ok_or_else(|| {
+                            ProviderError::Internal(
+                                "media creator_id is required for shared Bilibili danmaku"
+                                    .to_string(),
+                            )
+                        })?
                     } else {
                         ctx.verified_claims
                             .as_ref()
-                            .map(|claims| claims.user_id.as_str())
                             .ok_or_else(|| {
                                 ProviderError::Internal(
                                     "verified proxy claims are required for Bilibili danmaku"
                                         .to_string(),
+                                )
+                            })
+                            .and_then(|claims| {
+                                super::proxy::parse_proxy_user_id(
+                                    &ctx.services.public_id_codec,
+                                    &claims.user_id,
+                                    "danmaku proxy claims",
                                 )
                             })?
                     };
@@ -1185,6 +1194,7 @@ impl BilibiliProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::UserId;
     use crate::provider::{MediaProvider, ProviderContext};
     use crate::repository::ProviderInstanceRepository;
     use crate::service::RemoteProviderManager;
@@ -1242,8 +1252,8 @@ mod tests {
     async fn test_bilibili_shared_credential_dependency_uses_creator() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id("viewer-1")
-            .with_credential_owner_id("creator-1");
+            .with_user_id(UserId::from(1))
+            .with_credential_owner_id(UserId::from(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -1260,7 +1270,7 @@ mod tests {
             dependencies,
             vec![ProviderCredentialDependency::new(
                 BilibiliProvider::NAME,
-                "creator-1",
+                "2",
                 bilibili_credential_server_id()
             )]
         );
@@ -1269,7 +1279,7 @@ mod tests {
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
-        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let ctx = ProviderContext::new("test").with_user_id(UserId::from(1));
         let err = provider
             .credential_dependencies(
                 &ctx,
@@ -1292,8 +1302,8 @@ mod tests {
     async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id("viewer-1")
-            .with_credential_owner_id("creator-1");
+            .with_user_id(UserId::from(1))
+            .with_credential_owner_id(UserId::from(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -1309,7 +1319,7 @@ mod tests {
             dependencies,
             vec![ProviderCredentialDependency::new(
                 BilibiliProvider::NAME,
-                "viewer-1",
+                "1",
                 bilibili_credential_server_id()
             )]
         );

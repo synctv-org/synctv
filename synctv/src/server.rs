@@ -692,17 +692,20 @@ fn spawn_admin_event_listener(
                                 ..
                             } => {
                                 info!(
-                                    room_id = %room_id.as_str(),
-                                    media_id = %media_id.as_str(),
+                                    room_id = %room_id,
+                                    media_id = %media_id,
                                     reason = %reason,
                                     "Received cluster-wide stream kick"
                                 );
-                                if let Err(e) =
-                                    infra.kick_stream(room_id.as_str(), media_id.as_str()).await
+                                let room_id_string = room_id.to_string();
+                                let media_id_string = media_id.to_string();
+                                if let Err(e) = infra
+                                    .kick_stream(&room_id_string, &media_id_string)
+                                    .await
                                 {
                                     warn!(
-                                        room_id = %room_id.as_str(),
-                                        media_id = %media_id.as_str(),
+                                        room_id = %room_id,
+                                        media_id = %media_id,
                                         error = %e,
                                         "Failed to kick publisher from cluster admin event"
                                     );
@@ -712,11 +715,12 @@ fn spawn_admin_event_listener(
                                 user_id, reason, ..
                             } => {
                                 info!(
-                                    user_id = %user_id.as_str(),
+                                    user_id = %user_id,
                                     reason = %reason,
                                     "Received cluster-wide user kick"
                                 );
-                                infra.kick_user_publishers(user_id.as_str()).await;
+                                let user_id_string = user_id.to_string();
+                                infra.kick_user_publishers(&user_id_string).await;
                             }
                             ClusterEvent::KickUserFromRoom {
                                 room_id,
@@ -725,13 +729,15 @@ fn spawn_admin_event_listener(
                                 ..
                             } => {
                                 info!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %user_id.as_str(),
+                                    room_id = %room_id,
+                                    user_id = %user_id,
                                     reason = %reason,
                                     "Received room-scoped user kick"
                                 );
+                                let room_id_string = room_id.to_string();
+                                let user_id_string = user_id.to_string();
                                 infra
-                                    .kick_user_room_publishers(room_id.as_str(), user_id.as_str())
+                                    .kick_user_room_publishers(&room_id_string, &user_id_string)
                                     .await;
                             }
                             _ => {}
@@ -2494,11 +2500,15 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
+        let room_id = RoomId::from(112_001);
+        let media_id = MediaId::from(112_002);
+        let room_id_string = room_id.to_string();
+        let media_id_string = media_id.to_string();
         let registry = synctv_livestream::relay::local_stream_registry();
         registry
             .try_register_publisher(
-                "room-1",
-                "media-1",
+                &room_id_string,
+                &media_id_string,
                 "test-node",
                 "publisher-user",
                 "127.0.0.1:50051",
@@ -2536,8 +2546,8 @@ mod tests {
                     .admin_event_tx()
                     .send(ClusterEvent::KickPublisher {
                         event_id: synctv_common::snanoid!(16),
-                        room_id: RoomId::from_string("room-1".to_string()),
-                        media_id: MediaId::from_string("media-1".to_string()),
+                        room_id,
+                        media_id,
                         reason: "room_deleted".to_string(),
                         timestamp: Utc::now(),
                     })
@@ -2562,7 +2572,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if registry
-                    .get_publisher("room-1", "media-1")
+                    .get_publisher(&room_id_string, &media_id_string)
                     .await
                     .expect("registry lookup should succeed")
                     .is_none()
@@ -2583,7 +2593,7 @@ mod tests {
     async fn test_admin_event_listener_kick_user_from_room_only_removes_room_local_publishers() {
         use chrono::Utc;
         use synctv_cluster::sync::{ClusterConfig, ClusterEvent, ClusterManager, RoomMessageHub};
-        use synctv_core::models::{RoomId, UserId};
+        use synctv_core::models::{MediaId, RoomId, UserId};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
         use tokio::sync::mpsc;
@@ -2608,11 +2618,21 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
+        let room_id = RoomId::from(112_001);
+        let other_room_id = RoomId::from(112_004);
+        let media_id = MediaId::from(112_002);
+        let other_media_id = MediaId::from(112_005);
+        let user_id = UserId::from(112_003);
+        let room_id_string = room_id.to_string();
+        let other_room_id_string = other_room_id.to_string();
+        let media_id_string = media_id.to_string();
+        let other_media_id_string = other_media_id.to_string();
+        let user_id_string = user_id.to_string();
         let registry = synctv_livestream::relay::local_stream_registry();
         registry
             .try_register_publisher(
-                "room-1",
-                "media-1",
+                &room_id_string,
+                &media_id_string,
                 "test-node",
                 "publisher-user",
                 "127.0.0.1:50051",
@@ -2621,10 +2641,10 @@ mod tests {
             .expect("room-1 publisher should register");
         registry
             .try_register_publisher(
-                "room-2",
-                "media-2",
+                &other_room_id_string,
+                &other_media_id_string,
                 "test-node",
-                "publisher-user",
+                &user_id_string,
                 "127.0.0.1:50051",
             )
             .await
@@ -2632,18 +2652,18 @@ mod tests {
 
         let tracker = Arc::new(StreamTracker::new());
         tracker.insert(
-            "publisher-user".to_string(),
-            "room-1".to_string(),
-            "media-1".to_string(),
-            "room-1",
-            "media-1",
+            user_id_string.clone(),
+            room_id_string.clone(),
+            media_id_string.clone(),
+            &room_id_string,
+            &media_id_string,
         );
         tracker.insert(
-            "publisher-user".to_string(),
-            "room-2".to_string(),
-            "media-2".to_string(),
-            "room-2",
-            "media-2",
+            user_id_string.clone(),
+            other_room_id_string.clone(),
+            other_media_id_string.clone(),
+            &other_room_id_string,
+            &other_media_id_string,
         );
 
         let (event_sender, mut event_receiver) = mpsc::channel(8);
@@ -2676,8 +2696,8 @@ mod tests {
                     .admin_event_tx()
                     .send(ClusterEvent::KickUserFromRoom {
                         event_id: synctv_common::snanoid!(16),
-                        room_id: RoomId::from_string("room-1".to_string()),
-                        user_id: UserId::from_string("publisher-user".to_string()),
+                        room_id,
+                        user_id,
                         reason: "removed".to_string(),
                         timestamp: Utc::now(),
                     })
@@ -2703,12 +2723,12 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let room1_missing = registry
-                    .get_publisher("room-1", "media-1")
+                    .get_publisher(&room_id_string, &media_id_string)
                     .await
                     .expect("registry lookup should succeed")
                     .is_none();
                 let room2_present = registry
-                    .get_publisher("room-2", "media-2")
+                    .get_publisher(&other_room_id_string, &other_media_id_string)
                     .await
                     .expect("registry lookup should succeed")
                     .is_some();
@@ -2722,12 +2742,16 @@ mod tests {
         .expect("room-scoped kick listener should only remove the targeted publisher");
 
         assert!(
-            tracker.get_stream_user("room-1", "media-1").is_none(),
+            tracker
+                .get_stream_user(&room_id_string, &media_id_string)
+                .is_none(),
             "target room publisher must be removed from tracker"
         );
         assert_eq!(
-            tracker.get_stream_user("room-2", "media-2").as_deref(),
-            Some("publisher-user"),
+            tracker
+                .get_stream_user(&other_room_id_string, &other_media_id_string)
+                .as_deref(),
+            Some(user_id_string.as_str()),
             "publisher in another room must remain tracked"
         );
 

@@ -97,8 +97,8 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
             PublishRequest {
                 event: ClusterEvent::PlaylistCreated {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
+                    room_id: *room_id,
+                    user_id: *user_id,
                     username: username.to_string(),
                     playlist: playlist.clone(),
                     timestamp: chrono::Utc::now(),
@@ -120,8 +120,8 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
             PublishRequest {
                 event: ClusterEvent::PlaylistUpdated {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
+                    room_id: *room_id,
+                    user_id: *user_id,
                     username: username.to_string(),
                     playlist: playlist.clone(),
                     timestamp: chrono::Utc::now(),
@@ -143,10 +143,10 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
             PublishRequest {
                 event: ClusterEvent::PlaylistDeleted {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
+                    room_id: *room_id,
+                    user_id: *user_id,
                     username: username.to_string(),
-                    playlist_id: playlist_id.clone(),
+                    playlist_id: *playlist_id,
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -169,16 +169,16 @@ mod tests {
     use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-fanout".to_string())
+        RoomId::from(105_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-fanout".to_string())
+        UserId::from(105_002)
     }
 
     fn playlist() -> Playlist {
         Playlist {
-            id: PlaylistId::from_string("playlist-fanout".to_string()),
+            id: PlaylistId::from(105_003),
             room_id: room_id(),
             creator_id: Some(user_id()),
             name: "fanout playlist".to_string(),
@@ -226,10 +226,10 @@ mod tests {
                 playlist,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-fanout");
-                assert_eq!(user_id.as_str(), "user-fanout");
+                assert_eq!(room_id, RoomId::from(105_001));
+                assert_eq!(user_id, UserId::from(105_002));
                 assert_eq!(username, "tester");
-                assert_eq!(playlist.id.as_str(), "playlist-fanout");
+                assert_eq!(playlist.id, PlaylistId::from(105_003));
             }
             other => panic!("expected PlaylistCreated, got {other:?}"),
         }

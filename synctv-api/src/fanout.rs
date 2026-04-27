@@ -70,8 +70,8 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
     ) {
         let event = ClusterEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: actor_user_id.clone(),
+            room_id: *room_id,
+            user_id: *actor_user_id,
             username: actor_username.to_string(),
             settings_json,
             version,
@@ -144,7 +144,7 @@ mod tests {
             self.local_events
                 .lock()
                 .expect("recorded local events mutex should not be poisoned")
-                .push((room_id.as_str().to_string(), event.clone()));
+                .push((room_id.to_string(), event.clone()));
             1
         }
 
@@ -166,11 +166,11 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-fanout".to_string())
+        RoomId::from(107_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-fanout".to_string())
+        UserId::from(107_002)
     }
 
     #[tokio::test]
@@ -224,8 +224,8 @@ mod tests {
                 version,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-fanout");
-                assert_eq!(user_id.as_str(), "user-fanout");
+                assert_eq!(room_id, RoomId::from(107_001));
+                assert_eq!(user_id, UserId::from(107_002));
                 assert_eq!(username, "tester");
                 assert_eq!(settings_json, br#"{"require_password":false}"#.to_vec());
                 assert_eq!(version, 9);

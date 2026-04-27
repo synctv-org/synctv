@@ -306,9 +306,7 @@ pub async fn create_room(
         request_meta,
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
-            client_api
-                .create_room(authenticated.user_id.as_str(), req)
-                .await
+            client_api.create_room(&authenticated.user_id, req).await
         },
     )
     .await?;
@@ -354,9 +352,7 @@ pub async fn get_room(
         request_meta,
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
-            client_api
-                .get_room(authenticated.user_id.as_str(), &room_id)
-                .await
+            client_api.get_room(&authenticated.user_id, &room_id).await
         },
     )
     .await?;
@@ -408,7 +404,7 @@ pub async fn join_room(
             move |request_control, authenticated| async move {
                 client_api
                     .join_room_with_control(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         &room_id,
                         req,
                         client_ip.as_deref(),
@@ -454,7 +450,7 @@ pub async fn leave_room(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .leave_room(authenticated.user_id.as_str(), &room_id)
+                .leave_room(&authenticated.user_id, &room_id)
                 .await
         },
     )
@@ -499,7 +495,7 @@ pub async fn delete_room(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .delete_room(authenticated.user_id.as_str(), &room_id)
+                .delete_room(&authenticated.user_id, &room_id)
                 .await
         },
     )
@@ -543,7 +539,7 @@ pub async fn add_media(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .add_media(authenticated.user_id.as_str(), &room_id, req)
+                .add_media(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -592,7 +588,7 @@ pub async fn delete_media(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .delete_media(authenticated.user_id.as_str(), &room_id, proto_req)
+                .delete_media(&authenticated.user_id, &room_id, proto_req)
                 .await
         },
     )
@@ -635,7 +631,7 @@ pub async fn delete_entries(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .delete_entries(authenticated.user_id.as_str(), &room_id, req)
+                .delete_entries(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -678,7 +674,7 @@ pub async fn move_media(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .move_media(authenticated.user_id.as_str(), &room_id, req)
+                .move_media(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -721,7 +717,7 @@ pub async fn list_playlist_items(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .list_playlist_items(authenticated.user_id.as_str(), &room_id, req)
+                .list_playlist_items(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -765,7 +761,7 @@ pub async fn start_playback(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .start_playback(authenticated.user_id.as_str(), &room_id, req)
+                .start_playback(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -808,7 +804,7 @@ pub async fn stop_playback(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .stop_playback(authenticated.user_id.as_str(), &room_id, req)
+                .stop_playback(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -856,7 +852,7 @@ pub async fn get_playback(
             move |request_control, authenticated| async move {
                 client_api
                     .get_playback_with_context(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         &room_id,
                         req,
                         &request_control,
@@ -904,7 +900,7 @@ pub async fn get_room_members(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .get_room_members(authenticated.user_id.as_str(), &room_id, req)
+                .get_room_members(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -947,7 +943,7 @@ pub async fn list_room_streams(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .list_room_streams(authenticated.user_id.as_str(), &room_id, req)
+                .list_room_streams(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1022,7 +1018,7 @@ pub async fn set_room_password(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .set_room_password(authenticated.user_id.as_str(), &room_id, req)
+                .set_room_password(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1063,7 +1059,7 @@ pub async fn get_room_settings(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .get_room_settings(authenticated.user_id.as_str(), &room_id)
+                .get_room_settings(&authenticated.user_id, &room_id)
                 .await
         },
     )
@@ -1106,7 +1102,7 @@ pub async fn push_media_batch(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .add_media_batch(authenticated.user_id.as_str(), &room_id, req)
+                .add_media_batch(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1152,7 +1148,7 @@ pub async fn edit_media(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .edit_media(authenticated.user_id.as_str(), &room_id, req)
+                .edit_media(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1192,7 +1188,7 @@ pub async fn clear_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .clear_playlist(authenticated.user_id.as_str(), &room_id)
+                .clear_playlist(&authenticated.user_id, &room_id)
                 .await
         },
     )
@@ -1235,7 +1231,7 @@ pub async fn get_media(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .get_media(authenticated.user_id.as_str(), &room_id, &media_id)
+                .get_media(&authenticated.user_id, &room_id, &media_id)
                 .await
         },
     )
@@ -1281,7 +1277,7 @@ pub async fn get_playlist(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .get_playlist(authenticated.user_id.as_str(), &room_id, &playlist_id)
+                .get_playlist(&authenticated.user_id, &room_id, &playlist_id)
                 .await
         },
     )
@@ -1363,7 +1359,7 @@ pub async fn update_room_settings(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .update_room_settings(authenticated.user_id.as_str(), &room_id, req)
+                .update_room_settings(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1406,7 +1402,7 @@ pub async fn transfer_room_ownership(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .transfer_room_ownership(authenticated.user_id.as_str(), &room_id, req)
+                .transfer_room_ownership(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1456,7 +1452,7 @@ pub async fn update_playback(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .update_playback(authenticated.user_id.as_str(), &room_id, req)
+                .update_playback(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1496,7 +1492,7 @@ pub async fn reset_room_settings(
         EndpointRateLimitCategory::Write,
         move |client_api, authenticated| async move {
             client_api
-                .reset_room_settings(authenticated.user_id.as_str(), &room_id)
+                .reset_room_settings(&authenticated.user_id, &room_id)
                 .await
         },
     )
@@ -1547,7 +1543,7 @@ pub async fn get_chat_history(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .get_chat_history(authenticated.user_id.as_str(), &room_id, req)
+                .get_chat_history(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1605,7 +1601,7 @@ pub async fn create_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .create_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .create_playlist(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1655,7 +1651,7 @@ pub async fn update_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .update_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .update_playlist(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1703,7 +1699,7 @@ pub async fn move_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .move_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .move_playlist(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1756,7 +1752,7 @@ pub async fn delete_playlist(
         EndpointRateLimitCategory::Media,
         move |client_api, authenticated| async move {
             client_api
-                .delete_playlist(authenticated.user_id.as_str(), &room_id, req)
+                .delete_playlist(&authenticated.user_id, &room_id, req)
                 .await
         },
     )
@@ -1799,7 +1795,7 @@ pub async fn list_playlists(
         EndpointRateLimitCategory::Read,
         move |client_api, authenticated| async move {
             client_api
-                .list_playlists(authenticated.user_id.as_str(), &room_id, req)
+                .list_playlists(&authenticated.user_id, &room_id, req)
                 .await
         },
     )

@@ -37,7 +37,7 @@ pub async fn get_me(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.get_profile(auth.user_id.as_str()).await },
+            |auth| async move { client_api.get_profile(&auth.user_id).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -101,7 +101,7 @@ pub async fn update_user(
             |auth| async move {
                 client_api
                     .update_profile(
-                        auth.user_id.as_str(),
+                        &auth.user_id,
                         update_username.clone(),
                         old_password,
                         password,
@@ -156,7 +156,7 @@ pub async fn list_my_rooms(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { client_api.list_my_rooms(auth.user_id.as_str(), req).await },
+            |auth| async move { client_api.list_my_rooms(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -198,9 +198,7 @@ pub async fn delete_me(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                client_api
-                    .delete_current_user(auth.user_id.as_str())
-                    .await?;
+                client_api.delete_current_user(&auth.user_id).await?;
                 Ok::<(), crate::impls::ApiError>(())
             },
         )

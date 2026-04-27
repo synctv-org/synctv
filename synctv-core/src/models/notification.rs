@@ -2,54 +2,19 @@
 //!
 //! User notifications for room invitations, system announcements, and room events
 
+use crate::models::{id::UserId, query::SortDirection};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::models::id::UserId;
-use crate::models::query::SortDirection;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationListSortBy {
-    Title,
-    UpdatedAt,
-    #[default]
-    CreatedAt,
-}
-
-impl NotificationListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Title => "title",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum NotificationListSortBy {
+        Title => { display: "title", sql: "title" },
+        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
     }
-}
-
-impl std::str::FromStr for NotificationListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "title" => Ok(Self::Title),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            other => Err(format!("Unknown notification list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for NotificationListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Title => "title",
-            Self::UpdatedAt => "updated_at",
-            Self::CreatedAt => "created_at",
-        };
-        f.write_str(value)
-    }
+    default = CreatedAt;
+    error = "Unknown notification list sort field";
 }
 
 /// Notification type
@@ -128,7 +93,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for NotificationType {
 /// Notification model
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Notification {
-    pub id: Uuid,
+    pub id: i64,
     pub user_id: UserId,
     #[sqlx(rename = "type")]
     pub notification_type: NotificationType,
@@ -171,7 +136,7 @@ pub struct NotificationListQuery {
 /// Mark notification as read request
 #[derive(Debug, Deserialize)]
 pub struct MarkAsReadRequest {
-    pub notification_ids: Vec<Uuid>,
+    pub notification_ids: Vec<i64>,
 }
 
 /// Mark all notifications as read request
@@ -267,13 +232,13 @@ mod tests {
     #[test]
     fn test_create_notification_request_deserialize() {
         let json = serde_json::json!({
-            "user_id": "user_123",
+            "user_id": 123,
             "notification_type": "room_invitation",
             "title": "You have been invited",
             "content": "Join room ABC"
         });
         let req: CreateNotificationRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.user_id.as_str(), "user_123");
+        assert_eq!(req.user_id.as_i64(), 123);
         assert_eq!(req.notification_type, NotificationType::RoomInvitation);
         assert_eq!(req.title, "You have been invited");
         assert_eq!(req.content, "Join room ABC");
@@ -284,7 +249,7 @@ mod tests {
     #[test]
     fn test_create_notification_request_with_data() {
         let json = serde_json::json!({
-            "user_id": "user_456",
+            "user_id": 456,
             "notification_type": "system_announcement",
             "title": "Maintenance",
             "content": "System will be down",
@@ -299,8 +264,8 @@ mod tests {
     fn test_mark_as_read_request_deserialize() {
         let json = serde_json::json!({
             "notification_ids": [
-                "550e8400-e29b-41d4-a716-446655440000",
-                "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                5_508_400,
+                6_978_100
             ]
         });
         let req: MarkAsReadRequest = serde_json::from_value(json).unwrap();

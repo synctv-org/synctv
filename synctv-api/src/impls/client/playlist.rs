@@ -44,6 +44,7 @@ fn normalize_non_empty_filter(value: &str) -> Option<String> {
 pub(crate) fn build_create_playlist_request(
     room_id: &synctv_core::models::RoomId,
     req: crate::proto::client::CreatePlaylistRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<CoreCreatePlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::CreatePlaylistRequest {
@@ -54,7 +55,7 @@ pub(crate) fn build_create_playlist_request(
         provider_instance_name,
     } = req;
 
-    let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id);
+    let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec);
     let source_provider = normalize_non_empty_filter(&source_provider);
     let source_config = if source_config.is_empty() {
         None
@@ -67,7 +68,7 @@ pub(crate) fn build_create_playlist_request(
     let provider_instance_name = normalize_non_empty_filter(&provider_instance_name);
 
     Ok(CoreCreatePlaylistRequest {
-        room_id: room_id.clone(),
+        room_id: *room_id,
         name,
         parent_id,
         source_provider,
@@ -78,6 +79,7 @@ pub(crate) fn build_create_playlist_request(
 
 pub(crate) fn build_update_playlist_request(
     req: crate::proto::client::UpdatePlaylistRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     if req.name.trim().is_empty() {
@@ -87,13 +89,14 @@ pub(crate) fn build_update_playlist_request(
     }
 
     Ok(CoreSetPlaylistRequest {
-        playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id),
+        playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec),
         name: Some(req.name),
     })
 }
 
 pub(crate) fn build_move_playlist_request(
     req: crate::proto::client::MovePlaylistRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<CoreMovePlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::MovePlaylistRequest {
@@ -109,17 +112,23 @@ pub(crate) fn build_move_playlist_request(
 
     let (before_playlist_id, after_playlist_id) = match anchor {
         crate::proto::client::move_playlist_request::Anchor::BeforePlaylistId(anchor_id) => (
-            Some(crate::impls::proto_validated_playlist_id(anchor_id)),
+            Some(crate::impls::proto_validated_playlist_id(
+                anchor_id,
+                public_id_codec,
+            )),
             None,
         ),
         crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(anchor_id) => (
             None,
-            Some(crate::impls::proto_validated_playlist_id(anchor_id)),
+            Some(crate::impls::proto_validated_playlist_id(
+                anchor_id,
+                public_id_codec,
+            )),
         ),
     };
 
     Ok(CoreMovePlaylistRequest {
-        playlist_id: crate::impls::proto_validated_playlist_id(playlist_id),
+        playlist_id: crate::impls::proto_validated_playlist_id(playlist_id, public_id_codec),
         before_playlist_id,
         after_playlist_id,
     })
@@ -127,11 +136,12 @@ pub(crate) fn build_move_playlist_request(
 
 pub(crate) fn build_delete_playlist_request(
     req: crate::proto::client::DeletePlaylistRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<(synctv_core::models::PlaylistId, bool), ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
     Ok((
-        crate::impls::proto_validated_playlist_id(req.playlist_id),
+        crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec),
         req.force,
     ))
 }
@@ -139,13 +149,13 @@ pub(crate) fn build_delete_playlist_request(
 impl ClientApiImpl {
     pub async fn create_playlist(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::CreatePlaylistRequest,
     ) -> Result<crate::proto::client::CreatePlaylistResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let actor_id = uid.clone();
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let actor_id = uid;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership and add media permission
         self.room_service
@@ -153,14 +163,14 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let service_req = build_create_playlist_request(&rid, req)?;
+        let service_req = build_create_playlist_request(&rid, req, &self.public_id_codec)?;
         let playlist_cluster_event = self.playlist_fanout.reserve_created().await?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .create_playlist(rid.clone(), actor_id.clone(), service_req)
+            .create_playlist(rid, actor_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -194,20 +204,23 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::CreatePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
-                &playlist, item_count, true,
+                &playlist,
+                item_count,
+                true,
+                &self.public_id_codec,
             )),
         })
     }
 
     pub async fn update_playlist(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::UpdatePlaylistRequest,
     ) -> Result<crate::proto::client::UpdatePlaylistResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let actor_id = uid.clone();
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let actor_id = uid;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership and playlist management permission
         self.room_service
@@ -215,14 +228,14 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let service_req = build_update_playlist_request(req)?;
+        let service_req = build_update_playlist_request(req, &self.public_id_codec)?;
         let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .set_playlist(rid.clone(), actor_id.clone(), service_req)
+            .set_playlist(rid, actor_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -256,34 +269,37 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
-                &playlist, item_count, true,
+                &playlist,
+                item_count,
+                true,
+                &self.public_id_codec,
             )),
         })
     }
 
     pub async fn move_playlist(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::MovePlaylistRequest,
     ) -> Result<crate::proto::client::MovePlaylistResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let actor_id = uid.clone();
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let actor_id = uid;
+        let rid = self.parse_room_id(room_id)?;
 
         self.room_service
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let service_req = build_move_playlist_request(req)?;
+        let service_req = build_move_playlist_request(req, &self.public_id_codec)?;
         let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let playlist = self
             .room_service
             .playlist_service()
-            .move_playlist(rid.clone(), actor_id.clone(), service_req)
+            .move_playlist(rid, actor_id, service_req)
             .await
             .map_err(ApiError::from)?;
 
@@ -316,24 +332,28 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::MovePlaylistResponse {
             playlist: Some(playlist_to_proto_with_availability(
-                &playlist, item_count, true,
+                &playlist,
+                item_count,
+                true,
+                &self.public_id_codec,
             )),
         })
     }
 
     pub async fn delete_playlist(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::DeletePlaylistRequest,
     ) -> Result<crate::proto::client::DeletePlaylistResponse, ApiError> {
-        let (playlist_id, force) = build_delete_playlist_request(req)?;
+        let public_playlist_id = req.playlist_id.clone();
+        let (_playlist_id, force) = build_delete_playlist_request(req, &self.public_id_codec)?;
         let _ = self
             .delete_entries(
                 user_id,
                 room_id,
                 crate::proto::client::DeleteEntriesRequest {
-                    playlist_ids: vec![playlist_id.as_str().to_string()],
+                    playlist_ids: vec![public_playlist_id],
                     media_ids: Vec::new(),
                     force,
                 },
@@ -346,13 +366,17 @@ impl ClientApiImpl {
     /// Get a single playlist by ID
     pub async fn get_playlist(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let pid = crate::impls::parse_playlist_id_param(playlist_id, "playlist_id")?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let pid = crate::impls::parse_playlist_id_param(
+            playlist_id,
+            "playlist_id",
+            &self.public_id_codec,
+        )?;
 
         // Check membership
         self.room_service
@@ -395,6 +419,7 @@ impl ClientApiImpl {
                 &playlist,
                 media_count,
                 playlist_availability.is_available(),
+                &self.public_id_codec,
             )),
             child_folder_count,
             media_count,
@@ -407,14 +432,14 @@ impl ClientApiImpl {
     /// Default page_size is 50, maximum is 100.
     pub async fn list_playlists(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning playlist data
         self.room_service
@@ -451,7 +476,10 @@ impl ClientApiImpl {
         let parent_id = if req.parent_id.is_empty() {
             None
         } else {
-            let parent_id = crate::impls::proto_validated_playlist_id(req.parent_id.clone());
+            let parent_id = crate::impls::proto_validated_playlist_id(
+                req.parent_id.clone(),
+                &self.public_id_codec,
+            );
             let parent = self
                 .room_service
                 .playlist_service()
@@ -507,10 +535,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Batch-fetch media counts to avoid N+1 queries.
-        let playlist_ids: Vec<&str> = playlists
-            .iter()
-            .map(|entry| entry.playlist.id.as_str())
-            .collect();
+        let playlist_ids: Vec<synctv_core::models::PlaylistId> =
+            playlists.iter().map(|entry| entry.playlist.id).collect();
         let counts = self
             .room_service
             .media_service()
@@ -522,13 +548,14 @@ impl ClientApiImpl {
             .iter()
             .map(|entry| {
                 let item_count = i64_to_i32_api(
-                    counts.get(entry.playlist.id.as_str()).copied().unwrap_or(0),
+                    counts.get(&entry.playlist.id).copied().unwrap_or(0),
                     "playlist item count",
                 )?;
                 Ok(playlist_to_proto_with_availability(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
+                    &self.public_id_codec,
                 ))
             })
             .collect::<std::result::Result<Vec<_>, ApiError>>()?;
@@ -546,10 +573,11 @@ mod tests {
         build_create_playlist_request, build_delete_playlist_request, build_move_playlist_request,
         build_update_playlist_request,
     };
-    use synctv_core::models::RoomId;
+    use synctv_core::models::{PlaylistId, RoomId};
 
     #[test]
     fn build_create_playlist_request_rejects_invalid_proto_payload() {
+        let codec = crate::PublicIdCodec::default_for_tests();
         let error = build_create_playlist_request(
             &RoomId::new(),
             crate::proto::client::CreatePlaylistRequest {
@@ -559,6 +587,7 @@ mod tests {
                 source_config: Vec::new(),
                 provider_instance_name: String::new(),
             },
+            &codec,
         )
         .unwrap_err();
 
@@ -575,6 +604,7 @@ mod tests {
 
     #[test]
     fn build_create_playlist_request_parses_dynamic_payload() {
+        let codec = crate::PublicIdCodec::default_for_tests();
         let room_id = RoomId::new();
         let request = build_create_playlist_request(
             &room_id,
@@ -585,6 +615,7 @@ mod tests {
                 source_config: serde_json::to_vec(&serde_json::json!({"path":"/tv"})).unwrap(),
                 provider_instance_name: "alist-main".into(),
             },
+            &codec,
         )
         .expect("valid request");
 
@@ -603,35 +634,36 @@ mod tests {
 
     #[test]
     fn build_create_playlist_request_parses_proto_validated_parent_id() {
+        let codec = crate::PublicIdCodec::default_for_tests();
         let room_id = RoomId::new();
-        let parent_id = synctv_common::snanoid!(12);
+        let parent_id = PlaylistId::from(123);
+        let parent_public_id = codec.encode_playlist_id(parent_id).unwrap();
         let request = build_create_playlist_request(
             &room_id,
             crate::proto::client::CreatePlaylistRequest {
                 name: "Child".into(),
-                parent_id: parent_id.clone(),
+                parent_id: parent_public_id,
                 source_provider: String::new(),
                 source_config: Vec::new(),
                 provider_instance_name: String::new(),
             },
+            &codec,
         )
         .expect("valid request");
 
-        assert_eq!(
-            request
-                .parent_id
-                .as_ref()
-                .map(synctv_core::models::PlaylistId::as_str),
-            Some(parent_id.as_str())
-        );
+        assert_eq!(request.parent_id, Some(parent_id));
     }
 
     #[test]
     fn build_update_playlist_request_rejects_long_name() {
-        let error = build_update_playlist_request(crate::proto::client::UpdatePlaylistRequest {
-            playlist_id: "playlist-1".into(),
-            name: "a".repeat(256),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let error = build_update_playlist_request(
+            crate::proto::client::UpdatePlaylistRequest {
+                playlist_id: codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+                name: "a".repeat(256),
+            },
+            &codec,
+        )
         .unwrap_err();
 
         match error {
@@ -644,10 +676,14 @@ mod tests {
 
     #[test]
     fn build_move_playlist_request_requires_anchor() {
-        let error = build_move_playlist_request(crate::proto::client::MovePlaylistRequest {
-            playlist_id: "playlist-1".into(),
-            anchor: None,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let error = build_move_playlist_request(
+            crate::proto::client::MovePlaylistRequest {
+                playlist_id: codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+                anchor: None,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         match error {
@@ -660,10 +696,14 @@ mod tests {
 
     #[test]
     fn build_delete_playlist_request_rejects_invalid_playlist_id() {
-        let error = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
-            playlist_id: "bad-playlist".into(),
-            force: false,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let error = build_delete_playlist_request(
+            crate::proto::client::DeletePlaylistRequest {
+                playlist_id: "bad-playlist".into(),
+                force: false,
+            },
+            &codec,
+        )
         .unwrap_err();
 
         match error {
@@ -676,14 +716,18 @@ mod tests {
 
     #[test]
     fn build_delete_playlist_request_parses_playlist_id() {
-        let playlist_id = synctv_common::snanoid!(12);
-        let request = build_delete_playlist_request(crate::proto::client::DeletePlaylistRequest {
-            playlist_id: playlist_id.clone(),
-            force: true,
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let playlist_id = PlaylistId::from(123);
+        let request = build_delete_playlist_request(
+            crate::proto::client::DeletePlaylistRequest {
+                playlist_id: codec.encode_playlist_id(playlist_id).unwrap(),
+                force: true,
+            },
+            &codec,
+        )
         .unwrap();
 
-        assert_eq!(request.0.as_str(), playlist_id);
+        assert_eq!(request.0, playlist_id);
         assert!(request.1);
     }
 }

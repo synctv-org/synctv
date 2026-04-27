@@ -66,7 +66,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 EndpointRateLimitCategory::Auth,
                 move |request_control, authenticated| async move {
                     api.login_with_context(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -101,7 +101,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.list_with_context(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -140,7 +140,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.search_with_context(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -174,7 +174,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 EndpointRateLimitCategory::Read,
                 move |request_control, authenticated| async move {
                     api.get_me_with_context(
-                        authenticated.user_id.as_str(),
+                        &authenticated.user_id,
                         req,
                         instance_name.as_deref(),
                         Some(&request_control),
@@ -206,7 +206,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |authenticated| async move {
-                    api.logout(authenticated.user_id.as_str(), req)
+                    api.logout(&authenticated.user_id, req)
                         .await
                         .map_err(crate::impls::ApiError::from)
                 },
@@ -234,7 +234,7 @@ impl AlistProviderService for AlistProviderGrpcService {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    api.get_binds(authenticated.user_id.as_str(), instance_name.as_deref())
+                    api.get_binds(&authenticated.user_id, instance_name.as_deref())
                         .await
                 },
             )

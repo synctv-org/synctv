@@ -122,9 +122,9 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
             PublishRequest {
                 event: ClusterEvent::RoomCreated {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
+                    room_id: *room_id,
                     room_name: room_name.to_string(),
-                    creator_id: creator_id.clone(),
+                    creator_id: *creator_id,
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -142,8 +142,8 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
             PublishRequest {
                 event: ClusterEvent::RoomDeleted {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    deleted_by: deleted_by.clone(),
+                    room_id: *room_id,
+                    deleted_by: *deleted_by,
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -161,8 +161,8 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
             PublishRequest {
                 event: ClusterEvent::RoomBanned {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    banned_by: banned_by.clone(),
+                    room_id: *room_id,
+                    banned_by: *banned_by,
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -181,9 +181,9 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
             PublishRequest {
                 event: ClusterEvent::RoomOwnerInactive {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    owner_id: owner_id.clone(),
-                    triggered_by: triggered_by.clone(),
+                    room_id: *room_id,
+                    owner_id: *owner_id,
+                    triggered_by: *triggered_by,
                     timestamp: chrono::Utc::now(),
                 },
             },
@@ -206,11 +206,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-lifecycle-fanout".to_string())
+        RoomId::from(104_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-lifecycle-fanout".to_string())
+        UserId::from(104_002)
     }
 
     #[tokio::test]
@@ -244,8 +244,8 @@ mod tests {
                 deleted_by,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-lifecycle-fanout");
-                assert_eq!(deleted_by.as_str(), "user-lifecycle-fanout");
+                assert_eq!(room_id, RoomId::from(104_001));
+                assert_eq!(deleted_by, UserId::from(104_002));
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
         }
@@ -268,8 +268,8 @@ mod tests {
             ClusterEvent::RoomBanned {
                 room_id, banned_by, ..
             } => {
-                assert_eq!(room_id.as_str(), "room-lifecycle-fanout");
-                assert_eq!(banned_by.as_str(), "user-lifecycle-fanout");
+                assert_eq!(room_id, RoomId::from(104_001));
+                assert_eq!(banned_by, UserId::from(104_002));
             }
             other => panic!("expected RoomBanned, got {other:?}"),
         }

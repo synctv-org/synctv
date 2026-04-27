@@ -6,55 +6,22 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use super::id::{PlaylistId, RoomId, UserId};
-use super::query::SortDirection;
+use super::{
+    id::{PlaylistId, RoomId, UserId},
+    query::SortDirection,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PlaylistListSortBy {
-    Name,
-    CreatedAt,
-    UpdatedAt,
-    #[default]
-    Position,
-}
-
-impl PlaylistListSortBy {
-    #[must_use]
-    pub const fn as_sql(self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::CreatedAt => "created_at",
-            Self::UpdatedAt => "updated_at",
-            Self::Position => "position",
-        }
+sort_field_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PlaylistListSortBy {
+        Name => { display: "name", sql: "name" },
+        CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },
+        UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
+        Position => { display: "position", sql: "position" },
     }
-}
-
-impl std::str::FromStr for PlaylistListSortBy {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "name" => Ok(Self::Name),
-            "created_at" | "createdat" => Ok(Self::CreatedAt),
-            "updated_at" | "updatedat" => Ok(Self::UpdatedAt),
-            "position" => Ok(Self::Position),
-            other => Err(format!("Unknown playlist list sort field: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for PlaylistListSortBy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Name => "name",
-            Self::CreatedAt => "created_at",
-            Self::UpdatedAt => "updated_at",
-            Self::Position => "position",
-        };
-        f.write_str(value)
-    }
+    default = Position;
+    error = "Unknown playlist list sort field";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,9 +136,9 @@ mod tests {
         source_provider: Option<String>,
     ) -> Playlist {
         Playlist {
-            id: PlaylistId("pl_001".to_string()),
-            room_id: RoomId("room_001".to_string()),
-            creator_id: Some(UserId("user_001".to_string())),
+            id: PlaylistId::from(1),
+            room_id: RoomId::from(1),
+            creator_id: Some(UserId::from(1)),
             name: name.to_string(),
             parent_id,
             position: 0.0,
@@ -192,7 +159,7 @@ mod tests {
         let named = make_playlist("Music", None, None);
         assert!(named.is_top_level());
 
-        let child = make_playlist("", Some(PlaylistId("parent".to_string())), None);
+        let child = make_playlist("", Some(PlaylistId::from(2)), None);
         assert!(!child.is_top_level());
     }
 
@@ -200,17 +167,13 @@ mod tests {
     fn test_playlist_is_dynamic() {
         let dynamic = make_playlist(
             "Alist Folder",
-            Some(PlaylistId("parent".to_string())),
+            Some(PlaylistId::from(2)),
             Some("alist".to_string()),
         );
         assert!(dynamic.is_dynamic());
         assert!(!dynamic.is_static());
 
-        let static_pl = make_playlist(
-            "Manual Folder",
-            Some(PlaylistId("parent".to_string())),
-            None,
-        );
+        let static_pl = make_playlist("Manual Folder", Some(PlaylistId::from(2)), None);
         assert!(!static_pl.is_dynamic());
         assert!(static_pl.is_static());
     }
@@ -227,24 +190,24 @@ mod tests {
     #[test]
     fn test_create_playlist_request_deserialize() {
         let json = serde_json::json!({
-            "room_id": "room_123",
+            "room_id": 123,
             "name": "My Playlist",
-            "parent_id": "pl_parent",
+            "parent_id": 456,
             "source_provider": "alist",
             "source_config": {"path": "/videos"},
             "provider_instance_name": "my_alist"
         });
         let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.room_id.as_str(), "room_123");
+        assert_eq!(req.room_id.as_i64(), 123);
         assert_eq!(req.name, "My Playlist");
-        assert_eq!(req.parent_id.as_ref().unwrap().as_str(), "pl_parent");
+        assert_eq!(req.parent_id.as_ref().unwrap().as_i64(), 456);
         assert_eq!(req.source_provider.as_deref(), Some("alist"));
     }
 
     #[test]
     fn test_create_playlist_request_minimal() {
         let json = serde_json::json!({
-            "room_id": "room_123",
+            "room_id": 123,
             "name": "Simple"
         });
         let req: CreatePlaylistRequest = serde_json::from_value(json).unwrap();

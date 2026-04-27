@@ -1,14 +1,14 @@
 use config::{ConfigError, FileFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use synctv_common::time as common_time;
 
 const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024;
 const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const DANGEROUS_CIDR_RANGES: &[&str] = &["0.0.0.0/0", "::/0", "0.0.0.0/0,::/0"];
-const ALLOWED_DISCOVERY_MODES: &[&str] = &["redis", "static", "k8s_dns"];
-const ALLOWED_LEADER_ELECTION_MODES: &[&str] = &["redis", "k8s_lease"];
 
 fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -359,6 +359,7 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
 pub struct Config {
     pub server: ServerConfig,
     pub time: TimeConfig,
+    pub external_ids: ExternalIdsConfig,
     /// Shared root directory for runtime-owned local files.
     ///
     /// This affects default runtime paths and relative overrides for
@@ -396,6 +397,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("server", &self.server)
             .field("time", &self.time)
+            .field("external_ids", &self.external_ids)
             .field("data_dir", &self.data_dir)
             .field("metrics", &self.metrics)
             .field("management", &self.management)
@@ -426,6 +428,7 @@ impl Default for Config {
         Self {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
@@ -447,6 +450,24 @@ impl Default for Config {
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExternalIdsConfig {
+    /// Optional sqids alphabet. Leave empty/None to use the crate default.
+    pub alphabet: Option<String>,
+    /// Minimum public ID length for API-facing sqids.
+    pub min_length: u8,
+}
+
+impl Default for ExternalIdsConfig {
+    fn default() -> Self {
+        Self {
+            alphabet: None,
+            min_length: 12,
         }
     }
 }
@@ -1687,6 +1708,7 @@ impl Config {
                     };
                 }
             parse_into!(u16);
+            parse_into!(u8);
             parse_into!(u32);
             parse_into!(u64);
             parse_into!(usize);
@@ -1743,6 +1765,15 @@ impl Config {
         };
 
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
+
+        env_override_opt_str(
+            "SYNCTV_EXTERNAL_IDS_ALPHABET",
+            &mut self.external_ids.alphabet,
+        );
+        env_override_parse(
+            "SYNCTV_EXTERNAL_IDS_MIN_LENGTH",
+            &mut self.external_ids.min_length,
+        )?;
 
         env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
@@ -2098,14 +2129,22 @@ impl Config {
             "SYNCTV_CLUSTER_PUBLISH_CHANNEL_CAPACITY",
             &mut self.cluster.publish_channel_capacity,
         )?;
-        env_override_str(
-            "SYNCTV_CLUSTER_DISCOVERY_MODE",
-            &mut self.cluster.discovery_mode,
-        );
-        env_override_str(
-            "SYNCTV_CLUSTER_LEADER_ELECTION_MODE",
-            &mut self.cluster.leader_election_mode,
-        );
+        env_override_enum("SYNCTV_CLUSTER_DISCOVERY_MODE", &mut |val| {
+            self.cluster.discovery_mode = val.parse().map_err(|error| {
+                ConfigError::Message(format!(
+                    "Invalid value for environment variable SYNCTV_CLUSTER_DISCOVERY_MODE: '{val}' ({error})"
+                ))
+            })?;
+            Ok(())
+        })?;
+        env_override_enum("SYNCTV_CLUSTER_LEADER_ELECTION_MODE", &mut |val| {
+            self.cluster.leader_election_mode = val.parse().map_err(|error| {
+                ConfigError::Message(format!(
+                    "Invalid value for environment variable SYNCTV_CLUSTER_LEADER_ELECTION_MODE: '{val}' ({error})"
+                ))
+            })?;
+            Ok(())
+        })?;
         env_override_csv("SYNCTV_CLUSTER_PEERS", &mut self.cluster.peers);
         env_override_parse(
             "SYNCTV_CLUSTER_CATCHUP_WINDOW_SECS",
@@ -2487,6 +2526,35 @@ impl Config {
             if *port == 0 {
                 errors.push(format!("{name} must be between 1 and 65535, got 0"));
             }
+        }
+
+        if let Some(alphabet) = self.external_ids.alphabet.as_ref() {
+            if alphabet.is_empty() {
+                errors.push("external_ids.alphabet must not be empty when set".to_string());
+            } else if alphabet.chars().any(|ch| ch.len_utf8() > 1) {
+                errors.push(
+                    "external_ids.alphabet must contain only single-byte characters".to_string(),
+                );
+            } else if alphabet.chars().any(|ch| !ch.is_ascii_alphanumeric()) {
+                errors.push(
+                    "external_ids.alphabet must contain only ASCII alphanumeric characters"
+                        .to_string(),
+                );
+            } else if alphabet
+                .chars()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != alphabet.chars().count()
+            {
+                errors.push(
+                    "external_ids.alphabet must not contain duplicate characters".to_string(),
+                );
+            } else if alphabet.chars().count() < 3 {
+                errors.push("external_ids.alphabet must contain at least 3 characters".to_string());
+            }
+        }
+        if let Err(error) = crate::PublicIdCodec::from_config(&self.external_ids) {
+            errors.push(error);
         }
 
         // Validate database pool settings
@@ -2984,22 +3052,6 @@ impl Config {
             }
         }
 
-        if !ALLOWED_DISCOVERY_MODES.contains(&self.cluster.discovery_mode.as_str()) {
-            errors.push(format!(
-                "cluster.discovery_mode '{}' is invalid. Allowed values: {}",
-                self.cluster.discovery_mode,
-                ALLOWED_DISCOVERY_MODES.join(", ")
-            ));
-        }
-
-        if !ALLOWED_LEADER_ELECTION_MODES.contains(&self.cluster.leader_election_mode.as_str()) {
-            errors.push(format!(
-                "cluster.leader_election_mode '{}' is invalid. Allowed values: {}",
-                self.cluster.leader_election_mode,
-                ALLOWED_LEADER_ELECTION_MODES.join(", ")
-            ));
-        }
-
         if self.livestream.hls_shared_storage && self.livestream.hls_storage_path.trim().is_empty()
         {
             errors.push(
@@ -3045,7 +3097,7 @@ impl Config {
             );
         }
 
-        if cluster_mode_active && self.cluster.discovery_mode == "k8s_dns" {
+        if cluster_mode_active && self.cluster.discovery_mode == ClusterDiscoveryMode::K8sDns {
             if !cfg!(feature = "k8s") {
                 errors.push(
                     "cluster.discovery_mode='k8s_dns' requires the 'k8s' feature to be compiled in. \
@@ -3073,7 +3125,9 @@ impl Config {
             }
         }
 
-        if cluster_mode_active && self.cluster.leader_election_mode == "k8s_lease" {
+        if cluster_mode_active
+            && self.cluster.leader_election_mode == ClusterLeaderElectionMode::K8sLease
+        {
             if !cfg!(feature = "k8s") {
                 errors.push(
                     "cluster.leader_election_mode='k8s_lease' requires the 'k8s' feature to be compiled in. \
@@ -3331,6 +3385,77 @@ impl Default for BootstrapConfig {
 ///
 /// Controls the buffer sizes for internal channels used in cluster communication.
 /// Larger values provide more resilience during traffic spikes but use more memory.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterDiscoveryMode {
+    #[default]
+    Redis,
+    Static,
+    K8sDns,
+}
+
+impl ClusterDiscoveryMode {
+    pub const ALLOWED_VALUES: &'static str = "redis, static, k8s_dns";
+}
+
+impl fmt::Display for ClusterDiscoveryMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Redis => "redis",
+            Self::Static => "static",
+            Self::K8sDns => "k8s_dns",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for ClusterDiscoveryMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "redis" => Ok(Self::Redis),
+            "static" => Ok(Self::Static),
+            "k8s_dns" => Ok(Self::K8sDns),
+            _ => Err(format!("expected one of: {}", Self::ALLOWED_VALUES)),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterLeaderElectionMode {
+    #[default]
+    Redis,
+    K8sLease,
+}
+
+impl ClusterLeaderElectionMode {
+    pub const ALLOWED_VALUES: &'static str = "redis, k8s_lease";
+}
+
+impl fmt::Display for ClusterLeaderElectionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Redis => "redis",
+            Self::K8sLease => "k8s_lease",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for ClusterLeaderElectionMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "redis" => Ok(Self::Redis),
+            "k8s_lease" => Ok(Self::K8sLease),
+            _ => Err(format!("expected one of: {}", Self::ALLOWED_VALUES)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClusterChannelConfig {
@@ -3360,20 +3485,20 @@ pub struct ClusterChannelConfig {
     pub publish_channel_capacity: usize,
 
     /// Discovery mode for cluster node registration.
-    /// - "redis": Use Redis-based node registry (default, works everywhere)
+    /// - `redis`: Use Redis-based node registry (default, works everywhere)
     /// - "`k8s_dns"`: Use Kubernetes headless service DNS for peer discovery
     ///   (requires `HEADLESS_SERVICE_NAME` and `POD_NAMESPACE` env vars).
     ///   NOTE: K8s DNS mode still requires Redis for health monitoring, load
     ///   balancing, and cluster pub/sub. DNS only supplements peer discovery
     ///   (faster detection of new pods). Without Redis, `k8s_dns` mode provides
     ///   DNS resolution only -- no `NodeRegistry`, `HealthMonitor`, or `LoadBalancer`.
-    pub discovery_mode: String,
+    pub discovery_mode: ClusterDiscoveryMode,
 
     /// Leader election mode for singleton operations.
-    /// - "redis": Use Redis-based distributed locks (default, works everywhere)
+    /// - `redis`: Use Redis-based distributed locks (default, works everywhere)
     /// - "`k8s_lease"`: Use Kubernetes coordination.k8s.io/v1 Lease resource
     ///   (requires `POD_NAME` and `POD_NAMESPACE` env vars, RBAC permissions)
-    pub leader_election_mode: String,
+    pub leader_election_mode: ClusterLeaderElectionMode,
 
     /// Static peer addresses for non-K8s / non-Redis cluster discovery.
     /// When configured, each peer is periodically health-checked via gRPC
@@ -3404,8 +3529,8 @@ impl Default for ClusterChannelConfig {
             enabled: false,
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
-            discovery_mode: "redis".to_string(),
-            leader_election_mode: "redis".to_string(),
+            discovery_mode: ClusterDiscoveryMode::Redis,
+            leader_election_mode: ClusterLeaderElectionMode::Redis,
             peers: Vec::new(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
@@ -3717,6 +3842,7 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
@@ -3748,6 +3874,7 @@ mod tests {
         let config = Config {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig {
                 enabled: true,
@@ -3964,6 +4091,7 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig {
@@ -4055,7 +4183,7 @@ mod tests {
     fn test_validate_cluster_oauth2_rejects_redis_sentinel_backend_without_url() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
         config.oauth2.providers = serde_json::json!({
             "github": {
                 "type": "github",
@@ -5410,7 +5538,7 @@ jwt:
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         config.redis.sentinel_master_name = Some("mymaster".to_string());
         config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
-        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
 
         let errors = config
@@ -5436,7 +5564,7 @@ jwt:
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
         config.redis.sentinel_master_name = Some("mymaster".to_string());
         config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
-        config.cluster.leader_election_mode = "redis".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::Redis;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
 
         let errors = config.validate().unwrap_err();
@@ -5609,32 +5737,35 @@ jwt:
     }
 
     #[test]
-    fn test_validate_rejects_unknown_cluster_discovery_mode() {
-        let mut config = valid_prod_config();
-        config.cluster.discovery_mode = "mystery".to_string();
-
-        let errors = config.validate().unwrap_err();
+    fn test_from_env_rejects_unknown_cluster_discovery_mode() {
+        let error = Config::from_env_map(&env_map(&[("SYNCTV_CLUSTER_DISCOVERY_MODE", "mystery")]))
+            .expect_err("invalid discovery mode override must fail closed");
 
         assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("cluster.discovery_mode") && e.contains("redis")),
-            "Expected discovery_mode validation error, got: {errors:?}"
+            error.to_string().contains("SYNCTV_CLUSTER_DISCOVERY_MODE")
+                && error
+                    .to_string()
+                    .contains(ClusterDiscoveryMode::ALLOWED_VALUES),
+            "Expected discovery_mode parse error, got: {error}"
         );
     }
 
     #[test]
-    fn test_validate_rejects_unknown_cluster_leader_election_mode() {
-        let mut config = valid_prod_config();
-        config.cluster.leader_election_mode = "mystery".to_string();
-
-        let errors = config.validate().unwrap_err();
+    fn test_from_env_rejects_unknown_cluster_leader_election_mode() {
+        let error = Config::from_env_map(&env_map(&[(
+            "SYNCTV_CLUSTER_LEADER_ELECTION_MODE",
+            "mystery",
+        )]))
+        .expect_err("invalid leader election mode override must fail closed");
 
         assert!(
-            errors
-                .iter()
-                .any(|e| { e.contains("cluster.leader_election_mode") && e.contains("redis") }),
-            "Expected leader_election_mode validation error, got: {errors:?}"
+            error
+                .to_string()
+                .contains("SYNCTV_CLUSTER_LEADER_ELECTION_MODE")
+                && error
+                    .to_string()
+                    .contains(ClusterLeaderElectionMode::ALLOWED_VALUES),
+            "Expected leader_election_mode parse error, got: {error}"
         );
     }
 
@@ -5642,7 +5773,7 @@ jwt:
     fn test_validate_k8s_dns_requires_env_vars_in_cluster_mode() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.cluster.discovery_mode = "k8s_dns".to_string();
+        config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
 
         let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
 
@@ -5670,7 +5801,7 @@ jwt:
     fn test_validate_k8s_lease_requires_env_vars_in_cluster_mode() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
 
         let errors = config.validate_with_env_map(&HashMap::new()).unwrap_err();
 
@@ -5705,7 +5836,7 @@ jwt:
 
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.cluster.discovery_mode = "k8s_dns".to_string();
+        config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
 
         let errors = config
             .validate_with_env_map(&env_map(&[
@@ -5730,7 +5861,7 @@ jwt:
 
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.cluster.leader_election_mode = "k8s_lease".to_string();
+        config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
 
         let errors = config
             .validate_with_env_map(&env_map(&[

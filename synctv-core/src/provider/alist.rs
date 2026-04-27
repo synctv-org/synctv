@@ -546,11 +546,10 @@ impl AlistProvider {
                 "credential_owner_id not available in ProviderContext".to_string(),
             )
         })?;
-
         let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,
             Self::NAME,
-            credential_owner_id,
+            *credential_owner_id,
             &config.server_id,
             ctx.request_context(),
         )
@@ -960,7 +959,7 @@ impl MediaProvider for AlistProvider {
                 )
             })?;
             let cred = repo
-                .get_by_provider_and_server(credential_owner_id, Self::NAME, &config.server_id)
+                .get_by_provider_and_server(*credential_owner_id, Self::NAME, &config.server_id)
                 .await
                 .map_err(|e| {
                     ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
@@ -991,7 +990,7 @@ impl MediaProvider for AlistProvider {
 
         Ok(vec![ProviderCredentialDependency::new(
             Self::NAME,
-            credential_owner_id,
+            credential_owner_id.to_string(),
             config.server_id,
         )])
     }
@@ -1728,6 +1727,7 @@ impl DynamicFolder for AlistProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::UserId;
     use crate::provider::provider_client::AlistTranscodingTask;
     use crate::repository::ProviderInstanceRepository;
     use async_trait::async_trait;
@@ -1923,8 +1923,8 @@ mod tests {
     async fn test_alist_credential_dependencies_use_creator_credential() {
         let provider = AlistProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id("viewer-1")
-            .with_credential_owner_id("creator-1");
+            .with_user_id(UserId::from(1))
+            .with_credential_owner_id(UserId::from(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -1939,7 +1939,7 @@ mod tests {
             dependencies,
             vec![ProviderCredentialDependency::new(
                 AlistProvider::NAME,
-                "creator-1",
+                "2",
                 "alist-main"
             )]
         );
@@ -1948,7 +1948,7 @@ mod tests {
     #[tokio::test]
     async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
         let provider = AlistProvider::new(fake_provider_instance_manager());
-        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let ctx = ProviderContext::new("test").with_user_id(UserId::from(1));
         let err = provider
             .credential_dependencies(
                 &ctx,

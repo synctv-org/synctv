@@ -6444,7 +6444,10 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.description, "created through full-stack gRPC e2e");
     assert_eq!(room.created_by, login.user.expect("login user").id);
     assert_eq!(room.member_count, 1);
-    assert_eq!(room.id.len(), 12);
+    let decoded_room_id = synctv_core::PublicIdCodec::default_for_tests()
+        .decode_room_id(&room.id)
+        .expect("created room id should be a typed public room id");
+    assert!(decoded_room_id.as_i64() > 0);
 
     // per-test isolated server
 }

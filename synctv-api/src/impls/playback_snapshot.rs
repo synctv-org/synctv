@@ -94,6 +94,9 @@ pub(crate) async fn provider_credential_dependency_fingerprint(
 
     let mut hasher = Sha256::new();
     for dependency in dependencies {
+        let dependency_user_id = dependency.user_id.parse::<UserId>().map_err(|error| {
+            ApiError::InvalidInput(format!("Invalid credential dependency user id: {error}"))
+        })?;
         hasher.update(dependency.provider.as_bytes());
         hasher.update(b"\0");
         hasher.update(dependency.user_id.as_bytes());
@@ -103,7 +106,7 @@ pub(crate) async fn provider_credential_dependency_fingerprint(
 
         let credential = repo
             .get_by_provider_and_server(
-                &dependency.user_id,
+                dependency_user_id,
                 &dependency.provider,
                 &dependency.server_id,
             )
@@ -120,7 +123,7 @@ pub(crate) async fn provider_credential_dependency_fingerprint(
                 hasher.update(b"\0");
                 hasher.update(
                     synctv_core::provider::credential_resolver::credential_revision(
-                        &credential.id,
+                        credential.id,
                         credential.updated_at,
                     )
                     .as_bytes(),

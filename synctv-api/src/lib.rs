@@ -24,11 +24,9 @@ mod room_cache_fanout;
 mod room_lifecycle_fanout;
 pub mod runtime;
 
-// Shared validation utilities
-pub mod room_id_validation;
-
 // Re-export commonly used types
 pub use http::AppState;
+pub use synctv_core::PublicIdCodec;
 
 /// Shared Redis connection handle that supports Sentinel failover.
 ///

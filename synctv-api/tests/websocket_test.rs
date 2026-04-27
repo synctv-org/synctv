@@ -227,7 +227,7 @@ mod jwt_auth {
     #[test]
     fn test_sign_access_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_123".to_string());
+        let user_id = UserId::from(10_000_013);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         assert!(!token.is_empty());
         // JWT has 3 parts separated by dots
@@ -237,7 +237,7 @@ mod jwt_auth {
     #[test]
     fn test_sign_refresh_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_456".to_string());
+        let user_id = UserId::from(10_000_014);
         let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         assert!(!token.is_empty());
     }
@@ -245,11 +245,11 @@ mod jwt_auth {
     #[test]
     fn test_verify_access_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_789".to_string());
+        let user_id = UserId::from(10_000_015);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         let claims = svc.verify_access_token(&token).unwrap();
-        assert_eq!(claims.sub, "user_789");
+        assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_access_token());
         assert!(!claims.is_refresh_token());
     }
@@ -257,11 +257,11 @@ mod jwt_auth {
     #[test]
     fn test_verify_refresh_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_abc".to_string());
+        let user_id = UserId::from(10_000_016);
         let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
 
         let claims = svc.verify_refresh_token(&token).unwrap();
-        assert_eq!(claims.sub, "user_abc");
+        assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_refresh_token());
         assert!(!claims.is_access_token());
     }
@@ -272,7 +272,7 @@ mod jwt_auth {
         let svc2 = JwtService::new("another-secret-that-is-different-and-long-enough-for-the-test")
             .unwrap();
 
-        let user_id = UserId::from_string("user_xyz".to_string());
+        let user_id = UserId::from(10_000_017);
         let token = svc1.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Verification with different secret should fail
@@ -295,31 +295,31 @@ mod jwt_auth {
     fn test_validator_extract_user_id_from_bearer() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from_string("user_val".to_string());
+        let user_id = UserId::from(10_000_018);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let _bearer = format!("Bearer {token}");
 
         let extracted = validator.validate_and_extract_user_id(&token).unwrap();
-        assert_eq!(extracted.as_str(), "user_val");
+        assert_eq!(extracted, user_id);
     }
 
     #[test]
     fn test_validator_http_bearer_header() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from_string("user_http".to_string());
+        let user_id = UserId::from(10_000_019);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let header = format!("Bearer {token}");
 
         let claims = validator.validate_http(&header).unwrap();
-        assert_eq!(claims.sub, "user_http");
+        assert_eq!(claims.sub, user_id.to_string());
     }
 
     #[test]
     fn test_validator_rejects_missing_bearer_prefix() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from_string("user_no_prefix".to_string());
+        let user_id = UserId::from(10_000_020);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Without "Bearer " prefix
@@ -329,7 +329,7 @@ mod jwt_auth {
     #[test]
     fn test_access_token_has_jti() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_jti".to_string());
+        let user_id = UserId::from(10_000_021);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
         assert!(!claims.jti.is_empty(), "JWT ID (jti) should be set");
@@ -338,7 +338,7 @@ mod jwt_auth {
     #[test]
     fn test_unique_jti_per_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_unique".to_string());
+        let user_id = UserId::from(10_000_022);
         let token1 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let token2 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims1 = svc.verify_access_token(&token1).unwrap();
@@ -352,7 +352,7 @@ mod jwt_auth {
     #[test]
     fn test_claims_iat_is_recent() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_iat".to_string());
+        let user_id = UserId::from(10_000_023);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
@@ -366,7 +366,7 @@ mod jwt_auth {
     #[test]
     fn test_access_token_exp_is_in_future() {
         let svc = test_jwt_service();
-        let user_id = UserId::from_string("user_exp".to_string());
+        let user_id = UserId::from(10_000_024);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
@@ -934,6 +934,7 @@ mod websocket_e2e {
             None, // live_streaming_infrastructure
             None, // providers_manager
             None, // settings_registry
+            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
         ));
 
         // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
@@ -1028,6 +1029,7 @@ mod websocket_e2e {
             )
             .with_request_executor(shared_request_executor.clone()),
         );
+        let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
         let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
             redis_runtime: None,
             rate_limit_config: rate_limit_config.clone(),
@@ -1039,6 +1041,7 @@ mod websocket_e2e {
             ),
             jwt_validator: jwt_validator.clone(),
             security_pipeline: shared_security_pipeline.clone(),
+            public_id_codec: public_id_codec.clone(),
             request_executor: shared_request_executor.clone(),
             client_api: client_api.clone(),
             admin_api: None,
@@ -1064,6 +1067,7 @@ mod websocket_e2e {
                     credential_encryption: None,
                     credential_repo: user_provider_credential_repo.clone(),
                     signing_key,
+                    public_id_codec: public_id_codec.clone(),
                 })
             },
             proxy_signing_key: std::sync::Arc::new(
@@ -1086,6 +1090,7 @@ mod websocket_e2e {
             ),
             jwt_validator,
             security_pipeline: shared_api_runtime.security_pipeline.clone(),
+            public_id_codec: shared_api_runtime.public_id_codec.clone(),
             request_executor: shared_request_executor,
             client_api,
             admin_api: None,
@@ -1175,16 +1180,36 @@ mod websocket_e2e {
         room_name: &str,
     ) -> String {
         let (room, _member) = room_service
-            .create_room(
-                room_name.to_string(),
-                String::new(),
-                user_id.clone(),
-                None,
-                None,
-            )
+            .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        room.id.as_str().to_string()
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_room_id(room.id)
+            .expect("room id should encode")
+    }
+
+    fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
+        synctv_api::PublicIdCodec::default_for_tests()
+            .decode_room_id(room_id)
+            .expect("test room id should decode")
+    }
+
+    fn encode_test_user_id(user_id: &UserId) -> String {
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_user_id(*user_id)
+            .expect("test user id should encode")
+    }
+
+    fn encode_test_media_id(media_id: &synctv_core::models::MediaId) -> String {
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_media_id(*media_id)
+            .expect("test media id should encode")
+    }
+
+    fn encode_test_playlist_id(playlist_id: &synctv_core::models::PlaylistId) -> String {
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_playlist_id(*playlist_id)
+            .expect("test playlist id should encode")
     }
 
     /// Connect to the WebSocket endpoint using Authorization header.
@@ -1360,7 +1385,7 @@ mod websocket_e2e {
             Some(server_message::Message::UserJoined(joined)) => {
                 assert_eq!(joined.room_id, room_id);
                 let member = joined.member.expect("member should be present");
-                assert_eq!(member.user_id, user_id.as_str());
+                assert_eq!(member.user_id, encode_test_user_id(&user_id));
                 assert!(member.is_online);
             }
             other => panic!("Expected UserJoined, got: {other:?}"),
@@ -1623,10 +1648,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user2_mc").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join room");
 
@@ -1642,7 +1667,8 @@ mod websocket_e2e {
             loop {
                 let msg = recv_server_message(&mut ws1).await.expect("stream ended");
                 if let Some(server_message::Message::UserJoined(ref joined)) = msg.message {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                        == Some(encode_test_user_id(&user2_id).as_str())
                     {
                         return msg;
                     }
@@ -1656,7 +1682,7 @@ mod websocket_e2e {
             Some(server_message::Message::UserJoined(joined)) => {
                 assert_eq!(joined.room_id, room_id);
                 let member = joined.member.expect("member");
-                assert_eq!(member.user_id, user2_id.as_str());
+                assert_eq!(member.user_id, encode_test_user_id(&user2_id));
             }
             other => panic!("Expected UserJoined for user2, got: {other:?}"),
         }
@@ -1680,10 +1706,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "receiver_cb").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join");
 
@@ -1723,7 +1749,7 @@ mod websocket_e2e {
             Some(server_message::Message::Chat(chat)) => {
                 assert_eq!(chat.content, "Hello from user1!");
                 assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, user1_id.as_str());
+                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
             }
             other => panic!("Expected Chat message, got: {other:?}"),
         }
@@ -1784,10 +1810,10 @@ mod websocket_e2e {
         // Add user2
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "leaver_ul").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -1818,7 +1844,7 @@ mod websocket_e2e {
         match left_event.message {
             Some(server_message::Message::UserLeft(left)) => {
                 assert_eq!(left.room_id, room_id);
-                assert_eq!(left.user_id, user2_id.as_str());
+                assert_eq!(left.user_id, encode_test_user_id(&user2_id));
             }
             other => panic!("Expected UserLeft, got: {other:?}"),
         }
@@ -1938,7 +1964,7 @@ mod websocket_e2e {
             Some(server_message::Message::UserJoined(joined)) => {
                 assert_eq!(joined.room_id, room_id);
                 let member = joined.member.expect("member");
-                assert_eq!(member.user_id, user_id.as_str());
+                assert_eq!(member.user_id, encode_test_user_id(&user_id));
             }
             other => panic!("Expected UserJoined on reconnect, got: {other:?}"),
         }
@@ -1980,10 +2006,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "victim_kick").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -2038,10 +2064,10 @@ mod websocket_e2e {
             "victim_kick_noleft",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -2113,10 +2139,10 @@ mod websocket_e2e {
             "victim_admin_kick",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -2129,8 +2155,8 @@ mod websocket_e2e {
 
         let event = synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
-            room_id: rid.clone(),
-            user_id: user2_id.clone(),
+            room_id: rid,
+            user_id: user2_id,
             reason: "admin kick".to_string(),
             timestamp: chrono::Utc::now(),
         };
@@ -2187,10 +2213,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "xrep_u2").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server1
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join");
 
@@ -2231,7 +2257,7 @@ mod websocket_e2e {
             Some(server_message::Message::Chat(chat)) => {
                 assert_eq!(chat.content, "Cross-replica hello!");
                 assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, user1_id.as_str());
+                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
             }
             other => panic!("Expected Chat message via cross-replica, got: {other:?}"),
         }
@@ -2267,10 +2293,10 @@ mod websocket_e2e {
             "multi_presence_xrep_user",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server1
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -2375,10 +2401,10 @@ mod websocket_e2e {
             "multi_join_xrep_user",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server1
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -2399,7 +2425,8 @@ mod websocket_e2e {
                     .await
                     .expect("stream ended");
                 if let Some(server_message::Message::UserJoined(joined)) = msg.message {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                        == Some(encode_test_user_id(&user2_id).as_str())
                     {
                         return joined;
                     }
@@ -2438,10 +2465,10 @@ mod websocket_e2e {
 
         let (member_id, member_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "matrix_member").await;
-        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        let room = decode_test_room_id(&room_id);
         server1
             .room_service
-            .join_room(room.clone(), member_id.clone(), None)
+            .join_room(room, member_id, None)
             .await
             .expect("member join");
 
@@ -2457,11 +2484,16 @@ mod websocket_e2e {
         let media_one = synctv_core::models::MediaId::new();
         let media_two = synctv_core::models::MediaId::new();
         let playlist_id = synctv_core::models::PlaylistId::new();
+        let public_owner_id = encode_test_user_id(&owner_id);
+        let public_member_id = encode_test_user_id(&member_id);
+        let public_media_one = encode_test_media_id(&media_one);
+        let public_media_two = encode_test_media_id(&media_two);
+        let public_playlist_id = encode_test_playlist_id(&playlist_id);
 
         let playlist = synctv_core::models::Playlist {
-            id: playlist_id.clone(),
-            room_id: room.clone(),
-            creator_id: Some(owner_id.clone()),
+            id: playlist_id,
+            room_id: room,
+            creator_id: Some(owner_id),
             name: "Realtime Playlist".to_string(),
             parent_id: None,
             position: 1024.0,
@@ -2482,8 +2514,8 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 message: "cross-replica danmaku".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -2498,7 +2530,7 @@ mod websocket_e2e {
                     &message.message,
                     Some(server_message::Message::Chat(chat))
                         if chat.content == "cross-replica danmaku"
-                            && chat.user_id == owner_id.as_str()
+                            && chat.user_id == public_owner_id
                             && chat.position.is_some_and(|position| (position - 12.5).abs() < 0.01)
                             && chat.color.as_deref() == Some("#ff6600")
                 )
@@ -2515,10 +2547,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::MediaAdded {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                media_id: media_one.clone(),
+                media_id: media_one,
                 media_title: "Matrix Media One".to_string(),
                 timestamp: chrono::Utc::now(),
             });
@@ -2529,9 +2561,9 @@ mod websocket_e2e {
                 matches!(
                     &message.message,
                     Some(server_message::Message::MediaAdded(media))
-                        if media.media_id == media_one.as_str()
+                        if media.media_id == public_media_one
                             && media.title == "Matrix Media One"
-                            && media.added_by_user_id == owner_id.as_str()
+                            && media.added_by_user_id == public_owner_id
                 )
             },
             "cross-replica media added",
@@ -2549,10 +2581,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::MediaUpdated {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                media_id: media_one.clone(),
+                media_id: media_one,
                 media_title: "Matrix Media One Renamed".to_string(),
                 timestamp: chrono::Utc::now(),
             });
@@ -2563,9 +2595,9 @@ mod websocket_e2e {
                 matches!(
                     &message.message,
                     Some(server_message::Message::MediaUpdated(media))
-                        if media.media_id == media_one.as_str()
+                        if media.media_id == public_media_one
                             && media.title == "Matrix Media One Renamed"
-                            && media.updated_by_user_id == owner_id.as_str()
+                            && media.updated_by_user_id == public_owner_id
                 )
             },
             "cross-replica media updated",
@@ -2583,10 +2615,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistReordered {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                media_ids: vec![media_two.clone(), media_one.clone()],
+                media_ids: vec![media_two, media_one],
                 timestamp: chrono::Utc::now(),
             });
         let playlist_reordered_msg = recv_matching_server_message(
@@ -2598,10 +2630,10 @@ mod websocket_e2e {
                     Some(server_message::Message::PlaylistReordered(reordered))
                         if reordered.media_ids
                             == vec![
-                                media_two.as_str().to_string(),
-                                media_one.as_str().to_string()
+                                public_media_two.clone(),
+                                public_media_one.clone()
                             ]
-                            && reordered.reordered_by_user_id == owner_id.as_str()
+                            && reordered.reordered_by_user_id == public_owner_id
                 )
             },
             "cross-replica playlist reordered",
@@ -2619,10 +2651,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemoved {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                media_id: media_one.clone(),
+                media_id: media_one,
                 timestamp: chrono::Utc::now(),
             });
         let media_removed_msg = recv_matching_server_message(
@@ -2632,8 +2664,8 @@ mod websocket_e2e {
                 matches!(
                     &message.message,
                     Some(server_message::Message::MediaRemoved(media))
-                        if media.media_id == media_one.as_str()
-                            && media.removed_by_user_id == owner_id.as_str()
+                        if media.media_id == public_media_one
+                            && media.removed_by_user_id == public_owner_id
                 )
             },
             "cross-replica media removed",
@@ -2651,10 +2683,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                media_ids: vec![media_one.clone(), media_two.clone()],
+                media_ids: vec![media_one, media_two],
                 timestamp: chrono::Utc::now(),
             });
         let media_removed_batch_msg = recv_matching_server_message(
@@ -2666,10 +2698,10 @@ mod websocket_e2e {
                     Some(server_message::Message::MediaRemovedBatch(batch))
                         if batch.media_ids
                             == vec![
-                                media_one.as_str().to_string(),
-                                media_two.as_str().to_string()
+                                public_media_one.clone(),
+                                public_media_two.clone()
                             ]
-                            && batch.removed_by_user_id == owner_id.as_str()
+                            && batch.removed_by_user_id == public_owner_id
                 )
             },
             "cross-replica media removed batch",
@@ -2687,8 +2719,8 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistCreated {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 playlist: playlist.clone(),
                 timestamp: chrono::Utc::now(),
@@ -2704,7 +2736,7 @@ mod websocket_e2e {
                             .playlist
                             .as_ref()
                             .is_some_and(|playlist| {
-                                playlist.id == playlist_id.as_str()
+                                playlist.id == public_playlist_id
                                     && playlist.name == "Realtime Playlist"
                             })
                 )
@@ -2724,8 +2756,8 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistUpdated {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 playlist: updated_playlist,
                 timestamp: chrono::Utc::now(),
@@ -2741,7 +2773,7 @@ mod websocket_e2e {
                             .playlist
                             .as_ref()
                             .is_some_and(|playlist| {
-                                playlist.id == playlist_id.as_str()
+                                playlist.id == public_playlist_id
                                     && playlist.name == "Realtime Playlist Renamed"
                             })
                 )
@@ -2761,10 +2793,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistDeleted {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
-                playlist_id: playlist_id.clone(),
+                playlist_id,
                 timestamp: chrono::Utc::now(),
             });
         let playlist_deleted_msg = recv_matching_server_message(
@@ -2774,7 +2806,7 @@ mod websocket_e2e {
                 matches!(
                     &message.message,
                     Some(server_message::Message::PlaylistDeleted(deleted))
-                        if deleted.playlist_id == playlist_id.as_str()
+                        if deleted.playlist_id == public_playlist_id
                 )
             },
             "cross-replica playlist deleted",
@@ -2794,10 +2826,10 @@ mod websocket_e2e {
             .cluster_manager
             .broadcast(synctv_cluster::sync::ClusterEvent::PermissionChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                target_user_id: member_id.clone(),
+                room_id: room,
+                target_user_id: member_id,
                 target_username: "matrix_member".to_string(),
-                changed_by: owner_id.clone(),
+                changed_by: owner_id,
                 changed_by_username: "matrix_owner".to_string(),
                 new_permissions: synctv_core::models::PermissionBits(permission_bits),
                 role: synctv_proto::common::RoomMemberRole::Admin as i32,
@@ -2814,7 +2846,7 @@ mod websocket_e2e {
                 matches!(
                     &message.message,
                     Some(server_message::Message::PermissionChanged(permission))
-                        if permission.user_id == member_id.as_str()
+                        if permission.user_id == public_member_id
                             && permission.role == synctv_proto::common::RoomMemberRole::Admin as i32
                             && permission.effective_permissions == permission_bits
                             && permission.admin_added_permissions == permission_bits
@@ -2839,8 +2871,8 @@ mod websocket_e2e {
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 settings_json: serde_json::to_vec(&updated_settings).expect("encode room settings"),
                 version: 7,
@@ -2878,8 +2910,8 @@ mod websocket_e2e {
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 settings_json: serde_json::to_vec(&default_settings).expect("encode room settings"),
                 version: 8,
@@ -2915,7 +2947,7 @@ mod websocket_e2e {
             .broadcast(synctv_cluster::sync::ClusterEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
-                deleted_by: owner_id.clone(),
+                deleted_by: owner_id,
                 timestamp: chrono::Utc::now(),
             });
         let room_deleted_msg = recv_matching_server_message(
@@ -2966,10 +2998,10 @@ mod websocket_e2e {
             "playback_matrix_member",
         )
         .await;
-        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        let room = decode_test_room_id(&room_id);
         server1
             .room_service
-            .join_room(room.clone(), member_id, None)
+            .join_room(room, member_id, None)
             .await
             .expect("member join");
 
@@ -2983,16 +3015,17 @@ mod websocket_e2e {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let media_id = synctv_core::models::MediaId::new();
+        let public_media_id = encode_test_media_id(&media_id);
 
-        let mut started_state = synctv_core::models::RoomPlaybackState::new(room.clone());
-        started_state.playing_media_id = Some(media_id.clone());
+        let mut started_state = synctv_core::models::RoomPlaybackState::new(room);
+        started_state.playing_media_id = Some(media_id);
         started_state.is_playing = true;
         started_state.version = 1;
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: started_state,
                 timestamp: chrono::Utc::now(),
@@ -3007,7 +3040,7 @@ mod websocket_e2e {
                     Some(server_message::Message::PlaybackState(playback))
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
-                                && state.playing_media_id == media_id.as_str()
+                                && state.playing_media_id == public_media_id
                                 && (state.current_time - 0.0).abs() < f64::EPSILON
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 1
@@ -3025,16 +3058,16 @@ mod websocket_e2e {
             "Playback start should be forwarded"
         );
 
-        let mut paused_state = synctv_core::models::RoomPlaybackState::new(room.clone());
-        paused_state.playing_media_id = Some(media_id.clone());
+        let mut paused_state = synctv_core::models::RoomPlaybackState::new(room);
+        paused_state.playing_media_id = Some(media_id);
         paused_state.current_time = 17.5;
         paused_state.is_playing = false;
         paused_state.version = 2;
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: paused_state,
                 timestamp: chrono::Utc::now(),
@@ -3049,7 +3082,7 @@ mod websocket_e2e {
                     Some(server_message::Message::PlaybackState(playback))
                         if playback.state.as_ref().is_some_and(|state| {
                             !state.is_playing
-                                && state.playing_media_id == media_id.as_str()
+                                && state.playing_media_id == public_media_id
                                 && (state.current_time - 17.5).abs() < 0.01
                                 && (state.speed - 1.0).abs() < f64::EPSILON
                                 && state.version == 2
@@ -3067,8 +3100,8 @@ mod websocket_e2e {
             "Playback pause/seek should be forwarded"
         );
 
-        let mut resumed_state = synctv_core::models::RoomPlaybackState::new(room.clone());
-        resumed_state.playing_media_id = Some(media_id.clone());
+        let mut resumed_state = synctv_core::models::RoomPlaybackState::new(room);
+        resumed_state.playing_media_id = Some(media_id);
         resumed_state.current_time = 17.5;
         resumed_state.speed = 1.5;
         resumed_state.is_playing = true;
@@ -3076,8 +3109,8 @@ mod websocket_e2e {
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room.clone(),
-                user_id: owner_id.clone(),
+                room_id: room,
+                user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: resumed_state,
                 timestamp: chrono::Utc::now(),
@@ -3092,7 +3125,7 @@ mod websocket_e2e {
                     Some(server_message::Message::PlaybackState(playback))
                         if playback.state.as_ref().is_some_and(|state| {
                             state.is_playing
-                                && state.playing_media_id == media_id.as_str()
+                                && state.playing_media_id == public_media_id
                                 && (state.current_time - 17.5).abs() < 0.01
                                 && (state.speed - 1.5).abs() < f64::EPSILON
                                 && state.version == 3
@@ -3115,7 +3148,7 @@ mod websocket_e2e {
         server1.cluster_manager.broadcast(
             synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
-                room_id: synctv_core::models::RoomId::from_string(room_id),
+                room_id: decode_test_room_id(&room_id),
                 user_id: owner_id,
                 username: "playback_matrix_owner".to_string(),
                 state: stopped_state,
@@ -3240,10 +3273,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "xss_receiver").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join");
 
@@ -3311,10 +3344,10 @@ mod websocket_e2e {
 
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "dropper_tcp").await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -3343,7 +3376,7 @@ mod websocket_e2e {
         match left_event.message {
             Some(server_message::Message::UserLeft(left)) => {
                 assert_eq!(left.room_id, room_id);
-                assert_eq!(left.user_id, user2_id.as_str());
+                assert_eq!(left.user_id, encode_test_user_id(&user2_id));
             }
             other => panic!("Expected UserLeft after TCP drop, got: {other:?}"),
         }
@@ -3485,10 +3518,10 @@ mod websocket_e2e {
             "danmaku_receiver",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join");
 
@@ -3527,7 +3560,7 @@ mod websocket_e2e {
             Some(server_message::Message::Chat(chat)) => {
                 assert_eq!(chat.content, "LOL");
                 assert_eq!(chat.room_id, room_id);
-                assert_eq!(chat.user_id, user1_id.as_str());
+                assert_eq!(chat.user_id, encode_test_user_id(&user1_id));
                 assert!(chat.position.is_some(), "Danmaku should have a position");
                 assert!(
                     (chat.position.unwrap() - 42.5).abs() < f64::EPSILON,
@@ -3632,10 +3665,10 @@ mod websocket_e2e {
             "join_presence_user",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -3656,7 +3689,8 @@ mod websocket_e2e {
                     .await
                     .expect("stream ended");
                 if let Some(server_message::Message::UserJoined(joined)) = msg.message {
-                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    if joined.member.as_ref().map(|m| m.user_id.as_str())
+                        == Some(encode_test_user_id(&user2_id).as_str())
                     {
                         return joined;
                     }
@@ -3696,10 +3730,10 @@ mod websocket_e2e {
             "multi_presence_user",
         )
         .await;
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid.clone(), user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("join");
 
@@ -3795,7 +3829,7 @@ mod websocket_e2e {
         .await;
         let room_id =
             create_test_room(&server.room_service, &user_id, "Multi Conn WebRTC Room").await;
-        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        let room = decode_test_room_id(&room_id);
 
         let mut ws1 = ws_connect(&server.addr, &room_id, &token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
@@ -3882,10 +3916,10 @@ mod websocket_e2e {
             "Multi Conn WebRTC Offer Room",
         )
         .await;
-        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        let room = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(room.clone(), peer_user_id.clone(), None)
+            .join_room(room, peer_user_id, None)
             .await
             .expect("peer joins room");
 
@@ -3950,7 +3984,7 @@ mod websocket_e2e {
         let offer = ClientMessage {
             message: Some(client_message::Message::WebrtcOffer(
                 synctv_proto::client::WebRtcOffer {
-                    to: peer_user_id.as_str().to_string(),
+                    to: encode_test_user_id(&peer_user_id),
                     from: String::new(),
                     data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
                 },
@@ -3979,7 +4013,7 @@ mod websocket_e2e {
         match error_message.message {
             Some(server_message::Message::Error(error)) => {
                 assert!(
-                    error.message.contains("user_id:conn_id"),
+                    error.message.contains("public_user_id:conn_id"),
                     "expected recipient format error, got: {}",
                     error.message
                 );
@@ -4042,10 +4076,10 @@ mod websocket_e2e {
             "WebRTC Offer Requires Join Room",
         )
         .await;
-        let room = synctv_core::models::RoomId::from_string(room_id.clone());
+        let room = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(room.clone(), peer_user_id.clone(), None)
+            .join_room(room, peer_user_id, None)
             .await
             .expect("peer joins room");
 
@@ -4068,7 +4102,7 @@ mod websocket_e2e {
         let offer = ClientMessage {
             message: Some(client_message::Message::WebrtcOffer(
                 synctv_proto::client::WebRtcOffer {
-                    to: format!("{}:{}", peer_user_id.as_str(), peer_conn_id),
+                    to: format!("{}:{}", encode_test_user_id(&peer_user_id), peer_conn_id),
                     from: String::new(),
                     data: "{\"type\":\"offer\",\"sdp\":\"test-sdp\"}".to_string(),
                 },
@@ -4221,11 +4255,7 @@ mod websocket_e2e {
 
         let ticket = server
             .ws_ticket_service
-            .create_ticket(
-                &outsider_id,
-                &synctv_core::models::RoomId::from_string(room_id.clone()),
-                0,
-            )
+            .create_ticket(&outsider_id, &decode_test_room_id(&room_id), 0)
             .await
             .expect("create websocket ticket");
 
@@ -4245,7 +4275,7 @@ mod websocket_e2e {
 
         let validated = server
             .ws_ticket_service
-            .validate_and_consume(&ticket, &synctv_core::models::RoomId::from_string(room_id))
+            .validate_and_consume(&ticket, &decode_test_room_id(&room_id))
             .await
             .expect("membership rejection must not consume the ticket");
         assert_eq!(validated.user_id, outsider_id);
@@ -4731,6 +4761,7 @@ mod websocket_connection_limit_timing {
             None,
             None,
             None,
+            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
         ));
 
         let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
@@ -4808,6 +4839,7 @@ mod websocket_connection_limit_timing {
             synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
         );
         let shared_proxy_provider_registry = std::sync::Arc::new(providers.build_proxy_registry());
+        let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
         let shared_proxy_signing_key =
             std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
                 b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
@@ -4818,6 +4850,7 @@ mod websocket_connection_limit_timing {
                 credential_encryption: None,
                 credential_repo: user_provider_credential_repo.clone(),
                 signing_key: shared_proxy_signing_key.clone(),
+                public_id_codec: public_id_codec.clone(),
             });
         let shared_request_executor = Arc::new(synctv_api::impls::RequestExecutor::new(
             router_config.config.clone(),
@@ -4849,6 +4882,7 @@ mod websocket_connection_limit_timing {
                 ),
                 jwt_validator: jwt_validator.clone(),
                 security_pipeline: shared_security_pipeline.clone(),
+                public_id_codec: public_id_codec.clone(),
                 request_executor: shared_request_executor.clone(),
                 client_api: client_api.clone(),
                 admin_api: None,
@@ -4875,6 +4909,7 @@ mod websocket_connection_limit_timing {
             ),
             jwt_validator,
             security_pipeline: shared_security_pipeline,
+            public_id_codec,
             request_executor: shared_request_executor,
             client_api,
             admin_api: None,
@@ -4957,16 +4992,18 @@ mod websocket_connection_limit_timing {
         room_name: &str,
     ) -> String {
         let (room, _member) = room_service
-            .create_room(
-                room_name.to_string(),
-                String::new(),
-                user_id.clone(),
-                None,
-                None,
-            )
+            .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        room.id.as_str().to_string()
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_room_id(room.id)
+            .expect("room id should encode")
+    }
+
+    fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
+        synctv_api::PublicIdCodec::default_for_tests()
+            .decode_room_id(room_id)
+            .expect("test room id should decode")
     }
 
     /// Build a WebSocket request with Authorization header (no `?token=` query param).
@@ -5083,10 +5120,10 @@ mod websocket_connection_limit_timing {
 
         let room_id = create_test_room(&server.room_service, &user1_id, "Multi User Room").await;
 
-        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        let rid = decode_test_room_id(&room_id);
         server
             .room_service
-            .join_room(rid, user2_id.clone(), None)
+            .join_room(rid, user2_id, None)
             .await
             .expect("user2 join room");
 

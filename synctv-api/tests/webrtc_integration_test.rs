@@ -305,6 +305,7 @@ mod permissions {
             None,
             None,
             Some(settings_registry.clone()),
+            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
         )
         .with_builtin_stun_url(builtin_stun_url);
 
@@ -361,7 +362,7 @@ mod permissions {
             .create_room(
                 "WebRTC Custom ICE Room".to_string(),
                 String::new(),
-                creator.id.clone(),
+                creator.id,
                 None,
                 None,
             )
@@ -369,17 +370,12 @@ mod permissions {
             .expect("create room");
         fixture
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join room");
         fixture
             .room_service
-            .grant_permission(
-                room.id.clone(),
-                creator.id.clone(),
-                member.id.clone(),
-                PermissionBits::USE_WEBRTC,
-            )
+            .grant_permission(room.id, creator.id, member.id, PermissionBits::USE_WEBRTC)
             .await
             .expect("grant USE_WEBRTC");
 
@@ -439,7 +435,7 @@ mod permissions {
             .create_room(
                 "WebRTC Permission Room".to_string(),
                 String::new(),
-                creator.id.clone(),
+                creator.id,
                 None,
                 None,
             )
@@ -447,19 +443,14 @@ mod permissions {
             .expect("create room");
         fixture
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join room");
 
         fixture
             .room_service
             .member_service()
-            .revoke_permission(
-                room.id.clone(),
-                creator.id.clone(),
-                member.id.clone(),
-                PermissionBits::USE_WEBRTC,
-            )
+            .revoke_permission(room.id, creator.id, member.id, PermissionBits::USE_WEBRTC)
             .await
             .expect("revoke USE_WEBRTC");
 
@@ -511,7 +502,7 @@ mod permissions {
             .create_room(
                 "WebRTC Banned Room".to_string(),
                 String::new(),
-                creator.id.clone(),
+                creator.id,
                 None,
                 None,
             )
@@ -519,7 +510,7 @@ mod permissions {
             .expect("create room");
         fixture
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join room");
         fixture
@@ -574,7 +565,7 @@ mod permissions {
             .create_room(
                 "WebRTC Closed Room".to_string(),
                 String::new(),
-                creator.id.clone(),
+                creator.id,
                 None,
                 None,
             )
@@ -582,7 +573,7 @@ mod permissions {
             .expect("create room");
         fixture
             .room_service
-            .join_room(room.id.clone(), member.id.clone(), None)
+            .join_room(room.id, member.id, None)
             .await
             .expect("join room");
 

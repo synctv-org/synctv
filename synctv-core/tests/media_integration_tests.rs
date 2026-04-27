@@ -78,7 +78,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
                 id: RoomId::new(),
                 name: format!("Media Room {suffix}"),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -95,8 +95,8 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let root_playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Top Level".to_string(),
             parent_id: None,
             position: 0.0,
@@ -122,8 +122,8 @@ async fn setup_test_context(suffix: &str) -> TestContext {
 fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: i32) -> Media {
     Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist_id.clone()),
-        room_id: room_id.clone(),
+        playlist_id: Some(*playlist_id),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
         position: f64::from(position),
@@ -140,7 +140,7 @@ fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
     Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
         position: f64::from(position),
@@ -317,7 +317,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
                 id: RoomId::new(),
                 name: "Media Root Room".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -338,9 +338,9 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
             source_provider, source_config, provider_instance_name, added_at, updated_at, version
         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), 0)",
     )
-    .bind(media_id.as_str())
-    .bind(room.id.as_str())
-    .bind(owner.id.as_str())
+    .bind(media_id)
+    .bind(room.id)
+    .bind(owner.id)
     .bind("root-media.mp4")
     .bind(0.0)
     .bind("direct_url")
@@ -368,10 +368,10 @@ async fn test_media_cascade_delete_with_playlist() {
     let child_playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: ctx.room.id.clone(),
+            room_id: ctx.room.id,
             creator_id: None,
             name: "Child PL".to_string(),
-            parent_id: Some(ctx.root_playlist.id.clone()),
+            parent_id: Some(ctx.root_playlist.id),
             position: 0.0,
             source_provider: None,
             source_config: None,
@@ -494,10 +494,7 @@ async fn test_media_batch_delete() {
         .unwrap();
 
     // Batch delete first two
-    let deleted_count = media_repo
-        .delete_batch(&[m1.id.clone(), m2.id.clone()])
-        .await
-        .unwrap();
+    let deleted_count = media_repo.delete_batch(&[m1.id, m2.id]).await.unwrap();
     assert_eq!(deleted_count, 2);
 
     // Only m3 should remain
@@ -607,10 +604,10 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
     let pl2 = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: ctx.room.id.clone(),
+            room_id: ctx.room.id,
             creator_id: None,
             name: "Second PL".to_string(),
-            parent_id: Some(ctx.root_playlist.id.clone()),
+            parent_id: Some(ctx.root_playlist.id),
             position: 0.0,
             source_provider: None,
             source_config: None,
@@ -647,17 +644,17 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
     }
 
     let counts = media_repo
-        .count_by_playlists_batch(&[ctx.root_playlist.id.as_str(), pl2.id.as_str()])
+        .count_by_playlists_batch(&[ctx.root_playlist.id, pl2.id])
         .await
         .unwrap();
 
     assert_eq!(
-        counts.get(ctx.root_playlist.id.as_str().trim()),
+        counts.get(&ctx.root_playlist.id),
         Some(&3),
         "Root playlist should have 3 items"
     );
     assert_eq!(
-        counts.get(pl2.id.as_str().trim()),
+        counts.get(&pl2.id),
         Some(&2),
         "Second playlist should have 2 items"
     );
@@ -712,15 +709,14 @@ async fn test_get_by_ids_partial_returns_subset() {
     // Ask for only m1 and m2 (not m3), plus a nonexistent ID
     let nonexistent = MediaId::new();
     let results = media_repo
-        .get_by_ids(&[m1.id.clone(), m2.id.clone(), nonexistent])
+        .get_by_ids(&[m1.id, m2.id, nonexistent])
         .await
         .unwrap();
 
     assert_eq!(results.len(), 2, "Should return only the 2 existing items");
-    let result_ids: std::collections::HashSet<String> =
-        results.iter().map(|m| m.id.as_str().to_string()).collect();
-    assert!(result_ids.contains(m1.id.as_str()));
-    assert!(result_ids.contains(m2.id.as_str()));
+    let result_ids: std::collections::HashSet<MediaId> = results.iter().map(|m| m.id).collect();
+    assert!(result_ids.contains(&m1.id));
+    assert!(result_ids.contains(&m2.id));
 }
 
 // delete_by_playlist test
@@ -801,7 +797,7 @@ async fn test_delete_room_root_only_removes_target_room_media() {
                 id: RoomId::new(),
                 name: "Other root media room".to_string(),
                 description: String::new(),
-                created_by: other_owner.id.clone(),
+                created_by: other_owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -856,8 +852,8 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
     // Spawn 10 concurrent tasks, each adding media to the same empty playlist
     for i in 0..num_concurrent {
         let pool = ctx.pool.clone();
-        let playlist_id = ctx.root_playlist.id.clone();
-        let room_id = ctx.room.id.clone();
+        let playlist_id = ctx.root_playlist.id;
+        let room_id = ctx.room.id;
         let media_repo = media_repo.clone();
 
         let handle = tokio::spawn(async move {
@@ -870,8 +866,8 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
 
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: Some(playlist_id.clone()),
-                room_id: room_id.clone(),
+                playlist_id: Some(playlist_id),
+                room_id,
                 creator_id: None,
                 name: format!("concurrent_{i}.mp4"),
                 position,
@@ -965,8 +961,8 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
     // Spawn 5 concurrent tasks adding more media
     for i in 0..num_concurrent {
         let pool = ctx.pool.clone();
-        let playlist_id = ctx.root_playlist.id.clone();
-        let room_id = ctx.room.id.clone();
+        let playlist_id = ctx.root_playlist.id;
+        let room_id = ctx.room.id;
         let media_repo = media_repo.clone();
 
         let handle = tokio::spawn(async move {
@@ -979,8 +975,8 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
 
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: Some(playlist_id.clone()),
-                room_id: room_id.clone(),
+                playlist_id: Some(playlist_id),
+                room_id,
                 creator_id: None,
                 name: format!("new_{i}.mp4"),
                 position,
@@ -1051,7 +1047,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
                 id: RoomId::new(),
                 name: "Cross Room Media A".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -1071,7 +1067,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
                 id: RoomId::new(),
                 name: "Cross Room Media B".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -1088,8 +1084,8 @@ async fn test_media_rejects_cross_room_playlist_reference() {
     let playlist_b = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room_b.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room_b.id,
+            creator_id: Some(owner.id),
             name: "Room B Playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -1106,8 +1102,8 @@ async fn test_media_rejects_cross_room_playlist_reference() {
     let result = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist_b.id.clone()),
-            room_id: room_a.id.clone(),
+            playlist_id: Some(playlist_b.id),
+            room_id: room_a.id,
             creator_id: None,
             name: "cross-room.mp4".to_string(),
             position: 0.0,

@@ -143,26 +143,38 @@ fn build_my_room_list_query(
 
 fn build_transfer_room_ownership_request(
     req: crate::proto::client::TransferRoomOwnershipRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<UserId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    Ok(crate::impls::proto_validated_user_id(req.new_owner_user_id))
+    Ok(crate::impls::proto_validated_user_id(
+        req.new_owner_user_id,
+        public_id_codec,
+    ))
 }
 
 fn build_check_room_request(
     req: crate::proto::client::CheckRoomRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    Ok(crate::impls::proto_validated_room_id(req.room_id))
+    Ok(crate::impls::proto_validated_room_id(
+        req.room_id,
+        public_id_codec,
+    ))
 }
 
 pub(crate) fn build_create_websocket_ticket_request(
     req: &crate::proto::client::CreateWebSocketTicketRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    Ok(crate::impls::proto_validated_room_id(req.room_id.clone()))
+    Ok(crate::impls::proto_validated_room_id(
+        req.room_id.clone(),
+        public_id_codec,
+    ))
 }
 
-type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, String);
+type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
 
 fn build_get_chat_history_request(
     req: &crate::proto::client::GetChatHistoryRequest,
@@ -175,7 +187,10 @@ fn build_get_chat_history_request(
     } else if let Some((ts_str, id)) = req.cursor.split_once('|') {
         let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
             .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        Some((ts, id.to_string()))
+        let id = id
+            .parse::<i64>()
+            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+        Some((ts, id))
     } else {
         return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
     };
@@ -200,11 +215,11 @@ impl ClientApiImpl {
     /// Requires the caller to be a member of the room.
     pub async fn get_playing_media(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<Option<crate::proto::client::Media>, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning playing media
         self.room_service
@@ -217,7 +232,7 @@ impl ClientApiImpl {
             .get_playing_media(&rid)
             .await
             .map_err(ApiError::from)?;
-        Ok(media.map(|m| media_to_proto(&m)))
+        Ok(media.map(|m| media_to_proto(&m, &self.public_id_codec)))
     }
 
     pub async fn list_rooms(
@@ -237,7 +252,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
-        let room_id_strs: Vec<&str> = rooms.iter().map(|room| room.id.as_str()).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)
@@ -245,22 +260,23 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let room_settings_map = self
             .room_service
-            .get_room_settings_batch(&room_id_strs)
+            .get_room_settings_batch(&room_ids)
             .await
             .unwrap_or_default();
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in &rooms {
-            let member_count = member_counts.get(r.id.as_str()).copied();
+            let member_count = member_counts.get(&r.id).copied();
             let availability = *availability_map
                 .get(&r.id)
                 .unwrap_or(&ClientResourceAvailability::Available);
-            let settings = room_settings_map.get(r.id.as_str());
+            let settings = room_settings_map.get(&r.id);
             room_list.push(room_to_proto_with_availability(
                 r,
                 settings,
                 member_count,
                 availability,
+                &self.public_id_codec,
             ));
         }
 
@@ -272,10 +288,10 @@ impl ClientApiImpl {
 
     pub async fn list_my_rooms(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         req: crate::proto::client::ListMyRoomsRequest,
     ) -> Result<crate::proto::client::ListMyRoomsResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
+        let uid = *user_id;
         let query = build_my_room_list_query(req)?;
         let (rooms, total) = self
             .room_service
@@ -284,10 +300,11 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Batch-fetch room settings for three-layer permission calculation (A6 fix)
-        let room_id_strs: Vec<&str> = rooms.iter().map(|(r, _, _, _)| r.id.as_str()).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> =
+            rooms.iter().map(|(room, _, _, _)| room.id).collect();
         let room_settings_map = self
             .room_service
-            .get_room_settings_batch(&room_id_strs)
+            .get_room_settings_batch(&room_ids)
             .await
             .unwrap_or_default();
 
@@ -298,10 +315,7 @@ impl ClientApiImpl {
             // calculate_role_default_permissions applies:
             //   1. Global default permissions (from SettingsRegistry)
             //   2. Room-level overrides (room_added / room_removed)
-            let settings = room_settings_map
-                .get(room.id.as_str())
-                .cloned()
-                .unwrap_or_default();
+            let settings = room_settings_map.get(&room.id).cloned().unwrap_or_default();
             let permissions = self
                 .room_service
                 .permission_service()
@@ -313,7 +327,12 @@ impl ClientApiImpl {
                 crate::proto::client::MyRoomRelation::Participating as i32
             };
             room_list.push(crate::proto::client::MyRoom {
-                room: Some(room_to_proto_basic(room, None, Some(*member_count))),
+                room: Some(room_to_proto_basic(
+                    room,
+                    None,
+                    Some(*member_count),
+                    &self.public_id_codec,
+                )),
                 permissions,
                 role: room_role_to_proto(*role),
                 relation,
@@ -328,7 +347,7 @@ impl ClientApiImpl {
 
     pub async fn create_room(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         mut req: crate::proto::client::CreateRoomRequest,
     ) -> Result<crate::proto::client::CreateRoomResponse, ApiError> {
         // Validate and sanitize room name
@@ -343,7 +362,7 @@ impl ClientApiImpl {
 
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = UserId::from_string(user_id.to_string());
+        let uid = *user_id;
 
         let settings = if req.settings.is_empty() {
             None
@@ -365,7 +384,7 @@ impl ClientApiImpl {
 
         let (room, _member) = self
             .room_service
-            .create_room(req.name, req.description, uid.clone(), password, settings)
+            .create_room(req.name, req.description, uid, password, settings)
             .await
             .map_err(ApiError::from)?;
 
@@ -377,17 +396,18 @@ impl ClientApiImpl {
                 &room,
                 Some(&response_settings),
                 self.load_room_member_count(&room.id).await?,
+                &self.public_id_codec,
             )),
         })
     }
 
     pub async fn get_room(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -406,13 +426,14 @@ impl ClientApiImpl {
             .get_playback_state(&rid)
             .await
             .ok()
-            .map(|s| playback_state_to_proto(&s));
+            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
 
         Ok(crate::proto::client::GetRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
                 None,
                 self.load_room_member_count(&rid).await?,
+                &self.public_id_codec,
             )),
             playback_state,
         })
@@ -420,7 +441,7 @@ impl ClientApiImpl {
 
     pub async fn join_room(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
@@ -431,7 +452,7 @@ impl ClientApiImpl {
 
     pub async fn join_room_with_control(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
@@ -439,8 +460,8 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -493,7 +514,7 @@ impl ClientApiImpl {
 
         let (_room, member, members) = self
             .room_service
-            .join_room(rid.clone(), uid.clone(), password)
+            .join_room(rid, uid, password)
             .await
             .map_err(ApiError::from)?;
 
@@ -512,7 +533,7 @@ impl ClientApiImpl {
             .get_playback_state(&rid)
             .await
             .ok()
-            .map(|s| playback_state_to_proto(&s));
+            .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
 
         let room_settings = self
             .room_service
@@ -523,6 +544,7 @@ impl ClientApiImpl {
             &members,
             &room_settings,
             self.room_service.permission_service(),
+            &self.public_id_codec,
         );
 
         let requires_approval = proto_members.is_empty();
@@ -531,6 +553,7 @@ impl ClientApiImpl {
                 &room,
                 None,
                 self.load_room_member_count(&rid).await?,
+                &self.public_id_codec,
             )),
             members: proto_members,
             playback_state,
@@ -541,16 +564,16 @@ impl ClientApiImpl {
 
     pub async fn leave_room(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         let cluster_event = self.membership_event_fanout.reserve_user_left().await?;
 
         self.room_service
-            .leave_room(rid.clone(), uid.clone())
+            .leave_room(rid, uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -569,17 +592,17 @@ impl ClientApiImpl {
 
     pub async fn delete_room(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let cluster_event = self.room_lifecycle_fanout.reserve_room_deleted().await?;
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
         self.room_service
-            .delete_room(rid.clone(), uid.clone())
+            .delete_room(rid, uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -596,12 +619,12 @@ impl ClientApiImpl {
 
     pub async fn update_room_settings(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::UpdateRoomSettingsRequest,
     ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         if req.settings.is_empty() {
             // SECURITY: Return success with None room instead of room details.
@@ -616,7 +639,7 @@ impl ClientApiImpl {
         let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let snapshot = self
             .room_service
-            .set_settings(rid.clone(), uid.clone(), settings)
+            .set_settings(rid, uid, settings)
             .await
             .map_err(ApiError::from)?;
         let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
@@ -651,6 +674,7 @@ impl ClientApiImpl {
                 &room,
                 None,
                 self.load_room_member_count(&rid).await?,
+                &self.public_id_codec,
             )),
         })
     }
@@ -658,12 +682,12 @@ impl ClientApiImpl {
     /// Set or remove room password
     pub async fn set_room_password(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::SetRoomPasswordRequest,
     ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Validate password length
         if !req.password.is_empty() {
@@ -728,11 +752,11 @@ impl ClientApiImpl {
     /// Requires the caller to be a member of the room.
     pub async fn get_room_settings(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning settings
         self.room_service
@@ -758,11 +782,11 @@ impl ClientApiImpl {
     /// Reset room settings to defaults
     pub async fn reset_room_settings(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
         let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let snapshot = self
@@ -796,13 +820,13 @@ impl ClientApiImpl {
 
     pub async fn transfer_room_ownership(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::TransferRoomOwnershipRequest,
     ) -> Result<crate::proto::client::TransferRoomOwnershipResponse, ApiError> {
-        let current_owner_id = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let new_owner_id = build_transfer_room_ownership_request(req)?;
+        let current_owner_id = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
         let old_owner_permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -815,7 +839,7 @@ impl ClientApiImpl {
 
         let room = self
             .room_service
-            .transfer_room_ownership(rid.clone(), current_owner_id.clone(), new_owner_id.clone())
+            .transfer_room_ownership(rid, current_owner_id, new_owner_id)
             .await
             .map_err(Self::map_room_access_error)?;
         self.membership_event_fanout
@@ -842,6 +866,7 @@ impl ClientApiImpl {
                 &room,
                 None,
                 self.load_room_member_count(&rid).await?,
+                &self.public_id_codec,
             )),
         })
     }
@@ -885,7 +910,7 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::CheckRoomRequest,
     ) -> Result<crate::proto::client::CheckRoomResponse, ApiError> {
-        let rid = build_check_room_request(req)?;
+        let rid = build_check_room_request(req, &self.public_id_codec)?;
 
         match self.room_service.get_room(&rid).await {
             Ok(room) => {
@@ -984,7 +1009,8 @@ impl ClientApiImpl {
             .unwrap_or_default();
 
         // Batch-fetch settings for the top N rooms
-        let room_ids: Vec<&str> = top_rooms.iter().map(|(r, _)| r.id.as_str()).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> =
+            top_rooms.iter().map(|(room, _)| room.id).collect();
         let settings_map = self
             .room_service
             .get_room_settings_batch(&room_ids)
@@ -994,8 +1020,8 @@ impl ClientApiImpl {
         let hot_rooms: Vec<crate::proto::client::RoomWithStats> = top_rooms
             .into_iter()
             .map(|(room, online_count)| {
-                let total_members = member_counts.get(room.id.as_str()).copied().unwrap_or(0);
-                let settings = settings_map.get(room.id.as_str());
+                let total_members = member_counts.get(&room.id).copied().unwrap_or(0);
+                let settings = settings_map.get(&room.id);
                 let availability = *availability_map
                     .get(&room.id)
                     .unwrap_or(&ClientResourceAvailability::Available);
@@ -1006,6 +1032,7 @@ impl ClientApiImpl {
                         settings,
                         Some(total_members),
                         availability,
+                        &self.public_id_codec,
                     )),
                     online_count,
                     total_members,
@@ -1018,12 +1045,12 @@ impl ClientApiImpl {
 
     pub async fn get_chat_history(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership before returning chat history
         self.room_service
@@ -1034,11 +1061,7 @@ impl ClientApiImpl {
         let (limit, cursor) = build_get_chat_history_request(&req)?;
         let (messages, next) = self
             .room_service
-            .get_chat_history_cursor(
-                &rid,
-                cursor.as_ref().map(|(ts, id)| (*ts, id.as_str())),
-                limit,
-            )
+            .get_chat_history_cursor(&rid, cursor, limit)
             .await
             .map_err(ApiError::from)?;
         let next_cursor_str = next.map(|(ts, id)| {
@@ -1052,20 +1075,17 @@ impl ClientApiImpl {
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages
             .iter()
-            .filter_map(|m| m.user_id.clone())
+            .filter_map(|m| m.user_id)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
 
         // Batch fetch usernames (single query instead of N+1)
-        let username_map: std::collections::HashMap<String, String> = self
+        let username_map: std::collections::HashMap<synctv_core::models::UserId, String> = self
             .user_service
             .get_usernames(&user_ids)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, name)| (id.to_string(), name))
-            .collect();
+            .unwrap_or_default();
 
         // Convert to proto format
         let proto_messages = messages
@@ -1073,9 +1093,12 @@ impl ClientApiImpl {
             .map(|m| {
                 let (user_id_str, username) = match &m.user_id {
                     Some(uid) => {
-                        let uid_str = uid.as_str().to_string();
+                        let uid_str = self
+                            .public_id_codec
+                            .encode_user_id(*uid)
+                            .expect("chat message user id must be encodable");
                         let name = username_map
-                            .get(&uid_str)
+                            .get(uid)
                             .cloned()
                             .unwrap_or_else(|| format!("user_{uid_str}"));
                         (uid_str, name)
@@ -1084,8 +1107,11 @@ impl ClientApiImpl {
                 };
 
                 crate::proto::client::ChatMessageReceive {
-                    id: m.id.clone(),
-                    room_id: m.room_id.as_str().to_string(),
+                    id: m.id.to_string(),
+                    room_id: self
+                        .public_id_codec
+                        .encode_room_id(m.room_id)
+                        .expect("chat message room id must be encodable"),
                     user_id: user_id_str,
                     username,
                     content: m.content,
@@ -1237,10 +1263,12 @@ mod tests {
 
     #[test]
     fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() {
+        let codec = crate::PublicIdCodec::default_for_tests();
         let error = build_transfer_room_ownership_request(
             crate::proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
             },
+            &codec,
         )
         .unwrap_err();
 
@@ -1254,9 +1282,13 @@ mod tests {
 
     #[test]
     fn build_check_room_request_rejects_invalid_room_id() {
-        let error = build_check_room_request(crate::proto::client::CheckRoomRequest {
-            room_id: "bad-room".to_string(),
-        })
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let error = build_check_room_request(
+            crate::proto::client::CheckRoomRequest {
+                room_id: "bad-room".to_string(),
+            },
+            &codec,
+        )
         .unwrap_err();
 
         match error {
@@ -1269,10 +1301,12 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_rejects_invalid_room_id() {
+        let codec = crate::PublicIdCodec::default_for_tests();
         let error = build_create_websocket_ticket_request(
             &crate::proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
             },
+            &codec,
         )
         .unwrap_err();
 
@@ -1286,15 +1320,18 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_parses_proto_validated_room_id() {
-        let room_id = synctv_common::snanoid!(12);
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let room_id = synctv_core::models::RoomId::from(123);
+        let room_public_id = codec.encode_room_id(room_id).unwrap();
         let parsed = build_create_websocket_ticket_request(
             &crate::proto::client::CreateWebSocketTicketRequest {
-                room_id: room_id.clone(),
+                room_id: room_public_id,
             },
+            &codec,
         )
         .expect("valid room id");
 
-        assert_eq!(parsed.as_str(), room_id);
+        assert_eq!(parsed, room_id);
     }
 
     #[test]

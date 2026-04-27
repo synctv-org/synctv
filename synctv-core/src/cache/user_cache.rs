@@ -16,11 +16,11 @@ use crate::models::{UserId, UserRole, UserStatus};
 use crate::Result;
 
 impl CacheKey for UserId {
-    fn as_str(&self) -> &str {
-        self.as_str()
+    fn cache_key(&self) -> String {
+        self.to_string()
     }
     fn from_id(id: &str) -> Self {
-        Self::from_string(id.to_string())
+        id.parse().expect("valid numeric cache key")
     }
 }
 
@@ -33,7 +33,7 @@ pub struct UserCache {
 /// Cached user data
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CachedUser {
-    id: String,
+    id: UserId,
     username: String,
     role: UserRole,
     status: UserStatus,
@@ -52,7 +52,7 @@ impl CachedUser {
     /// Create a new `CachedUser`
     #[must_use]
     pub fn new(
-        id: String,
+        id: UserId,
         username: String,
         role: UserRole,
         status: UserStatus,
@@ -76,7 +76,7 @@ impl CachedUser {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn with_updated_at(
-        id: String,
+        id: UserId,
         username: String,
         role: UserRole,
         status: UserStatus,
@@ -102,7 +102,7 @@ impl CachedUser {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn with_security_state(
-        id: String,
+        id: UserId,
         username: String,
         role: UserRole,
         status: UserStatus,
@@ -288,13 +288,13 @@ impl std::fmt::Debug for UserCache {
 mod tests {
     use super::*;
 
-    fn create_test_user_id(id: &str) -> UserId {
-        UserId::from_string(id.to_string())
+    fn create_test_user_id(id: i64) -> UserId {
+        UserId::from(id)
     }
 
-    fn create_test_user(id: &str, username: &str) -> CachedUser {
+    fn create_test_user(id: UserId, username: &str) -> CachedUser {
         CachedUser {
-            id: id.to_string(),
+            id,
             username: username.to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -317,8 +317,8 @@ mod tests {
         )
         .unwrap();
 
-        let user_id = create_test_user_id("user1");
-        let user = create_test_user("user1", "alice");
+        let user_id = create_test_user_id(96_001);
+        let user = create_test_user(user_id, "alice");
 
         // Cache miss
         assert!(cache.get(&user_id).await.unwrap().is_none());
@@ -344,25 +344,22 @@ mod tests {
         )
         .unwrap();
 
-        let user1 = create_test_user_id("user1");
-        let user2 = create_test_user_id("user2");
-        let user3 = create_test_user_id("user3");
+        let user1 = create_test_user_id(96_002);
+        let user2 = create_test_user_id(96_003);
+        let user3 = create_test_user_id(96_004);
 
         // Set some entries
         cache
-            .set(&user1, create_test_user("user1", "alice"))
+            .set(&user1, create_test_user(user1, "alice"))
             .await
             .unwrap();
         cache
-            .set(&user3, create_test_user("user3", "charlie"))
+            .set(&user3, create_test_user(user3, "charlie"))
             .await
             .unwrap();
 
         // Batch lookup
-        let result = cache
-            .get_batch(&[user1.clone(), user2.clone(), user3.clone()])
-            .await
-            .unwrap();
+        let result = cache.get_batch(&[user1, user2, user3]).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(

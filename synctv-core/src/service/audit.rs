@@ -51,6 +51,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::fmt;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -107,7 +109,7 @@ struct AuditRecord {
 }
 
 /// Audit actions
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditAction {
     UserCreated,
@@ -201,8 +203,63 @@ impl AuditAction {
     }
 }
 
+impl FromStr for AuditAction {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "user_created" => Ok(Self::UserCreated),
+            "user_deleted" => Ok(Self::UserDeleted),
+            "user_banned" => Ok(Self::UserBanned),
+            "user_unbanned" => Ok(Self::UserUnbanned),
+            "user_password_updated" => Ok(Self::UserPasswordUpdated),
+            "user_username_updated" => Ok(Self::UserUsernameUpdated),
+            "user_role_updated" => Ok(Self::UserRoleUpdated),
+            "room_created" => Ok(Self::RoomCreated),
+            "room_deleted" => Ok(Self::RoomDeleted),
+            "room_banned" => Ok(Self::RoomBanned),
+            "room_unbanned" => Ok(Self::RoomUnbanned),
+            "room_password_updated" => Ok(Self::RoomPasswordUpdated),
+            "room_ownership_transferred" => Ok(Self::RoomOwnershipTransferred),
+            "permission_granted" => Ok(Self::PermissionGranted),
+            "permission_revoked" => Ok(Self::PermissionRevoked),
+            "provider_instance_created" => Ok(Self::ProviderInstanceCreated),
+            "provider_instance_updated" => Ok(Self::ProviderInstanceUpdated),
+            "provider_instance_deleted" => Ok(Self::ProviderInstanceDeleted),
+            "provider_instance_reconnected" => Ok(Self::ProviderInstanceReconnected),
+            "settings_updated" => Ok(Self::SettingsUpdated),
+            "member_kicked" => Ok(Self::MemberKicked),
+            "member_banned" => Ok(Self::MemberBanned),
+            "member_unbanned" => Ok(Self::MemberUnbanned),
+            "member_role_updated" => Ok(Self::MemberRoleUpdated),
+            "member_permission_updated" => Ok(Self::MemberPermissionUpdated),
+            "member_status_updated" => Ok(Self::MemberStatusUpdated),
+            "room_settings_updated" => Ok(Self::RoomSettingsUpdated),
+            "user_approved" => Ok(Self::UserApproved),
+            "room_approved" => Ok(Self::RoomApproved),
+            "room_rejected" => Ok(Self::RoomRejected),
+            "stream_kicked" => Ok(Self::StreamKicked),
+            "rate_limit_reset_failed" => Ok(Self::RateLimitResetFailed),
+            "user_login" => Ok(Self::UserLogin),
+            "user_logout" => Ok(Self::UserLogout),
+            "token_issued" => Ok(Self::TokenIssued),
+            "token_refreshed" => Ok(Self::TokenRefreshed),
+            "token_family_revoked" => Ok(Self::TokenFamilyRevoked),
+            "settings_viewed" => Ok(Self::SettingsViewed),
+            "settings_group_viewed" => Ok(Self::SettingsGroupViewed),
+            other => Err(format!("Unknown audit action: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for AuditAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Target types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditTargetType {
     User,
@@ -228,6 +285,30 @@ impl AuditTargetType {
             Self::Stream => "stream",
             Self::Token => "token",
         }
+    }
+}
+
+impl FromStr for AuditTargetType {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "user" => Ok(Self::User),
+            "room" => Ok(Self::Room),
+            "member" => Ok(Self::Member),
+            "provider_instance" => Ok(Self::ProviderInstance),
+            "settings" => Ok(Self::Settings),
+            "system" => Ok(Self::System),
+            "stream" => Ok(Self::Stream),
+            "token" => Ok(Self::Token),
+            other => Err(format!("Unknown audit target type: {other}")),
+        }
+    }
+}
+
+impl fmt::Display for AuditTargetType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -419,7 +500,7 @@ impl AuditService {
         ";
 
         sqlx::query(query)
-            .bind(actor_id)
+            .bind(parse_actor_id_for_storage(actor_id))
             .bind(actor_username)
             .bind(action_str)
             .bind(target_str)
@@ -877,6 +958,10 @@ const FLUSH_MAX_RETRIES: u32 = 3;
 /// Base delay in milliseconds for exponential backoff on flush retries
 const FLUSH_RETRY_BASE_MS: u64 = 100;
 
+fn parse_actor_id_for_storage(actor_id: &str) -> Option<i64> {
+    actor_id.parse::<i64>().ok().filter(|id| *id > 0)
+}
+
 /// Flush a batch of audit records to the database with retry on failure.
 ///
 /// Uses exponential backoff (100ms, 200ms, 400ms) before giving up and
@@ -886,7 +971,7 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     tracing::debug!(batch_size = batch_size, "Flushing audit event batch");
 
     // Build a batch insert using UNNEST for efficiency
-    let mut actor_ids = Vec::with_capacity(batch_size);
+    let mut actor_ids: Vec<Option<i64>> = Vec::with_capacity(batch_size);
     let mut actor_usernames = Vec::with_capacity(batch_size);
     let mut actions = Vec::with_capacity(batch_size);
     let mut target_types = Vec::with_capacity(batch_size);
@@ -897,7 +982,7 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(batch_size);
 
     for record in buffer.iter() {
-        actor_ids.push(record.actor_id.clone());
+        actor_ids.push(parse_actor_id_for_storage(&record.actor_id));
         actor_usernames.push(record.actor_username.clone());
         actions.push(record.action_str.to_string());
         target_types.push(record.target_str.to_string());
@@ -914,7 +999,7 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
             details, ip_address, user_agent, created_at
         )
         SELECT * FROM UNNEST(
-            $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+            $1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[],
             $6::jsonb[], $7::text[], $8::text[], $9::timestamptz[]
         )
     ";
@@ -1553,5 +1638,25 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[test]
+    fn test_audit_action_and_target_display_parse_roundtrip() {
+        assert_eq!(AuditAction::TokenIssued.to_string(), "token_issued");
+        assert_eq!(
+            "ROOM_OWNERSHIP_TRANSFERRED".parse::<AuditAction>().unwrap(),
+            AuditAction::RoomOwnershipTransferred
+        );
+        assert!("unknown_action".parse::<AuditAction>().is_err());
+
+        assert_eq!(
+            AuditTargetType::ProviderInstance.to_string(),
+            "provider_instance"
+        );
+        assert_eq!(
+            "STREAM".parse::<AuditTargetType>().unwrap(),
+            AuditTargetType::Stream
+        );
+        assert!("unknown_target".parse::<AuditTargetType>().is_err());
     }
 }

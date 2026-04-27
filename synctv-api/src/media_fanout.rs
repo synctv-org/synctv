@@ -168,10 +168,10 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) {
         let event = ClusterEvent::MediaAdded {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.to_string(),
-            media_id: media_id.clone(),
+            media_id: *media_id,
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
@@ -188,10 +188,10 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) {
         let event = ClusterEvent::MediaRemoved {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.to_string(),
-            media_id: media_id.clone(),
+            media_id: *media_id,
             timestamp: chrono::Utc::now(),
         };
         reservation.publish(PublishRequest { event });
@@ -208,10 +208,10 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) {
         let event = ClusterEvent::MediaUpdated {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.to_string(),
-            media_id: media_id.clone(),
+            media_id: *media_id,
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
@@ -228,8 +228,8 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) {
         let event = ClusterEvent::MediaRemovedBatch {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.to_string(),
             media_ids,
             timestamp: chrono::Utc::now(),
@@ -248,8 +248,8 @@ impl MediaFanoutService for DefaultMediaFanoutService {
     ) {
         let event = ClusterEvent::PlaylistReordered {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
             username: username.to_string(),
             media_ids,
             timestamp: chrono::Utc::now(),
@@ -321,7 +321,7 @@ mod tests {
             self.local_events
                 .lock()
                 .expect("recorded local events mutex should not be poisoned")
-                .push((room_id.as_str().to_string(), event.clone()));
+                .push((room_id.to_string(), event.clone()));
             1
         }
 
@@ -343,15 +343,15 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-media-fanout".to_string())
+        RoomId::from(106_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-media-fanout".to_string())
+        UserId::from(106_002)
     }
 
     fn media_id() -> MediaId {
-        MediaId::from_string("media-fanout".to_string())
+        MediaId::from(106_003)
     }
 
     #[tokio::test]
@@ -395,10 +395,10 @@ mod tests {
                 media_title,
                 ..
             } => {
-                assert_eq!(room_id.as_str(), "room-media-fanout");
-                assert_eq!(user_id.as_str(), "user-media-fanout");
+                assert_eq!(room_id, RoomId::from(106_001));
+                assert_eq!(user_id, UserId::from(106_002));
                 assert_eq!(username, "tester");
-                assert_eq!(media_id.as_str(), "media-fanout");
+                assert_eq!(media_id, MediaId::from(106_003));
                 assert_eq!(media_title, "demo");
             }
             other => panic!("expected MediaAdded, got {other:?}"),

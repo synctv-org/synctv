@@ -18,12 +18,18 @@ const SHORT_WEBRTC_TIMEOUT: Duration = Duration::from_millis(60);
 const WEBRTC_TIMEOUT_BUFFER: Duration = Duration::from_millis(25);
 const ACTIVE_SESSION_CHECK_DELAY: Duration = Duration::from_millis(10);
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 #[tokio::test]
@@ -45,10 +51,8 @@ async fn test_webrtc_session_timeout_after_inactivity() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -102,10 +106,8 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -149,10 +151,8 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Join WebRTC session
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
@@ -202,8 +202,8 @@ async fn test_multiple_webrtc_sessions_timeout() {
     // Register multiple connections and join WebRTC
     for i in 0..3 {
         let conn_id = format!("conn{i}");
-        mgr.register(conn_id.clone(), user1.clone()).await.unwrap();
-        mgr.join_room(&conn_id, room.clone()).await.unwrap();
+        mgr.register(conn_id.clone(), user1).await.unwrap();
+        mgr.join_room(&conn_id, room).await.unwrap();
         mgr.mark_rtc_joined(&room, &user1, &conn_id, true);
     }
 
@@ -251,10 +251,8 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     let room = rid("room1");
 
     // Register connection and join WebRTC
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
     tokio::time::sleep(timeout + WEBRTC_TIMEOUT_BUFFER).await;
@@ -268,10 +266,8 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     assert_eq!(rtc_connections.len(), 0, "Session should be cleaned up");
 
     // User reconnects with a new connection
-    mgr.register("conn2".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
+    mgr.register("conn2".to_string(), user).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn2", true);
 
     // Verify new connection is RTC-joined

@@ -126,7 +126,7 @@ fn decode_dynamic_target(target: &[u8]) -> String {
 async fn create_top_level_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist {
     let playlist = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
@@ -154,8 +154,8 @@ async fn insert_media(
 ) -> Media {
     let media = Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist_id.clone()),
-        room_id: room_id.clone(),
+        playlist_id: Some(*playlist_id),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
         position: f64::from(position),
@@ -177,7 +177,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
         position: f64::from(position),
@@ -424,8 +424,8 @@ async fn create_dynamic_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(owner_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*owner_id),
         name: "Dynamic Playlist".to_string(),
         parent_id: None,
         position: 0.0,
@@ -450,8 +450,8 @@ async fn create_dynamic_sensitive_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(owner_id.clone()),
+        room_id: *room_id,
+        creator_id: Some(*owner_id),
         name: "Dynamic Sensitive Playlist".to_string(),
         parent_id: None,
         position: 0.0,
@@ -480,13 +480,7 @@ async fn test_sequential_advance_to_next() {
         .await
         .unwrap();
     let (room, _) = room_service
-        .create_room(
-            "Seq Next".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Seq Next".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -497,13 +491,7 @@ async fn test_sequential_advance_to_next() {
     // Set currently playing to media1
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -528,13 +516,7 @@ async fn test_sequential_end_of_playlist_returns_none() {
 
     let owner = user_repo.create(&make_user("seq_end_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room(
-            "Seq End".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Seq End".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -543,13 +525,7 @@ async fn test_sequential_end_of_playlist_returns_none() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -568,13 +544,7 @@ async fn test_repeat_one_replays_current() {
 
     let owner = user_repo.create(&make_user("rep1_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room(
-            "Rep1".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Rep1".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -584,13 +554,7 @@ async fn test_repeat_one_replays_current() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -619,13 +583,7 @@ async fn test_repeat_all_wraps_around_at_end() {
 
     let owner = user_repo.create(&make_user("repa_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room(
-            "RepAll".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("RepAll".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -636,13 +594,7 @@ async fn test_repeat_all_wraps_around_at_end() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media3.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media3.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -673,7 +625,7 @@ async fn test_repeat_all_middle_advances_to_next() {
         .create_room(
             "RepAll Mid".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -687,13 +639,7 @@ async fn test_repeat_all_middle_advances_to_next() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -724,7 +670,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
         .create_room(
             "Shuffle Single".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -736,13 +682,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -773,7 +713,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
         .create_room(
             "Shuffle Multi".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -786,13 +726,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -817,13 +751,7 @@ async fn test_auto_play_disabled_returns_none() {
 
     let owner = user_repo.create(&make_user("noauto_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room(
-            "No Auto".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("No Auto".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -833,13 +761,7 @@ async fn test_auto_play_disabled_returns_none() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -872,13 +794,7 @@ async fn test_empty_playlist_returns_none() {
         .await
         .unwrap();
     let (room, _) = room_service
-        .create_room(
-            "Empty PL".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Empty PL".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -902,7 +818,7 @@ async fn test_no_current_media_plays_first() {
         .create_room(
             "No Current".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -914,7 +830,7 @@ async fn test_no_current_media_plays_first() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             creator_id: None,
             name: "first_vid".to_string(),
             position: 0.0,
@@ -931,7 +847,7 @@ async fn test_no_current_media_plays_first() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             creator_id: None,
             name: "second_vid".to_string(),
             position: 1.0,
@@ -977,7 +893,7 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
         .create_room(
             "No Current Root A".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -987,7 +903,7 @@ async fn test_no_current_media_ignores_other_rooms_root_media() {
         .create_room(
             "No Current Root B".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1033,7 +949,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         .create_room(
             "Play Next Inactive Media".to_string(),
             String::new(),
-            room_owner.id.clone(),
+            room_owner.id,
             None,
             None,
         )
@@ -1044,9 +960,9 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
     let media_repo = MediaRepository::new(pool.clone());
     let media1 = Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        creator_id: Some(room_owner.id.clone()),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
+        creator_id: Some(room_owner.id),
         name: "episode-1".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -1058,9 +974,9 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
     };
     let media2 = Media {
         id: MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        creator_id: Some(next_creator.id.clone()),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
+        creator_id: Some(next_creator.id),
         name: "episode-2".to_string(),
         position: 1.0,
         source_provider: "direct_url".to_string(),
@@ -1075,13 +991,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
 
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            room_owner.id.clone(),
-            Some(media1.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, room_owner.id, Some(media1.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -1129,7 +1039,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
         .create_room(
             "Dynamic Seq".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1143,10 +1053,10 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     let playback = room_service.playback_service();
     playback
         .switch(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             None,
-            Some(playlist.id.clone()),
+            Some(playlist.id),
             dynamic_target("/episode-1.mp4"),
         )
         .await
@@ -1198,7 +1108,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
         .create_room(
             "Dynamic Inactive Creator".to_string(),
             String::new(),
-            room_owner.id.clone(),
+            room_owner.id,
             None,
             None,
         )
@@ -1226,10 +1136,10 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
     let result = room_service
         .playback_service()
         .switch(
-            room.id.clone(),
-            room_owner.id.clone(),
+            room.id,
+            room_owner.id,
             None,
-            Some(playlist.id.clone()),
+            Some(playlist.id),
             dynamic_target("/episode-1.mp4"),
         )
         .await;
@@ -1276,7 +1186,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
         .create_room(
             "Dynamic Play Next Inactive Creator".to_string(),
             String::new(),
-            room_owner.id.clone(),
+            room_owner.id,
             None,
             None,
         )
@@ -1295,10 +1205,10 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
     room_service
         .playback_service()
         .switch(
-            room.id.clone(),
-            room_owner.id.clone(),
+            room.id,
+            room_owner.id,
             None,
-            Some(playlist.id.clone()),
+            Some(playlist.id),
             dynamic_target("/episode-1.mp4"),
         )
         .await
@@ -1352,7 +1262,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
         .create_room(
             "Dynamic Repeat All".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1366,10 +1276,10 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     let playback = room_service.playback_service();
     playback
         .switch(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             None,
-            Some(playlist.id.clone()),
+            Some(playlist.id),
             dynamic_target("/episode-2.mp4"),
         )
         .await
@@ -1414,7 +1324,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
         .create_room(
             "Dynamic Bound Instance".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1428,10 +1338,10 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     let playback = room_service.playback_service();
     playback
         .switch(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             None,
-            Some(playlist.id.clone()),
+            Some(playlist.id),
             dynamic_target("/bound-episode-1.mp4"),
         )
         .await
@@ -1493,7 +1403,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
         .create_room(
             "Dynamic Sensitive List".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1516,8 +1426,8 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
     let items = room_service
         .media_service()
         .list_dynamic_playlist_items(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             &playlist.id,
             None,
             DynamicListQuery {

@@ -43,8 +43,8 @@ async fn list_owned_room_ids(
 }
 
 impl ClientApiImpl {
-    pub async fn delete_current_user(&self, user_id: &str) -> Result<(), ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
+    pub async fn delete_current_user(&self, user_id: &UserId) -> Result<(), ApiError> {
+        let uid = *user_id;
         let owned_room_ids = list_owned_room_ids(self, &uid).await?;
         let mut deleted_room_fanout = Vec::with_capacity(owned_room_ids.len());
         for room_id in owned_room_ids {
@@ -74,7 +74,7 @@ impl ClientApiImpl {
 
     pub async fn update_profile(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         username: Option<String>,
         old_password: Option<String>,
         new_password: Option<String>,
@@ -98,7 +98,7 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         }
 
-        let uid = UserId::from_string(user_id.to_string());
+        let uid = *user_id;
         let updated_user = self
             .user_service
             .update_profile(&uid, normalized_username, old_password, new_password)
@@ -106,15 +106,15 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetProfileResponse {
-            user: Some(user_to_proto(&updated_user)),
+            user: Some(user_to_proto(&updated_user, &self.public_id_codec)),
         })
     }
 
     pub async fn get_profile(
         &self,
-        user_id: &str,
+        user_id: &UserId,
     ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
-        let uid = UserId::from_string(user_id.to_string());
+        let uid = *user_id;
         let user = self
             .user_service
             .get_user(&uid)
@@ -122,13 +122,13 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetProfileResponse {
-            user: Some(user_to_proto(&user)),
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
         })
     }
 
     pub async fn set_username(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
         let response = self
@@ -147,7 +147,7 @@ impl ClientApiImpl {
 
     pub async fn set_password(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         req: crate::proto::client::SetPasswordRequest,
     ) -> Result<crate::proto::client::SetPasswordResponse, ApiError> {
         self.update_profile(

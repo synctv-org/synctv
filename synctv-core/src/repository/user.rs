@@ -95,13 +95,12 @@ impl UserRepository {
     {
         let sql = format!(
             r"
-            INSERT INTO users (id, username, email, password_hash, signup_method, role, email_verified, created_at, updated_at, password_changed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+            INSERT INTO users (username, email, password_hash, signup_method, role, email_verified, created_at, updated_at, password_changed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
             RETURNING {USER_RETURNING_COLUMNS}
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user.id.as_str())
             .bind(&user.username)
             .bind(user.email.as_ref())
             .bind(&user.password_hash)
@@ -141,7 +140,7 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id.as_str())
+            .bind(user_id)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -166,7 +165,7 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id.as_str())
+            .bind(user_id)
             .fetch_optional(executor)
             .await?;
 
@@ -179,9 +178,9 @@ impl UserRepository {
             return Ok(Vec::new());
         }
 
-        let ids: Vec<&str> = user_ids
+        let ids: Vec<i64> = user_ids
             .iter()
-            .map(super::super::models::id::UserId::as_str)
+            .map(super::super::models::id::UserId::as_i64)
             .collect();
         let sql = format!(
             r"
@@ -270,7 +269,7 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user.id.as_str())
+            .bind(user.id)
             .bind(&user.username)
             .bind(user.email.as_ref())
             .bind(&user.password_hash)
@@ -290,10 +289,7 @@ impl UserRepository {
             if exists {
                 Err(Error::OptimisticLockConflict)
             } else {
-                Err(Error::NotFound(format!(
-                    "User {} not found",
-                    user.id.as_str()
-                )))
+                Err(Error::NotFound(format!("User {} not found", user.id)))
             }
         }
     }
@@ -335,7 +331,7 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id.as_str())
+            .bind(user_id)
             .bind(username)
             .bind(password_hash)
             .bind(now)
@@ -350,10 +346,7 @@ impl UserRepository {
             if exists {
                 Err(Error::OptimisticLockConflict)
             } else {
-                Err(Error::NotFound(format!(
-                    "User {} not found",
-                    user_id.as_str()
-                )))
+                Err(Error::NotFound(format!("User {user_id} not found")))
             }
         }
     }
@@ -375,7 +368,7 @@ impl UserRepository {
             WHERE id = $1 AND deleted_at IS NULL
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(Utc::now())
         .execute(executor)
         .await?;
@@ -409,12 +402,12 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id.as_str())
+            .bind(user_id)
             .bind(password_hash)
             .bind(now)
             .fetch_optional(executor)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         Ok(u)
     }
@@ -434,12 +427,12 @@ impl UserRepository {
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
-            .bind(user_id.as_str())
+            .bind(user_id)
             .bind(email_verified)
             .bind(Utc::now())
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         Ok(u)
     }
@@ -455,7 +448,7 @@ impl UserRepository {
             .await?;
         self.get_by_id(user_id)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))
     }
 
     /// Insert a global ban record using a provided executor.
@@ -472,10 +465,10 @@ impl UserRepository {
         let now = Utc::now();
         let inserted = sqlx::query(
             r"
-            INSERT INTO user_bans (id, user_id, banned_by, reason, starts_at)
-            SELECT $1, u.id, $3, $4, $5
+            INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
+            SELECT u.id, $2, $3, $4
             FROM users u
-            WHERE u.id = $2 AND u.deleted_at IS NULL
+            WHERE u.id = $1 AND u.deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM user_bans ub
                   WHERE ub.user_id = u.id
@@ -484,9 +477,8 @@ impl UserRepository {
               )
             ",
         )
-        .bind(crate::models::generate_id())
-        .bind(user_id.as_str())
-        .bind(banned_by.map(UserId::as_str))
+        .bind(user_id)
+        .bind(banned_by.map(UserId::as_i64))
         .bind(reason)
         .bind(now)
         .execute(executor)
@@ -494,8 +486,7 @@ impl UserRepository {
 
         if inserted.rows_affected() == 0 {
             return Err(Error::NotFound(format!(
-                "User {} not found or already banned",
-                user_id.as_str()
+                "User {user_id} not found or already banned"
             )));
         }
 
@@ -516,22 +507,21 @@ impl UserRepository {
               AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;
 
         if result.rows_affected() == 0 {
             return Err(Error::NotFound(format!(
-                "User {} not found or not banned",
-                user_id.as_str()
+                "User {user_id} not found or not banned"
             )));
         }
 
         let u = self
             .get_by_id(user_id)
             .await?
-            .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
 
         Ok(u)
     }
@@ -550,7 +540,7 @@ impl UserRepository {
             )
             ",
         )
-        .bind(user_id.as_str())
+        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 

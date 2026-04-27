@@ -640,7 +640,8 @@ mod create_ticket_validation {
                     ));
                 }
 
-                synctv_api::room_id_validation::parse_room_id(&req.room_id)
+                synctv_api::PublicIdCodec::default_for_tests()
+                    .decode_room_id(&req.room_id)
                     .map_err(|e| AppError::bad_request(format!("Invalid room_id: {e}")))?;
 
                 Ok(Json(serde_json::json!({"ticket": "abc"})))

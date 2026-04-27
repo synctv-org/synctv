@@ -11,9 +11,9 @@ use synctv_core::cache::{l2_backend::RedisCacheL2, user_cache::CachedUser, UserC
 use synctv_core::models::{UserId, UserRole, UserStatus};
 use synctv_core_testing::start_redis as start_test_redis;
 
-fn make_cached_user(id: &str, username: &str) -> CachedUser {
+fn make_cached_user(id: UserId, username: &str) -> CachedUser {
     CachedUser::with_updated_at(
-        id.to_string(),
+        id,
         username.to_string(),
         UserRole::User,
         UserStatus::Active,
@@ -35,8 +35,8 @@ async fn test_tiered_cache_l2_set_and_get() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:".to_string())
         .expect("Failed to create UserCache");
 
-    let user_id = UserId::from_string("user_l2_1".to_string());
-    let user = make_cached_user("user_l2_1", "alice");
+    let user_id = UserId::from(99_001);
+    let user = make_cached_user(user_id, "alice");
 
     // Set in cache (populates both L1 and L2)
     cache.set(&user_id, user.clone()).await.unwrap();
@@ -65,8 +65,8 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:inv:".to_string())
         .expect("Failed to create UserCache");
 
-    let user_id = UserId::from_string("user_inv_1".to_string());
-    let user = make_cached_user("user_inv_1", "bob");
+    let user_id = UserId::from(99_002);
+    let user = make_cached_user(user_id, "bob");
 
     cache.set(&user_id, user).await.unwrap();
 
@@ -98,15 +98,15 @@ async fn test_tiered_cache_clear_removes_all() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:clr:".to_string())
         .expect("Failed to create UserCache");
 
-    let user1 = UserId::from_string("user_clr_1".to_string());
-    let user2 = UserId::from_string("user_clr_2".to_string());
+    let user1 = UserId::from(99_003);
+    let user2 = UserId::from(99_004);
 
     cache
-        .set(&user1, make_cached_user("user_clr_1", "alice"))
+        .set(&user1, make_cached_user(user1, "alice"))
         .await
         .unwrap();
     cache
-        .set(&user2, make_cached_user("user_clr_2", "bob"))
+        .set(&user2, make_cached_user(user2, "bob"))
         .await
         .unwrap();
 

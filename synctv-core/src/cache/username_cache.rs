@@ -173,7 +173,7 @@ impl UsernameCache {
             if let Err(e) = service.invalidate_username(user_id).await {
                 tracing::warn!(
                     error = %e,
-                    user_id = %user_id.as_str(),
+                    user_id = %user_id,
                     "Failed to broadcast username cache invalidation to other replicas"
                 );
             }
@@ -241,8 +241,8 @@ mod tests {
     use super::*;
     use crate::cache::CacheInvalidationService;
 
-    fn create_test_user_id(id: &str) -> UserId {
-        UserId::from_string(id.to_string())
+    fn create_test_user_id(id: i64) -> UserId {
+        UserId::from(id)
     }
 
     #[tokio::test]
@@ -254,7 +254,7 @@ mod tests {
             0,
         );
 
-        let user_id = create_test_user_id("user1");
+        let user_id = create_test_user_id(97_001);
 
         // Cache miss
         assert!(cache.get(&user_id).await.unwrap().is_none());
@@ -278,19 +278,16 @@ mod tests {
             0,
         );
 
-        let user1 = create_test_user_id("user1");
-        let user2 = create_test_user_id("user2");
-        let user3 = create_test_user_id("user3");
+        let user1 = create_test_user_id(97_002);
+        let user2 = create_test_user_id(97_003);
+        let user3 = create_test_user_id(97_004);
 
         // Set some entries
         cache.set(&user1, "alice").await.unwrap();
         cache.set(&user3, "charlie").await.unwrap();
 
         // Batch lookup
-        let result = cache
-            .get_batch(&[user1.clone(), user2.clone(), user3.clone()])
-            .await
-            .unwrap();
+        let result = cache.get_batch(&[user1, user2, user3]).await.unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(&user1), Some(&"alice".to_string()));
@@ -307,7 +304,7 @@ mod tests {
             0,
         );
 
-        let user_id = create_test_user_id("user1");
+        let user_id = create_test_user_id(97_005);
         cache.set(&user_id, "alice").await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_some());
 
@@ -324,11 +321,11 @@ mod tests {
             0,
         );
 
-        let user_id = create_test_user_id("user1");
+        let user_id = create_test_user_id(97_006);
         cache.set(&user_id, "alice").await.unwrap();
         assert!(cache.get(&user_id).await.unwrap().is_some());
 
-        cache.invalidate_by_id("user1").await;
+        cache.invalidate_by_id(&user_id.to_string()).await;
         assert!(cache.get(&user_id).await.unwrap().is_none());
     }
 
@@ -351,7 +348,7 @@ mod tests {
         )
         .with_invalidation_service(invalidation_service);
 
-        let user_id = create_test_user_id("user1");
+        let user_id = create_test_user_id(97_007);
 
         // set() should write the value and NOT self-invalidate
         cache.set(&user_id, "alice").await.unwrap();
@@ -383,11 +380,11 @@ mod tests {
         .with_invalidation_service(invalidation_service);
 
         let mut entries = HashMap::new();
-        entries.insert(create_test_user_id("u1"), "alice".to_string());
-        entries.insert(create_test_user_id("u2"), "bob".to_string());
-        entries.insert(create_test_user_id("u3"), "charlie".to_string());
-        entries.insert(create_test_user_id("u4"), "diana".to_string());
-        entries.insert(create_test_user_id("u5"), "eve".to_string());
+        entries.insert(create_test_user_id(97_008), "alice".to_string());
+        entries.insert(create_test_user_id(97_009), "bob".to_string());
+        entries.insert(create_test_user_id(97_010), "charlie".to_string());
+        entries.insert(create_test_user_id(97_011), "diana".to_string());
+        entries.insert(create_test_user_id(97_012), "eve".to_string());
 
         cache.preload(entries.clone()).await.unwrap();
 
@@ -397,13 +394,12 @@ mod tests {
             assert_eq!(
                 retrieved.as_deref(),
                 Some(expected_name.as_str()),
-                "preload entry for {} should be retrievable",
-                user_id.as_str()
+                "preload entry for {user_id} should be retrievable"
             );
         }
 
         // Verify batch lookup also works
-        let all_ids: Vec<UserId> = entries.keys().cloned().collect();
+        let all_ids: Vec<UserId> = entries.keys().copied().collect();
         let batch = cache.get_batch(&all_ids).await.unwrap();
         assert_eq!(
             batch.len(),
@@ -431,7 +427,7 @@ mod tests {
         )
         .with_invalidation_service(invalidation_service);
 
-        let user_id = create_test_user_id("user1");
+        let user_id = create_test_user_id(97_013);
 
         // set() should NOT produce any invalidation message
         cache.set(&user_id, "alice").await.unwrap();

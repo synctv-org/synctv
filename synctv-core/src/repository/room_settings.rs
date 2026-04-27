@@ -47,8 +47,6 @@ impl RoomSettingsRepository {
     ///
     /// Returns `(settings, version)` where version is 0 if no settings row exists yet.
     pub async fn get_with_version(&self, room_id: &RoomId) -> Result<(RoomSettings, i64)> {
-        let room_id_str = room_id.as_str();
-
         let row = sqlx::query(
             r"
             SELECT value, version
@@ -56,7 +54,7 @@ impl RoomSettingsRepository {
             WHERE room_id = $1 AND key = '_settings'
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -81,8 +79,6 @@ impl RoomSettingsRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let room_id_str = room_id.as_str();
-
         let row = sqlx::query(
             r"
             SELECT value, version
@@ -91,7 +87,7 @@ impl RoomSettingsRepository {
             FOR UPDATE
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .fetch_optional(executor)
         .await?;
 
@@ -108,8 +104,6 @@ impl RoomSettingsRepository {
 
     /// Set a specific setting for a room
     pub async fn set(&self, room_id: &RoomId, key: &str, value: &str) -> Result<()> {
-        let room_id_str = room_id.as_str();
-
         sqlx::query(
             r"
             INSERT INTO room_settings (room_id, key, value, version)
@@ -118,7 +112,7 @@ impl RoomSettingsRepository {
             DO UPDATE SET value = $3, version = room_settings.version + 1, updated_at = NOW()
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .bind(key)
         .bind(value)
         .execute(&self.pool)
@@ -138,8 +132,6 @@ impl RoomSettingsRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let room_id_str = room_id.as_str();
-
         sqlx::query(
             r"
             INSERT INTO room_settings (room_id, key, value, version)
@@ -148,7 +140,7 @@ impl RoomSettingsRepository {
             DO UPDATE SET value = $3, version = room_settings.version + 1, updated_at = NOW()
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .bind(key)
         .bind(value)
         .execute(executor)
@@ -167,8 +159,6 @@ impl RoomSettingsRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let room_id_str = room_id.as_str();
-
         let json_value = serde_json::to_string(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
@@ -180,7 +170,7 @@ impl RoomSettingsRepository {
             DO UPDATE SET value = $2, version = room_settings.version + 1, updated_at = NOW()
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .bind(&json_value)
         .execute(executor)
         .await?;
@@ -191,8 +181,8 @@ impl RoomSettingsRepository {
     /// Get settings for multiple rooms in a single query
     pub async fn get_batch(
         &self,
-        room_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, RoomSettings>> {
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, RoomSettings>> {
         Ok(self
             .get_batch_with_version(room_ids)
             .await?
@@ -204,11 +194,12 @@ impl RoomSettingsRepository {
     /// Get settings and optimistic-lock versions for multiple rooms in a single query.
     pub async fn get_batch_with_version(
         &self,
-        room_ids: &[&str],
-    ) -> Result<std::collections::HashMap<String, (RoomSettings, i64)>> {
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, (RoomSettings, i64)>> {
         if room_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+        let ids: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
 
         let rows = sqlx::query(
             r"
@@ -217,17 +208,17 @@ impl RoomSettingsRepository {
             WHERE room_id = ANY($1) AND key = '_settings'
             ",
         )
-        .bind(room_ids)
+        .bind(&ids)
         .fetch_all(&self.pool)
         .await?;
 
         let mut result = std::collections::HashMap::new();
         for row in rows {
-            let rid: String = row.try_get("room_id")?;
+            let rid: i64 = row.try_get("room_id")?;
             let value: String = row.try_get("value")?;
             let version: i64 = row.try_get("version")?;
             if let Ok(settings) = serde_json::from_str::<RoomSettings>(&value) {
-                result.insert(rid, (settings, version));
+                result.insert(RoomId::from(rid), (settings, version));
             }
         }
         Ok(result)
@@ -235,8 +226,6 @@ impl RoomSettingsRepository {
 
     /// Get a specific setting value for a room
     pub async fn get_value(&self, room_id: &RoomId, key: &str) -> Result<Option<String>> {
-        let room_id_str = room_id.as_str();
-
         let result = sqlx::query(
             r"
             SELECT value
@@ -244,7 +233,7 @@ impl RoomSettingsRepository {
             WHERE room_id = $1 AND key = $2
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .bind(key)
         .fetch_optional(&self.pool)
         .await?;
@@ -262,8 +251,6 @@ impl RoomSettingsRepository {
     /// This uses **automatic serde serialization** - the entire struct becomes JSON!
     /// All settings are stored as a single JSON value under key "_settings".
     pub async fn set_settings(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<()> {
-        let room_id_str = room_id.as_str();
-
         // Serialize entire settings struct to JSON - one line!
         let json_value = serde_json::to_string(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
@@ -277,7 +264,7 @@ impl RoomSettingsRepository {
             DO UPDATE SET value = $2, version = room_settings.version + 1, updated_at = NOW()
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .bind(&json_value)
         .execute(&self.pool)
         .await?;
@@ -296,8 +283,6 @@ impl RoomSettingsRepository {
         settings: &RoomSettings,
         expected_version: i64,
     ) -> Result<i64> {
-        let room_id_str = room_id.as_str();
-
         let json_value = serde_json::to_string(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
@@ -311,7 +296,7 @@ impl RoomSettingsRepository {
                 RETURNING version
                 ",
             )
-            .bind(room_id_str)
+            .bind(room_id)
             .bind(&json_value)
             .fetch_optional(&self.pool)
             .await?;
@@ -331,7 +316,7 @@ impl RoomSettingsRepository {
                 RETURNING version
                 ",
             )
-            .bind(room_id_str)
+            .bind(room_id)
             .bind(&json_value)
             .bind(expected_version)
             .fetch_optional(&self.pool)
@@ -346,10 +331,8 @@ impl RoomSettingsRepository {
 
     /// Delete a specific setting for a room (revert to default)
     pub async fn delete(&self, room_id: &RoomId, key: &str) -> Result<()> {
-        let room_id_str = room_id.as_str();
-
         sqlx::query("DELETE FROM room_settings WHERE room_id = $1 AND key = $2")
-            .bind(room_id_str)
+            .bind(room_id)
             .bind(key)
             .execute(&self.pool)
             .await?;
@@ -367,10 +350,8 @@ impl RoomSettingsRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let room_id_str = room_id.as_str();
-
         sqlx::query("DELETE FROM room_settings WHERE room_id = $1 AND key = $2")
-            .bind(room_id_str)
+            .bind(room_id)
             .bind(key)
             .execute(executor)
             .await?;
@@ -380,10 +361,8 @@ impl RoomSettingsRepository {
 
     /// Delete all settings for a room
     pub async fn delete_all(&self, room_id: &RoomId) -> Result<()> {
-        let room_id_str = room_id.as_str();
-
         sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-            .bind(room_id_str)
+            .bind(room_id)
             .execute(&self.pool)
             .await?;
 
@@ -395,8 +374,6 @@ impl RoomSettingsRepository {
         &self,
         room_id: &RoomId,
     ) -> Result<std::collections::HashMap<String, String>> {
-        let room_id_str = room_id.as_str();
-
         let rows = sqlx::query(
             r"
             SELECT key, value
@@ -404,7 +381,7 @@ impl RoomSettingsRepository {
             WHERE room_id = $1
         ",
         )
-        .bind(room_id_str)
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 

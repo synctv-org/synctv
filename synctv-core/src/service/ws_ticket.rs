@@ -197,12 +197,7 @@ impl RedisTicketStore {
     }
 
     fn redis_key(&self, ticket: &str, room_id: &RoomId) -> String {
-        format!(
-            "{}ws_ticket:{}:{}",
-            self.key_prefix,
-            room_id.as_str(),
-            ticket
-        )
+        format!("{}ws_ticket:{room_id}:{ticket}", self.key_prefix)
     }
 }
 
@@ -227,7 +222,7 @@ impl TicketStore for RedisTicketStore {
     async fn store(&self, ticket: &str, data: &WsTicketData, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
 
-        let room_id = RoomId::from_string(data.room_id.clone());
+        let room_id = data.room_id.parse().map_err(Error::Internal)?;
         let key = self.redis_key(ticket, &room_id);
         let json = serde_json::to_string(data)
             .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
@@ -391,7 +386,7 @@ impl TicketStore for InMemoryTicketStore {
     }
 
     async fn load(&self, ticket: &str, expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
-        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let cache_key = format!("{expected_room_id}:{ticket}");
         let Some(entry) = self.cache.get(&cache_key).await else {
             return Ok(None);
         };
@@ -414,7 +409,7 @@ impl TicketStore for InMemoryTicketStore {
         expected_room_id: &RoomId,
         expected_ticket: &WsTicketData,
     ) -> Result<bool> {
-        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let cache_key = format!("{expected_room_id}:{ticket}");
         let Some(entry) = self.cache.get(&cache_key).await else {
             return Ok(false);
         };
@@ -448,7 +443,7 @@ impl TicketStore for InMemoryTicketStore {
         // Use remove() for atomic get-and-delete to prevent TOCTOU race conditions.
         // Since moka uses lazy eviction, remove() may return entries that haven't
         // been evicted yet, so we manually check TTL expiry on the returned value.
-        let cache_key = format!("{}:{ticket}", expected_room_id.as_str());
+        let cache_key = format!("{expected_room_id}:{ticket}");
         let Some(entry) = self.cache.remove(&cache_key).await else {
             return Ok(None);
         };
@@ -668,8 +663,8 @@ impl WsTicketService {
         let ticket = Self::generate_ticket();
 
         let ticket_data = WsTicketData {
-            user_id: user_id.as_str().to_string(),
-            room_id: room_id.as_str().to_string(),
+            user_id: user_id.to_string(),
+            room_id: room_id.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -685,7 +680,7 @@ impl WsTicketService {
         .await?;
 
         debug!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             ttl_secs = self.ticket_ttl_secs,
             cross_node_capable = self.store.supports_cluster_runtime(),
             "WebSocket ticket created"
@@ -735,10 +730,10 @@ impl WsTicketService {
         };
 
         // Room-bound validation: reject the ticket if it was issued for a different room.
-        if ticket_data.room_id != expected_room_id.as_str() {
+        if ticket_data.room_id != expected_room_id.to_string() {
             debug!(
                 ticket_room = %ticket_data.room_id,
-                expected_room = %expected_room_id.as_str(),
+                expected_room = %expected_room_id,
                 cross_node_capable,
                 "WebSocket ticket rejected: room mismatch"
             );
@@ -755,7 +750,7 @@ impl WsTicketService {
         );
 
         Ok(ValidatedTicket {
-            user_id: UserId::from_string(ticket_data.user_id),
+            user_id: ticket_data.user_id.parse().map_err(Error::Internal)?,
             password_version: ticket_data.password_version,
         })
     }
@@ -814,7 +809,7 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %pending.user_id.as_str(),
+            user_id = %pending.user_id,
             room_id = %pending.ticket_data.room_id,
             cross_node_capable,
             "WebSocket ticket validated and consumed with user check"
@@ -863,7 +858,7 @@ impl WsTicketService {
             ));
         };
 
-        let user_id = UserId::from_string(ticket_data.user_id.clone());
+        let user_id = ticket_data.user_id.parse().map_err(Error::Internal)?;
 
         // Room binding is enforced by the storage key. A ticket fetched here
         // is already scoped to `expected_room_id`.
@@ -872,7 +867,7 @@ impl WsTicketService {
                 .await
                 .map_err(|e| {
                     debug!(
-                        user_id = %user_id.as_str(),
+                        user_id = %user_id,
                         error = %e,
                         cross_node_capable,
                         "WebSocket ticket rejected: user validation failed"
@@ -890,7 +885,7 @@ impl WsTicketService {
         // Check password version after loading the current user state.
         if ticket_data.password_version < user_validation.password_version {
             debug!(
-                user_id = %user_id.as_str(),
+                user_id = %user_id,
                 ticket_pv = ticket_data.password_version,
                 current_pv = user_validation.password_version,
                 cross_node_capable,
@@ -900,7 +895,7 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             room_id = %ticket_data.room_id,
             cross_node_capable,
             "WebSocket ticket prevalidated with user check"
@@ -951,14 +946,14 @@ impl WsTicketService {
         }
 
         debug!(
-            user_id = %pending.user_id.as_str(),
+            user_id = %pending.user_id,
             room_id = %pending.ticket_data.room_id,
             cross_node_capable,
             "WebSocket ticket consumed after prevalidated handshake succeeded"
         );
 
         Ok(ValidatedTicket {
-            user_id: pending.user_id.clone(),
+            user_id: pending.user_id,
             password_version: pending.password_version,
         })
     }
@@ -1090,12 +1085,12 @@ mod tests {
     use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
 
-    fn create_test_user_id(id: &str) -> UserId {
-        UserId::from_string(id.to_string())
+    fn create_test_user_id(id: i64) -> UserId {
+        UserId::from(id)
     }
 
-    fn create_test_room_id(id: &str) -> RoomId {
-        RoomId::from_string(id.to_string())
+    fn create_test_room_id(id: i64) -> RoomId {
+        RoomId::from(id)
     }
 
     #[tokio::test]
@@ -1142,8 +1137,8 @@ mod tests {
     async fn test_ws_ticket_service_supports_service_trait_object() {
         let service: Arc<dyn WebSocketTicketService> =
             Arc::new(WsTicketService::local_only(Some(30)));
-        let user_id = create_test_user_id("trait_obj_u01");
-        let room_id = create_test_room_id("trait_obj_r01");
+        let user_id = create_test_user_id(50_001);
+        let room_id = create_test_room_id(50_002);
 
         let ticket = service
             .create_ticket(&user_id, &room_id, 7)
@@ -1165,8 +1160,8 @@ mod tests {
         let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
         let service = web_socket_ticket_service_from_shared_state_profile(&profile, Some(30))
             .expect("standalone mode should allow local ticket storage");
-        let user_id = create_test_user_id("builder_u01");
-        let room_id = create_test_room_id("builder_r01");
+        let user_id = create_test_user_id(50_003);
+        let room_id = create_test_room_id(50_004);
 
         let ticket = service
             .create_ticket(&user_id, &room_id, 9)
@@ -1230,8 +1225,8 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_service_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room1");
+        let user_id = create_test_user_id(50_005);
+        let room_id = create_test_room_id(50_006);
 
         let ticket = service.create_ticket(&user_id, &room_id, 0).await;
         assert!(ticket.is_ok());
@@ -1241,15 +1236,15 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let validated = result.unwrap();
-        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.user_id, user_id);
         assert_eq!(validated.password_version, 0);
     }
 
     #[tokio::test]
     async fn test_ticket_one_time_use_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room1");
+        let user_id = create_test_user_id(50_007);
+        let room_id = create_test_room_id(50_008);
 
         let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
 
@@ -1263,9 +1258,9 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_room_mismatch_rejected() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_a = create_test_room_id("room-a");
-        let room_b = create_test_room_id("room-b");
+        let user_id = create_test_user_id(50_009);
+        let room_a = create_test_room_id(50_010);
+        let room_b = create_test_room_id(50_011);
 
         let ticket = service.create_ticket(&user_id, &room_a, 0).await.unwrap();
 
@@ -1293,9 +1288,9 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_room_mismatch_does_not_consume_ticket() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_a = create_test_room_id("room-a");
-        let room_b = create_test_room_id("room-b");
+        let user_id = create_test_user_id(50_012);
+        let room_a = create_test_room_id(50_013);
+        let room_b = create_test_room_id(50_014);
 
         let ticket = service.create_ticket(&user_id, &room_a, 7).await.unwrap();
 
@@ -1311,15 +1306,15 @@ mod tests {
             "room mismatch must not consume the ticket"
         );
         let validated = correct_room_result.unwrap();
-        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.user_id, user_id);
         assert_eq!(validated.password_version, 7);
     }
 
     #[tokio::test]
     async fn test_ticket_user_validation_failure_does_not_consume_ticket() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room-a");
+        let user_id = create_test_user_id(50_015);
+        let room_id = create_test_room_id(50_016);
         let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
 
         let rejecting_validator = StaticUserValidator {
@@ -1347,15 +1342,15 @@ mod tests {
             "user validation rejection must not consume the ticket"
         );
         let validated = second_result.unwrap();
-        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.user_id, user_id);
         assert_eq!(validated.password_version, 4);
     }
 
     #[tokio::test]
     async fn test_ticket_user_validation_backend_outage_is_preserved_and_does_not_consume_ticket() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room-a");
+        let user_id = create_test_user_id(50_017);
+        let room_id = create_test_room_id(50_018);
         let ticket = service.create_ticket(&user_id, &room_id, 4).await.unwrap();
 
         let failing_validator = StaticUserValidator {
@@ -1383,15 +1378,15 @@ mod tests {
             "backend outages must not consume the ticket"
         );
         let validated = second_result.unwrap();
-        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.user_id, user_id);
         assert_eq!(validated.password_version, 4);
     }
 
     #[tokio::test]
     async fn test_ticket_checked_validation_is_still_one_time_use() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room-a");
+        let user_id = create_test_user_id(50_019);
+        let room_id = create_test_room_id(50_020);
         let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
 
         let allow_validator = StaticUserValidator {
@@ -1420,8 +1415,8 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_prevalidation_does_not_consume_until_commit() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room-prevalidated");
+        let user_id = create_test_user_id(50_021);
+        let room_id = create_test_room_id(50_022);
         let ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
 
         let allow_validator = StaticUserValidator {
@@ -1439,7 +1434,7 @@ mod tests {
             .validate_and_consume(&ticket, &room_id)
             .await
             .expect("prevalidation alone must not consume the ticket");
-        assert_eq!(still_valid.user_id.as_str(), "user1");
+        assert_eq!(still_valid.user_id, user_id);
         assert_eq!(still_valid.password_version, 5);
 
         let second_ticket = service.create_ticket(&user_id, &room_id, 5).await.unwrap();
@@ -1451,7 +1446,7 @@ mod tests {
             .consume_prevalidated(&second_ticket, &room_id, &pending)
             .await
             .expect("commit should consume the prevalidated ticket");
-        assert_eq!(committed.user_id.as_str(), "user1");
+        assert_eq!(committed.user_id, user_id);
 
         let consumed_again = service.validate_and_consume(&second_ticket, &room_id).await;
         assert!(
@@ -1463,8 +1458,8 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_checked_validation_concurrent_consumption_only_succeeds_once() {
         let service = WsTicketService::with_memory(Some(30));
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room-concurrent");
+        let user_id = create_test_user_id(50_023);
+        let room_id = create_test_room_id(50_024);
         let ticket = service.create_ticket(&user_id, &room_id, 2).await.unwrap();
 
         let validator = Arc::new(StaticUserValidator {
@@ -1477,7 +1472,6 @@ mod tests {
         for _ in 0..8 {
             let service = service.clone();
             let ticket = ticket.clone();
-            let room_id = room_id.clone();
             let validator = validator.clone();
             handles.push(tokio::spawn(async move {
                 service
@@ -1501,12 +1495,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
-        let room_id = create_test_room_id("room-claim");
+        let room_id = create_test_room_id(50_025);
         let ticket = "ticket-claim";
         let store = InMemoryTicketStore::new(30);
         let original = WsTicketData {
-            user_id: "user1".to_string(),
-            room_id: room_id.as_str().to_string(),
+            user_id: "50026".to_string(),
+            room_id: room_id.to_string(),
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1534,8 +1528,8 @@ mod tests {
     #[tokio::test]
     async fn test_ticket_expiration_memory_mode() {
         let service = WsTicketService::with_memory(Some(1)); // 1 second TTL
-        let user_id = create_test_user_id("user1");
-        let room_id = create_test_room_id("room1");
+        let user_id = create_test_user_id(50_027);
+        let room_id = create_test_room_id(50_028);
 
         let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
 
@@ -1548,7 +1542,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_ticket_memory_mode() {
         let service = WsTicketService::with_memory(Some(30));
-        let room_id = create_test_room_id("room1");
+        let room_id = create_test_room_id(50_029);
 
         let result = service
             .validate_and_consume("invalid_ticket", &room_id)

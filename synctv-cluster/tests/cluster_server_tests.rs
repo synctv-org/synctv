@@ -160,7 +160,7 @@ async fn test_deregister_node_valid_id_returns_error_when_registry_cleanup_fails
 async fn test_get_user_online_status_too_many_ids() {
     let server = make_authenticated_server();
 
-    let user_ids: Vec<String> = (0..1001).map(|i| format!("user_{i}")).collect();
+    let user_ids: Vec<i64> = (1..=1001).collect();
     let request = with_cluster_secret(
         Request::new(GetUserOnlineStatusRequest { user_ids }),
         "cluster-test-secret",
@@ -187,7 +187,7 @@ async fn test_get_user_online_status_too_many_ids() {
 async fn test_get_user_online_status_at_limit() {
     let server = make_authenticated_server();
 
-    let user_ids: Vec<String> = (0..1000).map(|i| format!("user_{i}")).collect();
+    let user_ids: Vec<i64> = (1..=1000).collect();
     let request = with_cluster_secret(
         Request::new(GetUserOnlineStatusRequest { user_ids }),
         "cluster-test-secret",
@@ -213,7 +213,7 @@ async fn test_get_user_online_status_no_connection_manager() {
 
     let request = with_cluster_secret(
         Request::new(GetUserOnlineStatusRequest {
-            user_ids: vec!["user1".to_string(), "user2".to_string()],
+            user_ids: vec![1, 2],
         }),
         "cluster-test-secret",
     );
@@ -234,9 +234,7 @@ async fn test_get_room_connections_no_connection_manager() {
     let server = make_authenticated_server(); // No with_connection_manager() call
 
     let request = with_cluster_secret(
-        Request::new(GetRoomConnectionsRequest {
-            room_id: "room1".to_string(),
-        }),
+        Request::new(GetRoomConnectionsRequest { room_id: 101 }),
         "cluster-test-secret",
     );
 
@@ -326,10 +324,8 @@ async fn test_get_user_online_status_with_connection_manager() {
     let cm = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     // Register a connection
-    let user_id = UserId::from_string("test-user".to_string());
-    cm.register("conn-1".to_string(), user_id.clone())
-        .await
-        .unwrap();
+    let user_id = UserId::from(10_000_028);
+    cm.register("conn-1".to_string(), user_id).await.unwrap();
 
     let server = ClusterServer::new(registry, "test-node".to_string())
         .with_cluster_secret("cluster-test-secret".to_string())
@@ -337,7 +333,7 @@ async fn test_get_user_online_status_with_connection_manager() {
 
     let request = with_cluster_secret(
         Request::new(GetUserOnlineStatusRequest {
-            user_ids: vec!["test-user".to_string(), "offline-user".to_string()],
+            user_ids: vec![user_id.as_i64(), 10_000_029],
         }),
         "cluster-test-secret",
     );
@@ -351,17 +347,17 @@ async fn test_get_user_online_status_with_connection_manager() {
     let online_user = response
         .statuses
         .iter()
-        .find(|s| s.user_id == "test-user")
+        .find(|s| s.user_id == user_id.as_i64())
         .unwrap();
-    assert!(online_user.is_online, "test-user should be online");
+    assert!(online_user.is_online, "test user should be online");
     assert_eq!(online_user.node_id, "test-node");
 
     let offline_user = response
         .statuses
         .iter()
-        .find(|s| s.user_id == "offline-user")
+        .find(|s| s.user_id == 10_000_029)
         .unwrap();
-    assert!(!offline_user.is_online, "offline-user should be offline");
+    assert!(!offline_user.is_online, "offline user should be offline");
 }
 
 #[tokio::test]
@@ -370,7 +366,7 @@ async fn test_cluster_server_rejects_requests_without_configured_secret() {
 
     let result = server
         .get_user_online_status(Request::new(GetUserOnlineStatusRequest {
-            user_ids: vec!["user1".to_string()],
+            user_ids: vec![1],
         }))
         .await;
 
@@ -389,7 +385,7 @@ async fn test_cluster_server_rejects_missing_secret_header() {
 
     let result = server
         .get_user_online_status(Request::new(GetUserOnlineStatusRequest {
-            user_ids: vec!["user1".to_string()],
+            user_ids: vec![1],
         }))
         .await;
 

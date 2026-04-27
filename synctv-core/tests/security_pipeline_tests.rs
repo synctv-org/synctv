@@ -89,7 +89,7 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
 fn make_claims(user_id: &UserId, pv: i32) -> Claims {
     let now = chrono::Utc::now();
     Claims {
-        sub: user_id.as_str().to_string(),
+        sub: user_id.to_string(),
         typ: "access".to_string(),
         jti: synctv_common::snanoid!(16),
         iat: now.timestamp(),
@@ -203,7 +203,7 @@ async fn test_deleted_user_rejected() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     // UserRepository::create does not write deleted_at, so set it via raw SQL
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to soft-delete user");
@@ -230,7 +230,7 @@ async fn test_cache_hit_active_user_passes() {
 
     // Pre-populate cache
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Active,
@@ -261,7 +261,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
 
     // Cache with password_version=5
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Active,
@@ -297,7 +297,7 @@ async fn test_cache_hit_banned_user_rejected_from_status_cache() {
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Banned,
@@ -349,7 +349,7 @@ async fn test_cache_hit_banned_user_rejected() {
 
     // Pre-populate cache with Banned status
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Banned,
@@ -383,7 +383,7 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Active,
@@ -422,7 +422,7 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Active,
@@ -440,7 +440,7 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
              version = version + 1
          WHERE id = $1",
     )
-    .bind(user.id.as_str())
+    .bind(user.id)
     .execute(&pool)
     .await
     .expect("Failed to bump password_version in DB");
@@ -474,7 +474,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
     sqlx::query("UPDATE users SET password_version = $1 WHERE id = $2")
         .bind(password_version)
-        .bind(user.id.as_str())
+        .bind(user.id)
         .execute(&pool)
         .await
         .expect("Failed to set password_version");
@@ -619,7 +619,7 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
 
     // Pre-populate cache
     let cached = CachedUser::with_updated_at(
-        user.id.as_str().to_string(),
+        user.id,
         user.username.clone(),
         user.role,
         UserStatus::Active,

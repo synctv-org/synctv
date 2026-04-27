@@ -4,23 +4,29 @@
 //! safe unsubscribe of unknown connections.
 
 #![allow(clippy::unwrap_used)]
-use synctv_cluster::sync::events::ClusterEvent;
+use synctv_cluster::sync::events::{ClusterEvent, WebRTCSignalKind};
 use synctv_cluster::RoomMessageHub;
 use synctv_core::models::id::{RoomId, UserId};
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 fn chat_event(room: &RoomId, user: &UserId) -> ClusterEvent {
     ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: *room,
+        user_id: *user,
         username: "tester".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
@@ -32,8 +38,8 @@ fn chat_event(room: &RoomId, user: &UserId) -> ClusterEvent {
 fn webrtc_event(room: &RoomId) -> ClusterEvent {
     ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "offer".to_string(),
+        room_id: *room,
+        message_type: WebRTCSignalKind::Offer,
         from: "sender|conn-from".to_string(),
         to: "receiver:conn-target".to_string(),
         data: "{\"sdp\":\"test\"}".to_string(),
@@ -51,11 +57,11 @@ async fn test_broadcast_to_connection_targeted() {
     let u2 = uid("u2");
 
     let mut rx1 = hub
-        .subscribe(room.clone(), u1.clone(), "c1".to_string())
+        .subscribe(room, u1, "c1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), u2.clone(), "c2".to_string())
+        .subscribe(room, u2, "c2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -85,7 +91,7 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
     let user = uid("u1");
 
     let mut rx = hub
-        .subscribe(room.clone(), user, "conn-target".to_string())
+        .subscribe(room, user, "conn-target".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -99,7 +105,7 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
         );
     }
 
-    let room_for_task = room.clone();
+    let room_for_task = room;
     let hub_for_task = hub.clone();
     let notify = tokio::spawn(async move {
         hub_for_task
@@ -144,7 +150,7 @@ async fn test_broadcast_to_connection_does_not_report_success_when_reliable_deli
     let user = uid("u1");
 
     let _rx = hub
-        .subscribe(room.clone(), user, "conn-target".to_string())
+        .subscribe(room, user, "conn-target".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -157,7 +163,6 @@ async fn test_broadcast_to_connection_does_not_report_success_when_reliable_deli
 
     let notify = tokio::spawn({
         let hub = hub.clone();
-        let room = room.clone();
         async move {
             hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room))
                 .await
@@ -181,7 +186,7 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
     let user = uid("u1");
 
     let mut rx = hub
-        .subscribe(room.clone(), user.clone(), "conn-target".to_string())
+        .subscribe(room, user, "conn-target".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -194,7 +199,6 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
 
     let notify = tokio::spawn({
         let hub = hub.clone();
-        let room = room.clone();
         async move {
             hub.broadcast_to_connection(&room, "conn-target", webrtc_event(&room))
                 .await
@@ -244,7 +248,7 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
     let user = uid("u1");
 
     let mut rx = hub
-        .subscribe(room.clone(), user.clone(), "conn-user".to_string())
+        .subscribe(room, user, "conn-user".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -255,12 +259,12 @@ async fn test_broadcast_to_user_current_thread_defers_reliable_delivery_when_cha
     }
 
     let hub_for_task = hub.clone();
-    let room_for_task = room.clone();
-    let user_for_task = user.clone();
+    let room_for_task = room;
+    let user_for_task = user;
     let event = ClusterEvent::KickUserFromRoom {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         reason: "testing".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -312,7 +316,7 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
     let user = uid("u1");
 
     let mut rx = hub
-        .subscribe(room.clone(), user, "conn-broadcast".to_string())
+        .subscribe(room, user, "conn-broadcast".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -324,13 +328,13 @@ async fn test_broadcast_current_thread_defers_reliable_delivery_when_channel_ful
 
     let event = ClusterEvent::RoomDeleted {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         deleted_by: uid("deleter"),
         timestamp: chrono::Utc::now(),
     };
 
     let hub_for_task = hub.clone();
-    let room_for_task = room.clone();
+    let room_for_task = room;
     let notify = tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, &event) });
 
     tokio::task::yield_now().await;
@@ -370,7 +374,7 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
     let user = uid("u1");
 
     let mut rx = hub
-        .subscribe(room.clone(), user.clone(), "conn-user".to_string())
+        .subscribe(room, user, "conn-user".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -382,15 +386,15 @@ async fn test_broadcast_to_user_current_thread_deferred_delivery_keeps_connectio
 
     let event = ClusterEvent::KickUserFromRoom {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         reason: "testing".to_string(),
         timestamp: chrono::Utc::now(),
     };
 
     let hub_for_task = hub.clone();
-    let room_for_task = room.clone();
-    let user_for_task = user.clone();
+    let room_for_task = room;
+    let user_for_task = user;
     let notify = tokio::spawn(async move {
         hub_for_task.broadcast_to_user(&room_for_task, &user_for_task, &event)
     });
@@ -437,7 +441,7 @@ async fn test_broadcast_to_connection_unsubscribes_target_when_reliable_delivery
     let user = uid("u1");
 
     let _rx = hub
-        .subscribe(room.clone(), user, "conn-target".to_string())
+        .subscribe(room, user, "conn-target".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -478,15 +482,15 @@ async fn test_broadcast_to_user_multi_connection() {
 
     // Same user with two connections
     let mut rx1 = hub
-        .subscribe(room.clone(), user.clone(), "c1".to_string())
+        .subscribe(room, user, "c1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), user.clone(), "c2".to_string())
+        .subscribe(room, user, "c2".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room.clone(), other.clone(), "c3".to_string())
+        .subscribe(room, other, "c3".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -522,11 +526,11 @@ async fn test_remove_room_cleans_connections() {
     let u2 = uid("u2");
 
     let rx1 = hub
-        .subscribe(room.clone(), u1.clone(), "c1".to_string())
+        .subscribe(room, u1, "c1".to_string())
         .await
         .expect("subscribe should succeed");
     let rx2 = hub
-        .subscribe(room.clone(), u2.clone(), "c2".to_string())
+        .subscribe(room, u2, "c2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -581,7 +585,7 @@ async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
 
     // Subscribe should emit RoomActivated
     let _rx = hub
-        .subscribe(room.clone(), user.clone(), "lc_conn".to_string())
+        .subscribe(room, user, "lc_conn".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -616,7 +620,7 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
         let conn_id = format!("churn_conn_{i}");
 
         let _rx = hub
-            .subscribe(room.clone(), user.clone(), conn_id.clone())
+            .subscribe(room, user, conn_id.clone())
             .await
             .expect("subscribe should succeed");
         hub.unsubscribe(&conn_id);
@@ -662,7 +666,7 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
 
     // Subscribe first user -> RoomActivated
     let _rx1 = hub
-        .subscribe(room.clone(), user1.clone(), "conn1".to_string())
+        .subscribe(room, user1, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -678,7 +682,7 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     // After the room is fully removed, subscribing a second user must
     // emit another RoomActivated (the room is re-created from scratch).
     let _rx2 = hub
-        .subscribe(room.clone(), user2.clone(), "conn2".to_string())
+        .subscribe(room, user2, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -705,7 +709,7 @@ async fn test_remove_room_emits_deactivated_event() {
     let user = uid("rm_user");
 
     let _rx = hub
-        .subscribe(room.clone(), user.clone(), "rm_conn".to_string())
+        .subscribe(room, user, "rm_conn".to_string())
         .await
         .expect("subscribe should succeed");
 

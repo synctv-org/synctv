@@ -3,17 +3,18 @@
 // subtitle lookups, M3U8 rewriting) without depending on axum or synctv-proxy.
 // The HTTP layer receives a `ProxyAction` and executes it generically.
 
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use async_trait::async_trait;
 
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::ExecutionControl;
+use crate::models::{MediaId, RoomId, TypedId, UserId};
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use crate::service::{CredentialEncryption, RoomService};
+use crate::PublicIdCodec;
 
 /// What action the HTTP layer should perform after the provider resolves the request.
 #[derive(Debug, Clone)]
@@ -42,22 +43,22 @@ pub enum ProxyAction {
     /// Execute a live FLV stream directly from the API layer.
     LiveFlv {
         provider_name: String,
-        room_id: String,
-        media_id: String,
-        user_id: String,
+        room_id: RoomId,
+        media_id: MediaId,
+        user_id: UserId,
         expires_at: i64,
     },
     /// Generate an HLS playlist for a live stream.
     LiveHlsPlaylist {
         provider_name: String,
-        room_id: String,
-        media_id: String,
+        room_id: RoomId,
+        media_id: MediaId,
         version: String,
     },
     /// Serve a live HLS segment from the API layer.
     LiveHlsSegment {
-        room_id: String,
-        media_id: String,
+        room_id: RoomId,
+        media_id: MediaId,
         segment_name: String,
         disguised_as_png: bool,
     },
@@ -82,6 +83,55 @@ pub struct ProxyServices {
     pub credential_encryption: Option<CredentialEncryption>,
     pub credential_repo: Arc<UserProviderCredentialRepository>,
     pub signing_key: Arc<ProxySigningKey>,
+    pub public_id_codec: Arc<PublicIdCodec>,
+}
+
+pub(crate) fn parse_proxy_user_id(
+    codec: &PublicIdCodec,
+    value: &str,
+    context: &str,
+) -> Result<UserId, ProviderError> {
+    parse_proxy_id(codec, value, context)
+}
+
+pub(crate) fn parse_proxy_room_id(
+    codec: &PublicIdCodec,
+    value: &str,
+    context: &str,
+) -> Result<RoomId, ProviderError> {
+    parse_proxy_id(codec, value, context)
+}
+
+pub(crate) fn parse_proxy_media_id(
+    codec: &PublicIdCodec,
+    value: &str,
+    context: &str,
+) -> Result<MediaId, ProviderError> {
+    parse_proxy_id(codec, value, context)
+}
+
+fn parse_proxy_id<T>(codec: &PublicIdCodec, value: &str, context: &str) -> Result<T, ProviderError>
+where
+    T: crate::PublicIdType,
+{
+    codec
+        .decode::<T>(value)
+        .or_else(|_| parse_positive_id(value))
+        .map_err(|error| ProviderError::InvalidConfig(format!("Invalid {error} in {context}")))
+}
+
+fn parse_positive_id<T>(value: &str) -> Result<T, String>
+where
+    T: TypedId,
+{
+    let parsed = value
+        .trim()
+        .parse::<T>()
+        .map_err(|error| format!("{}: {error}", T::TYPE_NAME))?;
+    if parsed.get() <= 0 {
+        return Err(format!("{}: expected a positive integer", T::TYPE_NAME));
+    }
+    Ok(parsed)
 }
 
 /// Abstract proxy request context (no axum/HTTP framework types).

@@ -271,7 +271,8 @@ message CreateUserResponse {
 
 message DeleteUserRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -310,14 +311,16 @@ message ListUsersResponse {
 
 message GetUserRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message UserPathRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -330,7 +333,8 @@ message GetUserResponse {
 // provides an audit trail for compliance.
 message UpdateUserPasswordRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string new_password = 2 [(buf.validate.field).string = {
@@ -346,7 +350,8 @@ message UpdateUserPasswordResponse {
 
 message UpdateUserUsernameRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string new_username = 2 [(buf.validate.field).string = {
@@ -362,7 +367,8 @@ message UpdateUserUsernameResponse {
 
 message UpdateUserRoleRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     synctv.common.UserRole role = 2 [(buf.validate.field).enum.defined_only = true]; // New role
@@ -374,7 +380,8 @@ message UpdateUserRoleResponse {
 
 message BanUserRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2; // Optional
@@ -386,7 +393,8 @@ message BanUserResponse {
 
 message UnbanUserRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -397,7 +405,8 @@ message UnbanUserResponse {
 
 message GetUserRoomsRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     option (buf.validate.message).cel = {
@@ -491,7 +500,8 @@ message ListUserRegistrationReviewsResponse {
 
 message ApproveUserRegistrationReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -503,7 +513,8 @@ message ApproveUserRegistrationReviewResponse {
 
 message RejectUserRegistrationReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2 [(buf.validate.field).string.max_len = 500];
@@ -529,7 +540,7 @@ message ListRoomCreationReviewsRequest {
     int32 page_size = 2;
     synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
     string requested_by = 4 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
     string search = 5 [(buf.validate.field).string.max_len = 100];
@@ -542,7 +553,8 @@ message ListRoomCreationReviewsResponse {
 
 message ApproveRoomCreationReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -554,7 +566,8 @@ message ApproveRoomCreationReviewResponse {
 
 message RejectRoomCreationReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2 [(buf.validate.field).string.max_len = 500];
@@ -580,11 +593,11 @@ message ListRoomJoinReviewsRequest {
     int32 page_size = 2;
     synctv.common.ReviewStatus status = 3 [(buf.validate.field).enum.defined_only = true];
     string room_id = 4 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
     string user_id = 5 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
 }
@@ -596,7 +609,8 @@ message ListRoomJoinReviewsResponse {
 
 message ApproveRoomJoinReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -608,7 +622,8 @@ message ApproveRoomJoinReviewResponse {
 
 message RejectRoomJoinReviewRequest {
     string request_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2 [(buf.validate.field).string.max_len = 500];
@@ -626,8 +641,8 @@ message RejectRoomJoinReviewResponse {
 message ListRoomsRequest {
     option (buf.validate.message).cel = {
         id: "admin.list_rooms.creator_id"
-        message: "creator_id must be empty or a 12-character base62 identifier"
-        expression: "this.creator_id == '' || this.creator_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "creator_id must be empty or a public identifier"
+        expression: "this.creator_id == '' || this.creator_id.matches('^[A-Za-z0-9]{1,64}$')"
     };
     option (buf.validate.message).cel = {
         id: "admin.list_rooms.page"
@@ -658,14 +673,16 @@ message ListRoomsResponse {
 
 message GetRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
 
 message RoomPathRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -676,7 +693,8 @@ message GetRoomResponse {
 
 message GetRoomSettingsRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -688,7 +706,8 @@ message GetRoomSettingsResponse {
 
 message UpdateRoomSettingsRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     bytes settings = 2; // JSON settings
@@ -700,7 +719,8 @@ message UpdateRoomSettingsResponse {
 
 message ResetRoomSettingsRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -711,7 +731,8 @@ message ResetRoomSettingsResponse {
 
 message UpdateRoomPasswordRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string new_password = 2; // Empty to remove password. SECURITY: Plaintext - requires TLS.
@@ -723,7 +744,8 @@ message UpdateRoomPasswordResponse {
 
 message DeleteRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -734,7 +756,8 @@ message DeleteRoomResponse {
 
 message BanRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 2; // Optional
@@ -746,7 +769,8 @@ message BanRoomResponse {
 
 message UnbanRoomRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -757,7 +781,8 @@ message UnbanRoomResponse {
 
 message GetRoomMembersRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     option (buf.validate.message).cel = {
@@ -789,11 +814,13 @@ message GetRoomMembersResponse {
 
 message AddMemberRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     synctv.common.RoomMemberRole role = 3;
@@ -806,11 +833,13 @@ message AddMemberResponse {
 
 message UpdateMemberPermissionsRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     synctv.common.RoomMemberRole role = 3;
@@ -826,11 +855,13 @@ message UpdateMemberPermissionsResponse {
 
 message KickMemberRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -841,11 +872,13 @@ message KickMemberResponse {
 
 message BanMemberRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 3 [(buf.validate.field).string.max_len = 500];
@@ -857,11 +890,13 @@ message BanMemberResponse {
 
 message UnbanMemberRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string user_id = 2 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -876,7 +911,8 @@ message UnbanMemberResponse {
 
 message AddAdminRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -887,7 +923,8 @@ message AddAdminResponse {
 
 message RemoveAdminRequest {
     string user_id = 1 [(buf.validate.field).string = {
-        len: 12,
+        min_len: 1,
+        max_len: 64,
         pattern: "^[A-Za-z0-9]+$"
     }];
 }
@@ -945,13 +982,13 @@ message GetSystemStatsResponse {
 message ListActiveStreamsRequest {
     option (buf.validate.message).cel = {
         id: "admin.list_active_streams.room_id"
-        message: "room_id must be empty or a 12-character base62 identifier"
-        expression: "this.room_id == '' || this.room_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "room_id must be empty or a public sqid identifier"
+        expression: "this.room_id == '' || this.room_id.matches('^[A-Za-z0-9]+$')"
     };
     option (buf.validate.message).cel = {
         id: "admin.list_active_streams.user_id"
-        message: "user_id must be empty or a 12-character base62 identifier"
-        expression: "this.user_id == '' || this.user_id.matches('^[A-Za-z0-9]{12}$')"
+        message: "user_id must be empty or a public sqid identifier"
+        expression: "this.user_id == '' || this.user_id.matches('^[A-Za-z0-9]+$')"
     };
     option (buf.validate.message).cel = {
         id: "admin.list_active_streams.page"
@@ -989,11 +1026,9 @@ message ListActiveStreamsResponse {
 
 message KickStreamRequest {
     string room_id = 1 [(buf.validate.field).string = {
-        len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string media_id = 2 [(buf.validate.field).string = {
-        len: 12,
         pattern: "^[A-Za-z0-9]+$"
     }];
     string reason = 3;
@@ -1018,7 +1053,8 @@ message BatchBanUsersRequest {
         max_items: 100,
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
@@ -1039,7 +1075,8 @@ message BatchDeleteUsersRequest {
         max_items: 100,
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
@@ -1059,7 +1096,8 @@ message BatchBanRoomsRequest {
         max_items: 100,
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }
@@ -1090,11 +1128,11 @@ message ListBanRecordsRequest {
     BanTargetType target_type = 3 [(buf.validate.field).enum.defined_only = true];
     optional bool active = 4;
     string user_id = 5 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
     string room_id = 6 [(buf.validate.field).string = {
-        max_len: 12,
+        max_len: 64,
         pattern: "^$|^[A-Za-z0-9]+$"
     }];
 }
@@ -1110,7 +1148,8 @@ message BatchDeleteRoomsRequest {
         max_items: 100,
         items: {
             string: {
-                len: 12,
+                min_len: 1,
+        max_len: 64,
                 pattern: "^[A-Za-z0-9]+$"
             }
         }

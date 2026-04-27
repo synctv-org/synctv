@@ -90,12 +90,12 @@ async fn test_complete_registration_flow() {
     let access_claims = jwt_service
         .verify_access_token(&access_token)
         .expect("Failed to verify access token");
-    assert_eq!(access_claims.sub, fetched_user.id.as_str());
+    assert_eq!(access_claims.sub, fetched_user.id.to_string());
 
     let refresh_claims = jwt_service
         .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
-    assert_eq!(refresh_claims.sub, fetched_user.id.as_str());
+    assert_eq!(refresh_claims.sub, fetched_user.id.to_string());
 }
 
 #[tokio::test]
@@ -229,7 +229,7 @@ async fn test_token_refresh_flow() {
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)
         .expect("Failed to verify new access token");
-    assert_eq!(new_claims.sub, user_id.as_str());
+    assert_eq!(new_claims.sub, user_id.to_string());
 
     // Old and new access tokens should be different
     assert_ne!(access_token, new_access_token);
@@ -358,7 +358,7 @@ async fn test_concurrent_login_attempts() {
         .create(&user)
         .await
         .expect("Failed to create user");
-    let user_id = created_user.id.clone();
+    let user_id = created_user.id;
 
     // Simulate 10 concurrent login attempts
     let mut handles = vec![];
@@ -393,7 +393,9 @@ async fn test_concurrent_login_attempts() {
 
     // All should succeed with same user ID
     assert_eq!(results.len(), 10);
-    assert!(results.iter().all(|claims| claims.sub == user_id.as_str()));
+    assert!(results
+        .iter()
+        .all(|claims| claims.sub == user_id.to_string()));
 }
 
 #[tokio::test]

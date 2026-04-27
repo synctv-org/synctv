@@ -22,11 +22,11 @@ async fn test_critical_events_high_priority() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from_string("critical_room".to_string());
-    let user_id = UserId::from_string("listener".to_string());
+    let room_id = RoomId::from(10_000_025);
+    let user_id = UserId::from(10_000_026);
 
     let (mut room_rx, conn_id) = node_a
-        .subscribe(room_id.clone(), user_id.clone())
+        .subscribe(room_id, user_id)
         .await
         .expect("subscribe should succeed");
 
@@ -34,10 +34,10 @@ async fn test_critical_events_high_priority() {
 
     let critical_event = ClusterEvent::PermissionChanged {
         event_id: synctv_common::snanoid!(16),
-        room_id: room_id.clone(),
-        target_user_id: user_id.clone(),
+        room_id,
+        target_user_id: user_id,
         target_username: "listener".to_string(),
-        changed_by: UserId::from_string("admin".to_string()),
+        changed_by: UserId::from(10_000_027),
         changed_by_username: "admin".to_string(),
         new_permissions: synctv_core::models::PermissionBits(
             synctv_core::models::PermissionBits::DEFAULT_MEMBER,

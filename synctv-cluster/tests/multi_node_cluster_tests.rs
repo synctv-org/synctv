@@ -25,15 +25,15 @@ async fn test_three_node_cluster() {
     let node_b = create_node(&redis.redis_url, "node_b").await;
     let node_c = create_node(&redis.redis_url, "node_c").await;
 
-    let room_id = RoomId::from_string("three_node_room".to_string());
+    let room_id = RoomId::from(10_000_054);
 
     // Subscribe on node A and node C
     let (rx_a, conn_a) = node_a
-        .subscribe(room_id.clone(), UserId::from_string("user_a".to_string()))
+        .subscribe(room_id, UserId::from(10_000_003))
         .await
         .expect("subscribe should succeed");
     let (rx_c, conn_c) = node_c
-        .subscribe(room_id.clone(), UserId::from_string("user_c".to_string()))
+        .subscribe(room_id, UserId::from(10_000_055))
         .await
         .expect("subscribe should succeed");
 
@@ -47,8 +47,8 @@ async fn test_three_node_cluster() {
         message_from_b,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: UserId::from_string("user_b".to_string()),
+            room_id,
+            user_id: UserId::from(10_000_004),
             username: "user_b".to_string(),
             message: message_from_b.to_string(),
             timestamp: Utc::now(),
@@ -65,8 +65,8 @@ async fn test_three_node_cluster() {
         message_from_b,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: UserId::from_string("user_b".to_string()),
+            room_id,
+            user_id: UserId::from(10_000_004),
             username: "user_b".to_string(),
             message: message_from_b.to_string(),
             timestamp: Utc::now(),

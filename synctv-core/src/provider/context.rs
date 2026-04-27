@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_common::ExecutionControl;
 
+use crate::models::{MediaId, RoomId, UserId};
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::ProxySigningKey;
 use crate::service::CredentialEncryption;
@@ -18,17 +19,23 @@ use super::PlaybackClientProfile;
 #[derive(Clone)]
 pub struct ProviderContext<'a> {
     /// User ID requesting playback (optional)
-    pub user_id: Option<&'a str>,
+    pub user_id: Option<UserId>,
+
+    /// Externally visible user ID for signed proxy URLs.
+    pub public_user_id: Option<String>,
 
     /// User ID whose provider credentials should be used when provider semantics
     /// require creator-owned shared credentials.
-    pub credential_owner_id: Option<&'a str>,
+    pub credential_owner_id: Option<UserId>,
 
     /// Room ID (optional)
-    pub room_id: Option<&'a str>,
+    pub room_id: Option<RoomId>,
+
+    /// Externally visible room ID for signed proxy URLs.
+    pub public_room_id: Option<String>,
 
     /// Media ID currently being resolved (optional)
-    pub media_id: Option<&'a str>,
+    pub media_id: Option<MediaId>,
 
     /// Bound provider instance name selected by the media/playlist owner (optional)
     pub provider_instance_name: Option<&'a str>,
@@ -67,8 +74,10 @@ impl<'a> ProviderContext<'a> {
     pub fn new(key_prefix: &'a str) -> Self {
         Self {
             user_id: None,
+            public_user_id: None,
             credential_owner_id: None,
             room_id: None,
+            public_room_id: None,
             media_id: None,
             provider_instance_name: None,
             base_url: None,
@@ -85,28 +94,42 @@ impl<'a> ProviderContext<'a> {
 
     /// Set user ID
     #[must_use]
-    pub const fn with_user_id(mut self, user_id: &'a str) -> Self {
+    pub const fn with_user_id(mut self, user_id: UserId) -> Self {
         self.user_id = Some(user_id);
+        self
+    }
+
+    /// Set externally visible user ID for proxy signatures.
+    #[must_use]
+    pub fn with_public_user_id(mut self, user_id: impl Into<String>) -> Self {
+        self.public_user_id = Some(user_id.into());
         self
     }
 
     /// Set credential owner ID
     #[must_use]
-    pub const fn with_credential_owner_id(mut self, credential_owner_id: &'a str) -> Self {
+    pub const fn with_credential_owner_id(mut self, credential_owner_id: UserId) -> Self {
         self.credential_owner_id = Some(credential_owner_id);
         self
     }
 
     /// Set room ID
     #[must_use]
-    pub const fn with_room_id(mut self, room_id: &'a str) -> Self {
+    pub const fn with_room_id(mut self, room_id: RoomId) -> Self {
         self.room_id = Some(room_id);
+        self
+    }
+
+    /// Set externally visible room ID for proxy signatures.
+    #[must_use]
+    pub fn with_public_room_id(mut self, room_id: impl Into<String>) -> Self {
+        self.public_room_id = Some(room_id.into());
         self
     }
 
     /// Set media ID
     #[must_use]
-    pub const fn with_media_id(mut self, media_id: &'a str) -> Self {
+    pub const fn with_media_id(mut self, media_id: MediaId) -> Self {
         self.media_id = Some(media_id);
         self
     }
@@ -195,16 +218,42 @@ impl<'a> ProviderContext<'a> {
     }
 
     #[must_use]
-    pub const fn credential_owner_id(&self) -> Option<&str> {
-        self.credential_owner_id
+    pub const fn user_id(&self) -> Option<&UserId> {
+        self.user_id.as_ref()
     }
 
     #[must_use]
-    pub const fn credential_owner_or_user_id(&self) -> Option<&str> {
-        match self.credential_owner_id {
-            Some(credential_owner_id) => Some(credential_owner_id),
-            None => self.user_id,
-        }
+    pub const fn room_id(&self) -> Option<&RoomId> {
+        self.room_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn proxy_user_id(&self) -> Option<String> {
+        self.public_user_id
+            .clone()
+            .or_else(|| self.user_id.map(|id| id.to_string()))
+    }
+
+    #[must_use]
+    pub fn proxy_room_id(&self) -> Option<String> {
+        self.public_room_id
+            .clone()
+            .or_else(|| self.room_id.map(|id| id.to_string()))
+    }
+
+    #[must_use]
+    pub const fn media_id(&self) -> Option<&MediaId> {
+        self.media_id.as_ref()
+    }
+
+    #[must_use]
+    pub const fn credential_owner_id(&self) -> Option<&UserId> {
+        self.credential_owner_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn credential_owner_or_user_id(&self) -> Option<&UserId> {
+        self.credential_owner_id().or_else(|| self.user_id())
     }
 
     pub fn check_active(&self) -> Result<(), crate::Error> {

@@ -70,7 +70,7 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     let created_user = repository.create(&user).await?;
 
     info!("Root user created successfully:");
-    info!("  ID: {}", created_user.id.as_str());
+    info!("  ID: {}", created_user.id);
     info!("  Username: {}", created_user.username);
     info!("  Role: {:?}", created_user.role);
 

@@ -288,8 +288,8 @@ impl MemberService {
         ) {
             tracing::warn!(
                 error = %error,
-                room_id = %room_id.as_str(),
-                user_id = %member.user_id.as_str(),
+                room_id = %room_id,
+                user_id = %member.user_id,
                 "Failed to broadcast permission changed event"
             );
         }
@@ -323,7 +323,7 @@ impl MemberService {
         if let Some(ref audit) = self.audit_service {
             if let Err(e) = audit
                 .log(
-                    actor_id.as_str().to_string(),
+                    actor_id.to_string(),
                     actor_username.to_string(),
                     action,
                     target_type,
@@ -374,7 +374,7 @@ impl MemberService {
         }
 
         // Create member object
-        let mut member = RoomMember::new(room_id.clone(), user_id.clone(), role);
+        let mut member = RoomMember::new(room_id, user_id, role);
         member.status = options.initial_status;
 
         // Add member with options (transaction happens in repository)
@@ -471,8 +471,8 @@ impl MemberService {
         {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room_id,
+                user_id = %target_user_id,
                 "Failed to notify local clients of member kick"
             );
         }
@@ -488,9 +488,9 @@ impl MemberService {
             "",
             AuditAction::MemberKicked,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
             }),
         )
         .await;
@@ -530,8 +530,8 @@ impl MemberService {
         {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room_id,
+                user_id = %target_user_id,
                 "Failed to notify local clients of admin member kick"
             );
         }
@@ -545,9 +545,9 @@ impl MemberService {
             actor_username,
             AuditAction::MemberKicked,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "mode": "admin_override",
             }),
         )
@@ -638,9 +638,9 @@ impl MemberService {
             "",
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "added_permissions": added_permissions,
                 "removed_permissions": removed_permissions,
             }),
@@ -752,7 +752,7 @@ impl MemberService {
                 if let Err(error) = invalidation.invalidate_room_settings(&room_id).await {
                     tracing::warn!(
                         error = %error,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "Failed to broadcast room settings cache invalidation after admin role change"
                     );
                 }
@@ -763,9 +763,9 @@ impl MemberService {
                 &actor_username,
                 AuditAction::MemberRoleUpdated,
                 AuditTargetType::Member,
-                Some(target_user_id.as_str().to_string()),
+                Some(target_user_id.to_string()),
                 serde_json::json!({
-                    "room_id": room_id.as_str(),
+                    "room_id": room_id,
                     "role": new_role.to_string(),
                     "mode": "admin_override",
                 }),
@@ -831,9 +831,9 @@ impl MemberService {
             &actor_username,
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "added_permissions": if effective_is_admin { admin_added_permissions } else { added_permissions },
                 "removed_permissions": if effective_is_admin { admin_removed_permissions } else { removed_permissions },
                 "mode": "admin_override",
@@ -905,9 +905,9 @@ impl MemberService {
             "",
             AuditAction::PermissionGranted,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "permission": permission,
             }),
         )
@@ -974,9 +974,9 @@ impl MemberService {
             "",
             AuditAction::PermissionRevoked,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "permission": permission,
             }),
         )
@@ -1075,7 +1075,7 @@ impl MemberService {
     pub async fn count_members_batch(
         &self,
         room_ids: &[&RoomId],
-    ) -> Result<std::collections::HashMap<String, i32>> {
+    ) -> Result<std::collections::HashMap<RoomId, i32>> {
         self.member_repo.count_by_rooms_batch(room_ids).await
     }
 
@@ -1167,8 +1167,8 @@ impl MemberService {
         {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room_id,
+                user_id = %target_user_id,
                 "Failed to notify local clients of member ban"
             );
         }
@@ -1190,9 +1190,9 @@ impl MemberService {
             "",
             AuditAction::MemberBanned,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "reason": reason,
             }),
         )
@@ -1237,8 +1237,8 @@ impl MemberService {
         {
             tracing::warn!(
                 error = %e,
-                room_id = %room_id.as_str(),
-                user_id = %target_user_id.as_str(),
+                room_id = %room_id,
+                user_id = %target_user_id,
                 "Failed to notify local clients of admin member ban"
             );
         }
@@ -1256,9 +1256,9 @@ impl MemberService {
             actor_username,
             AuditAction::MemberBanned,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "reason": reason,
                 "mode": "admin_override",
             }),
@@ -1296,8 +1296,8 @@ impl MemberService {
             "",
             AuditAction::MemberUnbanned,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
-            serde_json::json!({ "room_id": room_id.as_str() }),
+            Some(target_user_id.to_string()),
+            serde_json::json!({ "room_id": room_id }),
         )
         .await;
 
@@ -1328,9 +1328,9 @@ impl MemberService {
             actor_username,
             AuditAction::MemberUnbanned,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "mode": "admin_override",
             }),
         )
@@ -1411,7 +1411,7 @@ impl MemberService {
             if let Err(e) = invalidation.invalidate_room_settings(&room_id).await {
                 tracing::warn!(
                     error = %e,
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     "Failed to broadcast room settings cache invalidation after role change"
                 );
             }
@@ -1423,9 +1423,9 @@ impl MemberService {
             "",
             AuditAction::MemberRoleUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "old_role": format!("{:?}", old_role),
                 "new_role": format!("{:?}", role),
             }),
@@ -1501,9 +1501,9 @@ impl MemberService {
             "",
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
-            Some(target_user_id.as_str().to_string()),
+            Some(target_user_id.to_string()),
             serde_json::json!({
-                "room_id": room_id.as_str(),
+                "room_id": room_id,
                 "old_status": format!("{:?}", old_status),
                 "new_status": format!("{:?}", status),
             }),

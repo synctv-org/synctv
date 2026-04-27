@@ -113,8 +113,7 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
     user_repo
         .create(&user)
         .await
-        .expect("Failed to create test user");
-    user
+        .expect("Failed to create test user")
 }
 
 async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -> Room {
@@ -123,7 +122,7 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         id: RoomId::new(),
         name: name.to_string(),
         description: "Test room".to_string(),
-        created_by: creator_id.clone(),
+        created_by: creator_id,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -148,7 +147,7 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
     // Add creator as room member
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member = RoomMember {
-        room_id: room.id.clone(),
+        room_id: room.id,
         user_id: creator_id,
         role: RoomRole::Creator,
         status: MemberStatus::Active,
@@ -179,7 +178,7 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "streamer1", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Stream Room 1").await;
+    let room = create_test_room(&pool, user.id, "Stream Room 1").await;
     let media_id = MediaId::new();
 
     // Generate publish token
@@ -194,9 +193,9 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
         .await
         .expect("Failed to validate publish key");
 
-    assert_eq!(claims.room_id, room.id.as_str());
-    assert_eq!(claims.media_id, media_id.as_str());
-    assert_eq!(claims.user_id, user.id.as_str());
+    assert_eq!(claims.room_id, room.id.to_string());
+    assert_eq!(claims.media_id, media_id.to_string());
+    assert_eq!(claims.user_id, user.id.to_string());
     assert!(claims.perm_start_live);
 }
 
@@ -208,7 +207,7 @@ async fn rtmp_auth_test_expired_token_rejected() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "streamer2", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Stream Room 2").await;
+    let room = create_test_room(&pool, user.id, "Stream Room 2").await;
     let media_id = MediaId::new();
 
     let jwt_service = JwtService::new("test-secret-key-for-expired-token-tests-32chars")
@@ -241,7 +240,7 @@ async fn rtmp_auth_test_banned_user_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "banned_user", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Ban Room").await;
+    let room = create_test_room(&pool, user.id, "Ban Room").await;
     let media_id = MediaId::new();
 
     // Generate publish key before banning
@@ -282,7 +281,7 @@ async fn rtmp_auth_test_deleted_user_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "deleted_user", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Delete Room").await;
+    let room = create_test_room(&pool, user.id, "Delete Room").await;
     let media_id = MediaId::new();
 
     // Generate publish key before deletion
@@ -324,7 +323,7 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "room_user", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Test Room").await;
+    let room = create_test_room(&pool, user.id, "Test Room").await;
 
     // Ban the room
     let room_repo = RoomRepository::new(pool.clone());
@@ -363,7 +362,7 @@ async fn rtmp_auth_test_closed_room_lifecycle_is_persisted() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "pending_user", UserRole::User).await;
-    let mut room = create_test_room(&pool, user.id.clone(), "Closed Room").await;
+    let mut room = create_test_room(&pool, user.id, "Closed Room").await;
 
     room.close();
     let room_repo = RoomRepository::new(pool.clone());
@@ -453,7 +452,7 @@ async fn rtmp_auth_test_rtmp_player_settings() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let user = create_test_user(&pool, "settings_user", UserRole::User).await;
-    let room = create_test_room(&pool, user.id.clone(), "Settings Room").await;
+    let room = create_test_room(&pool, user.id, "Settings Room").await;
 
     // Verify default rtmp_player is disabled
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -495,7 +494,7 @@ async fn rtmp_auth_test_non_room_member_rejected() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
     let owner = create_test_user(&pool, "room_owner", UserRole::User).await;
-    let room = create_test_room(&pool, owner.id.clone(), "Private Room").await;
+    let room = create_test_room(&pool, owner.id, "Private Room").await;
 
     let non_member = create_test_user(&pool, "outsider", UserRole::User).await;
 

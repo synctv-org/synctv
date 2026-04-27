@@ -92,12 +92,13 @@ pub async fn create_ticket(
     Json(req): Json<CreateWebSocketTicketRequest>,
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
-    let room_id =
-        build_create_websocket_ticket_request(&req).map_err(super::error::map_api_error)?;
+    let room_id = build_create_websocket_ticket_request(&req, &state.public_id_codec)
+        .map_err(super::error::map_api_error)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let room_service = state.room_service.clone();
     let ws_ticket_service = state.ws_ticket_service.clone();
     let requested_room_id = req.room_id.clone();
+    let public_id_codec = state.public_id_codec.clone();
 
     let ticket_response = state
         .request_executor
@@ -143,13 +144,15 @@ pub async fn create_ticket(
                     .await
                     .map_err(crate::impls::ApiError::from)?;
 
+                let public_room_id = public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(crate::impls::ApiError::Internal)?;
                 Ok(CreateWebSocketTicketResponse {
                     ticket,
-                    room_id: room_id.as_str().to_string(),
+                    room_id: public_room_id.clone(),
                     expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
                     usage: format!(
-                        "Use in WebSocket URL: ws://host/ws/rooms/{}?ticket=xxx",
-                        room_id.as_str()
+                        "Use in WebSocket URL: ws://host/ws/rooms/{public_room_id}?ticket=xxx"
                     ),
                 })
             },

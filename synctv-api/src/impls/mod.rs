@@ -184,80 +184,191 @@ fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiErro
     ApiError::InvalidInput(format!("Invalid {field}: {err}"))
 }
 
-macro_rules! define_typed_id_parser {
-    ($fn_name:ident, $ty:path) => {
-        pub fn $fn_name(value: &str, field: &'static str) -> Result<$ty, ApiError> {
-            <$ty>::from_string_validated(value.trim().to_string())
-                .map_err(|err| invalid_id_input(field, err))
-        }
-    };
+fn parse_numeric_id<T>(value: &str, field: &'static str) -> Option<Result<T, ApiError>>
+where
+    T: synctv_core::models::TypedId,
+{
+    let value = value.trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(
+        value
+            .parse::<T>()
+            .map_err(|err| invalid_id_input(field, err)),
+    )
 }
 
-define_typed_id_parser!(parse_user_id_param, synctv_core::models::UserId);
-define_typed_id_parser!(parse_room_id_param, synctv_core::models::RoomId);
-define_typed_id_parser!(parse_media_id_param, synctv_core::models::MediaId);
-define_typed_id_parser!(parse_playlist_id_param, synctv_core::models::PlaylistId);
-
-pub const fn proto_validated_user_id(value: String) -> synctv_core::models::UserId {
-    synctv_core::models::UserId::from_string(value)
+pub fn parse_id_param<T>(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<T, ApiError>
+where
+    T: synctv_core::PublicIdType,
+{
+    if let Some(parsed) = parse_numeric_id(value, field) {
+        return parsed;
+    }
+    public_id_codec
+        .decode::<T>(value.trim())
+        .map_err(|err| invalid_id_input(field, err))
 }
 
-pub const fn proto_validated_room_id(value: String) -> synctv_core::models::RoomId {
-    synctv_core::models::RoomId::from_string(value)
+pub fn parse_user_id_param(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<synctv_core::models::UserId, ApiError> {
+    parse_id_param(value, field, public_id_codec)
 }
 
-pub const fn proto_validated_media_id(value: String) -> synctv_core::models::MediaId {
-    synctv_core::models::MediaId::from_string(value)
+pub fn parse_room_id_param(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<synctv_core::models::RoomId, ApiError> {
+    parse_id_param(value, field, public_id_codec)
 }
 
-pub const fn proto_validated_playlist_id(value: String) -> synctv_core::models::PlaylistId {
-    synctv_core::models::PlaylistId::from_string(value)
+pub fn parse_media_id_param(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<synctv_core::models::MediaId, ApiError> {
+    parse_id_param(value, field, public_id_codec)
 }
 
-pub fn proto_validated_optional_media_id(value: String) -> Option<synctv_core::models::MediaId> {
-    (!value.is_empty()).then(|| proto_validated_media_id(value))
+pub fn parse_playlist_id_param(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<synctv_core::models::PlaylistId, ApiError> {
+    parse_id_param(value, field, public_id_codec)
+}
+
+pub fn proto_validated_id<T>(value: impl AsRef<str>, public_id_codec: &crate::PublicIdCodec) -> T
+where
+    T: synctv_core::PublicIdType,
+{
+    let value = value.as_ref();
+    if let Some(Ok(parsed)) = parse_numeric_id(value, T::TYPE_NAME) {
+        return parsed;
+    }
+    public_id_codec
+        .decode::<T>(value)
+        .unwrap_or_else(|_| panic!("validated {} must be a valid sqid", T::TYPE_NAME))
+}
+
+pub fn proto_validated_user_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_core::models::UserId {
+    proto_validated_id(value, public_id_codec)
+}
+
+pub fn proto_validated_room_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_core::models::RoomId {
+    proto_validated_id(value, public_id_codec)
+}
+
+pub fn proto_validated_media_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_core::models::MediaId {
+    proto_validated_id(value, public_id_codec)
+}
+
+pub fn proto_validated_playlist_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_core::models::PlaylistId {
+    proto_validated_id(value, public_id_codec)
+}
+
+pub fn proto_validated_optional_id<T>(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Option<T>
+where
+    T: synctv_core::PublicIdType,
+{
+    let value = value.as_ref();
+    (!value.is_empty()).then(|| proto_validated_id(value, public_id_codec))
+}
+
+pub fn proto_validated_optional_media_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Option<synctv_core::models::MediaId> {
+    proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_playlist_id(
-    value: String,
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Option<synctv_core::models::PlaylistId> {
-    (!value.is_empty()).then(|| proto_validated_playlist_id(value))
+    proto_validated_optional_id(value, public_id_codec)
 }
 
-pub fn proto_validated_optional_room_id(value: String) -> Option<synctv_core::models::RoomId> {
-    (!value.is_empty()).then(|| proto_validated_room_id(value))
+pub fn proto_validated_optional_room_id(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Option<synctv_core::models::RoomId> {
+    proto_validated_optional_id(value, public_id_codec)
 }
 
-pub fn proto_validated_media_ids(values: Vec<String>) -> Vec<synctv_core::models::MediaId> {
-    values.into_iter().map(proto_validated_media_id).collect()
-}
-
-pub fn proto_validated_playlist_ids(values: Vec<String>) -> Vec<synctv_core::models::PlaylistId> {
+pub fn proto_validated_media_ids(
+    values: Vec<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Vec<synctv_core::models::MediaId> {
     values
         .into_iter()
-        .map(proto_validated_playlist_id)
+        .map(|value| proto_validated_media_id(&value, public_id_codec))
+        .collect()
+}
+
+pub fn proto_validated_playlist_ids(
+    values: Vec<String>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Vec<synctv_core::models::PlaylistId> {
+    values
+        .into_iter()
+        .map(|value| proto_validated_playlist_id(&value, public_id_codec))
         .collect()
 }
 
 pub fn parse_optional_media_id_param(
     value: &str,
     field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
-    if value.trim().is_empty() {
-        Ok(None)
-    } else {
-        parse_media_id_param(value, field).map(Some)
-    }
+    parse_optional_id_param(value, field, public_id_codec)
 }
 
 pub fn parse_optional_playlist_id_param(
     value: &str,
     field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
+    parse_optional_id_param(value, field, public_id_codec)
+}
+
+pub fn parse_optional_id_param<T>(
+    value: &str,
+    field: &'static str,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<Option<T>, ApiError>
+where
+    T: synctv_core::PublicIdType,
+{
     if value.trim().is_empty() {
         Ok(None)
     } else {
-        parse_playlist_id_param(value, field).map(Some)
+        parse_id_param(value, field, public_id_codec).map(Some)
     }
 }
 
@@ -1090,7 +1201,7 @@ mod tests {
             event: ClusterEvent::CacheInvalidate {
                 event_id: "existing_event_1".to_string(),
                 targets: vec![CacheTarget::Room {
-                    room_id: "room12345678".to_string(),
+                    room_id: synctv_core::models::RoomId::from(12_345_678),
                 }],
                 timestamp: chrono::Utc::now(),
             },
@@ -1102,7 +1213,7 @@ mod tests {
             event: ClusterEvent::CacheInvalidate {
                 event_id: "delayed_event_1".to_string(),
                 targets: vec![CacheTarget::Room {
-                    room_id: "room87654321".to_string(),
+                    room_id: synctv_core::models::RoomId::from(87_654_321),
                 }],
                 timestamp: chrono::Utc::now(),
             },
@@ -1154,7 +1265,7 @@ mod tests {
                 event: ClusterEvent::CacheInvalidate {
                     event_id: "closed_channel_event".to_string(),
                     targets: vec![CacheTarget::Room {
-                        room_id: "room-cluster".to_string(),
+                        room_id: synctv_core::models::RoomId::from(12_345_679),
                     }],
                     timestamp: chrono::Utc::now(),
                 },

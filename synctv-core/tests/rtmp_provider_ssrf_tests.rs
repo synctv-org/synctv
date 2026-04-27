@@ -7,13 +7,14 @@
 #![allow(clippy::unwrap_used)]
 
 use serde_json::json;
+use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 
 fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
-        .with_user_id("test_user")
-        .with_room_id("test_room")
-        .with_media_id("test_media")
+        .with_user_id(UserId::from(1))
+        .with_room_id(RoomId::from(10))
+        .with_media_id(MediaId::from(100))
 }
 
 // validate_source_config should not accept external URLs

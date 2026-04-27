@@ -10,13 +10,22 @@ use synctv_core::models::Playlist;
 #[serde(rename_all = "snake_case")]
 pub enum CacheTarget {
     /// Invalidate a specific user's cached data
-    User { user_id: String },
+    User { user_id: UserId },
     /// Invalidate a specific user's username cache
-    Username { user_id: String },
+    Username { user_id: UserId },
     /// Invalidate a specific room's cached data
-    Room { room_id: String },
+    Room { room_id: RoomId },
     /// Invalidate all caches (full flush)
     All,
+}
+
+/// WebRTC signaling payload kind routed between room peers.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebRTCSignalKind {
+    Offer,
+    Answer,
+    IceCandidate,
 }
 
 /// Events that are synchronized across cluster nodes via Redis Pub/Sub.
@@ -198,18 +207,18 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// WebRTC signaling message (offer, answer, `ice_candidate`)
+    /// WebRTC signaling message.
     WebRTCSignaling {
         event_id: String,
         room_id: RoomId,
-        message_type: String, // "offer", "answer", "ice_candidate"
+        message_type: WebRTCSignalKind,
         /// Server-set field: `"<user_id>|<conn_id>"`.
         ///
         /// The `|` separator is used instead of `:` because user IDs may contain
         /// colons (e.g., namespaced IDs).  Using `|` makes parsing unambiguous:
         /// `from.splitn(2, '|')` always yields exactly `[user_id, conn_id]`.
         from: String,
-        /// Client-provided target: `"<user_id>:<conn_id>"` or just `"<conn_id>"`.
+        /// Client-provided target: `"<user_id>:<conn_id>"`.
         ///
         /// Parsed on the server with `rsplit_once(':')` so that colons in the
         /// user_id portion are handled safely.
@@ -543,42 +552,25 @@ impl ClusterEvent {
             Self::SystemNotification { message, level, .. } => {
                 format!("{level:?}:{message}")
             }
-            Self::KickUser { user_id, .. } => {
-                format!("kick_user:{}", user_id.as_str())
-            }
+            Self::KickUser { user_id, .. } => format!("kick_user:{user_id}"),
             Self::KickUserFromRoom {
                 user_id, room_id, ..
-            } => {
-                format!(
-                    "kick_user_from_room:{}:{}",
-                    user_id.as_str(),
-                    room_id.as_str()
-                )
-            }
-            Self::RoomBanned { room_id, .. } => format!("room_banned:{}", room_id.as_str()),
+            } => format!("kick_user_from_room:{user_id}:{room_id}"),
+            Self::RoomBanned { room_id, .. } => format!("room_banned:{room_id}"),
             Self::RoomOwnerInactive { room_id, .. } => {
-                format!("room_owner_inactive:{}", room_id.as_str())
+                format!("room_owner_inactive:{room_id}")
             }
             Self::UserNotification {
                 user_id,
                 notification_id,
                 ..
-            } => {
-                format!("user_notification:{}:{}", user_id.as_str(), notification_id)
-            }
+            } => format!("user_notification:{user_id}:{notification_id}"),
             Self::ProviderCredentialChanged {
                 user_id,
                 provider,
                 server_id,
                 ..
-            } => {
-                format!(
-                    "provider_credential_changed:{}:{}:{}",
-                    user_id.as_str(),
-                    provider,
-                    server_id
-                )
-            }
+            } => format!("provider_credential_changed:{user_id}:{provider}:{server_id}"),
             _ => String::new(),
         }
     }
@@ -627,8 +619,8 @@ mod tests {
     fn test_cluster_event_serialization() {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room123".to_string()),
-            user_id: UserId::from_string("user456".to_string()),
+            room_id: RoomId::from(10_000_140),
+            user_id: UserId::from(10_000_141),
             username: "testuser".to_string(),
             message: "Hello world!".to_string(),
             timestamp: Utc::now(),
@@ -650,7 +642,7 @@ mod tests {
     fn test_provider_credential_changed_is_admin_channel_event() {
         let event = ClusterEvent::ProviderCredentialChanged {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from_string("user-credential".to_string()),
+            user_id: UserId::from(42),
             provider: "bilibili".to_string(),
             server_id: "global".to_string(),
             timestamp: Utc::now(),
@@ -658,7 +650,7 @@ mod tests {
 
         assert_eq!(event.event_type(), "provider_credential_changed");
         assert!(event.room_id().is_none());
-        assert_eq!(event.user_id().map(UserId::as_str), Some("user-credential"));
+        assert_eq!(event.user_id().copied(), Some(UserId::from(42)));
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("provider_credential_changed"));
@@ -670,8 +662,8 @@ mod tests {
     fn test_cluster_event_deserialization_requires_event_id() {
         let json = serde_json::json!({
             "type": "chat_message",
-            "room_id": "room123",
-            "user_id": "user456",
+            "room_id": 123,
+            "user_id": 456,
             "username": "testuser",
             "message": "Hello world!",
             "timestamp": Utc::now(),
@@ -709,8 +701,8 @@ mod tests {
     fn test_cluster_event_room_id() {
         let event = ClusterEvent::UserJoined {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room123".to_string()),
-            user_id: UserId::from_string("user456".to_string()),
+            room_id: RoomId::from(10_000_140),
+            user_id: UserId::from(10_000_141),
             username: "testuser".to_string(),
             permissions: PermissionBits(0),
             role: 2, // Member role
@@ -722,8 +714,8 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        assert_eq!(event.room_id().unwrap().as_str(), "room123");
-        assert_eq!(event.user_id().unwrap().as_str(), "user456");
+        assert_eq!(event.room_id().copied(), Some(RoomId::from(10_000_140)));
+        assert_eq!(event.user_id().copied(), Some(UserId::from(10_000_141)));
     }
 
     #[test]
@@ -744,8 +736,8 @@ mod tests {
     fn test_kick_publisher_serialization() {
         let event = ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room123".to_string()),
-            media_id: MediaId::from_string("media456".to_string()),
+            room_id: RoomId::from(10_000_140),
+            media_id: MediaId::from(10_000_142),
             reason: "user_banned".to_string(),
             timestamp: Utc::now(),
         };
@@ -753,14 +745,17 @@ mod tests {
         // Serialize to JSON
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("kick_publisher"));
-        assert!(json.contains("room123"));
-        assert!(json.contains("media456"));
+        assert!(json.contains("10000140"));
+        assert!(json.contains("10000142"));
         assert!(json.contains("user_banned"));
 
         // Deserialize back
         let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "kick_publisher");
-        assert_eq!(deserialized.room_id().unwrap().as_str(), "room123");
+        assert_eq!(
+            deserialized.room_id().copied(),
+            Some(RoomId::from(10_000_140))
+        );
         assert!(deserialized.user_id().is_none());
 
         if let ClusterEvent::KickPublisher {
@@ -770,8 +765,8 @@ mod tests {
             ..
         } = &deserialized
         {
-            assert_eq!(room_id.as_str(), "room123");
-            assert_eq!(media_id.as_str(), "media456");
+            assert_eq!(*room_id, RoomId::from(10_000_140));
+            assert_eq!(*media_id, MediaId::from(10_000_142));
             assert_eq!(reason, "user_banned");
         } else {
             panic!("Expected KickPublisher variant");
@@ -782,13 +777,13 @@ mod tests {
     fn test_kick_publisher_has_room_id_no_user_id() {
         let event = ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room789".to_string()),
-            media_id: MediaId::from_string("media012".to_string()),
+            room_id: RoomId::from(10_000_143),
+            media_id: MediaId::from(10_000_144),
             reason: "room_deleted".to_string(),
             timestamp: Utc::now(),
         };
 
-        assert_eq!(event.room_id().unwrap().as_str(), "room789");
+        assert_eq!(event.room_id().copied(), Some(RoomId::from(10_000_143)));
         assert!(event.user_id().is_none());
         assert_eq!(event.event_type(), "kick_publisher");
     }
@@ -797,19 +792,22 @@ mod tests {
     fn test_kick_user_serialization() {
         let event = ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from_string("user123".to_string()),
+            user_id: UserId::from(10_000_145),
             reason: "user_banned".to_string(),
             timestamp: Utc::now(),
         };
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("kick_user"));
-        assert!(json.contains("user123"));
+        assert!(json.contains("10000145"));
 
         let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "kick_user");
         assert!(deserialized.room_id().is_none());
-        assert_eq!(deserialized.user_id().unwrap().as_str(), "user123");
+        assert_eq!(
+            deserialized.user_id().copied(),
+            Some(UserId::from(10_000_145))
+        );
     }
 
     #[test]
@@ -818,13 +816,13 @@ mod tests {
             event_id: synctv_common::snanoid!(16),
             targets: vec![
                 CacheTarget::User {
-                    user_id: "u1".to_string(),
+                    user_id: UserId::from(10_000_001),
                 },
                 CacheTarget::Room {
-                    room_id: "r1".to_string(),
+                    room_id: RoomId::from(10_000_002),
                 },
                 CacheTarget::Username {
-                    user_id: "u2".to_string(),
+                    user_id: UserId::from(10_000_003),
                 },
                 CacheTarget::All,
             ],
@@ -833,8 +831,8 @@ mod tests {
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("cache_invalidate"));
-        assert!(json.contains("\"u1\""));
-        assert!(json.contains("\"r1\""));
+        assert!(json.contains("10000001"));
+        assert!(json.contains("10000002"));
 
         let deserialized: ClusterEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "cache_invalidate");

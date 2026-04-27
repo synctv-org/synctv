@@ -45,7 +45,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -195,7 +195,7 @@ async fn test_cascade_delete_user_deletes_rooms() {
     // Attempting to delete the user while rooms still exist should fail
     // because of ON DELETE RESTRICT on rooms.created_by.
     let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(owner.id.as_str())
+        .bind(owner.id)
         .execute(&pool)
         .await;
     assert!(
@@ -209,21 +209,21 @@ async fn test_cascade_delete_user_deletes_rooms() {
 
     // Now that rooms are soft-deleted, hard-delete the rows so the FK is clear.
     sqlx::query("DELETE FROM rooms WHERE id = $1 OR id = $2")
-        .bind(room1.id.as_str())
-        .bind(room2.id.as_str())
+        .bind(room1.id)
+        .bind(room2.id)
         .execute(&pool)
         .await
         .unwrap();
 
     sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(owner.id.as_str())
+        .bind(owner.id)
         .execute(&pool)
         .await
         .unwrap();
 
     // User should be gone
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
-        .bind(owner.id.as_str())
+        .bind(owner.id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -257,8 +257,8 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
 
     // Add a member
     let rm = RoomMember {
-        room_id: room.id.clone(),
-        user_id: member_user.id.clone(),
+        room_id: room.id,
+        user_id: member_user.id,
         role: synctv_core::models::RoomRole::Member,
         status: MemberStatus::Active,
         added_permissions: 0,
@@ -276,8 +276,8 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
 
     let root_playlist = Playlist {
         id: PlaylistId::new(),
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: String::new(),
         parent_id: None,
         position: 0.0,
@@ -297,7 +297,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     // Check members are gone
     let member_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -306,7 +306,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     // Check playlists are gone
     let playlist_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -326,13 +326,13 @@ async fn test_concurrent_room_creation_unique_ids() {
         .create(&make_user("concurrent_owner"))
         .await
         .unwrap();
-    let owner_id = owner.id.clone();
+    let owner_id = owner.id;
 
     // Spawn 10 concurrent room creations
     let mut handles = vec![];
     for i in 0..10 {
         let repo = room_repo.clone();
-        let oid = owner_id.clone();
+        let oid = owner_id;
         let handle = tokio::spawn(async move {
             let room = make_room(&format!("Concurrent Room {i}"), "", &oid);
             repo.create(&room).await
@@ -347,7 +347,7 @@ async fn test_concurrent_room_creation_unique_ids() {
     for result in results {
         let room = result.unwrap().unwrap();
         assert!(
-            created_ids.insert(room.id.as_str().to_string()),
+            created_ids.insert(room.id.to_string()),
             "Room IDs should be unique"
         );
     }

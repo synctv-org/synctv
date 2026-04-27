@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS room_members (
-    room_id CHAR(12) NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
-    user_id CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
 
     role SMALLINT NOT NULL DEFAULT 3,
     added_permissions BIGINT NOT NULL DEFAULT 0
@@ -37,8 +37,8 @@ COMMENT ON COLUMN room_members.version IS 'Optimistic lock version for permissio
 COMMENT ON COLUMN room_members.left_at IS 'Timestamp when the member left the room';
 
 CREATE OR REPLACE FUNCTION update_room_member_permissions_cas(
-    p_room_id CHAR(12),
-    p_user_id CHAR(12),
+    p_room_id BIGINT,
+    p_user_id BIGINT,
     p_expected_version BIGINT,
     p_added_permissions BIGINT DEFAULT NULL,
     p_removed_permissions BIGINT DEFAULT NULL,

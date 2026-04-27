@@ -278,9 +278,14 @@ pub const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
     }
 }
 
-pub(crate) fn user_to_proto(user: &synctv_core::models::User) -> crate::proto::client::User {
+pub(crate) fn user_to_proto(
+    user: &synctv_core::models::User,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::User {
     crate::proto::client::User {
-        id: user.id.as_str().to_string(),
+        id: public_id_codec
+            .encode_user_id(user.id)
+            .expect("positive user ID must encode"),
         username: user.username.clone(),
         email: user.email.clone().unwrap_or_default(),
         role: user_role_to_proto(user.role),
@@ -295,12 +300,14 @@ pub(crate) fn room_to_proto_basic(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Room {
     room_to_proto_with_availability(
         room,
         settings,
         member_count,
         ClientResourceAvailability::Available,
+        public_id_codec,
     )
 }
 
@@ -309,13 +316,18 @@ pub(crate) fn room_to_proto_with_availability(
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
     availability: ClientResourceAvailability,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Room {
     let room_settings = settings.cloned().unwrap_or_default();
     crate::proto::client::Room {
-        id: room.id.as_str().to_string(),
+        id: public_id_codec
+            .encode_room_id(room.id)
+            .expect("positive room ID must encode"),
         name: room.name.clone(),
         description: room.description.clone(),
-        created_by: room.created_by.as_str().to_string(),
+        created_by: public_id_codec
+            .encode_user_id(room.created_by)
+            .expect("positive user ID must encode"),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
         settings: serde_json::to_vec(&room_settings).unwrap_or_default(),
         created_at: room.created_at.timestamp(),
@@ -334,9 +346,15 @@ pub(super) fn hot_room_to_proto(
     settings: Option<&synctv_core::models::RoomSettings>,
     online_count: i32,
     total_members: i32,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::RoomWithStats {
     crate::proto::client::RoomWithStats {
-        room: Some(room_to_proto_basic(room, settings, Some(total_members))),
+        room: Some(room_to_proto_basic(
+            room,
+            settings,
+            Some(total_members),
+            public_id_codec,
+        )),
         online_count,
         total_members,
     }
@@ -354,13 +372,17 @@ pub(crate) fn normalize_created_room_settings(
 }
 
 #[must_use]
-pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::client::Media {
-    media_to_proto_with_availability(media, true)
+pub fn media_to_proto(
+    media: &synctv_core::models::Media,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Media {
+    media_to_proto_with_availability(media, true, public_id_codec)
 }
 
 pub fn media_to_proto_with_availability(
     media: &synctv_core::models::Media,
     is_available: bool,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Media {
     // Extract metadata from source_config if present (any provider may store it)
     let metadata_bytes = media
@@ -370,17 +392,22 @@ pub fn media_to_proto_with_availability(
         .unwrap_or_default();
 
     crate::proto::client::Media {
-        id: media.id.as_str().to_string(),
-        room_id: media.room_id.as_str().to_string(),
+        id: public_id_codec
+            .encode_media_id(media.id)
+            .expect("positive media ID must encode"),
+        room_id: public_id_codec
+            .encode_room_id(media.room_id)
+            .expect("positive room ID must encode"),
         provider: media.source_provider.clone(),
         title: media.name.clone(),
         metadata: metadata_bytes,
         position: media.position,
         added_at: media.added_at.timestamp(),
-        added_by: media
-            .creator_id
-            .as_ref()
-            .map_or(String::new(), |id| id.as_str().to_string()),
+        added_by: media.creator_id.as_ref().map_or_else(String::new, |id| {
+            public_id_codec
+                .encode_user_id(*id)
+                .expect("positive user ID must encode")
+        }),
         provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
         source_config: serialize_sanitized_source_config(&media.source_config),
         availability: resource_availability_to_proto(is_available),
@@ -391,24 +418,30 @@ pub fn media_to_proto_with_availability(
 pub(crate) fn playlist_to_proto(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Playlist {
-    playlist_to_proto_with_availability(playlist, item_count, true)
+    playlist_to_proto_with_availability(playlist, item_count, true, public_id_codec)
 }
 
 pub(crate) fn playlist_to_proto_with_availability(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
     is_available: bool,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Playlist {
     crate::proto::client::Playlist {
-        id: playlist.id.as_str().to_string(),
-        room_id: playlist.room_id.as_str().to_string(),
+        id: public_id_codec
+            .encode_playlist_id(playlist.id)
+            .expect("positive playlist ID must encode"),
+        room_id: public_id_codec
+            .encode_room_id(playlist.room_id)
+            .expect("positive room ID must encode"),
         name: playlist.name.clone(),
-        parent_id: playlist
-            .parent_id
-            .as_ref()
-            .map(|id| id.as_str().to_string())
-            .unwrap_or_default(),
+        parent_id: playlist.parent_id.as_ref().map_or_else(String::new, |id| {
+            public_id_codec
+                .encode_playlist_id(*id)
+                .expect("positive playlist ID must encode")
+        }),
         position: playlist.position,
         is_dynamic: playlist.is_dynamic(),
         item_count,
@@ -421,9 +454,12 @@ pub(crate) fn playlist_to_proto_with_availability(
 
 pub(crate) fn playlist_path_node_to_proto(
     playlist: &synctv_core::models::Playlist,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::PlaylistBrowsePathNode {
     crate::proto::client::PlaylistBrowsePathNode {
-        playlist_id: playlist.id.as_str().to_string(),
+        playlist_id: public_id_codec
+            .encode_playlist_id(playlist.id)
+            .expect("positive playlist ID must encode"),
         name: playlist.name.clone(),
         target: Vec::new(),
     }
@@ -431,14 +467,20 @@ pub(crate) fn playlist_path_node_to_proto(
 
 pub(crate) fn playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::PlaybackState {
     crate::proto::client::PlaybackState {
-        room_id: state.room_id.as_str().to_string(),
+        room_id: public_id_codec
+            .encode_room_id(state.room_id)
+            .expect("positive room ID must encode"),
         playing_media_id: state
             .playing_media_id
             .as_ref()
-            .map(|id| id.as_str().to_string())
-            .unwrap_or_default(),
+            .map_or_else(String::new, |id| {
+                public_id_codec
+                    .encode_media_id(*id)
+                    .expect("positive media ID must encode")
+            }),
         current_time: state.computed_current_time(),
         speed: state.speed,
         is_playing: state.is_playing,
@@ -447,8 +489,11 @@ pub(crate) fn playback_state_to_proto(
         playing_playlist_id: state
             .playing_playlist_id
             .as_ref()
-            .map(|id| id.as_str().to_string())
-            .unwrap_or_default(),
+            .map_or_else(String::new, |id| {
+                public_id_codec
+                    .encode_playlist_id(*id)
+                    .expect("positive playlist ID must encode")
+            }),
         target: state.target.clone(),
     }
 }
@@ -456,10 +501,15 @@ pub(crate) fn playback_state_to_proto(
 pub(super) fn room_member_to_proto(
     member: &synctv_core::models::RoomMemberWithUser,
     role_default: synctv_core::models::PermissionBits,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
-        room_id: member.room_id.as_str().to_string(),
-        user_id: member.user_id.as_str().to_string(),
+        room_id: public_id_codec
+            .encode_room_id(member.room_id)
+            .expect("positive room ID must encode"),
+        user_id: public_id_codec
+            .encode_user_id(member.user_id)
+            .expect("positive user ID must encode"),
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
         permissions: member.effective_permissions(role_default).0,
@@ -487,18 +537,20 @@ pub(super) fn members_to_proto(
     members: &[synctv_core::models::RoomMemberWithUser],
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Vec<synctv_proto::common::RoomMember> {
     map_slice_preserve_order(members, |m| {
         let role_default =
             permission_service.calculate_role_default_permissions(&m.role, room_settings);
-        room_member_to_proto(m, role_default)
+        room_member_to_proto(m, role_default, public_id_codec)
     })
 }
 
 pub(crate) fn media_list_to_proto(
     media: &[synctv_core::models::Media],
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Vec<crate::proto::client::Media> {
-    map_slice_preserve_order(media, media_to_proto)
+    map_slice_preserve_order(media, |media| media_to_proto(media, public_id_codec))
 }
 
 pub(crate) fn media_list_to_proto_with_availability<T, F>(
@@ -615,9 +667,9 @@ pub(crate) fn direct_url_embedded_playback_result_to_model(
         .unwrap_or_default();
 
     Ok(Some(synctv_core::models::media::PlaybackResult {
-        id: Some(media.id.clone()),
-        playlist_id: media.playlist_id.clone(),
-        room_id: media.room_id.clone(),
+        id: Some(media.id),
+        playlist_id: media.playlist_id,
+        room_id: media.room_id,
         name: media.name.clone(),
         position: media.position,
         playback_infos,
@@ -630,6 +682,7 @@ pub(crate) fn direct_url_embedded_playback_result_to_model(
 pub(crate) fn bilibili_live_danmaku_for_static_media(
     media: &synctv_core::models::Media,
     user_id: &str,
+    public_id_codec: &crate::PublicIdCodec,
     signing_key: Option<&synctv_core::service::ProxySigningKey>,
     expires_at: Option<i64>,
 ) -> Option<synctv_core::models::media::Danmaku> {
@@ -650,12 +703,18 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
         chrono::Utc::now().timestamp()
             + synctv_core::service::ProxySigningKey::default_expiry_secs()
     });
+    let room_id = public_id_codec
+        .encode_room_id(media.room_id)
+        .expect("positive room id must encode as public sqid");
+    let media_id = public_id_codec
+        .encode_media_id(media.id)
+        .expect("positive media id must encode as public sqid");
     let url = synctv_core::service::proxy_signature::build_signed_proxy_url(
         synctv_core::provider::BilibiliProvider::NAME,
-        media.room_id.as_str(),
-        &format!("{}/danmu", media.id.as_str()),
+        &room_id,
+        &format!("{media_id}/danmu"),
         signing_key,
-        media.room_id.as_str(),
+        &room_id,
         user_id,
         expires_at,
     );
@@ -714,6 +773,7 @@ pub(crate) fn sign_local_bilibili_danmaku_urls(
 #[must_use]
 pub(crate) fn playback_snapshot_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::PlaybackSnapshot {
     let playback_infos = result
         .playback_infos
@@ -731,14 +791,24 @@ pub(crate) fn playback_snapshot_to_proto(
         media_id: result
             .id
             .as_ref()
-            .map(|id| id.as_str().to_string())
+            .map(|id| {
+                public_id_codec
+                    .encode_media_id(*id)
+                    .expect("positive media ID must encode")
+            })
             .unwrap_or_default(),
         playlist_id: result
             .playlist_id
             .as_ref()
-            .map(|id| id.as_str().to_string())
+            .map(|id| {
+                public_id_codec
+                    .encode_playlist_id(*id)
+                    .expect("positive playlist ID must encode")
+            })
             .unwrap_or_default(),
-        room_id: result.room_id.as_str().to_string(),
+        room_id: public_id_codec
+            .encode_room_id(result.room_id)
+            .expect("positive room ID must encode"),
         name: result.name.clone(),
         position: result.position,
         playback_infos,
@@ -997,9 +1067,9 @@ mod tests {
         let expire_at = chrono::DateTime::from_timestamp(1_700_000_100, 0)
             .expect("test timestamp should be valid");
         let media = Media {
-            id: MediaId::from_string("media_embedded".to_string()),
+            id: MediaId::from(1101),
             playlist_id: None,
-            room_id: RoomId::from_string("room_embedded".to_string()),
+            room_id: RoomId::from(1102),
             creator_id: None,
             name: "Embedded Direct Playback".to_string(),
             position: 7.5,
@@ -1081,10 +1151,7 @@ mod tests {
             .playback_infos
             .get("direct")
             .expect("direct mode should be preserved");
-        assert_eq!(
-            result.id.as_ref().map(synctv_core::models::MediaId::as_str),
-            Some("media_embedded")
-        );
+        assert_eq!(result.id, Some(media.id));
         assert_eq!(result.name, "Embedded Direct Playback");
         assert_eq!(
             direct.urls[0]
@@ -1148,9 +1215,9 @@ mod tests {
     #[test]
     fn bilibili_live_danmaku_for_static_media_builds_signed_proxy_url() {
         let media = Media {
-            id: MediaId::from_string("media_live".to_string()),
+            id: MediaId::from(1201),
             playlist_id: None,
-            room_id: RoomId::from_string("room_live".to_string()),
+            room_id: RoomId::from(1202),
             creator_id: None,
             name: "Bilibili Live".to_string(),
             position: 0.0,
@@ -1169,9 +1236,17 @@ mod tests {
         );
 
         let expires_at = chrono::Utc::now().timestamp() + 600;
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let public_room_id = public_id_codec
+            .encode_room_id(media.room_id)
+            .expect("room id should encode");
+        let public_user_id = public_id_codec
+            .encode_user_id(UserId::from(301))
+            .expect("user id should encode");
         let danmaku = bilibili_live_danmaku_for_static_media(
             &media,
-            "user-live",
+            &public_user_id,
+            &public_id_codec,
             Some(&signing_key),
             Some(expires_at),
         )
@@ -1181,27 +1256,28 @@ mod tests {
         assert_eq!(danmaku.format.as_deref(), Some("bilibili"));
         assert!(danmaku
             .url
-            .starts_with("/api/providers/proxy/bilibili/room_live/"));
+            .starts_with(&format!("/api/providers/proxy/bilibili/{public_room_id}/")));
         let query = danmaku
             .url
             .split('?')
             .nth(1)
             .expect("signed danmaku URL should include query");
         let claims = signing_key
-            .parse_and_verify_query(query, "bilibili", "room_live")
+            .parse_and_verify_query(query, "bilibili", &public_room_id)
             .expect("signed danmaku query should verify");
-        assert_eq!(claims.room_id, "room_live");
-        assert_eq!(claims.user_id, "user-live");
+        assert_eq!(claims.room_id, public_room_id);
+        assert_eq!(claims.user_id, public_user_id);
         assert_eq!(claims.expires_at, expires_at);
     }
 
     #[test]
     fn media_to_proto_includes_resource_version() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let media = Media {
-            id: MediaId::from_string("media_proto".to_string()),
+            id: MediaId::from(101),
             playlist_id: None,
-            room_id: RoomId::from_string("room_proto".to_string()),
-            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            room_id: RoomId::from(102),
+            creator_id: Some(UserId::from(103)),
             name: "Proto Media".to_string(),
             position: 3.5,
             source_provider: "direct_url".to_string(),
@@ -1212,17 +1288,18 @@ mod tests {
             version: 42,
         };
 
-        let proto = media_to_proto(&media);
+        let proto = media_to_proto(&media, &public_id_codec);
         assert_eq!(proto.version, 42);
     }
 
     #[test]
     fn media_to_proto_redacts_nested_credentials_without_cloning_sanitized_value() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let media = Media {
-            id: MediaId::from_string("media_secret".to_string()),
+            id: MediaId::from(104),
             playlist_id: None,
-            room_id: RoomId::from_string("room_proto".to_string()),
-            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            room_id: RoomId::from(102),
+            creator_id: Some(UserId::from(103)),
             name: "Secret Media".to_string(),
             position: 1.0,
             source_provider: "alist".to_string(),
@@ -1249,7 +1326,7 @@ mod tests {
             version: 1,
         };
 
-        let proto = media_to_proto(&media);
+        let proto = media_to_proto(&media, &public_id_codec);
         let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
             .expect("proto source config should be JSON");
 
@@ -1271,10 +1348,11 @@ mod tests {
 
     #[test]
     fn playlist_to_proto_includes_resource_version() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let playlist = synctv_core::models::Playlist {
-            id: PlaylistId::from_string("playlist_proto".to_string()),
-            room_id: RoomId::from_string("room_proto".to_string()),
-            creator_id: Some(UserId::from_string("user_proto".to_string())),
+            id: PlaylistId::from(105),
+            room_id: RoomId::from(102),
+            creator_id: Some(UserId::from(103)),
             name: "Proto Playlist".to_string(),
             parent_id: None,
             position: 1.0,
@@ -1286,18 +1364,19 @@ mod tests {
             version: 7,
         };
 
-        let proto = playlist_to_proto(&playlist, 3);
+        let proto = playlist_to_proto(&playlist, 3, &public_id_codec);
         assert_eq!(proto.version, 7);
     }
 
     #[test]
     fn room_to_proto_includes_resource_version() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let now = chrono::Utc::now();
         let room = Room {
-            id: RoomId::from_string("room_proto".to_string()),
+            id: RoomId::from(102),
             name: "Proto Room".to_string(),
             description: "Room description".to_string(),
-            created_by: UserId::from_string("user_proto".to_string()),
+            created_by: UserId::from(103),
             status: synctv_core::models::RoomStatus::Active,
             is_banned: false,
             closed_at: None,
@@ -1308,7 +1387,7 @@ mod tests {
             last_activity_at: now,
         };
 
-        let proto = room_to_proto_basic(&room, None, Some(0));
+        let proto = room_to_proto_basic(&room, None, Some(0), &public_id_codec);
         assert_eq!(proto.version, 9);
     }
 }

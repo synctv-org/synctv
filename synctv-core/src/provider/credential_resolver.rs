@@ -3,7 +3,7 @@
 //! Resolves provider credentials from the database without storing credential
 //! owner references in media `source_config`.
 
-use crate::models::ProviderCredential;
+use crate::models::{ProviderCredential, UserId};
 use crate::repository::UserProviderCredentialRepository;
 
 use super::ExecutionControl;
@@ -22,7 +22,7 @@ pub struct ResolvedProviderCredential {
 }
 
 #[must_use]
-pub fn credential_revision(id: &str, updated_at: chrono::DateTime<chrono::Utc>) -> String {
+pub fn credential_revision(id: i64, updated_at: chrono::DateTime<chrono::Utc>) -> String {
     format!("{id}:{}", updated_at.timestamp_micros())
 }
 
@@ -38,7 +38,7 @@ pub fn credential_revision(id: &str, updated_at: chrono::DateTime<chrono::Utc>) 
 pub async fn resolve_credential_for_owner(
     repo: &UserProviderCredentialRepository,
     provider: &str,
-    credential_owner_id: &str,
+    credential_owner_id: UserId,
     server_id: &str,
     request_context: Option<&ExecutionControl>,
 ) -> Result<ProviderCredential, ProviderError> {
@@ -57,7 +57,7 @@ pub async fn resolve_credential_for_owner(
 pub async fn resolve_credential_record_for_owner(
     repo: &UserProviderCredentialRepository,
     provider: &str,
-    credential_owner_id: &str,
+    credential_owner_id: UserId,
     server_id: &str,
     request_context: Option<&ExecutionControl>,
 ) -> Result<ResolvedProviderCredential, ProviderError> {
@@ -99,9 +99,9 @@ pub async fn resolve_credential_record_for_owner(
 
     Ok(ResolvedProviderCredential {
         credential,
-        id: credential_record.id.clone(),
+        id: credential_record.id.to_string(),
         updated_at: credential_record.updated_at,
-        revision: credential_revision(&credential_record.id, credential_record.updated_at),
+        revision: credential_revision(credential_record.id, credential_record.updated_at),
     })
 }
 
@@ -117,8 +117,8 @@ mod tests {
             .expect("valid timestamp");
 
         assert_eq!(
-            super::credential_revision("credential-row", updated_at),
-            "credential-row:1700000000123456"
+            super::credential_revision(42, updated_at),
+            "42:1700000000123456"
         );
     }
 }

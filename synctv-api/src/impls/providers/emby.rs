@@ -8,7 +8,7 @@ use crate::proto::providers::emby::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
 };
 use std::sync::Arc;
-use synctv_core::models::{ProviderCredential, UserProviderCredential};
+use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
 use synctv_core::provider::{EmbyProvider, ExecutionControl};
 use synctv_core::repository::UserProviderCredentialRepository;
 
@@ -50,14 +50,14 @@ impl EmbyApiImpl {
     /// Resolve Emby credentials from DB using server_id, returning (host, api_key, emby_user_id).
     async fn resolve_credentials(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         server_id: &str,
     ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError>
     {
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::EmbyProvider::NAME,
                 server_id,
             )
@@ -93,7 +93,7 @@ impl EmbyApiImpl {
     /// Login to Emby and persist credentials
     pub async fn login(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: LoginRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
@@ -103,7 +103,7 @@ impl EmbyApiImpl {
 
     pub async fn login_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: LoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -160,8 +160,8 @@ impl EmbyApiImpl {
             ProviderCredential::emby(host, login_resp.token, login_resp.user_id.clone());
 
         let credential = UserProviderCredential {
-            id: UserProviderCredential::new_id(),
-            user_id: caller_user_id.to_string(),
+            id: 0,
+            user_id: *caller_user_id,
             provider: synctv_core::provider::EmbyProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
@@ -186,7 +186,7 @@ impl EmbyApiImpl {
 
         publish_provider_credential_changed(
             self.event_service.as_ref(),
-            caller_user_id,
+            *caller_user_id,
             synctv_core::provider::EmbyProvider::NAME,
             &server_id,
         );
@@ -202,7 +202,7 @@ impl EmbyApiImpl {
     /// List Emby library items using stored credential
     pub async fn list(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: ListRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
@@ -212,7 +212,7 @@ impl EmbyApiImpl {
 
     pub async fn list_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: ListRequest,
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -267,7 +267,7 @@ impl EmbyApiImpl {
     /// Get Emby user info using stored credential
     pub async fn get_me(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: GetMeRequest,
         requested_instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
@@ -277,7 +277,7 @@ impl EmbyApiImpl {
 
     pub async fn get_me_with_context(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: GetMeRequest,
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
@@ -310,7 +310,7 @@ impl EmbyApiImpl {
     /// Logout and delete stored credential
     pub async fn logout(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
         if req.server_id.trim().is_empty() {
@@ -322,7 +322,7 @@ impl EmbyApiImpl {
         if let Some(existing) = self
             .credential_repo
             .get_by_provider_and_server(
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::EmbyProvider::NAME,
                 &req.server_id,
             )
@@ -334,7 +334,7 @@ impl EmbyApiImpl {
             })?
         {
             self.credential_repo
-                .delete(&existing.id)
+                .delete(existing.id)
                 .await
                 .map_err(|e| {
                     synctv_core::provider::ProviderError::Internal(format!(
@@ -343,7 +343,7 @@ impl EmbyApiImpl {
                 })?;
             publish_provider_credential_changed(
                 self.event_service.as_ref(),
-                caller_user_id,
+                *caller_user_id,
                 synctv_core::provider::EmbyProvider::NAME,
                 &req.server_id,
             );
@@ -356,7 +356,7 @@ impl EmbyApiImpl {
 
     pub async fn get_binds(
         &self,
-        caller_user_id: &str,
+        caller_user_id: &UserId,
         instance_name: Option<&str>,
     ) -> Result<GetBindsResponse, crate::impls::ApiError> {
         let binds = get_provider_binds(
@@ -408,7 +408,7 @@ mod tests {
 
         let err = api
             .login(
-                "user-1",
+                &synctv_core::models::UserId::new(),
                 crate::proto::providers::emby::LoginRequest {
                     host: "https://emby.example.com".to_string(),
                     username: "alice".to_string(),
@@ -439,7 +439,7 @@ mod tests {
 
         let err = api
             .logout(
-                "user-1",
+                &synctv_core::models::UserId::new(),
                 crate::proto::providers::emby::LogoutRequest {
                     server_id: String::new(),
                     instance_name: String::new(),

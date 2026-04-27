@@ -4,7 +4,7 @@ use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
-use synctv_core::models::{PermissionBits, ReviewStatus, UserId};
+use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, RoomId, UserId};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
@@ -35,11 +35,14 @@ pub(crate) fn compute_room_members_response_version(
     hex_encode(hasher.finalize())
 }
 
-fn review_status_i32_to_i16(value: i32) -> i16 {
+fn review_status_i32_to_core(value: i32) -> ReviewStatus {
     if value == synctv_proto::common::ReviewStatus::Unspecified as i32 {
-        ReviewStatus::Pending.as_i16()
+        ReviewStatus::Pending
     } else {
-        i16::try_from(value).unwrap_or_else(|_| ReviewStatus::Pending.as_i16())
+        i16::try_from(value)
+            .ok()
+            .and_then(|value| ReviewStatus::try_from(value).ok())
+            .unwrap_or(ReviewStatus::Pending)
     }
 }
 
@@ -57,22 +60,39 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
 
 fn room_join_review_row_to_proto(
     row: &sqlx::postgres::PgRow,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
+    let id: ReviewRequestId = row.try_get("id")?;
     let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
     let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
-    let reviewed_by: Option<String> = row.try_get("reviewed_by")?;
+    let room_id: RoomId = row.try_get("room_id")?;
+    let user_id: UserId = row.try_get("user_id")?;
+    let reviewed_by: Option<UserId> = row.try_get("reviewed_by")?;
     let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
-    let status: i16 = row.try_get("status")?;
+    let status: ReviewStatus = row.try_get("status")?;
     Ok(crate::proto::client::RoomJoinReview {
-        id: row.try_get("id")?,
-        room_id: row.try_get("room_id")?,
-        user_id: row.try_get("user_id")?,
+        id: public_id_codec
+            .encode_review_request_id(id)
+            .map_err(ApiError::InvalidInput)?,
+        room_id: public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::InvalidInput)?,
+        user_id: public_id_codec
+            .encode_user_id(user_id)
+            .map_err(ApiError::InvalidInput)?,
         username: row.try_get("username")?,
         requested_role: row.try_get("requested_role")?,
-        status: i32::from(status),
+        status: i32::from(i16::from(status)),
         requested_at: requested_at.timestamp(),
         reviewed_at: reviewed_at.map_or(0, |timestamp| timestamp.timestamp()),
-        reviewed_by: reviewed_by.unwrap_or_default(),
+        reviewed_by: reviewed_by
+            .map(|id| {
+                public_id_codec
+                    .encode_user_id(id)
+                    .map_err(ApiError::InvalidInput)
+            })
+            .transpose()?
+            .unwrap_or_default(),
         rejection_reason: rejection_reason.unwrap_or_default(),
     })
 }
@@ -107,7 +127,7 @@ impl ClientApiImpl {
     async fn load_room_join_review(
         &self,
         room_id: &synctv_core::models::RoomId,
-        request_id: &str,
+        request_id: ReviewRequestId,
     ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
         let row = sqlx::query(
             r"
@@ -120,28 +140,37 @@ impl ClientApiImpl {
             ",
         )
         .bind(request_id)
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(self.user_service.pool())
         .await?
         .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?;
-        room_join_review_row_to_proto(&row)
+        room_join_review_row_to_proto(&row, &self.public_id_codec)
     }
 
     pub async fn list_room_join_reviews(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::ListRoomJoinReviewsRequest,
     ) -> Result<crate::proto::client::ListRoomJoinReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         self.require_member_review_permission(&rid, &uid).await?;
 
         let page = page_i32_to_usize(req.page);
         let page_size = page_size_i32_to_usize(req.page_size);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
-        let status = review_status_i32_to_i16(req.status);
+        let status = review_status_i32_to_core(req.status);
+        let target_user_id = if req.user_id.trim().is_empty() {
+            None
+        } else {
+            Some(crate::impls::parse_user_id_param(
+                &req.user_id,
+                "user_id",
+                &self.public_id_codec,
+            )?)
+        };
 
         let total = sqlx::query_scalar::<_, i64>(
             r"
@@ -149,12 +178,12 @@ impl ClientApiImpl {
             FROM room_join_requests
             WHERE room_id = $1
               AND status = $2
-              AND ($3 = '' OR user_id = $3)
+              AND ($3::bigint IS NULL OR user_id = $3)
             ",
         )
-        .bind(rid.as_str())
+        .bind(rid)
         .bind(status)
-        .bind(req.user_id.as_str())
+        .bind(target_user_id)
         .fetch_one(self.user_service.pool())
         .await?;
 
@@ -167,21 +196,21 @@ impl ClientApiImpl {
             LEFT JOIN users u ON u.id = rjr.user_id
             WHERE rjr.room_id = $1
               AND rjr.status = $2
-              AND ($3 = '' OR rjr.user_id = $3)
+              AND ($3::bigint IS NULL OR rjr.user_id = $3)
             ORDER BY rjr.requested_at DESC, rjr.id DESC
             LIMIT $4 OFFSET $5
             ",
         )
-        .bind(rid.as_str())
+        .bind(rid)
         .bind(status)
-        .bind(req.user_id.as_str())
+        .bind(target_user_id)
         .bind(usize_to_i64_saturating(page_size))
         .bind(usize_to_i64_saturating(offset))
         .fetch_all(self.user_service.pool())
         .await?;
         let reviews = rows
             .iter()
-            .map(room_join_review_row_to_proto)
+            .map(|row| room_join_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::client::ListRoomJoinReviewsResponse {
             reviews,
@@ -195,14 +224,14 @@ impl ClientApiImpl {
     /// matching the pattern used by the admin endpoint.
     pub async fn get_room_members(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         // Check membership
         self.room_service
@@ -319,6 +348,7 @@ impl ClientApiImpl {
             &members,
             &room_settings,
             self.room_service.permission_service(),
+            &self.public_id_codec,
         );
 
         let mut response = crate::proto::client::GetRoomMembersResponse {
@@ -333,7 +363,7 @@ impl ClientApiImpl {
 
     pub async fn add_member(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::AddMemberRequest,
     ) -> Result<crate::proto::client::AddMemberResponse, ApiError> {
@@ -343,19 +373,20 @@ impl ClientApiImpl {
             role,
             notify,
         } = req;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
             proto_role_to_room_role(role)?
         };
 
-        let changed_by = uid.clone();
+        let changed_by = uid;
         let member = self
             .room_service
-            .add_member(rid.clone(), uid, target_uid.clone(), role, notify)
+            .add_member(rid, uid, target_uid, role, notify)
             .await
             .map_err(ApiError::from)?;
         self.membership_event_fanout
@@ -366,14 +397,14 @@ impl ClientApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id.clone(),
-            user_id: member.user_id.clone(),
+            room_id: member.room_id,
+            user_id: member.user_id,
             username,
             role: member.role,
             status: member.status,
@@ -400,28 +431,35 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::AddMemberResponse {
-            member: Some(room_member_to_proto(&member_with_user, role_default)),
+            member: Some(room_member_to_proto(
+                &member_with_user,
+                role_default,
+                &self.public_id_codec,
+            )),
         })
     }
 
     pub async fn approve_room_join_review(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::ApproveRoomJoinReviewRequest,
     ) -> Result<crate::proto::client::ApproveRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         self.require_member_review_permission(&rid, &uid).await?;
-        let request_id = req.request_id;
-        let changed_by = uid.clone();
+        let request_id = self
+            .public_id_codec
+            .decode_review_request_id(&req.request_id)
+            .map_err(ApiError::InvalidInput)?;
+        let changed_by = uid;
         let member = self
             .room_service
-            .approve_join_request(rid.clone(), uid, request_id.as_str())
+            .approve_join_request(rid, uid, request_id)
             .await
             .map_err(ApiError::from)?;
-        let target_uid = member.user_id.clone();
+        let target_uid = member.user_id;
         self.membership_event_fanout
             .publish_permission_changed(&rid, &target_uid, &changed_by, None)
             .await?;
@@ -430,14 +468,14 @@ impl ClientApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
         let is_online = self
             .connection_service
             .get_connection_id(&rid, &target_uid)
             .is_some();
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id.clone(),
-            user_id: member.user_id.clone(),
+            room_id: member.room_id,
+            user_id: member.user_id,
             username,
             role: member.role,
             status: member.status,
@@ -464,28 +502,35 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::ApproveRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(&rid, &request_id).await?),
-            member: Some(room_member_to_proto(&member_with_user, role_default)),
+            review: Some(self.load_room_join_review(&rid, request_id).await?),
+            member: Some(room_member_to_proto(
+                &member_with_user,
+                role_default,
+                &self.public_id_codec,
+            )),
         })
     }
 
     pub async fn reject_room_join_review(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::RejectRoomJoinReviewRequest,
     ) -> Result<crate::proto::client::RejectRoomJoinReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
         self.require_member_review_permission(&rid, &uid).await?;
-        let request_id = req.request_id;
+        let request_id = self
+            .public_id_codec
+            .decode_review_request_id(&req.request_id)
+            .map_err(ApiError::InvalidInput)?;
         let reason = (!req.reason.trim().is_empty()).then_some(req.reason.as_str());
 
-        let changed_by = uid.clone();
+        let changed_by = uid;
         let target_uid = self
             .room_service
-            .reject_join_request(rid.clone(), uid, request_id.as_str(), reason)
+            .reject_join_request(rid, uid, request_id, reason)
             .await
             .map_err(ApiError::from)?;
 
@@ -494,14 +539,14 @@ impl ClientApiImpl {
             .await?;
 
         Ok(crate::proto::client::RejectRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(&rid, &request_id).await?),
+            review: Some(self.load_room_join_review(&rid, request_id).await?),
             success: true,
         })
     }
 
     pub async fn update_member_permissions(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::UpdateMemberPermissionsRequest,
     ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
@@ -514,9 +559,10 @@ impl ClientApiImpl {
             admin_added_permissions,
             admin_removed_permissions,
         } = req;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
         let permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -581,7 +627,7 @@ impl ClientApiImpl {
                 let new_role = proto_role_to_room_role(role)?;
                 self.room_service
                     .member_service()
-                    .set_member_role(rid.clone(), uid.clone(), target_uid.clone(), new_role)
+                    .set_member_role(rid, uid, target_uid, new_role)
                     .await
                     .map_err(ApiError::from)?;
             }
@@ -604,13 +650,7 @@ impl ClientApiImpl {
                 };
 
                 self.room_service
-                    .set_member_permission(
-                        rid.clone(),
-                        uid.clone(),
-                        target_uid.clone(),
-                        added,
-                        removed,
-                    )
+                    .set_member_permission(rid, uid, target_uid, added, removed)
                     .await
                     .map_err(ApiError::from)?;
             }
@@ -633,7 +673,7 @@ impl ClientApiImpl {
             .user_service
             .get_user(&target_uid)
             .await
-            .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
+            .map_or_else(|_| format!("user_{target_uid}"), |u| u.username);
 
         // Query ConnectionManager for actual online status instead of hardcoding false
         let is_online = self
@@ -642,8 +682,8 @@ impl ClientApiImpl {
             .is_some();
 
         let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id.clone(),
-            user_id: member.user_id.clone(),
+            room_id: member.room_id,
+            user_id: member.user_id,
             username,
             role: member.role,
             status: member.status,
@@ -672,13 +712,17 @@ impl ClientApiImpl {
             .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto(&member_with_user, role_default)),
+            member: Some(room_member_to_proto(
+                &member_with_user,
+                role_default,
+                &self.public_id_codec,
+            )),
         })
     }
 
     pub async fn kick_member(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::KickMemberRequest,
     ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
@@ -686,9 +730,10 @@ impl ClientApiImpl {
         let crate::proto::client::KickMemberRequest {
             user_id: target_user_id,
         } = req;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
         let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
         let permission_fanout = self
             .membership_event_fanout
@@ -696,7 +741,7 @@ impl ClientApiImpl {
             .await?;
 
         self.room_service
-            .kick_member(rid.clone(), uid.clone(), target_uid.clone())
+            .kick_member(rid, uid, target_uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -717,7 +762,7 @@ impl ClientApiImpl {
 
     pub async fn ban_member(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::BanMemberRequest,
     ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
@@ -727,9 +772,10 @@ impl ClientApiImpl {
             reason,
         } = req;
 
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
         let reason = if reason.is_empty() {
             None
         } else {
@@ -743,7 +789,7 @@ impl ClientApiImpl {
 
         self.room_service
             .member_service()
-            .ban_member(rid.clone(), uid.clone(), target_uid.clone(), reason)
+            .ban_member(rid, uid, target_uid, reason)
             .await
             .map_err(ApiError::from)?;
 
@@ -764,7 +810,7 @@ impl ClientApiImpl {
 
     pub async fn unban_member(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: crate::proto::client::UnbanMemberRequest,
     ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
@@ -772,9 +818,10 @@ impl ClientApiImpl {
         let crate::proto::client::UnbanMemberRequest {
             user_id: target_user_id,
         } = req;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
-        let target_uid = crate::impls::proto_validated_user_id(target_user_id);
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
         let permission_fanout = self
             .membership_event_fanout
             .reserve_permission_changed()
@@ -782,7 +829,7 @@ impl ClientApiImpl {
 
         self.room_service
             .member_service()
-            .unban_member(rid.clone(), uid.clone(), target_uid.clone())
+            .unban_member(rid, uid, target_uid)
             .await
             .map_err(ApiError::from)?;
 
@@ -803,7 +850,11 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientA
         room_id: &synctv_core::models::RoomId,
         req: &crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
-        self.get_room_members(user_id.as_str(), room_id.as_str(), req.clone())
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id)
+            .map_err(crate::impls::ApiError::InvalidInput)?;
+        self.get_room_members(user_id, &public_room_id, req.clone())
             .await
     }
 }

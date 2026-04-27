@@ -8,12 +8,19 @@ use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
+fn stable_id(s: &str) -> i64 {
+    i64::from(
+        s.bytes()
+            .fold(1u16, |acc, byte| acc.wrapping_add(u16::from(byte))),
+    )
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_id(s))
 }
 
 #[tokio::test]
@@ -21,7 +28,7 @@ async fn test_disconnect_signal_queued_when_no_receiver() {
     let mgr = ConnectionManager::default();
     let user = uid("u1");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
+    mgr.register("c1".to_string(), user).await.unwrap();
 
     // Disconnect without subscribing first - signal should be handled gracefully
     // The signal won't be queued since there are no receivers (receiver_count == 0)
@@ -57,8 +64,8 @@ async fn test_disconnect_user_from_room_signal() {
     let user = uid("u1");
     let room = rid("r1");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
-    mgr.join_room("c1", room.clone()).await.unwrap();
+    mgr.register("c1".to_string(), user).await.unwrap();
+    mgr.join_room("c1", room).await.unwrap();
 
     // Subscribe before sending signal
     let mut rx = mgr.subscribe_disconnect();
@@ -81,7 +88,7 @@ async fn test_disconnect_signal_reliability_under_load() {
     // Register multiple connections
     for i in 0..10 {
         let user = uid(&format!("u{i}"));
-        mgr.register(format!("c{i}"), user.clone()).await.unwrap();
+        mgr.register(format!("c{i}"), user).await.unwrap();
     }
 
     // Subscribe to receive signals
@@ -114,9 +121,9 @@ async fn test_join_room_idempotent() {
     let user = uid("u1");
     let room = rid("r1");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
-    mgr.join_room("c1", room.clone()).await.unwrap();
-    mgr.join_room("c1", room.clone()).await.unwrap(); // second join to same room
+    mgr.register("c1".to_string(), user).await.unwrap();
+    mgr.join_room("c1", room).await.unwrap();
+    mgr.join_room("c1", room).await.unwrap(); // second join to same room
 
     assert_eq!(
         mgr.room_connection_count(&room),
@@ -134,12 +141,12 @@ async fn test_join_room_moves_between_rooms() {
     let r1 = rid("r1");
     let r2 = rid("r2");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
+    mgr.register("c1".to_string(), user).await.unwrap();
 
-    mgr.join_room("c1", r1.clone()).await.unwrap();
+    mgr.join_room("c1", r1).await.unwrap();
     assert_eq!(mgr.room_connection_count(&r1), 1);
 
-    mgr.join_room("c1", r2.clone()).await.unwrap();
+    mgr.join_room("c1", r2).await.unwrap();
     assert_eq!(
         mgr.room_connection_count(&r1),
         0,
@@ -152,7 +159,7 @@ async fn test_join_room_moves_between_rooms() {
     );
 
     let conn = mgr.get_connection("c1").unwrap();
-    assert_eq!(conn.room_id.unwrap().as_str(), "r2");
+    assert_eq!(conn.room_id.unwrap(), r2);
 }
 
 #[tokio::test]
@@ -172,22 +179,17 @@ async fn test_join_room_rejection_preserves_previous_room_membership() {
         .await
         .unwrap();
 
-    mgr.join_room("conn_a", room_a.clone()).await.unwrap();
-    mgr.join_room("conn_b", room_b.clone()).await.unwrap();
+    mgr.join_room("conn_a", room_a).await.unwrap();
+    mgr.join_room("conn_b", room_b).await.unwrap();
 
-    let err = mgr.join_room("conn_a", room_b.clone()).await.unwrap_err();
+    let err = mgr.join_room("conn_a", room_b).await.unwrap_err();
     assert!(err.contains("Room at capacity"));
 
     assert_eq!(mgr.room_connection_count(&room_a), 1);
     assert_eq!(mgr.room_connection_count(&room_b), 1);
 
     let conn = mgr.get_connection("conn_a").unwrap();
-    assert_eq!(
-        conn.room_id
-            .as_ref()
-            .map(synctv_core::models::RoomId::as_str),
-        Some("room_a")
-    );
+    assert_eq!(conn.room_id, Some(room_a));
 }
 
 // Test 3: max_duration timeout
@@ -204,7 +206,7 @@ async fn test_max_duration_timeout() {
     let mgr = ConnectionManager::new(limits);
     let user = uid("u1");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
+    mgr.register("c1".to_string(), user).await.unwrap();
 
     // Not yet expired
     let timeouts = mgr.check_timeouts();
@@ -253,8 +255,8 @@ async fn test_disconnect_signals() {
     let user = uid("u1");
     let room = rid("r1");
 
-    mgr.register("c1".to_string(), user.clone()).await.unwrap();
-    mgr.join_room("c1", room.clone()).await.unwrap();
+    mgr.register("c1".to_string(), user).await.unwrap();
+    mgr.join_room("c1", room).await.unwrap();
 
     // Subscribe before sending signals
     let mut rx = mgr.subscribe_disconnect();
@@ -293,10 +295,10 @@ async fn test_rtc_connections_filter() {
     let u2 = uid("u2");
     let room = rid("r1");
 
-    mgr.register("c1".to_string(), u1.clone()).await.unwrap();
-    mgr.register("c2".to_string(), u2.clone()).await.unwrap();
-    mgr.join_room("c1", room.clone()).await.unwrap();
-    mgr.join_room("c2", room.clone()).await.unwrap();
+    mgr.register("c1".to_string(), u1).await.unwrap();
+    mgr.register("c2".to_string(), u2).await.unwrap();
+    mgr.join_room("c1", room).await.unwrap();
+    mgr.join_room("c2", room).await.unwrap();
 
     // Mark only c1 as RTC-joined
     mgr.mark_rtc_joined(&room, &u1, "c1", true);

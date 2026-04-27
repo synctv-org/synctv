@@ -267,7 +267,7 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
         instance_name: "github".to_string(),
         redirect_url: Some("/settings".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: Some(bind_user_id.clone()),
+        bind_user_id: Some(bind_user_id),
         pkce_verifier: "bind_verifier".to_string(),
     };
     let state_token = "bind_state_token";

@@ -10,12 +10,18 @@ use synctv_cluster::sync::{ConnectionLimits, DisconnectSignal};
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 // Test 1: Connection lifecycle - register and unregister
@@ -52,19 +58,15 @@ async fn test_connection_reconnect_after_disconnect() {
     let room = rid("room1");
 
     // First connection
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Disconnect
     mgr.unregister("conn1").await;
 
     // Reconnect with new connection ID for same user
-    mgr.register("conn2".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
+    mgr.register("conn2".to_string(), user).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
 
     assert_eq!(mgr.room_connection_count(&room), 1);
     let conn = mgr.get_connection("conn2").unwrap();
@@ -109,18 +111,12 @@ async fn test_user_with_multiple_connections() {
     let user = uid("user1");
 
     // Should allow up to max_per_user connections
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.register("conn2".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.register("conn3".to_string(), user.clone())
-        .await
-        .unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.register("conn2".to_string(), user).await.unwrap();
+    mgr.register("conn3".to_string(), user).await.unwrap();
 
     // Fourth connection should fail
-    let result = mgr.register("conn4".to_string(), user.clone()).await;
+    let result = mgr.register("conn4".to_string(), user).await;
     assert!(result.is_err(), "Should fail when exceeding max_per_user");
     let err = result.unwrap_err();
     assert!(
@@ -150,9 +146,9 @@ async fn test_room_leave_cleanup() {
         .await
         .unwrap();
 
-    mgr.join_room("conn1", room.clone()).await.unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
-    mgr.join_room("conn3", room.clone()).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
+    mgr.join_room("conn3", room).await.unwrap();
 
     assert_eq!(mgr.room_connection_count(&room), 3);
 
@@ -172,14 +168,10 @@ async fn test_disconnect_signal_to_room() {
     let user1 = uid("user1");
     let user2 = uid("user2");
 
-    mgr.register("conn1".to_string(), user1.clone())
-        .await
-        .unwrap();
-    mgr.register("conn2".to_string(), user2.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user1).await.unwrap();
+    mgr.register("conn2".to_string(), user2).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
 
     // Subscribe to disconnect signals
     let mut rx = mgr.subscribe_disconnect();
@@ -197,9 +189,7 @@ async fn test_disconnect_signal_to_user() {
     let mgr = ConnectionManager::default();
     let user = uid("user1");
 
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
 
     let mut rx = mgr.subscribe_disconnect();
 
@@ -325,9 +315,9 @@ async fn test_room_connection_limit() {
         .await
         .unwrap();
 
-    mgr.join_room("conn1", room.clone()).await.unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
-    mgr.join_room("conn3", room.clone()).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
+    mgr.join_room("conn3", room).await.unwrap();
 
     // Fourth connection
     mgr.register("conn4".to_string(), uid("user4"))
@@ -335,7 +325,7 @@ async fn test_room_connection_limit() {
         .unwrap();
 
     // Should fail to join room (but connection exists)
-    let result = mgr.join_room("conn4", room.clone()).await;
+    let result = mgr.join_room("conn4", room).await;
     assert!(result.is_err(), "Should fail when room is full");
 }
 
@@ -347,10 +337,8 @@ async fn test_rtc_state_management() {
     let room = rid("room1");
     let user = uid("user1");
 
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
 
     // Initially not RTC joined
     let conn = mgr.get_connection("conn1").unwrap();
@@ -447,14 +435,10 @@ async fn test_disconnect_user_from_room_signal() {
     let room2 = rid("room2");
 
     // User in two rooms with two connections
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.register("conn2".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room1.clone()).await.unwrap();
-    mgr.join_room("conn2", room2.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.register("conn2".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room1).await.unwrap();
+    mgr.join_room("conn2", room2).await.unwrap();
 
     let mut rx = mgr.subscribe_disconnect();
 

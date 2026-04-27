@@ -24,7 +24,7 @@ async fn test_concurrent_play_pause_operations() {
         .create_room(
             "Concurrent Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -36,8 +36,8 @@ async fn test_concurrent_play_pause_operations() {
 
     for i in 0..10 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let playing = i % 2 == 0;
 
@@ -83,7 +83,7 @@ async fn test_version_increments_on_state_change() {
         .create_room(
             "Version Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -96,26 +96,26 @@ async fn test_version_increments_on_state_change() {
     let initial_version = state.version;
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
     assert_eq!(state.version, initial_version + 1);
 
     let state = playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
     assert_eq!(state.version, initial_version + 2);
 
     let state = playback_service
-        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .seek(room.id, owner.id, 50.0)
         .await
         .unwrap()
         .state;
     assert_eq!(state.version, initial_version + 3);
 
     let state = playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 1.5)
+        .change_speed(room.id, owner.id, 1.5)
         .await
         .unwrap();
     assert_eq!(state.version, initial_version + 4);

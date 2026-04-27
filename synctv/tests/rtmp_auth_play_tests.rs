@@ -108,6 +108,7 @@ fn make_rtmp_auth(
         registry,
         "test-node".to_string(),
         "127.0.0.1:50051".to_string(),
+        Arc::new(synctv_core::PublicIdCodec::default_for_tests()),
         None,
     )
 }
@@ -225,7 +226,7 @@ async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
         .create_room(
             "Play Test Room".to_string(),
             "A room for play testing".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -243,7 +244,7 @@ async fn test_on_play_allows_active_room_with_rtmp_player_enabled() {
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
+    let result = rtmp_auth.validate_play_request(&room.id.to_string()).await;
     assert!(
         result.is_ok(),
         "Expected play to be allowed for active room with rtmp_player enabled"
@@ -266,7 +267,7 @@ async fn test_on_play_rejects_banned_room() {
         .create_room(
             "Banned Room".to_string(),
             "A banned room".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -287,7 +288,7 @@ async fn test_on_play_rejects_banned_room() {
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
+    let result = rtmp_auth.validate_play_request(&room.id.to_string()).await;
     assert!(
         result.is_err(),
         "Expected play to be rejected for banned room"
@@ -315,7 +316,7 @@ async fn test_on_play_rejects_closed_room() {
         .create_room(
             "Closed Room".to_string(),
             "A closed room".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -339,7 +340,7 @@ async fn test_on_play_rejects_closed_room() {
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
+    let result = rtmp_auth.validate_play_request(&room.id.to_string()).await;
     assert!(
         result.is_err(),
         "Expected play to be rejected for closed room"
@@ -369,7 +370,7 @@ async fn test_on_play_rejects_when_rtmp_player_disabled() {
         .create_room(
             "Disabled RTMP Room".to_string(),
             "A room with RTMP disabled".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -387,7 +388,7 @@ async fn test_on_play_rejects_when_rtmp_player_disabled() {
     let publish_key_service = Arc::new(make_publish_key_service());
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
-    let result = rtmp_auth.validate_play_request(room.id.as_str()).await;
+    let result = rtmp_auth.validate_play_request(&room.id.to_string()).await;
     assert!(
         result.is_err(),
         "Expected play to be rejected when rtmp_player is disabled"
@@ -411,7 +412,9 @@ async fn test_on_play_rejects_nonexistent_room() {
     let rtmp_auth = make_rtmp_auth(room_service, user_service, publish_key_service);
 
     let fake_room_id = RoomId::new();
-    let result = rtmp_auth.validate_play_request(fake_room_id.as_str()).await;
+    let result = rtmp_auth
+        .validate_play_request(&fake_room_id.to_string())
+        .await;
     assert!(
         result.is_err(),
         "Expected play to be rejected for nonexistent room"

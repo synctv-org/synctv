@@ -76,6 +76,7 @@ fn make_client_api(
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
 }
 
@@ -107,19 +108,21 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
         .create_room(
             "Approval Contract Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
         .await
         .unwrap();
 
+    let public_id_codec = synctv_api::PublicIdCodec::default_for_tests();
+    let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .join_room(
-            joiner.id.as_str(),
-            room.id.as_str(),
+            &joiner.id,
+            &room_id,
             synctv_proto::client::JoinRoomRequest {
-                room_id: room.id.as_str().to_string(),
+                room_id: room_id.clone(),
                 password: String::new(),
             },
             None,

@@ -85,7 +85,7 @@ async fn create_top_level_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
@@ -169,7 +169,7 @@ async fn test_play_pause_triggers_broadcast() {
         .create_room(
             "WS Play Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -185,7 +185,7 @@ async fn test_play_pause_triggers_broadcast() {
     // Trigger play
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
@@ -206,7 +206,7 @@ async fn test_play_pause_triggers_broadcast() {
     // Trigger pause
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
 
@@ -238,7 +238,7 @@ async fn test_seek_triggers_broadcast() {
         .create_room(
             "WS Seek Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -254,7 +254,7 @@ async fn test_seek_triggers_broadcast() {
     // Trigger seek
     room_service
         .playback_service()
-        .seek(room.id.clone(), owner.id.clone(), 120.5)
+        .seek(room.id, owner.id, 120.5)
         .await
         .unwrap();
 
@@ -287,7 +287,7 @@ async fn test_speed_change_triggers_broadcast() {
         .create_room(
             "WS Speed Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -303,7 +303,7 @@ async fn test_speed_change_triggers_broadcast() {
     // Trigger speed change
     room_service
         .playback_service()
-        .change_speed(room.id.clone(), owner.id.clone(), 2.0)
+        .change_speed(room.id, owner.id, 2.0)
         .await
         .unwrap();
 
@@ -337,7 +337,7 @@ async fn test_media_switch_triggers_broadcast() {
         .create_room(
             "WS Switch Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -350,9 +350,9 @@ async fn test_media_switch_triggers_broadcast() {
     let now_media = Utc::now();
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
+        creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
@@ -373,13 +373,7 @@ async fn test_media_switch_triggers_broadcast() {
     // Trigger media switch
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
@@ -392,7 +386,7 @@ async fn test_media_switch_triggers_broadcast() {
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
     assert_eq!(
         broadcast.playing_media_id,
-        Some(media.id.clone()),
+        Some(media.id),
         "Broadcast should show correct media"
     );
     assert!(broadcast.is_playing, "Should be playing after media switch");
@@ -414,7 +408,7 @@ async fn test_reset_triggers_broadcast() {
         .create_room(
             "WS Reset Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -430,7 +424,7 @@ async fn test_reset_triggers_broadcast() {
     // Trigger reset
     room_service
         .playback_service()
-        .reset(room.id.clone(), owner.id.clone())
+        .reset(room.id, owner.id)
         .await
         .unwrap();
 
@@ -470,7 +464,7 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
         .create_room(
             "WS Multi Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -486,25 +480,25 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
     // Multiple operations
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
     room_service
         .playback_service()
-        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .seek(room.id, owner.id, 50.0)
         .await
         .unwrap();
 
     room_service
         .playback_service()
-        .change_speed(room.id.clone(), owner.id.clone(), 1.5)
+        .change_speed(room.id, owner.id, 1.5)
         .await
         .unwrap();
 
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .set_playing(room.id, owner.id, false)
         .await
         .unwrap();
 
@@ -545,7 +539,7 @@ async fn test_broadcast_contains_correct_room_id() {
         .create_room(
             "WS RoomID Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -561,7 +555,7 @@ async fn test_broadcast_contains_correct_room_id() {
     // Trigger operation
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
@@ -591,7 +585,7 @@ async fn test_operations_succeed_when_broadcast_fails() {
         .create_room(
             "WS Fail Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -608,7 +602,7 @@ async fn test_operations_succeed_when_broadcast_fails() {
     // Operations should still succeed
     let result = room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await;
 
     assert!(
@@ -641,7 +635,7 @@ async fn test_no_broadcaster_configured() {
         .create_room(
             "WS No BC Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -651,7 +645,7 @@ async fn test_no_broadcaster_configured() {
     // No broadcaster set - should work fine
     let result = room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await;
 
     assert!(
@@ -768,7 +762,7 @@ async fn test_broadcast_contains_correct_version() {
         .create_room(
             "WS Version Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -792,7 +786,7 @@ async fn test_broadcast_contains_correct_version() {
     // Trigger operation
     room_service
         .playback_service()
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
@@ -824,7 +818,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
         .create_room(
             "WS Concurrent Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -843,8 +837,8 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
 
     for i in 0..5 {
         let rs = room_service.clone();
-        let rid = room.id.clone();
-        let uid = owner.id.clone();
+        let rid = room.id;
+        let uid = owner.id;
         let b = barrier.clone();
         let pos = f64::from(i) * 10.0;
 
@@ -897,7 +891,7 @@ async fn test_cluster_mode_multiple_rooms() {
         .create_room(
             "WS Cluster Room 1".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -908,7 +902,7 @@ async fn test_cluster_mode_multiple_rooms() {
         .create_room(
             "WS Cluster Room 2".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -924,14 +918,14 @@ async fn test_cluster_mode_multiple_rooms() {
     // Update room1
     room_service
         .playback_service()
-        .seek(room1.id.clone(), owner.id.clone(), 100.0)
+        .seek(room1.id, owner.id, 100.0)
         .await
         .unwrap();
 
     // Update room2
     room_service
         .playback_service()
-        .seek(room2.id.clone(), owner.id.clone(), 200.0)
+        .seek(room2.id, owner.id, 200.0)
         .await
         .unwrap();
 

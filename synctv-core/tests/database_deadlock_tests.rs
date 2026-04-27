@@ -38,11 +38,11 @@ async fn create_test_pool() -> TestPostgres {
 
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
-    let username = format!("test_user_{}", user_id.as_str());
+    let username = format!("test_user_{user_id}");
     let user = User {
-        id: user_id.clone(),
+        id: *user_id,
         username,
-        email: Some(format!("{}@test.com", user_id.as_str())),
+        email: Some(format!("{user_id}@test.com")),
         password_hash: "test_hash".to_string(),
         signup_method: SignupMethod::Email,
         role: synctv_core::models::UserRole::User,
@@ -124,8 +124,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
     create_test_user(pool, &user1).await;
     create_test_user(pool, &user2).await;
 
-    let member1 = make_member(room.id.clone(), user1.clone());
-    let member2 = make_member(room.id.clone(), user2.clone());
+    let member1 = make_member(room.id, user1);
+    let member2 = make_member(room.id, user2);
     member_repo
         .add(&member1)
         .await
@@ -139,9 +139,9 @@ async fn test_deadlock_detection_opposite_lock_order() {
     let barrier = Arc::new(Barrier::new(2));
 
     let pool1 = pool.clone();
-    let room_id1 = room.id.clone();
-    let user1_clone = user1.clone();
-    let user2_clone1 = user2.clone();
+    let room_id1 = room.id;
+    let user1_clone = user1;
+    let user2_clone1 = user2;
     let barrier1 = barrier.clone();
 
     let handle1 = tokio::spawn(async move {
@@ -156,8 +156,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(100i64)
-            .bind(room_id1.as_str())
-            .bind(user1_clone.as_str())
+            .bind(room_id1)
+            .bind(user1_clone)
             .execute(&mut *tx)
             .await?;
 
@@ -169,8 +169,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(200i64)
-            .bind(room_id1.as_str())
-            .bind(user2_clone1.as_str())
+            .bind(room_id1)
+            .bind(user2_clone1)
             .execute(&mut *tx)
             .await?;
 
@@ -183,9 +183,9 @@ async fn test_deadlock_detection_opposite_lock_order() {
     });
 
     let pool2 = pool.clone();
-    let room_id2 = room.id.clone();
-    let user1_clone2 = user1.clone();
-    let user2_clone2 = user2.clone();
+    let room_id2 = room.id;
+    let user1_clone2 = user1;
+    let user2_clone2 = user2;
     let barrier2 = barrier.clone();
 
     let handle2 = tokio::spawn(async move {
@@ -200,8 +200,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(300i64)
-            .bind(room_id2.as_str())
-            .bind(user2_clone2.as_str())
+            .bind(room_id2)
+            .bind(user2_clone2)
             .execute(&mut *tx)
             .await?;
 
@@ -213,8 +213,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(400i64)
-            .bind(room_id2.as_str())
-            .bind(user1_clone2.as_str())
+            .bind(room_id2)
+            .bind(user1_clone2)
             .execute(&mut *tx)
             .await?;
 
@@ -267,7 +267,7 @@ async fn test_deadlock_with_for_update_nowait() {
 
     let user_id = UserId::new();
     create_test_user(pool, &user_id).await;
-    let member = make_member(room.id.clone(), user_id.clone());
+    let member = make_member(room.id, user_id);
     member_repo
         .add(&member)
         .await
@@ -276,8 +276,8 @@ async fn test_deadlock_with_for_update_nowait() {
     let barrier = Arc::new(Barrier::new(2));
 
     let pool1 = pool.clone();
-    let room_id1 = room.id.clone();
-    let user_id1 = user_id.clone();
+    let room_id1 = room.id;
+    let user_id1 = user_id;
     let barrier1 = barrier.clone();
 
     let handle1 = tokio::spawn(async move {
@@ -292,8 +292,8 @@ async fn test_deadlock_with_for_update_nowait() {
                  WHERE room_id = $1 AND user_id = $2
                  FOR UPDATE",
             )
-            .bind(room_id1.as_str())
-            .bind(user_id1.as_str())
+            .bind(room_id1)
+            .bind(user_id1)
             .fetch_optional(&mut *tx)
             .await?;
 
@@ -308,8 +308,8 @@ async fn test_deadlock_with_for_update_nowait() {
     });
 
     let pool2 = pool.clone();
-    let room_id2 = room.id.clone();
-    let user_id2 = user_id.clone();
+    let room_id2 = room.id;
+    let user_id2 = user_id;
     let barrier2 = barrier.clone();
 
     let handle2 = tokio::spawn(async move {
@@ -326,8 +326,8 @@ async fn test_deadlock_with_for_update_nowait() {
                  WHERE room_id = $1 AND user_id = $2
                  FOR UPDATE NOWAIT",
             )
-            .bind(room_id2.as_str())
-            .bind(user_id2.as_str())
+            .bind(room_id2)
+            .bind(user_id2)
             .fetch_optional(&mut *tx)
             .await;
 
@@ -383,14 +383,14 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
     create_test_user(pool, &user2).await;
 
     // Ensure consistent ordering
-    let (first_user, second_user) = if user1.as_str() < user2.as_str() {
-        (user1.clone(), user2.clone())
+    let (first_user, second_user) = if user1 < user2 {
+        (user1, user2)
     } else {
-        (user2.clone(), user1.clone())
+        (user2, user1)
     };
 
-    let member1 = make_member(room.id.clone(), first_user.clone());
-    let member2 = make_member(room.id.clone(), second_user.clone());
+    let member1 = make_member(room.id, first_user);
+    let member2 = make_member(room.id, second_user);
     member_repo
         .add(&member1)
         .await
@@ -404,9 +404,9 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
     // Both transactions lock in the same order
     let pool1 = pool.clone();
-    let room_id1 = room.id.clone();
-    let first_user1 = first_user.clone();
-    let second_user1 = second_user.clone();
+    let room_id1 = room.id;
+    let first_user1 = first_user;
+    let second_user1 = second_user;
     let barrier1 = barrier.clone();
 
     let handle1 = tokio::spawn(async move {
@@ -421,8 +421,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(100i64)
-            .bind(room_id1.as_str())
-            .bind(first_user1.as_str())
+            .bind(room_id1)
+            .bind(first_user1)
             .execute(&mut *tx)
             .await?;
 
@@ -431,8 +431,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(200i64)
-            .bind(room_id1.as_str())
-            .bind(second_user1.as_str())
+            .bind(room_id1)
+            .bind(second_user1)
             .execute(&mut *tx)
             .await?;
 
@@ -445,9 +445,9 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
     });
 
     let pool2 = pool.clone();
-    let room_id2 = room.id.clone();
-    let first_user2 = first_user.clone();
-    let second_user2 = second_user.clone();
+    let room_id2 = room.id;
+    let first_user2 = first_user;
+    let second_user2 = second_user;
     let barrier2 = barrier.clone();
 
     let handle2 = tokio::spawn(async move {
@@ -462,8 +462,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(300i64)
-            .bind(room_id2.as_str())
-            .bind(first_user2.as_str())
+            .bind(room_id2)
+            .bind(first_user2)
             .execute(&mut *tx)
             .await?;
 
@@ -472,8 +472,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
                  WHERE room_id = $2 AND user_id = $3",
             )
             .bind(400i64)
-            .bind(room_id2.as_str())
-            .bind(second_user2.as_str())
+            .bind(room_id2)
+            .bind(second_user2)
             .execute(&mut *tx)
             .await?;
 
@@ -515,15 +515,15 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
 
     let user_id = UserId::new();
     create_test_user(pool, &user_id).await;
-    let member = make_member(room.id.clone(), user_id.clone());
+    let member = make_member(room.id, user_id);
     member_repo
         .add(&member)
         .await
         .expect("Failed to create member");
 
     let pool1 = pool.clone();
-    let room_id1 = room.id.clone();
-    let user_id1 = user_id.clone();
+    let room_id1 = room.id;
+    let user_id1 = user_id;
 
     let tx_handle = tokio::spawn(async move {
         let mut tx = pool1.begin().await.expect("Failed to begin transaction");
@@ -534,8 +534,8 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
              WHERE room_id = $1 AND user_id = $2
              FOR UPDATE",
         )
-        .bind(room_id1.as_str())
-        .bind(user_id1.as_str())
+        .bind(room_id1)
+        .bind(user_id1)
         .fetch_optional(&mut *tx)
         .await
         .expect("Failed to lock row");
@@ -549,8 +549,8 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let pool2 = pool.clone();
-    let room_id2 = room.id.clone();
-    let user_id2 = user_id.clone();
+    let room_id2 = room.id;
+    let user_id2 = user_id;
 
     let timeout_result = tokio::time::timeout(tokio::time::Duration::from_secs(1), async move {
         let mut tx = pool2.begin().await?;
@@ -560,8 +560,8 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
                  WHERE room_id = $1 AND user_id = $2
                  FOR UPDATE",
         )
-        .bind(room_id2.as_str())
-        .bind(user_id2.as_str())
+        .bind(room_id2)
+        .bind(user_id2)
         .fetch_optional(&mut *tx)
         .await?;
 

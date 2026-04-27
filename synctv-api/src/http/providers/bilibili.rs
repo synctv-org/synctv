@@ -81,13 +81,8 @@ pub(crate) async fn parse(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.parse_with_context(
-                    authenticated.user_id.as_str(),
-                    req,
-                    instance_name,
-                    Some(&control),
-                )
-                .await
+                api.parse_with_context(&authenticated.user_id, req, instance_name, Some(&control))
+                    .await
             },
         )
         .await
@@ -183,7 +178,7 @@ pub(crate) async fn qr_check(
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
                 api.check_qr_with_context(
-                    authenticated.user_id.as_str(),
+                    &authenticated.user_id,
                     req,
                     instance_name,
                     Some(&control),
@@ -333,7 +328,7 @@ pub(crate) async fn sms_login(
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
                 api.login_sms_with_context(
-                    authenticated.user_id.as_str(),
+                    &authenticated.user_id,
                     req,
                     instance_name,
                     Some(&control),
@@ -387,7 +382,7 @@ pub(crate) async fn user_info(
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
                 api.get_user_info_with_context(
-                    authenticated.user_id.as_str(),
+                    &authenticated.user_id,
                     req,
                     instance_name,
                     Some(&control),
@@ -436,8 +431,7 @@ pub(crate) async fn binds(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 tracing::info!("Bilibili binds request for user: {}", authenticated.user_id);
-                api.get_binds(authenticated.user_id.as_str(), instance_name)
-                    .await
+                api.get_binds(&authenticated.user_id, instance_name).await
             },
         )
         .await
@@ -473,21 +467,18 @@ pub(crate) async fn logout(
 
     let api = state.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
-    let resp =
-        state
-            .client_api
-            .execute_user_endpoint(
-                &request_meta,
-                EndpointRateLimitCategory::Auth,
-                move |authenticated| async move {
-                    api.logout(authenticated.user_id.as_str(), req).await
-                },
-            )
-            .await
-            .map_err(|e| {
-                tracing::error!("Bilibili logout failed: {}", e);
-                e
-            })?;
+    let resp = state
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |authenticated| async move { api.logout(&authenticated.user_id, req).await },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Bilibili logout failed: {}", e);
+            e
+        })?;
     Ok(Json(resp))
 }
 

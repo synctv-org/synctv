@@ -265,11 +265,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from_string("room-runtime".to_string())
+        RoomId::from(108_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from_string("user-runtime".to_string())
+        UserId::from(108_002)
     }
 
     async fn local_cluster_manager(node_id: &str) -> Arc<ClusterManager> {
@@ -337,11 +337,11 @@ mod tests {
 
         connection_service.start();
         connection_service
-            .register("conn-runtime".to_string(), user_id.clone())
+            .register("conn-runtime".to_string(), user_id)
             .await
             .expect("connection registration should succeed");
         connection_service
-            .join_room("conn-runtime", room_id.clone())
+            .join_room("conn-runtime", room_id)
             .await
             .expect("room join should succeed");
 

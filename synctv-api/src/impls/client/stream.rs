@@ -1,4 +1,4 @@
-use synctv_core::models::UserId;
+use synctv_core::models::{MediaId, UserId};
 
 use crate::impls::{ApiError, ClientApiImpl};
 use crate::proto::client::{
@@ -33,9 +33,20 @@ pub(crate) fn build_room_streams_request(
 
 #[must_use]
 pub(crate) fn build_room_streams_response(
-    mut media_ids: Vec<String>,
+    media_ids: Vec<MediaId>,
     req: &ListRoomStreamsRequest,
+    public_id_codec: &crate::PublicIdCodec,
 ) -> ListRoomStreamsResponse {
+    let mut media_ids: Vec<String> = media_ids
+        .into_iter()
+        .filter_map(|media_id| match public_id_codec.encode_media_id(media_id) {
+            Ok(public_id) => Some(public_id),
+            Err(error) => {
+                tracing::warn!(media_id = %media_id, error = %error, "Skipping invalid stream media id");
+                None
+            }
+        })
+        .collect();
     if let Some(search) = (!req.search.trim().is_empty()).then(|| req.search.to_ascii_lowercase()) {
         media_ids.retain(|media_id| media_id.to_ascii_lowercase().contains(search.as_str()));
     }
@@ -73,13 +84,13 @@ pub(crate) fn live_streaming_unavailable_error() -> ApiError {
 impl ClientApiImpl {
     pub async fn list_room_streams(
         &self,
-        user_id: &str,
+        user_id: &UserId,
         room_id: &str,
         req: ListRoomStreamsRequest,
     ) -> Result<ListRoomStreamsResponse, ApiError> {
         let req = build_room_streams_request(req)?;
-        let uid = UserId::from_string(user_id.to_string());
-        let rid = Self::parse_room_id(room_id)?;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
 
         self.room_service
             .check_membership(&rid, &uid)
@@ -93,11 +104,21 @@ impl ClientApiImpl {
 
         let media_ids = infrastructure
             .registry
-            .list_streams_for_room(room_id)
+            .list_streams_for_room(&rid.to_string())
             .await
             .map_err(|error| Self::map_livestream_backend_error(&*error))?;
 
-        Ok(build_room_streams_response(media_ids, &req))
+        let media_ids = media_ids
+            .into_iter()
+            .map(|id| id.parse::<MediaId>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ApiError::Internal(format!("Invalid stream media id: {error}")))?;
+
+        Ok(build_room_streams_response(
+            media_ids,
+            &req,
+            &self.public_id_codec,
+        ))
     }
 }
 #[cfg(test)]
@@ -146,24 +167,33 @@ mod tests {
 
     #[test]
     fn build_room_streams_response_applies_search_sort_and_pagination() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let media_ids = vec![
+            synctv_core::models::MediaId::from(201),
+            synctv_core::models::MediaId::from(202),
+            synctv_core::models::MediaId::from(203),
+        ];
+        let mut expected_ids = media_ids
+            .iter()
+            .map(|media_id| public_id_codec.encode_media_id(*media_id).unwrap())
+            .collect::<Vec<_>>();
+        expected_ids.sort_unstable();
+        expected_ids.reverse();
         let response = build_room_streams_response(
-            vec![
-                "beta-02".to_string(),
-                "alpha-01".to_string(),
-                "beta-01".to_string(),
-            ],
+            media_ids,
             &crate::proto::client::ListRoomStreamsRequest {
                 page: 2,
                 page_size: 1,
-                search: "beta".to_string(),
+                search: String::new(),
                 sort_by: crate::proto::client::RoomStreamListSortBy::MediaId as i32,
                 sort_direction: crate::proto::client::SortDirection::Desc as i32,
             },
+            &public_id_codec,
         );
 
-        assert_eq!(response.total, 2);
+        assert_eq!(response.total, 3);
         assert_eq!(response.streams.len(), 1);
-        assert_eq!(response.streams[0].media_id, "beta-01");
+        assert_eq!(response.streams[0].media_id, expected_ids[1]);
         assert!(response.streams[0].active);
     }
 }

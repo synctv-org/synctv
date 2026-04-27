@@ -177,8 +177,8 @@ pub struct ConnectionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConnectionInfoPersistent {
     connection_id: String,
-    user_id: String,
-    room_id: Option<String>,
+    user_id: UserId,
+    room_id: Option<RoomId>,
     connected_at_unix: u64,
     last_activity_unix: u64,
     message_count: u64,
@@ -233,8 +233,8 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
 
         Self {
             connection_id: info.connection_id.clone(),
-            user_id: info.user_id.as_str().to_string(),
-            room_id: info.room_id.as_ref().map(|r| r.as_str().to_string()),
+            user_id: info.user_id,
+            room_id: info.room_id,
             connected_at_unix,
             last_activity_unix,
             message_count: info.message_count,
@@ -509,11 +509,11 @@ impl ConnectionManager {
         format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix)
     }
 
-    fn user_index_key(&self, user_id: &str) -> String {
+    fn user_index_key(&self, user_id: impl std::fmt::Display) -> String {
         format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix)
     }
 
-    fn room_index_key(&self, room_id: &str) -> String {
+    fn room_index_key(&self, room_id: impl std::fmt::Display) -> String {
         format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix)
     }
 
@@ -943,7 +943,7 @@ impl ConnectionManager {
         };
 
         let conn_key = self.conn_metadata_key(connection_id);
-        let user_index_key = self.user_index_key(user_id.as_str());
+        let user_index_key = self.user_index_key(user_id);
         let user_index_directory_key = self.user_index_directory_key();
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
@@ -995,12 +995,12 @@ impl ConnectionManager {
         };
 
         let conn_key = self.conn_metadata_key(connection_id);
-        let room_index_key = self.room_index_key(transition.room_id.as_str());
+        let room_index_key = self.room_index_key(transition.room_id);
         let room_index_directory_key = self.room_index_directory_key();
         let previous_room_index_key = transition
             .previous_room_id
             .as_ref()
-            .map(|room_id| self.room_index_key(room_id.as_str()));
+            .map(|room_id| self.room_index_key(room_id));
 
         let persistent = ConnectionInfoPersistent::from(&conn_info);
         match serde_json::to_string(&persistent) {
@@ -1348,11 +1348,11 @@ impl ConnectionManager {
     pub fn disconnect_user(&self, user_id: &UserId) {
         let conn_count = self.user_connection_count(user_id);
         info!(
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             connection_count = conn_count,
             "Forcing disconnect of all user connections"
         );
-        let signal = DisconnectSignal::User(user_id.clone());
+        let signal = DisconnectSignal::User(*user_id);
         self.send_disconnect_signal(&signal);
     }
 
@@ -1363,11 +1363,11 @@ impl ConnectionManager {
     pub fn disconnect_room(&self, room_id: &RoomId) {
         let conn_count = self.room_connection_count(room_id);
         info!(
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             connection_count = conn_count,
             "Forcing disconnect of all room connections"
         );
-        let signal = DisconnectSignal::Room(room_id.clone());
+        let signal = DisconnectSignal::Room(*room_id);
         self.send_disconnect_signal(&signal);
     }
 
@@ -1377,13 +1377,13 @@ impl ConnectionManager {
     /// If the broadcast channel is full, the signal is queued for retry.
     pub fn disconnect_user_from_room(&self, user_id: &UserId, room_id: &RoomId) {
         info!(
-            user_id = %user_id.as_str(),
-            room_id = %room_id.as_str(),
+            user_id = %user_id,
+            room_id = %room_id,
             "Forcing disconnect of user from room"
         );
         let signal = DisconnectSignal::UserFromRoom {
-            user_id: user_id.clone(),
-            room_id: room_id.clone(),
+            user_id: *user_id,
+            room_id: *room_id,
         };
         self.send_disconnect_signal(&signal);
     }
@@ -1443,7 +1443,7 @@ impl ConnectionManager {
     pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), String> {
         let counter = self
             .pending_room_reservations
-            .entry(room_id.clone())
+            .entry(*room_id)
             .or_insert_with(|| AtomicUsize::new(0));
 
         // Atomically try to reserve a slot by checking combined count
@@ -1490,7 +1490,7 @@ impl ConnectionManager {
                 }
                 Err(_) => {
                     warn!(
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "release_room_reservation called but counter is already 0 (double-release?)"
                     );
                 }
@@ -1511,7 +1511,7 @@ impl ConnectionManager {
     pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), String> {
         let counter = self
             .pending_user_reservations
-            .entry(user_id.clone())
+            .entry(*user_id)
             .or_insert_with(|| AtomicUsize::new(0));
 
         loop {
@@ -1552,7 +1552,7 @@ impl ConnectionManager {
                 }
                 Err(_) => {
                     warn!(
-                        user_id = %user_id.as_str(),
+                        user_id = %user_id,
                         "release_user_reservation called but counter is already 0 (double-release?)"
                     );
                 }
@@ -1640,11 +1640,7 @@ impl ConnectionManager {
         // so a Redis error here means distributed state is unavailable and we
         // must fail closed instead of weakening enforcement.
         if self.redis_enabled() {
-            let redis_key = format!(
-                "{}connections:user:{}",
-                self.redis_key_prefix,
-                user_id.as_str()
-            );
+            let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id);
             match self
                 .redis_incr_and_check(&redis_key, self.limits.max_per_user)
                 .await
@@ -1680,7 +1676,7 @@ impl ConnectionManager {
         // limit. Without Redis, this closes the TOCTOU race where concurrent
         // registrations could both observe the old count before either inserts.
         let is_first_connection_for_user = {
-            let mut user_entry = self.user_connections.entry(user_id.clone()).or_default();
+            let mut user_entry = self.user_connections.entry(user_id).or_default();
             if !self.redis_enabled() && user_entry.len() >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
                 return Err(format!(
@@ -1695,7 +1691,7 @@ impl ConnectionManager {
         };
 
         // Create and register connection info
-        let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
+        let conn_info = ConnectionInfo::new(connection_id.clone(), user_id);
         self.connections
             .insert(connection_id.clone(), conn_info.clone());
         self.schedule_idle_timeout(&connection_id, conn_info.last_activity);
@@ -1718,7 +1714,7 @@ impl ConnectionManager {
 
         info!(
             connection_id = %connection_id,
-            user_id = %user_id.as_str(),
+            user_id = %user_id,
             total_connections = self.total_connections.load(Ordering::Relaxed),
             "Connection registered"
         );
@@ -1742,10 +1738,8 @@ impl ConnectionManager {
             hook().await;
         }
 
-        let old_room_id: Option<RoomId> = self
-            .connections
-            .get(connection_id)
-            .and_then(|c| c.room_id.clone());
+        let old_room_id: Option<RoomId> =
+            self.connections.get(connection_id).and_then(|c| c.room_id);
 
         if let Some(ref old_room) = old_room_id {
             if old_room == &room_id {
@@ -1767,11 +1761,7 @@ impl ConnectionManager {
             hook().await;
         }
         let redis_room_incremented = if self.redis_enabled() {
-            let redis_key = format!(
-                "{}connections:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
+            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
             match self
                 .redis_incr_and_check(&redis_key, self.limits.max_per_room)
                 .await
@@ -1798,76 +1788,67 @@ impl ConnectionManager {
 
         let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
-        let (transition, last_activity) =
-            if let Some(mut conn) = self.connections.get_mut(connection_id) {
-                let current_room_id = conn.room_id.clone();
-                if current_room_id.as_ref() == Some(&room_id) {
-                    drop(lifecycle_guard);
-                    if redis_room_incremented {
-                        let redis_key = format!(
-                            "{}connections:room:{}",
-                            self.redis_key_prefix,
-                            room_id.as_str()
-                        );
-                        self.rollback_distributed_counter(redis_key).await;
-                    }
-                    return Ok(());
-                }
-
-                // Step 3: Commit the room move locally after all checks have passed.
-                // Without Redis, enforce the room limit under the same shard lock as
-                // the insert so concurrent local joins cannot oversubscribe the room.
-                {
-                    let mut room_entry = self.room_connections.entry(room_id.clone()).or_default();
-                    if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
-                        drop(lifecycle_guard);
-                        if redis_room_incremented {
-                            let redis_key = format!(
-                                "{}connections:room:{}",
-                                self.redis_key_prefix,
-                                room_id.as_str()
-                            );
-                            self.rollback_distributed_counter(redis_key).await;
-                        }
-                        return Err(format!(
-                            "Room at capacity ({} connections)",
-                            self.limits.max_per_room
-                        ));
-                    }
-                    room_entry.push(connection_id.to_string());
-                }
-
-                if let Some(ref old_room) = current_room_id {
-                    if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                        old_room_conns.retain(|id| id != connection_id);
-                        if old_room_conns.is_empty() {
-                            drop(old_room_conns);
-                            self.room_connections.remove(old_room);
-                        }
-                    }
-                }
-
-                conn.room_id = Some(room_id.clone());
-                conn.last_activity = Instant::now();
-                (
-                    Some(RoomTransition {
-                        previous_room_id: current_room_id,
-                        room_id: room_id.clone(),
-                    }),
-                    Some(conn.last_activity),
-                )
-            } else {
+        let (transition, last_activity) = if let Some(mut conn) =
+            self.connections.get_mut(connection_id)
+        {
+            let current_room_id = conn.room_id;
+            if current_room_id.as_ref() == Some(&room_id) {
                 drop(lifecycle_guard);
                 if redis_room_incremented {
-                    let redis_key = format!(
-                        "{}connections:room:{}",
-                        self.redis_key_prefix,
-                        room_id.as_str()
-                    );
+                    let redis_key =
+                        format!("{}connections:room:{}", self.redis_key_prefix, room_id);
                     self.rollback_distributed_counter(redis_key).await;
                 }
-                return Err("Connection not found".to_string());
-            };
+                return Ok(());
+            }
+
+            // Step 3: Commit the room move locally after all checks have passed.
+            // Without Redis, enforce the room limit under the same shard lock as
+            // the insert so concurrent local joins cannot oversubscribe the room.
+            {
+                let mut room_entry = self.room_connections.entry(room_id).or_default();
+                if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+                    drop(lifecycle_guard);
+                    if redis_room_incremented {
+                        let redis_key =
+                            format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+                        self.rollback_distributed_counter(redis_key).await;
+                    }
+                    return Err(format!(
+                        "Room at capacity ({} connections)",
+                        self.limits.max_per_room
+                    ));
+                }
+                room_entry.push(connection_id.to_string());
+            }
+
+            if let Some(ref old_room) = current_room_id {
+                if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
+                    old_room_conns.retain(|id| id != connection_id);
+                    if old_room_conns.is_empty() {
+                        drop(old_room_conns);
+                        self.room_connections.remove(old_room);
+                    }
+                }
+            }
+
+            conn.room_id = Some(room_id);
+            conn.last_activity = Instant::now();
+            (
+                Some(RoomTransition {
+                    previous_room_id: current_room_id,
+                    room_id,
+                }),
+                Some(conn.last_activity),
+            )
+        } else {
+            drop(lifecycle_guard);
+            if redis_room_incremented {
+                let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+                self.rollback_distributed_counter(redis_key).await;
+            }
+            return Err("Connection not found".to_string());
+        };
         drop(lifecycle_guard);
         if let Some(last_activity) = last_activity {
             self.schedule_idle_timeout(connection_id, last_activity);
@@ -1880,11 +1861,7 @@ impl ConnectionManager {
             .as_ref()
             .and_then(|transition| transition.previous_room_id.as_ref())
         {
-            let old_key = format!(
-                "{}connections:room:{}",
-                self.redis_key_prefix,
-                old_room.as_str()
-            );
+            let old_key = format!("{}connections:room:{}", self.redis_key_prefix, old_room);
             self.rollback_distributed_counter(old_key).await;
         }
 
@@ -1899,7 +1876,7 @@ impl ConnectionManager {
 
         debug!(
             connection_id = %connection_id,
-            room_id = %room_id.as_str(),
+            room_id = %room_id,
             "Connection joined room"
         );
 
@@ -1955,8 +1932,8 @@ impl ConnectionManager {
             // TTL on Redis keys acts as a safety net for eventual cleanup.
             if let Some(conn_clone) = self.redis_conn_snapshot().await {
                 let key_prefix = self.redis_key_prefix.clone();
-                let user_id_str = conn_info.user_id.as_str().to_string();
-                let room_id_str = conn_info.room_id.as_ref().map(|r| r.as_str().to_string());
+                let user_id = conn_info.user_id;
+                let room_id = conn_info.room_id;
                 let connection_id_owned = connection_id.to_string();
                 let retry_tx = self.pending_retries_tx.clone();
 
@@ -1970,13 +1947,13 @@ impl ConnectionManager {
                     }
 
                     // Decrement user counter
-                    let user_key = format!("{key_prefix}connections:user:{user_id_str}");
+                    let user_key = format!("{key_prefix}connections:user:{user_id}");
                     if let Err(_e) = this.redis_decr(&user_key).await {
                         let _ = retry_tx.try_send(PendingRedisOp::Decr(user_key));
                     }
 
                     // Decrement room counter
-                    if let Some(ref room_id) = room_id_str {
+                    if let Some(room_id) = room_id {
                         let room_key = format!("{key_prefix}connections:room:{room_id}");
                         if let Err(_e) = this.redis_decr(&room_key).await {
                             let _ = retry_tx.try_send(PendingRedisOp::Decr(room_key));
@@ -1985,10 +1962,9 @@ impl ConnectionManager {
 
                     // Remove metadata and index entries
                     let conn_key = format!("{key_prefix}conn_mgr:conn:{connection_id_owned}");
-                    let user_index_key = format!("{key_prefix}conn_mgr:user:{user_id_str}");
-                    let room_index_key = room_id_str
-                        .as_ref()
-                        .map(|r| format!("{key_prefix}conn_mgr:room:{r}"));
+                    let user_index_key = format!("{key_prefix}conn_mgr:user:{user_id}");
+                    let room_index_key =
+                        room_id.map(|room_id| format!("{key_prefix}conn_mgr:room:{room_id}"));
 
                     let mut mc = conn_clone.clone();
                     if mc.del::<_, i64>(&conn_key).await.is_err() {
@@ -2029,10 +2005,9 @@ impl ConnectionManager {
                     // Enqueue all decrement operations for retry
                     let total_key = format!("{}connections:total", self.redis_key_prefix);
                     self.enqueue_retry(PendingRedisOp::Decr(total_key));
-                    let user_key =
-                        format!("{}connections:user:{}", self.redis_key_prefix, user_id_str);
+                    let user_key = format!("{}connections:user:{user_id}", self.redis_key_prefix);
                     self.enqueue_retry(PendingRedisOp::Decr(user_key));
-                    if let Some(ref room_id) = room_id_str {
+                    if let Some(room_id) = room_id {
                         let room_key =
                             format!("{}connections:room:{room_id}", self.redis_key_prefix);
                         self.enqueue_retry(PendingRedisOp::Decr(room_key));
@@ -2047,7 +2022,7 @@ impl ConnectionManager {
                         format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
                     self.enqueue_retry(PendingRedisOp::Del(conn_key));
                     let user_index_key =
-                        format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id_str);
+                        format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix);
                     self.enqueue_retry(PendingRedisOp::SRem {
                         key: user_index_key,
                         member: connection_id.to_string(),
@@ -2074,7 +2049,7 @@ impl ConnectionManager {
 
             info!(
                 connection_id = %connection_id,
-                user_id = %conn_info.user_id.as_str(),
+                user_id = %conn_info.user_id,
                 duration = ?conn_info.duration(),
                 message_count = conn_info.message_count,
                 "Connection unregistered"
@@ -2137,18 +2112,14 @@ impl ConnectionManager {
                     if rtc_duration > self.limits.webrtc_session_timeout {
                         warn!(
                             connection_id = %conn.connection_id,
-                            user_id = %conn.user_id.as_str(),
+                            user_id = %conn.user_id,
                             room_id = ?conn.room_id,
                             rtc_session_duration = ?rtc_duration,
                             webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
                             "WebRTC session timeout"
                         );
                         if let Some(room_id) = &conn.room_id {
-                            rtc_timeouts.push((
-                                room_id.clone(),
-                                conn.user_id.clone(),
-                                conn.connection_id.clone(),
-                            ));
+                            rtc_timeouts.push((*room_id, conn.user_id, conn.connection_id.clone()));
                         }
                         // Add to disconnect list to force reconnection
                         to_disconnect.push(conn.connection_id.clone());
@@ -2220,11 +2191,7 @@ impl ConnectionManager {
         room_id: &RoomId,
     ) -> Result<usize, String> {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let redis_key = format!(
-                "{}connections:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
+            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
             match conn.get::<_, Option<i64>>(&redis_key).await {
                 Ok(Some(count)) if count > 0 => return Ok(i64_to_usize_saturating(count)),
                 Ok(_) => return Ok(0),
@@ -2256,7 +2223,7 @@ impl ConnectionManager {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             let keys: Vec<String> = room_ids
                 .iter()
-                .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid.as_str()))
+                .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid))
                 .collect();
 
             match redis::cmd("MGET")
@@ -2323,9 +2290,9 @@ impl ConnectionManager {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
             use std::collections::{HashMap, HashSet};
 
-            let mut room_to_users: HashMap<&str, HashSet<String>> = room_ids
+            let mut room_to_users: HashMap<RoomId, HashSet<UserId>> = room_ids
                 .iter()
-                .map(|room_id| (room_id.as_str(), HashSet::new()))
+                .map(|room_id| (**room_id, HashSet::new()))
                 .collect();
 
             for room_id in room_ids {
@@ -2346,9 +2313,9 @@ impl ConnectionManager {
                             format!("Failed to deserialize distributed connection metadata: {e}")
                         })?;
 
-                    if info.room_id.as_deref() == Some(room_id.as_str()) {
+                    if info.room_id.as_ref() == Some(room_id) {
                         room_to_users
-                            .entry(room_id.as_str())
+                            .entry(**room_id)
                             .or_default()
                             .insert(info.user_id);
                     }
@@ -2357,7 +2324,7 @@ impl ConnectionManager {
 
             return Ok(room_ids
                 .iter()
-                .map(|room_id| room_to_users.get(room_id.as_str()).map_or(0, HashSet::len))
+                .map(|room_id| room_to_users.get(room_id).map_or(0, HashSet::len))
                 .collect());
         }
 
@@ -2482,13 +2449,13 @@ impl ConnectionManager {
                 counter_keys.insert(format!(
                     "{}connections:user:{}",
                     self.redis_key_prefix,
-                    entry.key().as_str()
+                    entry.key()
                 ));
                 // R-P2-4: Also refresh user index metadata TTL
                 metadata_keys.insert(format!(
                     "{}conn_mgr:user:{}",
                     self.redis_key_prefix,
-                    entry.key().as_str()
+                    entry.key()
                 ));
                 has_user_metadata = true;
             }
@@ -2498,13 +2465,13 @@ impl ConnectionManager {
                 counter_keys.insert(format!(
                     "{}connections:room:{}",
                     self.redis_key_prefix,
-                    entry.key().as_str()
+                    entry.key()
                 ));
                 // R-P2-4: Also refresh room index metadata TTL
                 metadata_keys.insert(format!(
                     "{}conn_mgr:room:{}",
                     self.redis_key_prefix,
-                    entry.key().as_str()
+                    entry.key()
                 ));
                 has_room_metadata = true;
             }
@@ -2729,11 +2696,7 @@ impl ConnectionManager {
         for entry in self.user_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!(
-                    "{}connections:user:{}",
-                    self.redis_key_prefix,
-                    entry.key().as_str()
-                );
+                let key = format!("{}connections:user:{}", self.redis_key_prefix, entry.key());
                 user_counts.insert(key, count);
             }
         }
@@ -2743,11 +2706,7 @@ impl ConnectionManager {
         for entry in self.room_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!(
-                    "{}connections:room:{}",
-                    self.redis_key_prefix,
-                    entry.key().as_str()
-                );
+                let key = format!("{}connections:room:{}", self.redis_key_prefix, entry.key());
                 room_counts.insert(key, count);
             }
         }
@@ -2942,11 +2901,11 @@ impl ConnectionManager {
         for entry in self.connections.iter() {
             let conn_info = entry.value();
             let key = self.conn_metadata_key(&conn_info.connection_id);
-            let user_index_key = self.user_index_key(conn_info.user_id.as_str());
+            let user_index_key = self.user_index_key(conn_info.user_id);
             let room_index_key = conn_info
                 .room_id
                 .as_ref()
-                .map(|room_id| self.room_index_key(room_id.as_str()));
+                .map(|room_id| self.room_index_key(room_id));
             let persistent = ConnectionInfoPersistent::from(conn_info);
 
             match serde_json::to_string(&persistent) {
@@ -2990,7 +2949,7 @@ impl ConnectionManager {
                 errors += 1;
                 warn!(
                     connection_id = %conn_info.connection_id,
-                    user_id = %conn_info.user_id.as_str(),
+                    user_id = %conn_info.user_id,
                     error = %e,
                     "Failed to repair user connection index membership in Redis"
                 );
@@ -3108,11 +3067,10 @@ impl ConnectionManager {
                 Some(metadata_json) => {
                     match serde_json::from_str::<ConnectionInfoPersistent>(&metadata_json) {
                         Ok(info) => {
-                            let matches_user = expected_user_id
-                                .is_none_or(|user_id| info.user_id == user_id.as_str());
-                            let matches_room = expected_room_id.is_none_or(|room_id| {
-                                info.room_id.as_deref() == Some(room_id.as_str())
-                            });
+                            let matches_user =
+                                expected_user_id.is_none_or(|user_id| info.user_id == *user_id);
+                            let matches_room = expected_room_id
+                                .is_none_or(|room_id| info.room_id.as_ref() == Some(room_id));
 
                             if matches_user && matches_room {
                                 valid_conn_ids.push(conn_id);
@@ -3370,8 +3328,8 @@ impl ConnectionManager {
                 }
                 debug!(
                     connection_id = %conn_id,
-                    user_id = %user_id.as_str(),
-                    room_id = %room_id.as_str(),
+                    user_id = %user_id,
+                    room_id = %room_id,
                     joined = joined,
                     "WebRTC join status updated"
                 );
@@ -3449,11 +3407,7 @@ impl ConnectionManager {
         user_id: &UserId,
     ) -> Result<Vec<String>, String> {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let user_index_key = format!(
-                "{}conn_mgr:user:{}",
-                self.redis_key_prefix,
-                user_id.as_str()
-            );
+            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id);
 
             match self
                 .load_valid_connection_ids_from_index(
@@ -3505,11 +3459,7 @@ impl ConnectionManager {
         room_id: &RoomId,
     ) -> Result<Vec<String>, String> {
         if let Some(mut conn) = self.redis_conn_snapshot().await {
-            let room_index_key = format!(
-                "{}conn_mgr:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
+            let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id);
 
             match self
                 .load_valid_connection_ids_from_index(
@@ -3568,9 +3518,7 @@ impl ConnectionManager {
                 let info: ConnectionInfoPersistent = serde_json::from_str(&entry).map_err(|e| {
                     format!("Failed to deserialize distributed connection metadata: {e}")
                 })?;
-                if info.user_id == user_id.as_str()
-                    && info.room_id.as_deref() == Some(room_id.as_str())
-                {
+                if info.user_id == *user_id && info.room_id.as_ref() == Some(room_id) {
                     count += 1;
                 }
             }
@@ -3620,15 +3568,15 @@ impl ConnectionManager {
             for entry in metadata.into_iter().flatten() {
                 match serde_json::from_str::<ConnectionInfoPersistent>(&entry) {
                     Ok(info) => {
-                        if info.room_id.as_deref() == Some(room_id.as_str()) {
+                        if info.room_id.as_ref() == Some(room_id) {
                             return Ok(true);
                         }
                     }
                     Err(e) => {
                         warn!(
                             error = %e,
-                            user_id = %user_id.as_str(),
-                            room_id = %room_id.as_str(),
+                            user_id = %user_id,
+                            room_id = %room_id,
                             "Failed to deserialize distributed connection metadata"
                         );
                     }
@@ -3840,9 +3788,9 @@ mod tests {
     #[tokio::test]
     async fn test_register_connection() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
-        let result = manager.register("conn1".to_string(), user_id.clone()).await;
+        let result = manager.register("conn1".to_string(), user_id).await;
         assert!(result.is_ok());
         assert_eq!(manager.connection_count(), 1);
         assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -3851,16 +3799,14 @@ mod tests {
     #[tokio::test]
     async fn test_register_duplicate_connection_id_is_rejected_without_double_counting() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("dup-user".to_string());
+        let user_id = UserId::from(10_000_110);
 
         manager
-            .register("dup-conn".to_string(), user_id.clone())
+            .register("dup-conn".to_string(), user_id)
             .await
             .expect("first register should succeed");
 
-        let duplicate = manager
-            .register("dup-conn".to_string(), user_id.clone())
-            .await;
+        let duplicate = manager.register("dup-conn".to_string(), user_id).await;
         assert!(
             duplicate.is_err(),
             "duplicate connection_id must be rejected deterministically"
@@ -3897,11 +3843,10 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from_string("dup-fast-user".to_string());
+        let user_id = UserId::from(10_000_111);
 
         let first = {
             let manager = Arc::clone(&manager);
-            let user_id = user_id.clone();
             tokio::spawn(async move { manager.register("dup-fast".to_string(), user_id).await })
         };
 
@@ -3909,7 +3854,7 @@ mod tests {
 
         let duplicate = tokio::time::timeout(
             Duration::from_millis(100),
-            manager.register("dup-fast".to_string(), user_id.clone()),
+            manager.register("dup-fast".to_string(), user_id),
         )
         .await
         .expect("duplicate registration must fail fast instead of waiting on lifecycle lock");
@@ -4023,13 +3968,12 @@ mod tests {
         let manager =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix));
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
-        let user1 = UserId::from_string("dup-race-user-1".to_string());
-        let user2 = UserId::from_string("dup-race-user-2".to_string());
+        let user1 = UserId::from(10_000_112);
+        let user2 = UserId::from(10_000_113);
 
         let task1 = {
             let manager = Arc::clone(&manager);
             let barrier = Arc::clone(&barrier);
-            let user1 = user1.clone();
             tokio::spawn(async move {
                 barrier.wait().await;
                 manager.register("dup-race-conn".to_string(), user1).await
@@ -4038,7 +3982,6 @@ mod tests {
         let task2 = {
             let manager = Arc::clone(&manager);
             let barrier = Arc::clone(&barrier);
-            let user2 = user2.clone();
             tokio::spawn(async move {
                 barrier.wait().await;
                 manager.register("dup-race-conn".to_string(), user2).await
@@ -4096,20 +4039,14 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
         // First two should succeed
-        assert!(manager
-            .register("conn1".to_string(), user_id.clone())
-            .await
-            .is_ok());
-        assert!(manager
-            .register("conn2".to_string(), user_id.clone())
-            .await
-            .is_ok());
+        assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
+        assert!(manager.register("conn2".to_string(), user_id).await.is_ok());
 
         // Third should fail
-        let result = manager.register("conn3".to_string(), user_id.clone()).await;
+        let result = manager.register("conn3".to_string(), user_id).await;
         assert!(result.is_err());
         assert_eq!(manager.connection_count(), 2);
     }
@@ -4122,12 +4059,11 @@ mod tests {
             ..Default::default()
         };
         let manager = Arc::new(ConnectionManager::new(limits));
-        let user_id = UserId::from_string("race-user".to_string());
+        let user_id = UserId::from(10_000_114);
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
 
         let task1 = {
             let manager = Arc::clone(&manager);
-            let user_id = user_id.clone();
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
@@ -4136,7 +4072,6 @@ mod tests {
         };
         let task2 = {
             let manager = Arc::clone(&manager);
-            let user_id = user_id.clone();
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
@@ -4165,39 +4100,39 @@ mod tests {
     #[tokio::test]
     async fn test_join_room() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
 
-        let result = manager.join_room("conn1", room_id.clone()).await;
+        let result = manager.join_room("conn1", room_id).await;
         assert!(result.is_ok());
         assert_eq!(manager.room_connection_count(&room_id), 1);
 
         let conn = manager.get_connection("conn1").unwrap();
-        assert_eq!(conn.room_id.as_ref().unwrap().as_str(), "room1");
+        assert_eq!(conn.room_id.as_ref(), Some(&room_id));
     }
 
     #[tokio::test]
     async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis()
     {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("conn2".to_string(), user_id.clone())
+            .register("conn2".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
-        manager.join_room("conn2", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
+        manager.join_room("conn2", room_id).await.unwrap();
 
         let has_other = manager
             .has_other_connection_for_user_in_room_distributed(&user_id, &room_id, "conn1")
@@ -4210,19 +4145,19 @@ mod tests {
     #[tokio::test]
     async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
-        let other_room_id = RoomId::from_string("room2".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
+        let other_room_id = RoomId::from(10_000_094);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("conn2".to_string(), user_id.clone())
+            .register("conn2".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
         manager.join_room("conn2", other_room_id).await.unwrap();
 
         let has_other = manager
@@ -4239,19 +4174,19 @@ mod tests {
     #[tokio::test]
     async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("conn2".to_string(), user_id.clone())
+            .register("conn2".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
-        manager.join_room("conn2", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
+        manager.join_room("conn2", room_id).await.unwrap();
 
         let has_existing_presence = manager
             .has_existing_presence_for_user_in_room_distributed(&user_id, &room_id, "conn2")
@@ -4271,22 +4206,22 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let room_id = RoomId::from_string("room1".to_string());
+        let room_id = RoomId::from(10_000_092);
 
         // Register two connections and join room
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
-        let user3 = UserId::from_string("user3".to_string());
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
+        let user3 = UserId::from(10_000_115);
 
         manager.register("conn1".to_string(), user1).await.unwrap();
         manager.register("conn2".to_string(), user2).await.unwrap();
         manager.register("conn3".to_string(), user3).await.unwrap();
 
-        assert!(manager.join_room("conn1", room_id.clone()).await.is_ok());
-        assert!(manager.join_room("conn2", room_id.clone()).await.is_ok());
+        assert!(manager.join_room("conn1", room_id).await.is_ok());
+        assert!(manager.join_room("conn2", room_id).await.is_ok());
 
         // Third should fail
-        let result = manager.join_room("conn3", room_id.clone()).await;
+        let result = manager.join_room("conn3", room_id).await;
         assert!(result.is_err());
     }
 
@@ -4299,27 +4234,20 @@ mod tests {
             ..Default::default()
         };
         let manager = Arc::new(ConnectionManager::new(limits));
-        let room_id = RoomId::from_string("race-room".to_string());
+        let room_id = RoomId::from(10_000_116);
 
         manager
-            .register(
-                "conn-room-race-1".to_string(),
-                UserId::from_string("user-room-race-1".to_string()),
-            )
+            .register("conn-room-race-1".to_string(), UserId::from(10_000_117))
             .await
             .expect("first registration");
         manager
-            .register(
-                "conn-room-race-2".to_string(),
-                UserId::from_string("user-room-race-2".to_string()),
-            )
+            .register("conn-room-race-2".to_string(), UserId::from(10_000_118))
             .await
             .expect("second registration");
 
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let join1 = {
             let manager = Arc::clone(&manager);
-            let room_id = room_id.clone();
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
@@ -4328,7 +4256,6 @@ mod tests {
         };
         let join2 = {
             let manager = Arc::clone(&manager);
-            let room_id = room_id.clone();
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
@@ -4363,9 +4290,9 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from_string("user-room-switch".to_string());
-        let room_a = RoomId::from_string("room-a".to_string());
-        let room_b = RoomId::from_string("room-b".to_string());
+        let user_id = UserId::from(10_000_119);
+        let room_a = RoomId::from(10_000_120);
+        let room_b = RoomId::from(10_000_121);
 
         manager
             .register("conn-switch".to_string(), user_id)
@@ -4374,12 +4301,10 @@ mod tests {
 
         let join_a = {
             let manager = Arc::clone(&manager);
-            let room_a = room_a.clone();
             tokio::spawn(async move { manager.join_room("conn-switch", room_a).await })
         };
         let join_b = {
             let manager = Arc::clone(&manager);
-            let room_b = room_b.clone();
             tokio::spawn(async move { manager.join_room("conn-switch", room_b).await })
         };
 
@@ -4391,10 +4316,7 @@ mod tests {
         let conn = manager
             .get_connection("conn-switch")
             .expect("connection should exist after room switch race");
-        let final_room = conn
-            .room_id
-            .clone()
-            .expect("connection should belong to one room");
+        let final_room = conn.room_id.expect("connection should belong to one room");
 
         let room_a_connections = manager.get_room_connections(&room_a);
         let room_b_connections = manager.get_room_connections(&room_b);
@@ -4458,17 +4380,16 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from_string("unregister-race-user".to_string());
-        let room_id = RoomId::from_string("unregister-race-room".to_string());
+        let user_id = UserId::from(10_000_122);
+        let room_id = RoomId::from(10_000_123);
 
         manager
-            .register("conn-unregister-race".to_string(), user_id.clone())
+            .register("conn-unregister-race".to_string(), user_id)
             .await
             .expect("registration should succeed");
 
         let join_task = {
             let manager = Arc::clone(&manager);
-            let room_id = room_id.clone();
             tokio::spawn(async move { manager.join_room("conn-unregister-race", room_id).await })
         };
 
@@ -4503,7 +4424,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_message() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4521,10 +4442,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_connections_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
 
@@ -4539,14 +4460,14 @@ mod tests {
     #[tokio::test]
     async fn test_user_connection_count_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user-count".to_string());
+        let user_id = UserId::from(10_000_124);
 
         manager
-            .register("user-count-1".to_string(), user_id.clone())
+            .register("user-count-1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("user-count-2".to_string(), user_id.clone())
+            .register("user-count-2".to_string(), user_id)
             .await
             .unwrap();
 
@@ -4560,14 +4481,14 @@ mod tests {
     #[tokio::test]
     async fn test_room_connection_count_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
 
         let count = manager
             .room_connection_count_distributed(&room_id)
@@ -4585,19 +4506,19 @@ mod tests {
     #[tokio::test]
     async fn test_room_online_user_count_deduplicates_same_user_connections() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("conn2".to_string(), user_id.clone())
+            .register("conn2".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
-        manager.join_room("conn2", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
+        manager.join_room("conn2", room_id).await.unwrap();
 
         assert_eq!(manager.room_connection_count(&room_id), 2);
         assert_eq!(manager.room_online_user_count(&room_id), 1);
@@ -4618,32 +4539,26 @@ mod tests {
     #[tokio::test]
     async fn test_user_connection_count_in_room_distributed_counts_all_connections() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user-room-count".to_string());
-        let room_id = RoomId::from_string("room-conn-count".to_string());
-        let other_room_id = RoomId::from_string("other-room".to_string());
+        let user_id = UserId::from(10_000_125);
+        let room_id = RoomId::from(10_000_126);
+        let other_room_id = RoomId::from(10_000_127);
 
         manager
-            .register("room-count-1".to_string(), user_id.clone())
+            .register("room-count-1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("room-count-2".to_string(), user_id.clone())
+            .register("room-count-2".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("room-count-3".to_string(), user_id.clone())
+            .register("room-count-3".to_string(), user_id)
             .await
             .unwrap();
+        manager.join_room("room-count-1", room_id).await.unwrap();
+        manager.join_room("room-count-2", room_id).await.unwrap();
         manager
-            .join_room("room-count-1", room_id.clone())
-            .await
-            .unwrap();
-        manager
-            .join_room("room-count-2", room_id.clone())
-            .await
-            .unwrap();
-        manager
-            .join_room("room-count-3", other_room_id.clone())
+            .join_room("room-count-3", other_room_id)
             .await
             .unwrap();
 
@@ -4657,14 +4572,14 @@ mod tests {
     #[tokio::test]
     async fn test_unregister() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
 
         assert_eq!(manager.connection_count(), 1);
         assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -4680,11 +4595,11 @@ mod tests {
     #[tokio::test]
     async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("metric_user".to_string());
+        let user_id = UserId::from(10_000_128);
         let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
-            .register("metric-conn-1".to_string(), user_id.clone())
+            .register("metric-conn-1".to_string(), user_id)
             .await
             .unwrap();
         assert_eq!(
@@ -4694,7 +4609,7 @@ mod tests {
         );
 
         manager
-            .register("metric-conn-2".to_string(), user_id.clone())
+            .register("metric-conn-2".to_string(), user_id)
             .await
             .unwrap();
         assert_eq!(
@@ -4711,15 +4626,15 @@ mod tests {
     #[tokio::test]
     async fn test_users_online_metric_decrements_only_after_last_connection_leaves() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from_string("metric_user_last".to_string());
+        let user_id = UserId::from(10_000_129);
         let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
-            .register("metric-last-1".to_string(), user_id.clone())
+            .register("metric-last-1".to_string(), user_id)
             .await
             .unwrap();
         manager
-            .register("metric-last-2".to_string(), user_id.clone())
+            .register("metric-last-2".to_string(), user_id)
             .await
             .unwrap();
 
@@ -4741,8 +4656,8 @@ mod tests {
     #[tokio::test]
     async fn test_metrics() {
         let manager = ConnectionManager::default();
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
 
         manager.register("conn1".to_string(), user1).await.unwrap();
         manager.register("conn2".to_string(), user2).await.unwrap();
@@ -4764,7 +4679,7 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4786,7 +4701,7 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4816,14 +4731,14 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
         manager.mark_rtc_joined(&room_id, &user_id, "conn1", true);
 
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -4848,36 +4763,29 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from_string("user1".to_string());
-        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::from(10_000_092);
+        let user_key = format!("{prefix}connections:user:{user_id}");
+        let room_key = format!("{prefix}connections:room:{room_id}");
 
         // Register connections
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
-        manager.join_room("conn1", room_id.clone()).await.unwrap();
+        manager.join_room("conn1", room_id).await.unwrap();
 
         // Verify Redis has the counts
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let user_count: i64 = redis_conn
-            .get(format!("{prefix}connections:user:user1"))
-            .await
-            .unwrap_or(0);
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Simulate Redis outage by clearing Redis keys manually
         // (In real scenario, Redis would be down)
-        let _: () = redis_conn
-            .del(format!("{prefix}connections:user:user1"))
-            .await
-            .unwrap();
-        let _: () = redis_conn
-            .del(format!("{prefix}connections:room:room1"))
-            .await
-            .unwrap();
+        let _: () = redis_conn.del(&user_key).await.unwrap();
+        let _: () = redis_conn.del(&room_key).await.unwrap();
 
         // At this point, local state has 1 connection but Redis has 0
         assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -4886,10 +4794,7 @@ mod tests {
         manager.reconcile_with_redis().await;
 
         // After reconciliation, Redis should match local state
-        let user_count: i64 = redis_conn
-            .get(format!("{prefix}connections:user:user1"))
-            .await
-            .unwrap_or(0);
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Cleanup
@@ -4948,8 +4853,8 @@ mod tests {
         // on this node must not delete it just because it is absent from local memory.
         let foreign_meta = ConnectionInfoPersistent {
             connection_id: "other_node_conn".to_string(),
-            user_id: "user_foreign".to_string(),
-            room_id: Some("room_foreign".to_string()),
+            user_id: UserId::from(20_000_201),
+            room_id: Some(RoomId::from(20_000_202)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5024,11 +4929,12 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test3:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
+        let user_key = format!("{prefix}connections:user:{user_id}");
 
         // Register a connection (should succeed and write to Redis)
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
 
@@ -5036,17 +4942,11 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let user_count: i64 = redis_conn
-            .get(format!("{prefix}connections:user:user1"))
-            .await
-            .unwrap_or(0);
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Manually corrupt the counter (simulating partial failure)
-        let _: () = redis_conn
-            .set(format!("{prefix}connections:user:user1"), 0)
-            .await
-            .unwrap();
+        let _: () = redis_conn.set(&user_key, 0).await.unwrap();
 
         // Local state says 1, Redis says 0
         assert_eq!(manager.user_connection_count(&user_id), 1);
@@ -5055,10 +4955,7 @@ mod tests {
         manager.reconcile_with_redis().await;
 
         // After reconciliation, Redis should be corrected
-        let user_count: i64 = redis_conn
-            .get(format!("{prefix}connections:user:user1"))
-            .await
-            .unwrap_or(0);
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
         assert_eq!(user_count, 1);
 
         // Cleanup
@@ -5077,8 +4974,8 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let user_key = format!("{prefix}connections:user:shared-user");
-        let room_key = format!("{prefix}connections:room:shared-room");
+        let user_key = format!("{prefix}connections:user:20000101");
+        let room_key = format!("{prefix}connections:room:20000102");
         let total_key = format!("{prefix}connections:total");
 
         let _: () = redis_conn.set(&user_key, 3).await.unwrap();
@@ -5127,8 +5024,8 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test6:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_a = UserId::from_string("user-a".to_string());
-        let room_a = RoomId::from_string("room-a".to_string());
+        let user_a = UserId::from(10_000_130);
+        let room_a = RoomId::from(10_000_120);
         let stale_missing = "conn-missing";
         let stale_mismatch = "conn-mismatch";
         let valid = "conn-valid";
@@ -5136,15 +5033,15 @@ mod tests {
         let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
-        let user_index_key = format!("{prefix}conn_mgr:user:{}", user_a.as_str());
-        let room_index_key = format!("{prefix}conn_mgr:room:{}", room_a.as_str());
+        let user_index_key = format!("{prefix}conn_mgr:user:{user_a}");
+        let room_index_key = format!("{prefix}conn_mgr:room:{room_a}");
         let mismatch_conn_key = format!("{prefix}conn_mgr:conn:{stale_mismatch}");
         let valid_conn_key = format!("{prefix}conn_mgr:conn:{valid}");
 
         let mismatch_metadata = ConnectionInfoPersistent {
             connection_id: stale_mismatch.to_string(),
-            user_id: "user-b".to_string(),
-            room_id: Some("room-b".to_string()),
+            user_id: UserId::from(10_000_131),
+            room_id: Some(RoomId::from(10_000_121)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5153,8 +5050,8 @@ mod tests {
         };
         let valid_metadata = ConnectionInfoPersistent {
             connection_id: valid.to_string(),
-            user_id: user_a.as_str().to_string(),
-            room_id: Some(room_a.as_str().to_string()),
+            user_id: user_a,
+            room_id: Some(room_a),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5244,23 +5141,20 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test7:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from_string("user-meta-ttl".to_string());
-        let room_id = RoomId::from_string("room-meta-ttl".to_string());
+        let user_id = UserId::from(10_000_131);
+        let room_id = RoomId::from(10_000_132);
 
         manager
-            .register("conn-meta-ttl".to_string(), user_id.clone())
+            .register("conn-meta-ttl".to_string(), user_id)
             .await
             .unwrap();
-        manager
-            .join_room("conn-meta-ttl", room_id.clone())
-            .await
-            .unwrap();
+        manager.join_room("conn-meta-ttl", room_id).await.unwrap();
 
         let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
         for key in [
             format!("{prefix}conn_mgr:conn:conn-meta-ttl"),
-            format!("{prefix}conn_mgr:user:{}", user_id.as_str()),
-            format!("{prefix}conn_mgr:room:{}", room_id.as_str()),
+            format!("{prefix}conn_mgr:user:{user_id}"),
+            format!("{prefix}conn_mgr:room:{room_id}"),
             format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}"),
             format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}"),
         ] {
@@ -5283,21 +5177,18 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test8:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from_string("user-repair".to_string());
-        let room_id = RoomId::from_string("room-repair".to_string());
-        let user_index_key = format!("{prefix}conn_mgr:user:{}", user_id.as_str());
-        let room_index_key = format!("{prefix}conn_mgr:room:{}", room_id.as_str());
+        let user_id = UserId::from(10_000_133);
+        let room_id = RoomId::from(10_000_134);
+        let user_index_key = format!("{prefix}conn_mgr:user:{user_id}");
+        let room_index_key = format!("{prefix}conn_mgr:room:{room_id}");
         let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
         let room_index_directory_key = format!("{prefix}{ROOM_INDEX_DIRECTORY_KEY_SUFFIX}");
 
         manager
-            .register("conn-repair".to_string(), user_id.clone())
+            .register("conn-repair".to_string(), user_id)
             .await
             .unwrap();
-        manager
-            .join_room("conn-repair", room_id.clone())
-            .await
-            .unwrap();
+        manager.join_room("conn-repair", room_id).await.unwrap();
 
         let mut redis_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
         let _: () = redis_conn.del(&user_index_key).await.unwrap();
@@ -5366,14 +5257,15 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let manager = ConnectionManager::new(limits).with_redis(conn, &prefix);
-        let user_id = UserId::from_string("user-total-rollback".to_string());
+        let user_id = UserId::from(10_000_135);
+        let user_key = format!("{prefix}connections:user:{user_id}");
 
         manager
-            .register("conn1".to_string(), user_id.clone())
+            .register("conn1".to_string(), user_id)
             .await
             .unwrap();
 
-        let second = manager.register("conn2".to_string(), user_id.clone()).await;
+        let second = manager.register("conn2".to_string(), user_id).await;
         assert!(
             second.is_err(),
             "second connection should be rejected by distributed per-user limit"
@@ -5386,10 +5278,7 @@ mod tests {
             .get(format!("{prefix}connections:total"))
             .await
             .unwrap_or(0);
-        let user_count: i64 = redis_conn
-            .get(format!("{prefix}connections:user:user-total-rollback"))
-            .await
-            .unwrap_or(0);
+        let user_count: i64 = redis_conn.get(&user_key).await.unwrap_or(0);
 
         assert_eq!(
             total_count, 1,
@@ -5414,22 +5303,16 @@ mod tests {
             .with_shared_redis(shared_conn.clone(), &prefix);
 
         manager
-            .register(
-                "conn-shared".to_string(),
-                UserId::from_string("user-shared".to_string()),
-            )
+            .register("conn-shared".to_string(), UserId::from(10_000_136))
             .await
             .unwrap();
         manager
-            .join_room(
-                "conn-shared",
-                RoomId::from_string("room-shared".to_string()),
-            )
+            .join_room("conn-shared", RoomId::from(10_000_137))
             .await
             .unwrap();
 
         let initial_metadata_key = format!("{prefix}conn_mgr:conn:conn-shared");
-        let initial_room_key = format!("{prefix}connections:room:room-shared");
+        let initial_room_key = format!("{prefix}connections:room:10000137");
         let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
@@ -5450,13 +5333,10 @@ mod tests {
             .unwrap();
         *shared_conn.write().await = replacement_conn;
 
-        let moved_room = RoomId::from_string("room-shared-2".to_string());
-        manager
-            .join_room("conn-shared", moved_room.clone())
-            .await
-            .unwrap();
+        let moved_room = RoomId::from(10_000_138);
+        manager.join_room("conn-shared", moved_room).await.unwrap();
 
-        let moved_room_key = format!("{prefix}connections:room:{}", moved_room.as_str());
+        let moved_room_key = format!("{prefix}connections:room:{moved_room}");
         let old_room_count: i64 = verify_conn.get(&initial_room_key).await.unwrap_or(0);
         let new_room_count: i64 = verify_conn.get(&moved_room_key).await.unwrap_or(0);
         let updated_metadata: String = verify_conn.get(&initial_metadata_key).await.unwrap();
@@ -5472,8 +5352,8 @@ mod tests {
             "new room counter should be incremented after move"
         );
         assert_eq!(
-            updated_info.room_id.as_deref(),
-            Some(moved_room.as_str()),
+            updated_info.room_id,
+            Some(moved_room),
             "post-swap operations must use the replacement shared Redis connection"
         );
 
@@ -5493,14 +5373,11 @@ mod tests {
             .with_redis_runtime(runtime, &prefix);
 
         manager
-            .register(
-                "conn-runtime".to_string(),
-                UserId::from_string("user-runtime".to_string()),
-            )
+            .register("conn-runtime".to_string(), UserId::from(10_000_139))
             .await
             .expect("register should use injected redis runtime");
 
-        let key = format!("{prefix}connections:user:user-runtime");
+        let key = format!("{prefix}connections:user:10000139");
         let mut verify_conn = redis::aio::ConnectionManager::new(client).await.unwrap();
         let user_count: i64 = verify_conn.get(&key).await.unwrap_or(0);
         assert_eq!(user_count, 1);
@@ -5528,8 +5405,8 @@ mod tests {
             .unwrap();
         let metadata = ConnectionInfoPersistent {
             connection_id: "conn-recover".to_string(),
-            user_id: "user-recover".to_string(),
-            room_id: Some("room-recover".to_string()),
+            user_id: UserId::from(20_000_301),
+            room_id: Some(RoomId::from(20_000_302)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5590,8 +5467,8 @@ mod tests {
         // Verify that ConnectionInfoPersistent can be serialized/deserialized
         let persistent = ConnectionInfoPersistent {
             connection_id: "conn1".to_string(),
-            user_id: "user1".to_string(),
-            room_id: Some("room1".to_string()),
+            user_id: UserId::from(20_000_401),
+            room_id: Some(RoomId::from(20_000_402)),
             connected_at_unix: 1000,
             last_activity_unix: 2000,
             message_count: 5,
@@ -5603,8 +5480,8 @@ mod tests {
         let deserialized: ConnectionInfoPersistent = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.connection_id, "conn1");
-        assert_eq!(deserialized.user_id, "user1");
-        assert_eq!(deserialized.room_id, Some("room1".to_string()));
+        assert_eq!(deserialized.user_id, UserId::from(20_000_401));
+        assert_eq!(deserialized.room_id, Some(RoomId::from(20_000_402)));
         assert_eq!(deserialized.message_count, 5);
         assert!(deserialized.rtc_joined);
     }
@@ -5630,7 +5507,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId("test_room".to_string());
+        let rid = RoomId::from(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_ok());
@@ -5648,7 +5525,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId("test_room".to_string());
+        let rid = RoomId::from(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_err());
@@ -5667,7 +5544,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let uid = UserId("test_user".to_string());
+        let uid = UserId::from(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert!(mgr.reserve_user_slot(&uid).is_ok());
@@ -5684,7 +5561,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let uid = UserId("test_user".to_string());
+        let uid = UserId::from(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert!(mgr.reserve_user_slot(&uid).is_err());
@@ -5703,8 +5580,8 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid1 = RoomId("room_a".to_string());
-        let rid2 = RoomId("room_b".to_string());
+        let rid1 = RoomId::from(1);
+        let rid2 = RoomId::from(2);
 
         assert!(mgr.reserve_room_slot(&rid1).is_ok());
         assert!(
@@ -5722,7 +5599,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId("test_room".to_string());
+        let rid = RoomId::from(1);
 
         // Release without prior reservation should not panic
         mgr.release_room_reservation(&rid);
@@ -5740,7 +5617,7 @@ mod tests {
     #[tokio::test]
     async fn test_release_room_reservation_removes_zero_counter_entry() {
         let mgr = ConnectionManager::new(ConnectionLimits::default());
-        let rid = RoomId("cleanup_room".to_string());
+        let rid = RoomId::from(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert_eq!(mgr.pending_room_reservations.len(), 1);
@@ -5757,7 +5634,7 @@ mod tests {
     #[tokio::test]
     async fn test_release_user_reservation_removes_zero_counter_entry() {
         let mgr = ConnectionManager::new(ConnectionLimits::default());
-        let uid = UserId("cleanup_user".to_string());
+        let uid = UserId::from(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert_eq!(mgr.pending_user_reservations.len(), 1);
@@ -5779,7 +5656,7 @@ mod tests {
         // the disconnect retry task is NOT started until start() is called.
         let manager = ConnectionManager::new(ConnectionLimits::default());
         // Verify manager is functional for basic operations without start()
-        let user_id = UserId::from_string("user1".to_string());
+        let user_id = UserId::from(10_000_010);
         assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
         assert_eq!(manager.connection_count(), 1);
     }

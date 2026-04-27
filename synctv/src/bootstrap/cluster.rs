@@ -13,7 +13,7 @@ use synctv_cluster::discovery::{
     StaticPeerConfig,
 };
 use synctv_cluster::sync::{ClusterManager, ConnectionRuntime};
-use synctv_core::Config;
+use synctv_core::{config::ClusterDiscoveryMode, Config};
 
 #[async_trait]
 pub trait ClusterNodeActivator: Send + Sync {
@@ -227,55 +227,70 @@ impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
     }
 }
 
+#[cfg(feature = "k8s")]
+fn build_cluster_peer_discovery_driver(
+    config: &Config,
+    shutdown_token: CancellationToken,
+) -> Box<dyn ClusterPeerDiscoveryDriver> {
+    match config.cluster.discovery_mode {
+        ClusterDiscoveryMode::K8sDns => Box::new(K8sClusterPeerDiscoveryDriver {
+            api_port: config.server.port,
+            cluster_secret: config.server.cluster_secret.clone(),
+            shutdown_token,
+        }),
+        ClusterDiscoveryMode::Static => {
+            build_static_cluster_peer_discovery_driver(config, shutdown_token)
+        }
+        ClusterDiscoveryMode::Redis => Box::new(RedisClusterPeerDiscoveryDriver),
+    }
+}
+
+#[cfg(not(feature = "k8s"))]
 fn build_cluster_peer_discovery_driver(
     config: &Config,
     shutdown_token: CancellationToken,
 ) -> Result<Box<dyn ClusterPeerDiscoveryDriver>, anyhow::Error> {
-    match config.cluster.discovery_mode.as_str() {
-        #[cfg(feature = "k8s")]
-        "k8s_dns" => Ok(Box::new(K8sClusterPeerDiscoveryDriver {
-            api_port: config.server.port,
-            cluster_secret: config.server.cluster_secret.clone(),
-            shutdown_token,
-        })),
-        #[cfg(not(feature = "k8s"))]
-        "k8s_dns" => Err(anyhow::anyhow!(
+    match config.cluster.discovery_mode {
+        ClusterDiscoveryMode::K8sDns => Err(anyhow::anyhow!(
             "K8s DNS discovery mode requires the 'k8s' feature. \
              Rebuild with: cargo build --features k8s"
         )),
-        "static" => {
-            info!("Using static peer discovery mode");
-            let peers: Vec<StaticPeerConfig> = config
-                .cluster
-                .peers
-                .iter()
-                .map(|addr| StaticPeerConfig {
-                    api_address: addr.clone(),
-                })
-                .collect();
-
-            if peers.is_empty() {
-                warn!(
-                    "Static discovery mode selected but no peers configured (cluster.peers is empty)"
-                );
-            }
-
-            Ok(Box::new(StaticClusterPeerDiscoveryDriver {
-                config: StaticDiscoveryConfig {
-                    peers,
-                    probe_interval_secs: 10,
-                    connect_timeout: Duration::from_secs(3),
-                    cluster_secret: config.server.cluster_secret.clone(),
-                    default_api_port: config.server.port,
-                },
-                cancel_token: shutdown_token,
-            }))
-        }
-        "redis" => Ok(Box::new(RedisClusterPeerDiscoveryDriver)),
-        other => Err(anyhow::anyhow!(
-            "cluster.discovery_mode is validated before startup: {other}"
+        ClusterDiscoveryMode::Static => Ok(build_static_cluster_peer_discovery_driver(
+            config,
+            shutdown_token,
         )),
+        ClusterDiscoveryMode::Redis => Ok(Box::new(RedisClusterPeerDiscoveryDriver)),
     }
+}
+
+fn build_static_cluster_peer_discovery_driver(
+    config: &Config,
+    shutdown_token: CancellationToken,
+) -> Box<dyn ClusterPeerDiscoveryDriver> {
+    info!("Using static peer discovery mode");
+    let peers: Vec<StaticPeerConfig> = config
+        .cluster
+        .peers
+        .iter()
+        .map(|addr| StaticPeerConfig {
+            api_address: addr.clone(),
+        })
+        .collect();
+
+    if peers.is_empty() {
+        warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
+    }
+
+    Box::new(StaticClusterPeerDiscoveryDriver {
+        config: StaticDiscoveryConfig {
+            peers,
+            probe_interval_secs: 10,
+            connect_timeout: Duration::from_secs(3),
+            cluster_secret: config.server.cluster_secret.clone(),
+            default_api_port: config.server.port,
+        },
+        cancel_token: shutdown_token,
+    })
 }
 
 pub fn init_cluster_components(
@@ -371,6 +386,9 @@ pub async fn init_cluster_discovery(
 ) -> Result<ClusterDiscoveryBundle, anyhow::Error> {
     let components =
         init_cluster_components(node_directory_factory, cm, config, connection_manager)?;
+    #[cfg(feature = "k8s")]
+    let discovery_driver = build_cluster_peer_discovery_driver(config, shutdown_token);
+    #[cfg(not(feature = "k8s"))]
     let discovery_driver = build_cluster_peer_discovery_driver(config, shutdown_token)?;
     let background_tasks = discovery_driver.start(components.registry.clone()).await?;
 
@@ -390,7 +408,7 @@ mod tests {
         build_room_message_runtime, ClusterConfig, ClusterManager, ConnectionLimits,
         ConnectionManager,
     };
-    use synctv_core::Config;
+    use synctv_core::{config::ClusterDiscoveryMode, Config};
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 
@@ -400,7 +418,7 @@ mod tests {
         config.server.port = 8080;
         config.server.cluster_secret.clear();
         config.redis.url = "redis://127.0.0.1:6379".to_string();
-        config.cluster.discovery_mode = "k8s_dns".to_string();
+        config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
         config
     }
 

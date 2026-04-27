@@ -252,9 +252,9 @@ impl PlaylistService {
         self.ensure_provider_credential_repo(&trimmed_provider)?;
 
         let mut ctx = ProviderContext::new("synctv")
-            .with_user_id(user_id.as_str())
-            .with_room_id(room_id.as_str())
-            .with_credential_owner_id(user_id.as_str());
+            .with_user_id(*user_id)
+            .with_room_id(*room_id)
+            .with_credential_owner_id(*user_id);
         if let Some(provider_instance_name) = trimmed_instance.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
@@ -384,8 +384,8 @@ impl PlaylistService {
         // Create playlist
         let playlist = Playlist {
             id: crate::models::PlaylistId::new(),
-            room_id: room_id.clone(),
-            creator_id: Some(user_id.clone()),
+            room_id,
+            creator_id: Some(user_id),
             name: request.name,
             parent_id: request.parent_id,
             position,
@@ -404,8 +404,8 @@ impl PlaylistService {
         tx.commit().await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            playlist_id = %created_playlist.id.as_str(),
+            room_id = %room_id,
+            playlist_id = %created_playlist.id,
             name = %created_playlist.name,
             is_dynamic = created_playlist.is_dynamic(),
             "Playlist created"
@@ -573,8 +573,8 @@ impl PlaylistService {
             {
                 Ok(updated_playlist) => {
                     tracing::info!(
-                        room_id = %room_id.as_str(),
-                        playlist_id = %request.playlist_id.as_str(),
+                        room_id = %room_id,
+                        playlist_id = %request.playlist_id,
                         "Playlist updated"
                     );
                     let actor_username = self.resolve_actor_username(&user_id).await;
@@ -595,8 +595,8 @@ impl PlaylistService {
                         let jitter = rand::random_range(0..OPTIMISTIC_LOCK_BACKOFF_BASE_MS);
                         let delay = backoff + jitter;
                         tracing::debug!(
-                            room_id = %room_id.as_str(),
-                            playlist_id = %request.playlist_id.as_str(),
+                            room_id = %room_id,
+                            playlist_id = %request.playlist_id,
                             attempt = attempt + 1,
                             delay_ms = delay,
                             "Playlist version conflict, retrying with backoff"
@@ -740,8 +740,8 @@ impl PlaylistService {
         self.playlist_repo.delete(&playlist_id).await?;
 
         tracing::info!(
-            room_id = %room_id.as_str(),
-            playlist_id = %playlist_id.as_str(),
+            room_id = %room_id,
+            playlist_id = %playlist_id,
             "Playlist deleted"
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
@@ -815,6 +815,7 @@ mod tests {
         ) -> std::result::Result<(), ProviderError> {
             let user_id = ctx
                 .user_id
+                .as_ref()
                 .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
             let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
                 ProviderError::Internal("missing credential_owner_id".to_string())
@@ -866,7 +867,7 @@ mod tests {
     fn test_create_playlist_request_basic() {
         let room_id = RoomId::new();
         let request = CreatePlaylistRequest {
-            room_id: room_id.clone(),
+            room_id,
             name: "My Playlist".to_string(),
             parent_id: None,
             source_provider: None,
@@ -902,7 +903,7 @@ mod tests {
         let request = CreatePlaylistRequest {
             room_id: RoomId::new(),
             name: "Subfolder".to_string(),
-            parent_id: Some(parent_id.clone()),
+            parent_id: Some(parent_id),
             source_provider: None,
             source_config: None,
             provider_instance_name: None,

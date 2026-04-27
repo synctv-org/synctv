@@ -67,8 +67,8 @@ pub struct DeregisterNodeResponse {
 /// User connection tracking
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetUserOnlineStatusRequest {
-    #[prost(string, repeated, tag = "1")]
-    pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(int64, repeated, tag = "1")]
+    pub user_ids: ::prost::alloc::vec::Vec<i64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetUserOnlineStatusResponse {
@@ -77,21 +77,21 @@ pub struct GetUserOnlineStatusResponse {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserOnlineStatus {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "1")]
+    pub user_id: i64,
     #[prost(bool, tag = "2")]
     pub is_online: bool,
     /// Rooms user is currently in
-    #[prost(string, repeated, tag = "3")]
-    pub room_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(int64, repeated, tag = "3")]
+    pub room_ids: ::prost::alloc::vec::Vec<i64>,
     /// Node where user is connected
     #[prost(string, tag = "4")]
     pub node_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoomConnectionsRequest {
-    #[prost(string, tag = "1")]
-    pub room_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "1")]
+    pub room_id: i64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetRoomConnectionsResponse {
@@ -100,8 +100,8 @@ pub struct GetRoomConnectionsResponse {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RoomConnection {
-    #[prost(string, tag = "1")]
-    pub user_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "1")]
+    pub user_id: i64,
     #[prost(string, tag = "2")]
     pub node_id: ::prost::alloc::string::String,
     #[prost(int64, tag = "3")]

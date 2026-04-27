@@ -2,13 +2,17 @@
 //!
 //! Run with: cargo bench --bench user_cache
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use synctv_core::cache::user_cache::{UserCache, CachedUser};
-use synctv_core::models::{UserId, UserRole, UserStatus};
-use std::time::Duration;
 use chrono::Utc;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::time::Duration;
+use synctv_core::cache::user_cache::{CachedUser, UserCache};
+use synctv_core::models::{UserId, UserRole, UserStatus};
 
-fn create_test_user(id: &str, username: &str) -> CachedUser {
+fn bench_user_id(offset: i64) -> UserId {
+    UserId::from(1_000_000 + offset)
+}
+
+fn create_test_user(id: UserId, username: &str) -> CachedUser {
     CachedUser::new(
         id.to_string(),
         username.to_string(),
@@ -25,13 +29,13 @@ fn bench_l1_cache_hit(c: &mut Criterion) {
 
     let cache = rt.block_on(async {
         let cache = UserCache::new(None, 10000, 5, 0, "test:".to_string()).unwrap();
-        let user_id = UserId::from_string("user1".to_string());
-        let user = create_test_user("user1", "alice");
+        let user_id = bench_user_id(1);
+        let user = create_test_user(user_id, "alice");
         cache.set(&user_id, user).await.unwrap();
         cache
     });
 
-    let user_id = UserId::from_string("user1".to_string());
+    let user_id = bench_user_id(1);
 
     c.bench_function("l1_cache_hit", |b| {
         b.to_async(&rt).iter(|| {
@@ -53,7 +57,7 @@ fn bench_l1_cache_miss(c: &mut Criterion) {
         UserCache::new(None, 10000, 5, 0, "test:".to_string()).unwrap()
     });
 
-    let user_id = UserId::from_string("nonexistent".to_string());
+    let user_id = bench_user_id(999_999);
 
     c.bench_function("l1_cache_miss", |b| {
         b.to_async(&rt).iter(|| {
@@ -74,8 +78,8 @@ fn bench_batch_lookup(c: &mut Criterion) {
     let cache = rt.block_on(async {
         let cache = UserCache::new(None, 10000, 5, 0, "test:".to_string()).unwrap();
         for i in 0..200 {
-            let user_id = UserId::from_string(format!("user{}", i));
-            let user = create_test_user(&format!("user{}", i), &format!("user{}", i));
+            let user_id = bench_user_id(i);
+            let user = create_test_user(user_id, &format!("user{}", i));
             cache.set(&user_id, user).await.unwrap();
         }
         cache
@@ -86,7 +90,7 @@ fn bench_batch_lookup(c: &mut Criterion) {
 
     for batch_size in [10, 50, 100, 200].iter() {
         let user_ids: Vec<UserId> = (0..*batch_size)
-            .map(|i| UserId::from_string(format!("user{}", i)))
+            .map(|i| bench_user_id(i64::from(i)))
             .collect();
 
         group.bench_with_input(BenchmarkId::from_parameter(batch_size), batch_size, |b, &_batch_size| {
@@ -115,15 +119,11 @@ fn bench_cache_set(c: &mut Criterion) {
     let mut group = c.benchmark_group("cache_set");
     group.measurement_time(Duration::from_secs(5));
 
-    for (i, (user_id, username)) in [
-        ("user1", "alice"),
-        ("user2", "bob"),
-        ("user3", "charlie"),
-    ].iter().enumerate()
+    for (i, username) in ["alice", "bob", "charlie"].iter().enumerate()
     {
         group.bench_with_input(BenchmarkId::from_parameter(i), &i, |b, &_i| {
-            let user_id = UserId::from_string(user_id.to_string());
-            let user = create_test_user(user_id.as_str(), username);
+            let user_id = bench_user_id(i64::try_from(i).expect("small benchmark index"));
+            let user = create_test_user(user_id, username);
 
             b.to_async(&rt).iter(|| {
                 let uid = user_id.clone();
@@ -145,24 +145,24 @@ fn bench_cache_invalidate(c: &mut Criterion) {
 
     let cache = rt.block_on(async {
         let cache = UserCache::new(None, 10000, 5, 0, "test:".to_string()).unwrap();
-        let user_id = UserId::from_string("user1".to_string());
-        let user = create_test_user("user1", "alice");
+        let user_id = bench_user_id(1);
+        let user = create_test_user(user_id, "alice");
         cache.set(&user_id, user).await.unwrap();
         cache
     });
 
-    let user_id = UserId::from_string("user1".to_string());
+    let user_id = bench_user_id(1);
 
     c.bench_function("cache_invalidate", |b| {
         b.to_async(&rt).iter(|| {
             let uid = user_id.clone();
-            let c = cache.clone();
-            async move {
-                c.invalidate(&uid).await.unwrap();
-                // Re-populate for next iteration
-                let user = create_test_user("user1", "alice");
-                c.set(&uid, user).await.unwrap();
-            }
+                let c = cache.clone();
+                async move {
+                    c.invalidate(&uid).await.unwrap();
+                    // Re-populate for next iteration
+                    let user = create_test_user(uid, "alice");
+                    c.set(&uid, user).await.unwrap();
+                }
         })
     });
 }
@@ -174,8 +174,8 @@ fn bench_concurrent_access(c: &mut Criterion) {
     let cache = rt.block_on(async {
         let cache = UserCache::new(None, 10000, 5, 0, "test:".to_string()).unwrap();
         for i in 0..100 {
-            let user_id = UserId::from_string(format!("user{}", i));
-            let user = create_test_user(&format!("user{}", i), &format!("user{}", i));
+            let user_id = bench_user_id(i);
+            let user = create_test_user(user_id, &format!("user{}", i));
             cache.set(&user_id, user).await.unwrap();
         }
         cache
@@ -193,7 +193,7 @@ fn bench_concurrent_access(c: &mut Criterion) {
                     let mut tasks = Vec::new();
                     for i in 0..num_tasks {
                         let cache = cache.clone();
-                        let user_id = UserId::from_string(format!("user{}", i % 100));
+                        let user_id = bench_user_id(i64::from(i % 100));
                         tasks.push(tokio::spawn(async move {
                             let result = cache.get(&user_id).await.unwrap();
                             black_box(result);

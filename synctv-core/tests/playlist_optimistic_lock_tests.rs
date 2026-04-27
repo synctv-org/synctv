@@ -43,7 +43,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -63,10 +63,10 @@ fn make_playlist(
 ) -> Playlist {
     Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
-        parent_id: parent_id.cloned(),
+        parent_id: parent_id.copied(),
         position: f64::from(position),
         source_provider: None,
         source_config: None,
@@ -112,7 +112,7 @@ async fn test_optimistic_lock_version_mismatch() {
 
     // Simulate concurrent update by incrementing version in DB
     sqlx::query("UPDATE playlists SET version = version + 1 WHERE id = $1")
-        .bind(playlist.id.as_str())
+        .bind(playlist.id)
         .execute(&pool)
         .await
         .unwrap();

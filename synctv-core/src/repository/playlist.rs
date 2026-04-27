@@ -71,11 +71,11 @@ impl PlaylistRepository {
         query: &PlaylistListQuery,
     ) {
         builder.push(" FROM playlists p LEFT JOIN users u ON p.creator_id = u.id AND u.deleted_at IS NULL WHERE p.room_id = ");
-        builder.push_bind(room_id.as_str().to_owned());
+        builder.push_bind(room_id.as_i64());
         match parent_id {
             Some(parent_id) => {
                 builder.push(" AND p.parent_id = ");
-                builder.push_bind(parent_id.as_str().to_owned());
+                builder.push_bind(parent_id.as_i64());
             }
             None => {
                 builder.push(" AND p.parent_id IS NULL");
@@ -200,7 +200,7 @@ impl PlaylistRepository {
             WHERE id = $1
             ",
         )
-        .bind(id.as_str())
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -223,7 +223,7 @@ impl PlaylistRepository {
             return Ok(Vec::new());
         }
 
-        let id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+        let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let rows = sqlx::query(
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
@@ -254,7 +254,7 @@ impl PlaylistRepository {
             ORDER BY position ASC
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -270,7 +270,7 @@ impl PlaylistRepository {
             SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND parent_id IS NULL
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -295,7 +295,7 @@ impl PlaylistRepository {
             LIMIT $2 OFFSET $3
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -318,7 +318,7 @@ impl PlaylistRepository {
             ORDER BY position ASC
             ",
         )
-        .bind(parent_id.as_str())
+        .bind(parent_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -334,7 +334,7 @@ impl PlaylistRepository {
             SELECT COUNT(*) FROM playlists WHERE parent_id = $1
             ",
         )
-        .bind(parent_id.as_str())
+        .bind(parent_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -359,7 +359,7 @@ impl PlaylistRepository {
             LIMIT $2 OFFSET $3
             ",
         )
-        .bind(parent_id.as_str())
+        .bind(parent_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -382,7 +382,7 @@ impl PlaylistRepository {
             ORDER BY parent_id NULLS FIRST, position ASC
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -398,7 +398,7 @@ impl PlaylistRepository {
             SELECT COUNT(*) FROM playlists WHERE room_id = $1
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -423,7 +423,7 @@ impl PlaylistRepository {
             LIMIT $2 OFFSET $3
             ",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -438,7 +438,7 @@ impl PlaylistRepository {
     const MIN_ORDER_GAP: f64 = 1e-9;
 
     fn scope_lock_key(room_id: &RoomId, parent_id: Option<&PlaylistId>) -> i64 {
-        super::stable_scope_lock_key(room_id.as_str(), parent_id.map(PlaylistId::as_str))
+        super::stable_scope_lock_key(room_id.as_i64(), parent_id.map(PlaylistId::as_i64))
     }
 
     async fn lock_scope_with_tx(
@@ -478,11 +478,11 @@ impl PlaylistRepository {
             LIMIT 1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(parent_id.map(PlaylistId::as_str))
-        .bind(exclude_playlist_id.as_str())
+        .bind(room_id)
+        .bind(parent_id.map(PlaylistId::as_i64))
+        .bind(exclude_playlist_id)
         .bind(anchor_position)
-        .bind(anchor_playlist_id.as_str())
+        .bind(anchor_playlist_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -512,11 +512,11 @@ impl PlaylistRepository {
             LIMIT 1
             ",
         )
-        .bind(room_id.as_str())
-        .bind(parent_id.map(PlaylistId::as_str))
-        .bind(exclude_playlist_id.as_str())
+        .bind(room_id)
+        .bind(parent_id.map(PlaylistId::as_i64))
+        .bind(exclude_playlist_id)
         .bind(anchor_position)
-        .bind(anchor_playlist_id.as_str())
+        .bind(anchor_playlist_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -538,14 +538,14 @@ impl PlaylistRepository {
             FOR UPDATE
             ",
         )
-        .bind(room_id.as_str())
-        .bind(parent_id.map(PlaylistId::as_str))
+        .bind(room_id)
+        .bind(parent_id.map(PlaylistId::as_i64))
         .fetch_all(&mut **tx)
         .await?;
 
         let mut position = Self::ORDER_STEP;
         for row in rows {
-            let playlist_id: String = row.try_get("id")?;
+            let playlist_id: PlaylistId = row.try_get("id")?;
             sqlx::query("UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1")
                 .bind(playlist_id)
                 .bind(position)
@@ -584,31 +584,22 @@ impl PlaylistRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let source_provider_str = playlist.source_provider.as_deref();
-        let parent_id_str = playlist
-            .parent_id
-            .as_ref()
-            .map(super::super::models::id::PlaylistId::as_str);
+        let parent_id = playlist.parent_id;
 
         let row = sqlx::query(
             r"
-            INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
+            INSERT INTO playlists (room_id, creator_id, name, parent_id, position,
                                    source_provider, source_config, provider_instance_name)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                       created_at, updated_at, version
             ",
         )
-        .bind(playlist.id.as_str())
-        .bind(playlist.room_id.as_str())
-        .bind(
-            playlist
-                .creator_id
-                .as_ref()
-                .map(super::super::models::id::UserId::as_str),
-        )
+        .bind(playlist.room_id)
+        .bind(playlist.creator_id)
         .bind(&playlist.name)
-        .bind(parent_id_str)
+        .bind(parent_id)
         .bind(playlist.position)
         .bind(source_provider_str)
         .bind(&playlist.source_config)
@@ -638,8 +629,8 @@ impl PlaylistRepository {
               AND parent_id IS NOT DISTINCT FROM $2
             ",
         )
-        .bind(room_id.as_str())
-        .bind(parent_id.map(PlaylistId::as_str))
+        .bind(room_id)
+        .bind(parent_id.map(PlaylistId::as_i64))
         .fetch_one(&mut **tx)
         .await?;
 
@@ -672,7 +663,7 @@ impl PlaylistRepository {
                       created_at, updated_at, version
             ",
         )
-        .bind(playlist.id.as_str())
+        .bind(playlist.id)
         .bind(&playlist.name)
         .bind(playlist.position)
         .bind(source_provider_str)
@@ -721,7 +712,7 @@ impl PlaylistRepository {
             FOR UPDATE
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_optional(&mut **tx)
         .await?
         .map(|row| Playlist::from_row(&row))
@@ -738,7 +729,7 @@ impl PlaylistRepository {
             FOR UPDATE
             ",
         )
-        .bind(anchor_id.as_str())
+        .bind(anchor_id)
         .fetch_optional(&mut **tx)
         .await?
         .map(|row| Playlist::from_row(&row))
@@ -758,7 +749,7 @@ impl PlaylistRepository {
         for _ in 0..2 {
             let anchor_position: f64 =
                 sqlx::query_scalar("SELECT position FROM playlists WHERE id = $1 FOR UPDATE")
-                    .bind(anchor.id.as_str())
+                    .bind(anchor.id)
                     .fetch_one(&mut **tx)
                     .await?;
 
@@ -805,7 +796,7 @@ impl PlaylistRepository {
                               created_at, updated_at, version
                     ",
                 )
-                .bind(moved.id.as_str())
+                .bind(moved.id)
                 .bind(position)
                 .fetch_one(&mut **tx)
                 .await?;
@@ -830,9 +821,9 @@ impl PlaylistRepository {
     pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
-        let room_id: Option<String> =
+        let room_id: Option<RoomId> =
             sqlx::query_scalar("SELECT room_id FROM playlists WHERE id = $1")
-                .bind(id.as_str())
+                .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some(room_id) = room_id else {
@@ -855,31 +846,33 @@ impl PlaylistRepository {
             GROUP BY id
             ORDER BY MAX(depth) DESC, id",
         )
-        .bind(id.as_str())
-        .bind(&room_id)
+        .bind(id)
+        .bind(room_id)
         .fetch_all(&mut *tx)
         .await?;
 
-        let mut ids_by_depth = BTreeMap::<i32, Vec<String>>::new();
+        let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = row.try_get::<String, _>("id")?;
+            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
             let depth = row.try_get::<i32, _>("depth")?;
-            playlist_ids.push(playlist_id.clone());
+            playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
 
         if !playlist_ids.is_empty() {
+            let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
             sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)")
-                .bind(&room_id)
-                .bind(&playlist_ids)
+                .bind(room_id)
+                .bind(&playlist_ids_raw)
                 .execute(&mut *tx)
                 .await?;
         }
 
         for (_depth, ids) in ids_by_depth.into_iter().rev() {
+            let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
             sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
-                .bind(&ids)
+                .bind(&ids_raw)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -901,7 +894,7 @@ impl PlaylistRepository {
             return Ok(0);
         }
 
-        let id_strs: Vec<&str> = playlist_ids.iter().map(PlaylistId::as_str).collect();
+        let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let result = sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
             .bind(&id_strs)
             .execute(executor)
@@ -936,7 +929,7 @@ impl PlaylistRepository {
             ORDER BY depth DESC
             ",
         )
-        .bind(playlist_id.as_str())
+        .bind(playlist_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -970,20 +963,19 @@ mod tests {
 
     #[test]
     fn test_advisory_lock_key_deterministic() {
-        let room_id = RoomId::from_string("room12345678".to_string());
-        let parent_id = PlaylistId::from_string("parent123456".to_string());
+        let room_id = RoomId::from(80_001);
+        let parent_id = PlaylistId::from(80_002);
         let key1 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
         let key2 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
-        assert_eq!(key1, 3_505_116_572_805_754_167);
         assert_eq!(key1, key2, "Lock key should be deterministic");
     }
 
     #[test]
     fn test_advisory_lock_key_different() {
-        let room1 = RoomId::from_string("room11111111".to_string());
-        let room2 = RoomId::from_string("room22222222".to_string());
-        let parent1 = PlaylistId::from_string("parent111111".to_string());
-        let parent2 = PlaylistId::from_string("parent222222".to_string());
+        let room1 = RoomId::from(80_003);
+        let room2 = RoomId::from(80_004);
+        let parent1 = PlaylistId::from(80_005);
+        let parent2 = PlaylistId::from(80_006);
         let key_room1_parent1 = PlaylistRepository::scope_lock_key(&room1, Some(&parent1));
         let key_room1_parent2 = PlaylistRepository::scope_lock_key(&room1, Some(&parent2));
         let key_room2_parent1 = PlaylistRepository::scope_lock_key(&room2, Some(&parent1));
@@ -996,17 +988,11 @@ mod tests {
 
     #[test]
     fn test_advisory_lock_key_range() {
-        let test_ids = [
-            "000000000000",
-            "ZZZZZZZZZZZZ",
-            "aaaaaaaaaaaa",
-            "123456789012",
-            "------------",
-        ];
+        let test_ids = [1, 42, 80_007, i64::from(i32::MAX), i64::MAX / 2];
 
         for id in test_ids {
-            let room_id = RoomId::from_string(id.to_string());
-            let parent_id = PlaylistId::from_string(id.to_string());
+            let room_id = RoomId::from(id);
+            let parent_id = PlaylistId::from(id);
             let key = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
             assert!(key >= 0, "Lock key should be non-negative for id: {id}");
         }
@@ -1043,7 +1029,7 @@ mod tests {
             provider_instance_name: Some("   ".to_string()),
             ..PlaylistListQuery::default()
         };
-        let room_id = RoomId::from_string("room12345678".to_string());
+        let room_id = RoomId::from(80_008);
 
         PlaylistRepository::push_playlist_scope_filters(&mut builder, &room_id, None, &query);
 
@@ -1072,13 +1058,13 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Playlist Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create top-level playlist
         let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
+            .with_room_id(room.id)
             .with_name("Top Level")
             .build();
         let created = playlist_repo.create(&playlist).await.unwrap();
@@ -1114,12 +1100,12 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Top Level Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         let top_level = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
+            .with_room_id(room.id)
             .with_name("Top Level")
             .build();
         let created = playlist_repo.create(&top_level).await.unwrap();
@@ -1150,12 +1136,12 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Default Provider Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         let mut playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
+            .with_room_id(room.id)
             .with_name("Dynamic Default Provider")
             .build();
         playlist.source_provider = Some("alist".to_string());
@@ -1167,7 +1153,7 @@ mod tests {
 
         let stored: Option<String> =
             sqlx::query_scalar("SELECT provider_instance_name FROM playlists WHERE id = $1")
-                .bind(created.id.as_str())
+                .bind(created.id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -1197,14 +1183,14 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Default Provider Filter Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         let mut default_provider_playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
+            .with_room_id(room.id)
             .with_name("Default Provider Playlist")
-            .with_creator(owner.id.clone())
+            .with_creator(owner.id)
             .build();
         default_provider_playlist.source_provider = Some("alist".to_string());
         default_provider_playlist.source_config = Some(serde_json::json!({ "path": "/default" }));
@@ -1215,9 +1201,9 @@ mod tests {
             .unwrap();
 
         let mut explicit_provider_playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
+            .with_room_id(room.id)
             .with_name("Explicit Provider Playlist")
-            .with_creator(owner.id.clone())
+            .with_creator(owner.id)
             .build();
         explicit_provider_playlist.source_provider = Some("alist".to_string());
         explicit_provider_playlist.source_config = Some(serde_json::json!({ "path": "/explicit" }));
@@ -1269,23 +1255,23 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Room Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create top-level playlist
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create child playlists
-        let child1 = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child1 = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Child 1")
             .build();
         let created_child1 = playlist_repo.create(&child1).await.unwrap();
 
-        let child2 = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child2 = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Child 2")
             .build();
         let created_child2 = playlist_repo.create(&child2).await.unwrap();
@@ -1299,7 +1285,7 @@ mod tests {
         assert_eq!(playlists[0].id, created_root.id);
 
         // Children should be sorted by position
-        let child_ids: Vec<_> = playlists[1..].iter().map(|p| p.id.clone()).collect();
+        let child_ids: Vec<_> = playlists[1..].iter().map(|p| p.id).collect();
         assert!(child_ids.contains(&created_child1.id));
         assert!(child_ids.contains(&created_child2.id));
     }
@@ -1324,16 +1310,16 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Update Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Original Name")
             .build();
         let created = playlist_repo.create(&child).await.unwrap();
@@ -1372,16 +1358,16 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Version Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Test Playlist")
             .build();
         let created = playlist_repo.create(&child).await.unwrap();
@@ -1429,16 +1415,16 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Delete Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("To Delete")
             .build();
         let created = playlist_repo.create(&child).await.unwrap();
@@ -1476,22 +1462,22 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Cascade Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root, child, grandchild
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Child")
             .build();
         let created_child = playlist_repo.create(&child).await.unwrap();
 
-        let grandchild = PlaylistFixture::new_child(created_child.id.clone())
-            .with_room_id(room.id.clone())
+        let grandchild = PlaylistFixture::new_child(created_child.id)
+            .with_room_id(room.id)
             .with_name("Grandchild")
             .build();
         let created_grandchild = playlist_repo.create(&grandchild).await.unwrap();
@@ -1528,12 +1514,12 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Position Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let mut tx = pool.begin().await.unwrap();
@@ -1545,8 +1531,8 @@ mod tests {
 
         // Create children with explicit positions
         for i in 0..3 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .with_position((i + 1) * 1024)
                 .build();
@@ -1585,18 +1571,18 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Children Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 3 children
         for i in 0..3 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
@@ -1633,18 +1619,18 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Paginated Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 15 children
         for i in 0..15 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
@@ -1688,12 +1674,12 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Count Children Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Initially 0 children
@@ -1705,8 +1691,8 @@ mod tests {
 
         // Create 5 children
         for i in 0..5 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .build();
             playlist_repo.create(&child).await.unwrap();
@@ -1737,12 +1723,12 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Count Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Initially 1 (just root)
@@ -1751,8 +1737,8 @@ mod tests {
 
         // Create children
         for i in 0..3 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .build();
             playlist_repo.create(&child).await.unwrap();
@@ -1782,22 +1768,22 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Path Playlist Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root -> child -> grandchild
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Child")
             .build();
         let created_child = playlist_repo.create(&child).await.unwrap();
 
-        let grandchild = PlaylistFixture::new_child(created_child.id.clone())
-            .with_room_id(room.id.clone())
+        let grandchild = PlaylistFixture::new_child(created_child.id)
+            .with_room_id(room.id)
             .with_name("Grandchild")
             .build();
         let created_grandchild = playlist_repo.create(&grandchild).await.unwrap();
@@ -1835,18 +1821,18 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Room Paginated Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 15 children
         for i in 0..15 {
-            let child = PlaylistFixture::new_child(created_root.id.clone())
-                .with_room_id(room.id.clone())
+            let child = PlaylistFixture::new_child(created_root.id)
+                .with_room_id(room.id)
                 .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
@@ -1890,16 +1876,16 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Executor Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
-        let child_explicit = PlaylistFixture::new_child(created_root.id.clone())
-            .with_room_id(room.id.clone())
+        let child_explicit = PlaylistFixture::new_child(created_root.id)
+            .with_room_id(room.id)
             .with_name("Explicit Child")
             .with_position(2048)
             .build();

@@ -22,7 +22,7 @@ async fn test_speed_change_preserves_position() {
         .create_room(
             "Speed Position Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -31,16 +31,16 @@ async fn test_speed_change_preserves_position() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 100.0)
+        .seek(room.id, owner.id, 100.0)
         .await
         .unwrap();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
     let state = playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 2.0)
+        .change_speed(room.id, owner.id, 2.0)
         .await
         .unwrap();
 
@@ -64,7 +64,7 @@ async fn test_speed_change_while_paused() {
         .create_room(
             "Speed Paused Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -73,7 +73,7 @@ async fn test_speed_change_while_paused() {
 
     let state = room_service
         .playback_service()
-        .change_speed(room.id.clone(), owner.id.clone(), 1.5)
+        .change_speed(room.id, owner.id, 1.5)
         .await
         .unwrap();
 
@@ -94,7 +94,7 @@ async fn test_reset_returns_to_initial_state() {
         .create_room(
             "Reset Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -103,22 +103,19 @@ async fn test_reset_returns_to_initial_state() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .seek(room.id.clone(), owner.id.clone(), 200.0)
+        .seek(room.id, owner.id, 200.0)
         .await
         .unwrap();
     playback_service
-        .change_speed(room.id.clone(), owner.id.clone(), 2.0)
+        .change_speed(room.id, owner.id, 2.0)
         .await
         .unwrap();
     playback_service
-        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .set_playing(room.id, owner.id, true)
         .await
         .unwrap();
 
-    let state = playback_service
-        .reset(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    let state = playback_service.reset(room.id, owner.id).await.unwrap();
 
     assert!(!state.is_playing);
     assert!((state.current_time - 0.0).abs() < f64::EPSILON);

@@ -216,9 +216,9 @@ mod tests {
         manager.start_invalidation_listener(&service);
 
         // Insert a user into L1 cache
-        let user_id = crate::models::UserId::from_string("u1".to_string());
+        let user_id = crate::models::UserId::from(94_001);
         let cached_user = crate::cache::user_cache::CachedUser::new(
-            "u1".to_string(),
+            user_id,
             "alice".to_string(),
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
@@ -231,7 +231,7 @@ mod tests {
         // Broadcast invalidation (all nodes including local)
         service
             .broadcast_all(InvalidationMessage::User {
-                user_id: "u1".to_string(),
+                user_id: "94001".to_string(),
             })
             .await
             .unwrap();
@@ -255,7 +255,7 @@ mod tests {
         manager.start_invalidation_listener(&service);
 
         // Insert a room into L1 cache
-        let room_id = crate::models::RoomId("r1".to_string());
+        let room_id = crate::models::RoomId::from(1);
         let cached_room = crate::cache::room_cache::CachedRoom::new(
             "r1".to_string(),
             "Test Room".to_string(),
@@ -269,7 +269,7 @@ mod tests {
         // Broadcast invalidation (all nodes including local)
         service
             .broadcast_all(InvalidationMessage::Room {
-                room_id: "r1".to_string(),
+                room_id: room_id.to_string(),
             })
             .await
             .unwrap();
@@ -293,9 +293,9 @@ mod tests {
         manager.start_invalidation_listener(&service);
 
         // Insert entries
-        let user_id = crate::models::UserId::from_string("u1".to_string());
+        let user_id = crate::models::UserId::from(1);
         let cached_user = crate::cache::user_cache::CachedUser::new(
-            "u1".to_string(),
+            user_id,
             "alice".to_string(),
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
@@ -304,7 +304,7 @@ mod tests {
         );
         user_cache.set(&user_id, cached_user).await.unwrap();
 
-        let room_id = crate::models::RoomId("r1".to_string());
+        let room_id = crate::models::RoomId::from(1);
         let cached_room = crate::cache::room_cache::CachedRoom::new(
             "r1".to_string(),
             "Test Room".to_string(),

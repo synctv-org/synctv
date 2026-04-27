@@ -17,6 +17,7 @@ pub struct ProviderPlaybackDeps<'a> {
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
     pub signing_key: Option<&'a ProxySigningKey>,
     pub store: Option<std::sync::Arc<dyn ProviderStore>>,
+    pub public_id_codec: Option<&'a crate::PublicIdCodec>,
     pub playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
     pub request_context: Option<&'a ExecutionControl>,
 }
@@ -30,15 +31,28 @@ fn build_provider_context<'a>(
     deps: ProviderPlaybackDeps<'a>,
 ) -> ProviderContext<'a> {
     let mut ctx = ProviderContext::new("synctv")
-        .with_user_id(user_id.as_str())
-        .with_room_id(room_id.as_str())
+        .with_user_id(*user_id)
+        .with_room_id(*room_id)
         .with_playback_client_profile(deps.playback_client_profile.cloned())
         .with_request_context(deps.request_context.cloned());
+    if let Some(public_id_codec) = deps.public_id_codec {
+        ctx = ctx
+            .with_public_user_id(
+                public_id_codec
+                    .encode_user_id(*user_id)
+                    .expect("positive user id must encode as public sqid"),
+            )
+            .with_public_room_id(
+                public_id_codec
+                    .encode_room_id(*room_id)
+                    .expect("positive room id must encode as public sqid"),
+            );
+    }
     if let Some(credential_owner_id) = credential_owner_id {
-        ctx = ctx.with_credential_owner_id(credential_owner_id.as_str());
+        ctx = ctx.with_credential_owner_id(*credential_owner_id);
     }
     if let Some(media_id) = media_id {
-        ctx = ctx.with_media_id(media_id.as_str());
+        ctx = ctx.with_media_id(*media_id);
     }
     if let Some(provider_instance_name) = provider_instance_name
         .map(str::trim)
@@ -150,16 +164,19 @@ pub async fn resolve_provider_playback_result(
 }
 
 impl ClientApiImpl {
-    pub async fn get_live_proxy_source_url(&self, room_id: &str, media_id: &str) -> Option<String> {
-        let media_id = MediaId::from_string(media_id.to_string());
+    pub async fn get_live_proxy_source_url(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Option<String> {
         let media = self
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_media(media_id)
             .await
             .ok()??;
 
-        if media.room_id.as_str() != room_id || media.source_provider != "live_proxy" {
+        if media.room_id != *room_id || media.source_provider != "live_proxy" {
             return None;
         }
 

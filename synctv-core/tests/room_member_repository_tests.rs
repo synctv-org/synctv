@@ -53,7 +53,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: "test room".to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -84,7 +84,7 @@ async fn test_add_with_options_full_flow() {
         .unwrap();
     let joiner = user_repo.create(&make_user("joiner_awo")).await.unwrap();
 
-    let member = make_member(room.id.clone(), joiner.id.clone(), RoomRole::Member);
+    let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
 
     let result = member_repo
@@ -112,7 +112,7 @@ async fn test_add_with_options_capacity_at_max_members() {
 
     // Add one member to fill the room (max_members=1)
     let user1 = user_repo.create(&make_user("user1_cap")).await.unwrap();
-    let m1 = make_member(room.id.clone(), user1.id.clone(), RoomRole::Member);
+    let m1 = make_member(room.id, user1.id, RoomRole::Member);
     let options_fill = AddMemberOptions::new().with_max_members(1);
     member_repo
         .add_with_options(&m1, &options_fill)
@@ -121,7 +121,7 @@ async fn test_add_with_options_capacity_at_max_members() {
 
     // Second member should be rejected
     let user2 = user_repo.create(&make_user("user2_cap")).await.unwrap();
-    let m2 = make_member(room.id.clone(), user2.id.clone(), RoomRole::Member);
+    let m2 = make_member(room.id, user2.id, RoomRole::Member);
     let options_reject = AddMemberOptions::new().with_max_members(1);
     let err = member_repo
         .add_with_options(&m2, &options_reject)
@@ -151,7 +151,7 @@ async fn test_add_with_options_left_members_do_not_consume_capacity() {
         .create(&make_user("user_left_capacity"))
         .await
         .unwrap();
-    let departed_member = make_member(room.id.clone(), left_user.id.clone(), RoomRole::Member);
+    let departed_member = make_member(room.id, left_user.id, RoomRole::Member);
     member_repo
         .add_with_options(&departed_member, &AddMemberOptions::new())
         .await
@@ -165,7 +165,7 @@ async fn test_add_with_options_left_members_do_not_consume_capacity() {
         .create(&make_user("user_active_capacity"))
         .await
         .unwrap();
-    let active_member = make_member(room.id.clone(), active_user.id.clone(), RoomRole::Member);
+    let active_member = make_member(room.id, active_user.id, RoomRole::Member);
 
     member_repo
         .add_with_options(&active_member, &AddMemberOptions::new().with_max_members(1))
@@ -200,7 +200,7 @@ async fn test_add_with_options_inactive_room_rejection() {
         .create(&make_user("joiner_inactive"))
         .await
         .unwrap();
-    let member = make_member(room.id.clone(), joiner.id.clone(), RoomRole::Member);
+    let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
 
     let err = member_repo
@@ -225,7 +225,7 @@ async fn test_add_with_options_duplicate_membership_check() {
         .unwrap();
     let joiner = user_repo.create(&make_user("joiner_dup")).await.unwrap();
 
-    let member = make_member(room.id.clone(), joiner.id.clone(), RoomRole::Member);
+    let member = make_member(room.id, joiner.id, RoomRole::Member);
     let options = AddMemberOptions::new();
 
     // First join succeeds
@@ -235,7 +235,7 @@ async fn test_add_with_options_duplicate_membership_check() {
         .unwrap();
 
     // Second join with duplicate check fails
-    let member2 = make_member(room.id.clone(), joiner.id.clone(), RoomRole::Member);
+    let member2 = make_member(room.id, joiner.id, RoomRole::Member);
     let err = member_repo
         .add_with_options(&member2, &options)
         .await
@@ -268,7 +268,7 @@ async fn test_add_with_options_max_members_zero_bypass() {
             .create(&make_user(&format!("user_zero_{i}")))
             .await
             .unwrap();
-        let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = make_member(room.id, user.id, RoomRole::Member);
         member_repo
             .add_with_options(&member, &options)
             .await
@@ -306,19 +306,11 @@ async fn test_ban_with_role_check_member_cannot_ban_admin() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin_user.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
         .unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            member_user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, member_user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -346,21 +338,13 @@ async fn test_ban_with_role_check_creator_can_ban_admin() {
 
     // Add creator as Creator role in room_members
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            creator.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, creator.id, RoomRole::Creator))
         .await
         .unwrap();
 
     let admin_user = user_repo.create(&make_user("admin_ban")).await.unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin_user.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -399,19 +383,11 @@ async fn test_remove_with_role_check_equal_rank_rejected() {
     let admin2 = user_repo.create(&make_user("admin2_eqrank")).await.unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin1.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin1.id, RoomRole::Admin))
         .await
         .unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin2.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin2.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -445,11 +421,7 @@ async fn test_remove_with_role_check_self_kick_fails() {
         .await
         .unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin_user.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -476,21 +448,13 @@ async fn test_remove_with_role_check_creator_kicks_admin() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            creator.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, creator.id, RoomRole::Creator))
         .await
         .unwrap();
 
     let admin_user = user_repo.create(&make_user("admin_kick")).await.unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin_user.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin_user.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -522,11 +486,7 @@ async fn test_grant_permission_atomic_bitwise_or() {
     let user = user_repo.create(&make_user("user_grant")).await.unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -561,11 +521,7 @@ async fn test_revoke_permission_atomic_bitwise_or() {
     let user = user_repo.create(&make_user("user_revoke")).await.unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -606,11 +562,7 @@ async fn test_grant_permission_atomic_left_member_returns_not_found() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -647,11 +599,7 @@ async fn test_revoke_permission_atomic_left_member_returns_not_found() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -688,11 +636,7 @@ async fn test_role_guarded_admin_permission_updates_fail_when_role_changed() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -736,11 +680,7 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
     let user = user_repo.create(&make_user("user_reset")).await.unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -756,8 +696,8 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
 
     // Also set admin permissions via raw SQL (since atomic ops only touch member-level)
     sqlx::query("UPDATE room_members SET admin_added_permissions = 42, admin_removed_permissions = 84 WHERE room_id = $1 AND user_id = $2")
-        .bind(room.id.as_str())
-        .bind(user.id.as_str())
+        .bind(room.id)
+        .bind(user.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -806,11 +746,7 @@ async fn test_count_by_rooms_batch_basic() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room1.id.clone(),
-                u.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room1.id, u.id, RoomRole::Member))
             .await
             .unwrap();
     }
@@ -822,11 +758,7 @@ async fn test_count_by_rooms_batch_basic() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room2.id.clone(),
-                u.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room2.id, u.id, RoomRole::Member))
             .await
             .unwrap();
     }
@@ -838,10 +770,10 @@ async fn test_count_by_rooms_batch_basic() {
         .await
         .unwrap();
 
-    assert_eq!(counts.get(room1.id.as_str()), Some(&2));
-    assert_eq!(counts.get(room2.id.as_str()), Some(&3));
+    assert_eq!(counts.get(&room1.id), Some(&2));
+    assert_eq!(counts.get(&room2.id), Some(&3));
     // Zero-member room absent from map
-    assert!(!counts.contains_key(room3.id.as_str()));
+    assert!(!counts.contains_key(&room3.id));
 }
 
 #[tokio::test]
@@ -876,7 +808,7 @@ async fn test_list_by_user_with_details_pagination() {
             .create(&make_room(&format!("Room Pag {i}"), &owner.id))
             .await
             .unwrap();
-        let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = make_member(room.id, user.id, RoomRole::Member);
         member_repo.add(&member).await.unwrap();
         // Small delay to ensure distinct joined_at timestamps for stable ordering
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -910,18 +842,9 @@ async fn test_list_by_user_with_details_pagination() {
     assert_eq!(rooms_p3.len(), 1);
 
     // Verify no overlapping room IDs between pages
-    let ids_p1: Vec<_> = rooms_p1
-        .iter()
-        .map(|(r, _, _, _)| r.id.as_str().to_string())
-        .collect();
-    let ids_p2: Vec<_> = rooms_p2
-        .iter()
-        .map(|(r, _, _, _)| r.id.as_str().to_string())
-        .collect();
-    let ids_p3: Vec<_> = rooms_p3
-        .iter()
-        .map(|(r, _, _, _)| r.id.as_str().to_string())
-        .collect();
+    let ids_p1: Vec<_> = rooms_p1.iter().map(|(r, _, _, _)| r.id).collect();
+    let ids_p2: Vec<_> = rooms_p2.iter().map(|(r, _, _, _)| r.id).collect();
+    let ids_p3: Vec<_> = rooms_p3.iter().map(|(r, _, _, _)| r.id).collect();
 
     for id in &ids_p1 {
         assert!(!ids_p2.contains(id));
@@ -977,11 +900,7 @@ async fn test_list_by_user_with_query_respects_filters_sort_and_pagination() {
 
     for room in [&alpha_room, &beta_room, &closed_room, &banned_room] {
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
     }
@@ -1050,29 +969,17 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            viewer.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, viewer.id, RoomRole::Member))
         .await
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            banned.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, banned.id, RoomRole::Member))
         .await
         .unwrap();
     member_repo
@@ -1082,7 +989,7 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
 
     let mut rejected_member = RoomMember {
         status: MemberStatus::Left,
-        ..make_member(room.id.clone(), rejected.id.clone(), RoomRole::Member)
+        ..make_member(room.id, rejected.id, RoomRole::Member)
     };
     rejected_member.left_at = Some(Utc::now());
     sqlx::query(
@@ -1093,8 +1000,8 @@ async fn test_list_by_user_with_query_member_count_excludes_banned_and_rejected(
             joined_at, left_at, version
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
-    .bind(room.id.as_str())
-    .bind(rejected_member.user_id.as_str())
+    .bind(room.id)
+    .bind(rejected_member.user_id)
     .bind(rejected_member.role)
     .bind(u64_to_i64(rejected_member.added_permissions))
     .bind(u64_to_i64(rejected_member.removed_permissions))
@@ -1142,11 +1049,7 @@ async fn test_diagnose_add_conflict_banned_user() {
 
     // Add the user first
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -1162,7 +1065,7 @@ async fn test_diagnose_add_conflict_banned_user() {
         .unwrap();
 
     // Try to re-add -> should get Authorization error (banned)
-    let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
+    let member = make_member(room.id, user.id, RoomRole::Member);
     let err = member_repo.add(&member).await.unwrap_err();
     assert!(matches!(err, Error::Authorization(_)));
 }
@@ -1184,11 +1087,7 @@ async fn test_diagnose_add_conflict_left_user() {
 
     // Add the user
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, user.id, RoomRole::Member))
         .await
         .unwrap();
     member_repo
@@ -1200,8 +1099,8 @@ async fn test_diagnose_add_conflict_left_user() {
         .await
         .unwrap();
     sqlx::query("UPDATE room_members SET admin_added_permissions = 4, admin_removed_permissions = 8 WHERE room_id = $1 AND user_id = $2")
-        .bind(room.id.as_str())
-        .bind(user.id.as_str())
+        .bind(room.id)
+        .bind(user.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -1211,7 +1110,7 @@ async fn test_diagnose_add_conflict_left_user() {
 
     // Try to re-add -- the ON CONFLICT DO UPDATE with WHERE status != Banned
     // will succeed for "Left" status (since Left != Banned), so re-join works.
-    let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
+    let member = make_member(room.id, user.id, RoomRole::Member);
     let result = member_repo.add(&member).await;
 
     // The ON CONFLICT clause should allow re-joining a "Left" member
@@ -1245,11 +1144,7 @@ async fn test_banned_by_restricts_user_delete() {
 
     // Add owner as creator
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -1258,11 +1153,7 @@ async fn test_banned_by_restricts_user_delete() {
         .await
         .unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            admin.id.clone(),
-            RoomRole::Admin,
-        ))
+        .add(&make_member(room.id, admin.id, RoomRole::Admin))
         .await
         .unwrap();
 
@@ -1271,11 +1162,7 @@ async fn test_banned_by_restricts_user_delete() {
         .await
         .unwrap();
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            banned_user.id.clone(),
-            RoomRole::Member,
-        ))
+        .add(&make_member(room.id, banned_user.id, RoomRole::Member))
         .await
         .unwrap();
 
@@ -1291,21 +1178,21 @@ async fn test_banned_by_restricts_user_delete() {
         .unwrap();
 
     // Verify banned_by is set
-    let banned_member: Option<(Option<String>,)> = sqlx::query_as(
+    let banned_member: Option<(Option<UserId>,)> = sqlx::query_as(
         "SELECT banned_by FROM room_member_bans
              WHERE room_id = $1 AND user_id = $2 AND revoked_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(banned_user.id.as_str())
+    .bind(room.id)
+    .bind(banned_user.id)
     .fetch_optional(&pool)
     .await
     .unwrap();
     assert!(banned_member.is_some());
-    assert_eq!(banned_member.unwrap().0, Some(admin.id.to_string()));
+    assert_eq!(banned_member.unwrap().0, Some(admin.id));
 
     // Deleting the admin should now be blocked until application-level cleanup runs.
     let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(admin.id.as_str())
+        .bind(admin.id)
         .execute(&pool)
         .await;
 
@@ -1342,7 +1229,7 @@ async fn test_update_permissions_after_member_left_should_fail() {
         .unwrap();
 
     // Add member with no permissions
-    let new_member = make_member(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let _member = member_repo
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await
@@ -1353,8 +1240,8 @@ async fn test_update_permissions_after_member_left_should_fail() {
         "UPDATE room_members SET left_at = CURRENT_TIMESTAMP \
          WHERE room_id = $1 AND user_id = $2",
     )
-    .bind(room.id.as_str())
-    .bind(member_user.id.as_str())
+    .bind(room.id)
+    .bind(member_user.id)
     .execute(&pool)
     .await
     .unwrap();
@@ -1416,7 +1303,7 @@ async fn test_update_permissions_for_active_member_should_succeed() {
         .unwrap();
 
     // Add active member
-    let new_member = make_member(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let new_member = make_member(room.id, member_user.id, RoomRole::Member);
     let member = member_repo
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await

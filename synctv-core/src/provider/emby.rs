@@ -472,11 +472,10 @@ impl EmbyProvider {
                 "credential_owner_id not available in ProviderContext".to_string(),
             )
         })?;
-
         let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,
             Self::NAME,
-            credential_owner_id,
+            *credential_owner_id,
             &config.server_id,
             ctx.request_context(),
         )
@@ -759,7 +758,7 @@ impl MediaProvider for EmbyProvider {
                 )
             })?;
             let cred = repo
-                .get_by_provider_and_server(credential_owner_id, Self::NAME, &config.server_id)
+                .get_by_provider_and_server(*credential_owner_id, Self::NAME, &config.server_id)
                 .await
                 .map_err(|e| {
                     ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
@@ -790,7 +789,7 @@ impl MediaProvider for EmbyProvider {
 
         Ok(vec![ProviderCredentialDependency::new(
             Self::NAME,
-            credential_owner_id,
+            credential_owner_id.to_string(),
             config.server_id,
         )])
     }
@@ -1216,7 +1215,7 @@ impl DynamicFolder for EmbyProvider {
                 let credential_owner_id = ctx.credential_owner_id()?;
                 let thumbnail_url = Self::build_thumbnail_url(
                     &base_config.server_id,
-                    credential_owner_id,
+                    &credential_owner_id.to_string(),
                     &item.id,
                 );
 
@@ -1549,6 +1548,7 @@ impl DynamicFolder for EmbyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::UserId;
     use crate::repository::ProviderInstanceRepository;
     use std::sync::Arc;
 
@@ -1599,8 +1599,8 @@ mod tests {
     async fn test_emby_credential_dependencies_use_creator_credential() {
         let provider = EmbyProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id("viewer-1")
-            .with_credential_owner_id("creator-1");
+            .with_user_id(UserId::from(1))
+            .with_credential_owner_id(UserId::from(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -1615,7 +1615,7 @@ mod tests {
             dependencies,
             vec![ProviderCredentialDependency::new(
                 EmbyProvider::NAME,
-                "creator-1",
+                "2",
                 "emby-main"
             )]
         );
@@ -1624,7 +1624,7 @@ mod tests {
     #[tokio::test]
     async fn test_emby_credential_dependencies_require_explicit_creator_credential_owner() {
         let provider = EmbyProvider::new(fake_provider_instance_manager());
-        let ctx = ProviderContext::new("test").with_user_id("viewer-1");
+        let ctx = ProviderContext::new("test").with_user_id(UserId::from(1));
         let err = provider
             .credential_dependencies(
                 &ctx,

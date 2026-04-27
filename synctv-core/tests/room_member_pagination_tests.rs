@@ -47,7 +47,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: "test room".to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -81,11 +81,7 @@ async fn test_list_by_room_paginated_first_page() {
 
     // Add owner as creator
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -96,11 +92,7 @@ async fn test_list_by_room_paginated_first_page() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         // Small delay to ensure distinct joined_at for stable ordering
@@ -138,11 +130,7 @@ async fn test_list_by_room_paginated_second_page() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -153,11 +141,7 @@ async fn test_list_by_room_paginated_second_page() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
@@ -189,11 +173,7 @@ async fn test_list_by_room_paginated_last_page_partial() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -204,11 +184,7 @@ async fn test_list_by_room_paginated_last_page_partial() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
@@ -244,11 +220,7 @@ async fn test_list_by_room_paginated_empty_page() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -279,11 +251,7 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -294,11 +262,7 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
@@ -328,10 +292,10 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
         .unwrap();
 
     // Collect all user IDs
-    let ids1: std::collections::HashSet<_> = members1.iter().map(|m| m.user_id.clone()).collect();
-    let ids2: std::collections::HashSet<_> = members2.iter().map(|m| m.user_id.clone()).collect();
-    let ids3: std::collections::HashSet<_> = members3.iter().map(|m| m.user_id.clone()).collect();
-    let ids4: std::collections::HashSet<_> = members4.iter().map(|m| m.user_id.clone()).collect();
+    let ids1: std::collections::HashSet<_> = members1.iter().map(|m| m.user_id).collect();
+    let ids2: std::collections::HashSet<_> = members2.iter().map(|m| m.user_id).collect();
+    let ids3: std::collections::HashSet<_> = members3.iter().map(|m| m.user_id).collect();
+    let ids4: std::collections::HashSet<_> = members4.iter().map(|m| m.user_id).collect();
 
     // Verify no overlap between pages
     assert!(ids1.is_disjoint(&ids2), "Page 1 and 2 should not overlap");
@@ -344,9 +308,9 @@ async fn test_list_by_room_paginated_no_overlap_between_pages() {
     // Verify total unique IDs equals total members
     let total_unique: std::collections::HashSet<_> = ids1
         .union(&ids2)
-        .cloned()
-        .chain(ids3.iter().cloned())
-        .chain(ids4.iter().cloned())
+        .copied()
+        .chain(ids3.iter().copied())
+        .chain(ids4.iter().copied())
         .collect();
     assert_eq!(
         total_unique.len(),
@@ -372,11 +336,7 @@ async fn test_list_by_room_paginated_large_member_count() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -387,11 +347,7 @@ async fn test_list_by_room_paginated_large_member_count() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         // No delay - we don't care about ordering, just count
@@ -453,11 +409,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -469,11 +421,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         active_users.push(user);
@@ -487,11 +435,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         left_users.push(user);
@@ -512,8 +456,7 @@ async fn test_list_by_room_paginated_excludes_left_members() {
     assert_eq!(members.len(), 6);
 
     // Verify left members are not in the result
-    let member_ids: std::collections::HashSet<_> =
-        members.iter().map(|m| m.user_id.clone()).collect();
+    let member_ids: std::collections::HashSet<_> = members.iter().map(|m| m.user_id).collect();
     for user in left_users {
         assert!(
             !member_ids.contains(&user.id),
@@ -538,11 +481,7 @@ async fn test_list_by_room_paginated_excludes_banned_members() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -553,11 +492,7 @@ async fn test_list_by_room_paginated_excludes_banned_members() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
     }
@@ -570,11 +505,7 @@ async fn test_list_by_room_paginated_excludes_banned_members() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
         banned_users.push(user);
@@ -649,11 +580,7 @@ async fn test_member_service_list_members_paginated() {
         .unwrap();
 
     member_repo
-        .add(&make_member(
-            room.id.clone(),
-            owner.id.clone(),
-            RoomRole::Creator,
-        ))
+        .add(&make_member(room.id, owner.id, RoomRole::Creator))
         .await
         .unwrap();
 
@@ -664,11 +591,7 @@ async fn test_member_service_list_members_paginated() {
             .await
             .unwrap();
         member_repo
-            .add(&make_member(
-                room.id.clone(),
-                user.id.clone(),
-                RoomRole::Member,
-            ))
+            .add(&make_member(room.id, user.id, RoomRole::Member))
             .await
             .unwrap();
     }

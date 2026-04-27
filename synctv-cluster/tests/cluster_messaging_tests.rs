@@ -18,16 +18,22 @@ use synctv_core_testing::{start_redis_with_client, RedisContainer};
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 fn mid(s: &str) -> MediaId {
-    MediaId::from_string(s.to_string())
+    MediaId::from(stable_test_id(s))
 }
 
 /// Helper to create a Redis container and connection manager.
@@ -140,7 +146,7 @@ async fn test_cross_node_broadcast() {
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager1
-        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .subscribe_with_id(room, user, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let received = broadcast_until_room_event(
@@ -148,7 +154,7 @@ async fn test_cross_node_broadcast() {
         &mut rx,
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room.clone(),
+            room_id: room,
             user_id: uid("user2"),
             username: "sender".to_string(),
             message: "hello from node2".to_string(),
@@ -178,8 +184,8 @@ async fn test_message_deduplication() {
 
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
@@ -227,7 +233,7 @@ async fn test_dedup_ttl_expiry() {
     let room = rid("room1");
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         user_id: uid("user1"),
         username: "test".to_string(),
         message: "hello".to_string(),
@@ -264,8 +270,8 @@ async fn test_dedup_with_different_events() {
     // Same event_id but different event types
     let event1 = ClusterEvent::UserJoined {
         event_id: event_id.clone(),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         username: "test".to_string(),
         permissions: synctv_core::models::permission::PermissionBits(0),
         role: 2,
@@ -321,15 +327,15 @@ async fn test_single_node_mode_without_redis() {
     let room = rid("room1");
     let user = uid("user1");
     let (mut rx, _conn_id) = manager
-        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .subscribe_with_id(room, user, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Local broadcast should still work
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         username: "test".to_string(),
         message: "local message".to_string(),
         timestamp: chrono::Utc::now(),
@@ -364,7 +370,7 @@ async fn test_pubsub_subscription_tracking() {
 
     // Subscribe
     let (_rx, conn_id) = manager
-        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .subscribe_with_id(room, user, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -396,18 +402,18 @@ async fn test_multiple_subscriptions_same_room() {
 
     // Subscribe with multiple connections
     let (mut rx1, _) = manager
-        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let (mut rx2, _) = manager
-        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         user_id: uid("user1"),
         username: "sender".to_string(),
         message: "broadcast test".to_string(),
@@ -468,7 +474,7 @@ async fn test_critical_event_delivery() {
 
     // Subscribe to room on node1
     let (mut room_rx, _) = manager1
-        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .subscribe_with_id(room, user, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -477,12 +483,12 @@ async fn test_critical_event_delivery() {
         &mut room_rx,
         || ClusterEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
-            room_id: room.clone(),
-            user_id: user.clone(),
+            room_id: room,
+            user_id: user,
             reason: "test_kick".to_string(),
             timestamp: chrono::Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
+        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if *user_id == user),
         "critical event on remote room channel",
     )
     .await;
@@ -493,12 +499,12 @@ async fn test_critical_event_delivery() {
         &mut admin_rx,
         || ClusterEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
-            room_id: room.clone(),
-            user_id: user.clone(),
+            room_id: room,
+            user_id: user,
             reason: "test_kick".to_string(),
             timestamp: chrono::Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if user_id.as_str() == "user1"),
+        |event| matches!(event, ClusterEvent::KickUserFromRoom { user_id, .. } if *user_id == user),
         "critical event on remote admin channel",
     )
     .await;
@@ -673,22 +679,22 @@ async fn test_broadcast_recipient_count() {
 
     // Subscribe 3 connections
     let (_rx1, _) = manager
-        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let (_rx2, _) = manager
-        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
         .await
         .expect("subscribe should succeed");
     let (_rx3, _) = manager
-        .subscribe_with_id(room.clone(), uid("user3"), "conn3".to_string())
+        .subscribe_with_id(room, uid("user3"), "conn3".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         user_id: uid("user1"),
         username: "test".to_string(),
         message: "hello".to_string(),
@@ -712,10 +718,10 @@ async fn test_cache_invalidation_event() {
         event_id: synctv_common::snanoid!(16),
         targets: vec![
             CacheTarget::User {
-                user_id: "u1".to_string(),
+                user_id: UserId::from(10_060_001),
             },
             CacheTarget::Room {
-                room_id: "r1".to_string(),
+                room_id: RoomId::from(10_060_002),
             },
             CacheTarget::All,
         ],
@@ -742,9 +748,7 @@ async fn test_cache_invalidation_event() {
 async fn test_media_removed_batch_event() {
     let room = rid("room1");
     let user = uid("user1");
-    let media_ids: Vec<MediaId> = (0..100)
-        .map(|i| MediaId::from_string(format!("media_{i}")))
-        .collect();
+    let media_ids: Vec<MediaId> = (0..100).map(|i| MediaId::from(100_000 + i)).collect();
 
     let event = ClusterEvent::MediaRemovedBatch {
         event_id: synctv_common::snanoid!(16),
@@ -793,7 +797,7 @@ async fn test_user_notification_event() {
 
     // Check dedup_extra includes notification_id
     let extra = event.dedup_extra();
-    assert!(extra.contains("user1"));
+    assert!(extra.contains(&user.to_string()));
     assert!(extra.contains("notif-123"));
 }
 
@@ -808,7 +812,7 @@ async fn test_dedup_key_from_event() {
 
     let event = ClusterEvent::ChatMessage {
         event_id: event_id.clone(),
-        room_id: room.clone(),
+        room_id: room,
         user_id: user,
         username: "test".to_string(),
         message: "hello".to_string(),
@@ -820,7 +824,7 @@ async fn test_dedup_key_from_event() {
     let key = DedupKey::from_event(&event);
 
     assert_eq!(key.event_type, "chat_message");
-    assert_eq!(key.room_id, room.as_str());
+    assert_eq!(key.room_id, room.to_string());
     // When event_id is present, it's embedded in the extra field
     assert_eq!(key.extra, event_id);
 }
@@ -844,11 +848,11 @@ async fn test_get_room_subscribers() {
     let room = rid("room1");
 
     let (_rx1, _) = manager
-        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let (_rx2, _) = manager
-        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .subscribe_with_id(room, uid("user2"), "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -876,7 +880,7 @@ async fn test_cluster_metrics() {
 
     let room = rid("room1");
     let (_rx, _) = manager
-        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .subscribe_with_id(room, uid("user1"), "conn1".to_string())
         .await
         .expect("subscribe should succeed");
 

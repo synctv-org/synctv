@@ -71,7 +71,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::RegisterResponse {
-            user: Some(user_to_proto(&user)),
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
             access_token: access_token.unwrap_or_default(),
             refresh_token: refresh_token.unwrap_or_default(),
         })
@@ -125,7 +125,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user)),
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
             access_token,
             refresh_token,
         })

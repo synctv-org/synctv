@@ -459,7 +459,7 @@ impl DistributedLock {
         with_token: bool,
     ) -> Result<Option<(String, u64)>> {
         let lock_key = format!("lock:{key}");
-        let lock_value = crate::models::generate_id(); // base62 ID (12 chars)
+        let lock_value = synctv_common::snanoid!(16);
 
         let mut conn = self.conn().await;
 
@@ -1062,9 +1062,9 @@ impl Redlock {
         })
     }
 
-    /// Generate a unique lock value using the shared base62 ID generator.
+    /// Generate a unique lock value for ownership checks during unlock/extend.
     fn generate_lock_value() -> String {
-        crate::models::generate_id()
+        synctv_common::snanoid!(24)
     }
 
     /// Get current time in milliseconds since Unix epoch.
@@ -1523,11 +1523,11 @@ mod tests {
 
     #[test]
     fn test_redlock_lock_value_generation() {
-        // Lock values should be unique
-        let val1 = crate::models::generate_id();
-        let val2 = crate::models::generate_id();
+        let val1 = Redlock::generate_lock_value();
+        let val2 = Redlock::generate_lock_value();
         assert_ne!(val1, val2);
-        assert!(!val1.is_empty());
+        assert_eq!(val1.len(), 24);
+        assert_eq!(val2.len(), 24);
     }
 
     #[test]

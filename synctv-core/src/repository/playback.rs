@@ -22,7 +22,7 @@ impl RoomPlaybackStateRepository {
     /// Uses `ON CONFLICT DO NOTHING` followed by a SELECT to avoid triggering
     /// the `updated_at` BEFORE UPDATE trigger on existing rows.
     pub async fn create_or_get(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
-        let state = RoomPlaybackState::new(room_id.clone());
+        let state = RoomPlaybackState::new(*room_id);
 
         // Attempt insert; if the row already exists, do nothing
         sqlx::query(
@@ -30,7 +30,7 @@ impl RoomPlaybackStateRepository {
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING"
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(state.current_time)
         .bind(state.speed)
         .bind(state.is_playing)
@@ -45,7 +45,7 @@ impl RoomPlaybackStateRepository {
              FROM room_playback_state
              WHERE room_id = $1"
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -64,14 +64,14 @@ impl RoomPlaybackStateRepository {
         room_id: &RoomId,
         conn: &mut sqlx::PgConnection,
     ) -> Result<RoomPlaybackState> {
-        let state = RoomPlaybackState::new(room_id.clone());
+        let state = RoomPlaybackState::new(*room_id);
 
         sqlx::query(
             "INSERT INTO room_playback_state (room_id, \"current_time\", speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (room_id) DO NOTHING"
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .bind(state.current_time)
         .bind(state.speed)
         .bind(state.is_playing)
@@ -85,7 +85,7 @@ impl RoomPlaybackStateRepository {
              FROM room_playback_state
              WHERE room_id = $1"
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_one(&mut *conn)
         .await?;
 
@@ -99,7 +99,7 @@ impl RoomPlaybackStateRepository {
              FROM room_playback_state
              WHERE room_id = $1",
         )
-        .bind(room_id.as_str())
+        .bind(room_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -108,15 +108,6 @@ impl RoomPlaybackStateRepository {
 
     /// Update playback state with optimistic locking
     pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
-        let media_id_str = state
-            .playing_media_id
-            .as_ref()
-            .map(super::super::models::id::MediaId::as_str);
-        let playlist_id_str = state
-            .playing_playlist_id
-            .as_ref()
-            .map(super::super::models::id::PlaylistId::as_str);
-
         let result = sqlx::query_as::<_, RoomPlaybackState>(
             "UPDATE room_playback_state
              SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
@@ -125,9 +116,9 @@ impl RoomPlaybackStateRepository {
              WHERE room_id = $1 AND version = $8
              RETURNING room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version",
         )
-        .bind(state.room_id.as_str())
-        .bind(media_id_str)
-        .bind(playlist_id_str)
+        .bind(state.room_id)
+        .bind(state.playing_media_id)
+        .bind(state.playing_playlist_id)
         .bind(&state.target)
         .bind(state.current_time)
         .bind(state.speed)
@@ -172,7 +163,7 @@ impl RoomPlaybackStateRepository {
                       rps."current_time", rps.speed, rps.is_playing, rps.updated_at, rps.version
             "#,
         )
-        .bind(creator_id.as_str())
+        .bind(creator_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -205,7 +196,7 @@ mod tests {
         // Create room
         let room = RoomFixture::new()
             .with_name("Playback Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
@@ -229,7 +220,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-        let room_id = RoomId::from_string("nonexistent_room".to_string());
+        let room_id = RoomId::from(90_001);
         let result = playback_repo.get(&room_id).await.unwrap();
         assert!(result.is_none());
     }
@@ -260,23 +251,23 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Playback Update Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
         // Create playlist hierarchy (root + child with name)
         let (_, playlist) = crate::test_helpers::create_top_level_playlist_hierarchy(
             &playlist_repo,
-            room.id.clone(),
+            room.id,
             "Playback Playlist",
         )
         .await;
 
         // Create media for playback reference (required by FK constraint)
         let media = Media::from_provider(
-            Some(playlist.id.clone()),
-            room.id.clone(),
-            Some(owner.id.clone()),
+            Some(playlist.id),
+            room.id,
+            Some(owner.id),
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
@@ -292,7 +283,7 @@ mod tests {
         state.current_time = 120.5;
         state.speed = 1.5;
         state.is_playing = true;
-        state.playing_media_id = Some(media.id.clone());
+        state.playing_media_id = Some(media.id);
 
         let updated = playback_repo.update(&state).await.unwrap();
         assert!((updated.current_time - 120.5).abs() < f64::EPSILON);
@@ -321,7 +312,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Lock Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
@@ -360,7 +351,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Version Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
@@ -395,7 +386,7 @@ mod tests {
 
         let room = RoomFixture::new()
             .with_name("Boundary Test Room")
-            .with_owner(owner.id.clone())
+            .with_owner(owner.id)
             .build();
         let room = room_repo.create(&room).await.unwrap();
 

@@ -26,11 +26,6 @@ impl ReviewStatus {
             Self::Rejected => "rejected",
         }
     }
-
-    #[must_use]
-    pub const fn as_i16(self) -> i16 {
-        self as i16
-    }
 }
 
 impl FromStr for ReviewStatus {
@@ -51,3 +46,9 @@ impl std::fmt::Display for ReviewStatus {
         f.write_str(self.as_str())
     }
 }
+
+sqlx_i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
+    Pending = 1,
+    Approved = 2,
+    Rejected = 3,
+});

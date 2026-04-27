@@ -1334,8 +1334,8 @@ impl CacheInvalidationService {
         user_id: &crate::models::UserId,
     ) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::UserPermission {
-            room_id: room_id.as_str().to_string(),
-            user_id: user_id.as_str().to_string(),
+            room_id: room_id.to_string(),
+            user_id: user_id.to_string(),
         })
         .await
     }
@@ -1343,7 +1343,7 @@ impl CacheInvalidationService {
     /// Invalidate permission cache for all users in a room
     pub async fn invalidate_room_permission(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::RoomPermission {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         })
         .await
     }
@@ -1351,7 +1351,7 @@ impl CacheInvalidationService {
     /// Invalidate user cache
     pub async fn invalidate_user(&self, user_id: &crate::models::UserId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::User {
-            user_id: user_id.as_str().to_string(),
+            user_id: user_id.to_string(),
         })
         .await
     }
@@ -1359,7 +1359,7 @@ impl CacheInvalidationService {
     /// Invalidate username cache
     pub async fn invalidate_username(&self, user_id: &crate::models::UserId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::Username {
-            user_id: user_id.as_str().to_string(),
+            user_id: user_id.to_string(),
         })
         .await
     }
@@ -1367,7 +1367,7 @@ impl CacheInvalidationService {
     /// Invalidate room cache
     pub async fn invalidate_room(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::Room {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         })
         .await
     }
@@ -1383,7 +1383,7 @@ impl CacheInvalidationService {
     /// Invalidate playback state cache for a room
     pub async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackState {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         })
         .await
     }
@@ -1397,7 +1397,7 @@ impl CacheInvalidationService {
         state: &crate::models::RoomPlaybackState,
     ) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackStateUpdate {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
             state: state.clone(),
         })
         .await
@@ -1406,7 +1406,7 @@ impl CacheInvalidationService {
     /// Invalidate room settings cache for a specific room
     pub async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::RoomSettings {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         })
         .await
     }
@@ -1431,7 +1431,7 @@ impl CacheInvalidationService {
         // Broadcast locally so that CacheManager's listener picks it up
         // and invalidates the local L1 + L2 cache entry.
         let msg = InvalidationMessage::User {
-            user_id: user_id.as_str().to_string(),
+            user_id: user_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast user invalidation locally");
@@ -1443,7 +1443,7 @@ impl CacheInvalidationService {
     /// Invalidate room cache locally and broadcast to other replicas.
     pub async fn invalidate_and_broadcast_room(&self, room_id: &RoomId) -> Result<()> {
         let msg = InvalidationMessage::Room {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast room invalidation locally");
@@ -1454,7 +1454,7 @@ impl CacheInvalidationService {
     /// Invalidate room settings cache locally and broadcast to other replicas.
     pub async fn invalidate_and_broadcast_room_settings(&self, room_id: &RoomId) -> Result<()> {
         let msg = InvalidationMessage::RoomSettings {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast room settings invalidation locally");
@@ -1468,7 +1468,7 @@ impl CacheInvalidationService {
         user_id: &crate::models::UserId,
     ) -> Result<()> {
         let msg = InvalidationMessage::Username {
-            user_id: user_id.as_str().to_string(),
+            user_id: user_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast username invalidation locally");
@@ -1483,8 +1483,8 @@ impl CacheInvalidationService {
         user_id: &crate::models::UserId,
     ) -> Result<()> {
         let msg = InvalidationMessage::UserPermission {
-            room_id: room_id.as_str().to_string(),
-            user_id: user_id.as_str().to_string(),
+            room_id: room_id.to_string(),
+            user_id: user_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast user permission invalidation locally");
@@ -1495,7 +1495,7 @@ impl CacheInvalidationService {
     /// Invalidate room permission cache locally and broadcast to other replicas.
     pub async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()> {
         let msg = InvalidationMessage::RoomPermission {
-            room_id: room_id.as_str().to_string(),
+            room_id: room_id.to_string(),
         };
         if let Err(e) = self.local_sender.send(msg.clone()) {
             warn!(error = %e, "Failed to broadcast room permission invalidation locally");
@@ -2132,7 +2132,7 @@ mod tests {
         );
         let mut receiver = service.subscribe();
 
-        let room_id = crate::models::RoomId::from_string("room_settings_test".to_string());
+        let room_id = crate::models::RoomId::from(95_001);
         service
             .invalidate_and_broadcast_room_settings(&room_id)
             .await
@@ -2141,7 +2141,7 @@ mod tests {
         let received = receiver.recv().await.unwrap();
         match received {
             InvalidationMessage::RoomSettings { room_id } => {
-                assert_eq!(room_id, "room_settings_test");
+                assert_eq!(room_id, "95001");
             }
             other => panic!("Expected RoomSettings, got: {other:?}"),
         }

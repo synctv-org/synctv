@@ -13,11 +13,11 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
 
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    s.parse().expect("valid numeric user id")
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    s.parse().expect("valid numeric room id")
 }
 
 async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager) {

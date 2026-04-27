@@ -85,7 +85,7 @@ pub async fn list_notifications(
         notifications: result
             .notifications
             .into_iter()
-            .map(notification_to_proto)
+            .map(|notification| notification_to_proto(notification, api.public_id_codec()))
             .collect(),
         total,
         unread_count,
@@ -136,7 +136,7 @@ pub async fn get_notification(
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(GetNotificationResponse {
-        notification: Some(notification_to_proto(notification)),
+        notification: Some(notification_to_proto(notification, api.public_id_codec())),
     }))
 }
 

@@ -5525,6 +5525,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqids"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1ec921820cea6db964ad35463cd8e5fa33cd04760e4dcd8329ecbfbcf98d60b"
+dependencies = [
+ "derive_builder",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sqlx"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6065,6 +6077,7 @@ dependencies = [
  "serde_yaml",
  "sha1 0.11.0",
  "sha2 0.11.0",
+ "sqids",
  "sqlx",
  "synctv-common",
  "synctv-core-testing",

@@ -17,6 +17,10 @@ use synctv_core::RedisConnectionRuntime;
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
+fn test_public_id_codec() -> crate::PublicIdCodec {
+    crate::PublicIdCodec::default_for_tests()
+}
+
 #[tokio::test]
 async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
     #[derive(Clone)]
@@ -88,6 +92,7 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
         None,
         None,
         None,
+        Arc::new(test_public_id_codec()),
     )
     .with_shared_runtime(Some(runtime.clone()));
 
@@ -207,6 +212,7 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
         None,
         None,
         None,
+        Arc::new(test_public_id_codec()),
     )
     .with_provider_stores(resolver.clone());
 
@@ -547,7 +553,7 @@ fn test_user_role_to_proto_roundtrip() {
 
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
     synctv_core::models::User {
-        id: UserId::from_string("test_user_id".to_string()),
+        id: UserId::from(101),
         username: "testuser".to_string(),
         email: Some("test@example.com".to_string()),
         password_hash: "hash".to_string(),
@@ -570,10 +576,11 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
 
 #[test]
 fn test_user_to_proto_basic() {
+    let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Active);
-    let proto = user_to_proto(&user);
+    let proto = user_to_proto(&user, &public_id_codec);
 
-    assert_eq!(proto.id, "test_user_id");
+    assert_eq!(proto.id, public_id_codec.encode_user_id(user.id).unwrap());
     assert_eq!(proto.username, "testuser");
     assert_eq!(proto.email, "test@example.com");
     assert_eq!(proto.role, synctv_proto::common::UserRole::User as i32);
@@ -656,22 +663,25 @@ fn test_provider_error_upstream_http_400_maps_to_invalid_input() {
 
 #[test]
 fn test_user_to_proto_admin_role() {
+    let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
-    let proto = user_to_proto(&user);
+    let proto = user_to_proto(&user, &public_id_codec);
     assert_eq!(proto.role, synctv_proto::common::UserRole::Admin as i32);
 }
 
 #[test]
 fn test_user_to_proto_root_role() {
+    let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::Root, UserStatus::Active);
-    let proto = user_to_proto(&user);
+    let proto = user_to_proto(&user, &public_id_codec);
     assert_eq!(proto.role, synctv_proto::common::UserRole::Root as i32);
 }
 
 #[test]
 fn test_user_to_proto_banned_status() {
+    let public_id_codec = test_public_id_codec();
     let user = make_test_user(UserRole::User, UserStatus::Banned);
-    let proto = user_to_proto(&user);
+    let proto = user_to_proto(&user, &public_id_codec);
     assert_eq!(
         proto.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -680,18 +690,19 @@ fn test_user_to_proto_banned_status() {
 
 #[test]
 fn test_user_to_proto_no_email() {
+    let public_id_codec = test_public_id_codec();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     user.email = None;
-    let proto = user_to_proto(&user);
+    let proto = user_to_proto(&user, &public_id_codec);
     assert_eq!(proto.email, ""); // None -> empty string
 }
 
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
     synctv_core::models::Room {
-        id: RoomId::from_string("test_room_id".to_string()),
+        id: RoomId::from(201),
         name: "Test Room".to_string(),
         description: "A test room".to_string(),
-        created_by: UserId::from_string("creator_id".to_string()),
+        created_by: UserId::from(202),
         status,
         is_banned: false,
         closed_at: None,
@@ -705,13 +716,17 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 
 #[test]
 fn test_room_to_proto_basic() {
+    let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = room_to_proto_basic(&room, None, Some(5));
+    let proto = room_to_proto_basic(&room, None, Some(5), &public_id_codec);
 
-    assert_eq!(proto.id, "test_room_id");
+    assert_eq!(proto.id, public_id_codec.encode_room_id(room.id).unwrap());
     assert_eq!(proto.name, "Test Room");
     assert_eq!(proto.description, "A test room");
-    assert_eq!(proto.created_by, "creator_id");
+    assert_eq!(
+        proto.created_by,
+        public_id_codec.encode_user_id(room.created_by).unwrap()
+    );
     assert_eq!(proto.member_count, 5);
     assert_eq!(
         proto.availability,
@@ -722,16 +737,18 @@ fn test_room_to_proto_basic() {
 
 #[test]
 fn test_room_to_proto_no_member_count() {
+    let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
-    let proto = room_to_proto_basic(&room, None, None);
+    let proto = room_to_proto_basic(&room, None, None, &public_id_codec);
     assert_eq!(proto.member_count, 0); // None -> 0
 }
 
 #[test]
 fn test_room_to_proto_banned() {
+    let public_id_codec = test_public_id_codec();
     let mut room = make_test_room(RoomStatus::Active);
     room.is_banned = true;
-    let proto = room_to_proto_basic(&room, None, None);
+    let proto = room_to_proto_basic(&room, None, None, &public_id_codec);
     assert!(proto.is_banned);
     assert_eq!(
         proto.availability,
@@ -741,11 +758,12 @@ fn test_room_to_proto_banned() {
 
 #[test]
 fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
+    let public_id_codec = test_public_id_codec();
     let room = make_test_room(RoomStatus::Active);
     let online_count = 3;
     let total_members = 17;
 
-    let proto = hot_room_to_proto(&room, None, online_count, total_members);
+    let proto = hot_room_to_proto(&room, None, online_count, total_members, &public_id_codec);
 
     assert_eq!(
         proto.room.as_ref().unwrap().member_count,
@@ -759,9 +777,10 @@ fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
 
 #[test]
 fn test_playback_state_to_proto() {
+    let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from_string("room1".to_string()),
-        playing_media_id: Some(MediaId::from_string("media1".to_string())),
+        room_id: RoomId::from(301),
+        playing_media_id: Some(MediaId::from(302)),
         playing_playlist_id: None,
         target: Vec::new(),
         current_time: 120.5,
@@ -771,10 +790,18 @@ fn test_playback_state_to_proto() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state);
+    let proto = playback_state_to_proto(&state, &public_id_codec);
 
-    assert_eq!(proto.room_id, "room1");
-    assert_eq!(proto.playing_media_id, "media1");
+    assert_eq!(
+        proto.room_id,
+        public_id_codec.encode_room_id(state.room_id).unwrap()
+    );
+    assert_eq!(
+        proto.playing_media_id,
+        public_id_codec
+            .encode_media_id(state.playing_media_id.unwrap())
+            .unwrap()
+    );
     assert_eq!(proto.playing_playlist_id, "");
     assert!(proto.target.is_empty());
     assert!((proto.current_time - 120.5).abs() < f64::EPSILON);
@@ -785,9 +812,10 @@ fn test_playback_state_to_proto() {
 
 #[test]
 fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
+    let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from_string("room1".to_string()),
-        playing_media_id: Some(MediaId::from_string("media1".to_string())),
+        room_id: RoomId::from(301),
+        playing_media_id: Some(MediaId::from(302)),
         playing_playlist_id: None,
         target: Vec::new(),
         current_time: 120.5,
@@ -797,7 +825,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state);
+    let proto = playback_state_to_proto(&state, &public_id_codec);
 
     assert!(proto.current_time >= 123.5);
     assert!(proto.current_time < 124.5);
@@ -805,10 +833,11 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
 
 #[test]
 fn test_playback_state_to_proto_dynamic_playlist_target() {
+    let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from_string("room1".to_string()),
+        room_id: RoomId::from(301),
         playing_media_id: None,
-        playing_playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
+        playing_playlist_id: Some(PlaylistId::from(303)),
         target: br#"{"item_id":"provider-item-9"}"#.to_vec(),
         current_time: 120.5,
         speed: 1.5,
@@ -817,19 +846,24 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state);
+    let proto = playback_state_to_proto(&state, &public_id_codec);
 
     assert_eq!(proto.playing_media_id, "");
-    assert_eq!(proto.playing_playlist_id, "pl1");
+    assert_eq!(
+        proto.playing_playlist_id,
+        public_id_codec
+            .encode_playlist_id(state.playing_playlist_id.unwrap())
+            .unwrap()
+    );
     let target: serde_json::Value = serde_json::from_slice(&proto.target).unwrap();
     assert_eq!(target, serde_json::json!({"item_id":"provider-item-9"}));
 }
 
 #[test]
 fn test_playback_state_to_proto_no_media() {
-    let state =
-        synctv_core::models::RoomPlaybackState::new(RoomId::from_string("room1".to_string()));
-    let proto = playback_state_to_proto(&state);
+    let public_id_codec = test_public_id_codec();
+    let state = synctv_core::models::RoomPlaybackState::new(RoomId::from(301));
+    let proto = playback_state_to_proto(&state, &public_id_codec);
 
     assert_eq!(proto.playing_media_id, ""); // None -> empty string
     assert_eq!(proto.playing_playlist_id, "");
@@ -839,10 +873,10 @@ fn test_playback_state_to_proto_no_media() {
 fn make_test_media() -> synctv_core::models::Media {
     let now = chrono::Utc::now();
     synctv_core::models::Media {
-        id: MediaId::from_string("media1".to_string()),
-        playlist_id: Some(PlaylistId::from_string("pl1".to_string())),
-        room_id: RoomId::from_string("room1".to_string()),
-        creator_id: Some(UserId::from_string("user1".to_string())),
+        id: MediaId::from(302),
+        playlist_id: Some(PlaylistId::from(303)),
+        room_id: RoomId::from(301),
+        creator_id: Some(UserId::from(304)),
         name: "Test Video".to_string(),
         position: 3.0,
         source_provider: "bilibili".to_string(),
@@ -856,24 +890,34 @@ fn make_test_media() -> synctv_core::models::Media {
 
 #[test]
 fn test_media_to_proto_basic() {
+    let public_id_codec = test_public_id_codec();
     let media = make_test_media();
-    let proto = media_to_proto(&media);
+    let proto = media_to_proto(&media, &public_id_codec);
 
-    assert_eq!(proto.id, "media1");
-    assert_eq!(proto.room_id, "room1");
+    assert_eq!(proto.id, public_id_codec.encode_media_id(media.id).unwrap());
+    assert_eq!(
+        proto.room_id,
+        public_id_codec.encode_room_id(media.room_id).unwrap()
+    );
     assert_eq!(proto.provider, "bilibili");
     assert_eq!(proto.title, "Test Video");
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
-    assert_eq!(proto.added_by, "user1");
+    assert_eq!(
+        proto.added_by,
+        public_id_codec
+            .encode_user_id(media.creator_id.unwrap())
+            .unwrap()
+    );
     assert_eq!(proto.provider_instance_name, "bili_main");
 }
 
 #[test]
 fn test_media_to_proto_direct_media_omits_default_instance_binding() {
+    let public_id_codec = test_public_id_codec();
     let media = synctv_core::models::Media::from_direct_single_mode(
-        Some(PlaylistId::from_string("playlist1".to_string())),
-        RoomId::from_string("room1".to_string()),
-        Some(UserId::from_string("user1".to_string())),
+        Some(PlaylistId::from(305)),
+        RoomId::from(301),
+        Some(UserId::from(304)),
         "Direct Media".to_string(),
         "direct",
         synctv_core::models::PlaybackInfo::single_url(
@@ -882,15 +926,15 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() {
         ),
         1.0,
     );
-    let proto = media_to_proto(&media);
+    let proto = media_to_proto(&media, &public_id_codec);
     assert_eq!(proto.provider, "direct_url");
     assert!(proto.provider_instance_name.is_empty());
 }
 
 fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
     synctv_core::models::RoomMemberWithUser {
-        room_id: RoomId::from_string("room1".to_string()),
-        user_id: UserId::from_string("user1".to_string()),
+        room_id: RoomId::from(301),
+        user_id: UserId::from(304),
         username: "alice".to_string(),
         role,
         status: MemberStatus::Active,
@@ -910,12 +954,19 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 
 #[test]
 fn test_room_member_to_proto() {
+    let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Member);
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(&member, role_default);
+    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
 
-    assert_eq!(proto.room_id, "room1");
-    assert_eq!(proto.user_id, "user1");
+    assert_eq!(
+        proto.room_id,
+        public_id_codec.encode_room_id(member.room_id).unwrap()
+    );
+    assert_eq!(
+        proto.user_id,
+        public_id_codec.encode_user_id(member.user_id).unwrap()
+    );
     assert_eq!(proto.username, "alice");
     assert_eq!(
         proto.role,
@@ -926,9 +977,10 @@ fn test_room_member_to_proto() {
 
 #[test]
 fn test_room_member_to_proto_creator() {
+    let public_id_codec = test_public_id_codec();
     let member = make_test_member(RoomRole::Creator);
     let role_default = RoomRole::Creator.permissions();
-    let proto = room_member_to_proto(&member, role_default);
+    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
     assert_eq!(
         proto.role,
         synctv_proto::common::RoomMemberRole::Creator as i32
@@ -937,21 +989,23 @@ fn test_room_member_to_proto_creator() {
 
 #[test]
 fn test_room_member_to_proto_custom_permissions() {
+    let public_id_codec = test_public_id_codec();
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = RoomRole::Member.permissions();
-    let proto = room_member_to_proto(&member, role_default);
+    let proto = room_member_to_proto(&member, role_default, &public_id_codec);
     assert_eq!(proto.added_permissions, 0xFF);
     assert_eq!(proto.removed_permissions, 0x0F);
 }
 
 #[test]
 fn test_playlist_to_proto() {
+    let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from_string("pl1".to_string()),
-        room_id: RoomId::from_string("room1".to_string()),
-        creator_id: Some(UserId::from_string("user1".to_string())),
+        id: PlaylistId::from(303),
+        room_id: RoomId::from(301),
+        creator_id: Some(UserId::from(304)),
         name: "My Playlist".to_string(),
         parent_id: None,
         position: 0.0,
@@ -963,10 +1017,16 @@ fn test_playlist_to_proto() {
         version: 0,
     };
 
-    let proto = playlist_to_proto(&playlist, 10);
+    let proto = playlist_to_proto(&playlist, 10, &public_id_codec);
 
-    assert_eq!(proto.id, "pl1");
-    assert_eq!(proto.room_id, "room1");
+    assert_eq!(
+        proto.id,
+        public_id_codec.encode_playlist_id(playlist.id).unwrap()
+    );
+    assert_eq!(
+        proto.room_id,
+        public_id_codec.encode_room_id(playlist.room_id).unwrap()
+    );
     assert_eq!(proto.name, "My Playlist");
     assert_eq!(proto.parent_id, "");
     assert_eq!(proto.item_count, 10);
@@ -975,12 +1035,13 @@ fn test_playlist_to_proto() {
 
 #[test]
 fn test_playlist_to_proto_dynamic() {
+    let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from_string("pl2".to_string()),
-        room_id: RoomId::from_string("room1".to_string()),
-        creator_id: Some(UserId::from_string("user1".to_string())),
+        id: PlaylistId::from(306),
+        room_id: RoomId::from(301),
+        creator_id: Some(UserId::from(304)),
         name: "Bilibili Folder".to_string(),
-        parent_id: Some(PlaylistId::from_string("pl1".to_string())),
+        parent_id: Some(PlaylistId::from(303)),
         position: 1.0,
         source_provider: Some("bilibili".to_string()),
         source_config: Some(serde_json::json!({})),
@@ -990,9 +1051,14 @@ fn test_playlist_to_proto_dynamic() {
         version: 0,
     };
 
-    let proto = playlist_to_proto(&playlist, 5);
+    let proto = playlist_to_proto(&playlist, 5, &public_id_codec);
 
-    assert_eq!(proto.parent_id, "pl1");
+    assert_eq!(
+        proto.parent_id,
+        public_id_codec
+            .encode_playlist_id(playlist.parent_id.unwrap())
+            .unwrap()
+    );
     assert!(proto.is_dynamic);
 }
 
@@ -1017,6 +1083,7 @@ fn test_pagination_page_positive_passes_through() {
 
 #[test]
 fn test_members_to_proto_pattern_multiple_roles() {
+    let public_id_codec = test_public_id_codec();
     let creator = {
         let mut m = make_test_member(RoomRole::Creator);
         m.username = "owner".to_string();
@@ -1025,19 +1092,19 @@ fn test_members_to_proto_pattern_multiple_roles() {
     let admin = {
         let mut m = make_test_member(RoomRole::Admin);
         m.username = "admin".to_string();
-        m.user_id = UserId::from_string("user2".to_string());
+        m.user_id = UserId::from(305);
         m
     };
     let member = {
         let mut m = make_test_member(RoomRole::Member);
         m.username = "member".to_string();
-        m.user_id = UserId::from_string("user3".to_string());
+        m.user_id = UserId::from(306);
         m
     };
     let guest = {
         let mut m = make_test_member(RoomRole::Guest);
         m.username = "guest".to_string();
-        m.user_id = UserId::from_string("user4".to_string());
+        m.user_id = UserId::from(307);
         m
     };
 
@@ -1046,7 +1113,7 @@ fn test_members_to_proto_pattern_multiple_roles() {
         .into_iter()
         .map(|m| {
             let role_default = m.role.permissions();
-            room_member_to_proto(&m, role_default)
+            room_member_to_proto(&m, role_default, &public_id_codec)
         })
         .collect();
 
@@ -1081,11 +1148,12 @@ fn test_members_to_proto_pattern_multiple_roles() {
 
 #[test]
 fn test_members_to_proto_pattern_preserves_custom_permissions() {
+    let public_id_codec = test_public_id_codec();
     let mut member = make_test_member(RoomRole::Member);
     member.added_permissions = 0xFF;
     member.removed_permissions = 0x0F;
     let role_default = member.role.permissions();
-    let result = room_member_to_proto(&member, role_default);
+    let result = room_member_to_proto(&member, role_default, &public_id_codec);
     assert_eq!(result.added_permissions, 0xFF);
     assert_eq!(result.removed_permissions, 0x0F);
 }
@@ -1167,10 +1235,11 @@ fn test_add_media_batch_uses_provider_instance_name() {
 
 #[test]
 fn test_playback_state_version_no_truncation() {
+    let public_id_codec = test_public_id_codec();
     // Version values above i32::MAX should not be truncated
     let large_version: i64 = i64::from(i32::MAX) + 1;
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from_string("room_v".to_string()),
+        room_id: RoomId::from(401),
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),
@@ -1181,7 +1250,7 @@ fn test_playback_state_version_no_truncation() {
         version: large_version,
     };
 
-    let proto = playback_state_to_proto(&state);
+    let proto = playback_state_to_proto(&state, &public_id_codec);
     assert_eq!(
         proto.version, large_version,
         "Version should not be truncated from i64 to i32"
@@ -1190,9 +1259,10 @@ fn test_playback_state_version_no_truncation() {
 
 #[test]
 fn test_playback_state_version_i32_range_still_works() {
+    let public_id_codec = test_public_id_codec();
     // Normal i32-range versions should continue to work correctly
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from_string("room_v2".to_string()),
+        room_id: RoomId::from(402),
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),
@@ -1203,6 +1273,6 @@ fn test_playback_state_version_i32_range_still_works() {
         version: 42,
     };
 
-    let proto = playback_state_to_proto(&state);
+    let proto = playback_state_to_proto(&state, &public_id_codec);
     assert_eq!(proto.version, 42);
 }

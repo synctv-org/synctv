@@ -72,6 +72,7 @@ fn make_client_api(
         None,
         None,
         None,
+        Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
     )
 }
 
@@ -98,7 +99,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
         .create_room(
             "Actor Created Room".to_string(),
             String::new(),
-            actor.id.clone(),
+            actor.id,
             None,
             None,
         )
@@ -109,7 +110,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
         .create_room(
             "External Created Room".to_string(),
             String::new(),
-            external_owner.id.clone(),
+            external_owner.id,
             None,
             None,
         )
@@ -117,13 +118,13 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
         .unwrap();
 
     room_service
-        .join_room(participating_room.id.clone(), actor.id.clone(), None)
+        .join_room(participating_room.id, actor.id, None)
         .await
         .unwrap();
 
     let created_only = client_api
         .list_my_rooms(
-            actor.id.as_str(),
+            &actor.id,
             ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
@@ -142,7 +143,9 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(created_only.rooms.len(), 1);
     assert_eq!(
         created_only.rooms[0].room.as_ref().unwrap().id,
-        created_room.id.as_str()
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_room_id(created_room.id)
+            .unwrap()
     );
     assert_eq!(
         created_only.rooms[0].relation,
@@ -151,7 +154,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
 
     let participating_only = client_api
         .list_my_rooms(
-            actor.id.as_str(),
+            &actor.id,
             ListMyRoomsRequest {
                 page: 1,
                 page_size: 20,
@@ -170,7 +173,9 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(participating_only.rooms.len(), 1);
     assert_eq!(
         participating_only.rooms[0].room.as_ref().unwrap().id,
-        participating_room.id.as_str()
+        synctv_api::PublicIdCodec::default_for_tests()
+            .encode_room_id(participating_room.id)
+            .unwrap()
     );
     assert_eq!(
         participating_only.rooms[0].relation,

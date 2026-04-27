@@ -45,7 +45,7 @@ fn filter_provider_binds(
                 .to_string();
 
             ProviderBind {
-                id: credential.id,
+                id: credential.id.to_string(),
                 server_id: credential.server_id,
                 host,
                 label_key: user_field_key.to_string(),
@@ -59,14 +59,14 @@ fn filter_provider_binds(
 
 pub async fn get_provider_credentials(
     repo: &Arc<UserProviderCredentialRepository>,
-    user_id: &str,
+    user_id: &UserId,
     provider_name: &str,
     instance_name: Option<&str>,
 ) -> Result<Vec<UserProviderCredential>, ApiError> {
     let requested_instance_name = normalized_instance_name(instance_name);
-    let credentials = repo.get_by_user(user_id).await.map_err(|error| {
+    let credentials = repo.get_by_user(*user_id).await.map_err(|error| {
         tracing::error!(
-            user_id,
+            user_id = %user_id,
             provider_name,
             error = %error,
             "Failed to query provider credentials"
@@ -88,7 +88,7 @@ pub async fn get_provider_credentials(
 
 pub async fn get_provider_binds(
     repo: &Arc<UserProviderCredentialRepository>,
-    user_id: &str,
+    user_id: &UserId,
     provider_name: &str,
     user_field_key: &str,
     instance_name: Option<&str>,
@@ -304,12 +304,12 @@ impl ProviderCommonApiImpl {
             .user_service
             .get_user(admin_user_id)
             .await
-            .map_or_else(|_| admin_user_id.as_str().to_string(), |user| user.username);
+            .map_or_else(|_| admin_user_id.to_string(), |user| user.username);
 
         if let Err(error) = self
             .audit_service
             .log(
-                admin_user_id.as_str().to_string(),
+                admin_user_id.to_string(),
                 admin_username.clone(),
                 action,
                 target_type,
@@ -322,7 +322,7 @@ impl ProviderCommonApiImpl {
         {
             tracing::error!(
                 error = %error,
-                admin_user_id = %admin_user_id.as_str(),
+                admin_user_id = %admin_user_id,
                 admin_username = %admin_username,
                 "AUDIT LOG FAILURE: failed to record provider common admin action"
             );

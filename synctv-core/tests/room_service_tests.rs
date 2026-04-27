@@ -15,8 +15,8 @@ use synctv_core::{
     models::{
         room_settings::{AllowAutoJoin, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, PermissionBits, Playlist,
-        PlaylistId, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        PlaylistId, ReviewRequestId, RoomId, RoomListQuery, RoomRole, RoomSettings, RoomStatus,
+        User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository,
@@ -110,7 +110,7 @@ async fn test_create_room_with_password_stores_hash() {
         .create_room(
             "Password Room".to_string(),
             "A password-protected room".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("MySecretPassword123".to_string()),
             None,
         )
@@ -150,7 +150,7 @@ async fn test_create_room_without_password() {
         .create_room(
             "No Password Room".to_string(),
             "An open room".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -188,7 +188,7 @@ async fn test_create_room_initializes_settings_version_at_one() {
         .create_room(
             "Settings Version Room".to_string(),
             "verify initial settings version".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -230,7 +230,7 @@ async fn test_create_room_does_not_create_root_playlist() {
         .create_room(
             "Playlist Room".to_string(),
             "A room with playlist".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -240,7 +240,7 @@ async fn test_create_room_does_not_create_root_playlist() {
     // Verify room creation does not create any top-level playlist rows implicitly
     let playlist_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -265,7 +265,7 @@ async fn test_join_room_correct_password() {
         .create_room(
             "Join Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -273,11 +273,7 @@ async fn test_join_room_correct_password() {
         .unwrap();
 
     let (joined_room, member, members) = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("CorrectPassword123".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("CorrectPassword123".to_string()))
         .await
         .unwrap();
 
@@ -310,7 +306,7 @@ async fn test_join_room_wrong_password_rejected() {
         .create_room(
             "Wrong Pwd Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -318,11 +314,7 @@ async fn test_join_room_wrong_password_rejected() {
         .unwrap();
 
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("WrongPassword456".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("WrongPassword456".to_string()))
         .await;
 
     assert!(result.is_err());
@@ -357,7 +349,7 @@ async fn test_join_room_password_required_not_provided() {
         .create_room(
             "Pwd Required Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("SecretPassword123".to_string()),
             None,
         )
@@ -365,9 +357,7 @@ async fn test_join_room_password_required_not_provided() {
         .unwrap();
 
     // Try to join without providing a password
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -406,7 +396,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .create_room(
             "Approval Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             Some(settings),
         )
@@ -414,7 +404,7 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         .unwrap();
 
     let (_joined_room, member, members) = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
 
@@ -441,8 +431,8 @@ async fn test_join_room_requires_approval_returns_pending_membership() {
         )
         ",
     )
-    .bind(room.id.as_str())
-    .bind(joiner.id.as_str())
+    .bind(room.id)
+    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -474,7 +464,7 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
         .create_room(
             "Manual Join Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             Some(settings),
         )
@@ -482,7 +472,7 @@ async fn test_join_room_rejects_self_join_when_auto_join_disabled() {
         .unwrap();
 
     let err = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .expect_err("self-service join must be blocked when allow_auto_join=false");
 
@@ -520,7 +510,7 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .create_room(
             "Reject Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             Some(settings),
         )
@@ -528,12 +518,12 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .unwrap();
 
     let (_joined_room, pending_member, _) = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
     assert_eq!(pending_member.status, MemberStatus::Active);
 
-    let request_id = sqlx::query_scalar::<_, String>(
+    let request_id = sqlx::query_scalar::<_, i64>(
         r"
         SELECT id
         FROM room_join_requests
@@ -542,17 +532,17 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
           AND reviewed_at IS NULL
         ",
     )
-    .bind(room.id.as_str())
-    .bind(joiner.id.as_str())
+    .bind(room.id)
+    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .unwrap();
 
     room_service
         .reject_join_request(
-            room.id.clone(),
-            creator.id.clone(),
-            request_id.as_str(),
+            room.id,
+            creator.id,
+            ReviewRequestId::from(request_id),
             Some("not now"),
         )
         .await
@@ -576,15 +566,15 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         )
         ",
     )
-    .bind(room.id.as_str())
-    .bind(joiner.id.as_str())
+    .bind(room.id)
+    .bind(joiner.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert!(rejected_request_exists);
 
     let (_joined_room, pending_again, _) = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
     assert_eq!(pending_again.status, MemberStatus::Active);
@@ -603,16 +593,14 @@ async fn test_leave_room_creator_cannot_leave() {
         .create_room(
             "Leave Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
         .await
         .unwrap();
 
-    let result = room_service
-        .leave_room(room.id.clone(), owner.id.clone())
-        .await;
+    let result = room_service.leave_room(room.id, owner.id).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -647,7 +635,7 @@ async fn test_leave_room_member_succeeds() {
         .create_room(
             "Leave Success Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -656,7 +644,7 @@ async fn test_leave_room_member_succeeds() {
 
     // Join the room first
     room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
 
@@ -664,10 +652,7 @@ async fn test_leave_room_member_succeeds() {
     assert!(member_repo.is_member(&room.id, &joiner.id).await.unwrap());
 
     // Leave the room
-    room_service
-        .leave_room(room.id.clone(), joiner.id.clone())
-        .await
-        .unwrap();
+    room_service.leave_room(room.id, joiner.id).await.unwrap();
 
     // Verify membership is gone
     assert!(!member_repo.is_member(&room.id, &joiner.id).await.unwrap());
@@ -693,16 +678,14 @@ async fn test_leave_room_non_member_is_rejected() {
         .create_room(
             "Leave Non Member Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
         .await
         .unwrap();
 
-    let result = room_service
-        .leave_room(room.id.clone(), outsider.id.clone())
-        .await;
+    let result = room_service.leave_room(room.id, outsider.id).await;
 
     assert!(
         result.is_err(),
@@ -733,7 +716,7 @@ async fn test_delete_room_sets_deleted_at() {
         .create_room(
             "Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -744,10 +727,7 @@ async fn test_delete_room_sets_deleted_at() {
     assert!(room_repo.exists(&room.id).await.unwrap());
 
     // Delete the room
-    room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    room_service.delete_room(room.id, owner.id).await.unwrap();
 
     // Room should no longer be findable via normal queries (deleted_at IS NULL filter)
     let fetched = room_repo.get_by_id(&room.id).await.unwrap();
@@ -759,7 +739,7 @@ async fn test_delete_room_sets_deleted_at() {
     // But should still exist in DB with deleted_at set
     let deleted_at: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -779,7 +759,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
         .create_room(
             "CAS Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -791,7 +771,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     // The service reads version N, then we immediately bump it, so the CAS write
     // fails with OptimisticLockConflict.
     // Spawn a concurrent task that keeps bumping the version.
-    let room_id_str = room.id.as_str().to_string();
+    let room_id_str = room.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -809,9 +789,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     });
 
     let settings = RoomSettings::default();
-    let result = room_service
-        .set_settings(room.id.clone(), owner.id.clone(), settings)
-        .await;
+    let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = bumper.await;
@@ -857,7 +835,7 @@ async fn test_banned_user_cannot_rejoin_room() {
         .create_room(
             "Ban Rejoin Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -866,25 +844,18 @@ async fn test_banned_user_cannot_rejoin_room() {
 
     // Join first
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     // Ban the member
     let member_service = room_service.member_service();
     member_service
-        .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            Some("Spamming".to_string()),
-        )
+        .ban_member(room.id, creator.id, target.id, Some("Spamming".to_string()))
         .await
         .unwrap();
 
-    let result = room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, target.id, None).await;
 
     assert!(result.is_err(), "Banned user should not be able to rejoin");
     match result.unwrap_err() {
@@ -918,7 +889,7 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
         .create_room(
             "Inactive Owner Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -926,7 +897,7 @@ async fn test_room_with_banned_creator_becomes_unavailable_to_existing_members()
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -967,7 +938,7 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
         .create_room(
             "Inactive Join Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -979,9 +950,7 @@ async fn test_room_with_banned_creator_rejects_new_joins() {
         .await
         .unwrap();
 
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
     match result.expect_err("room with banned creator must reject joins") {
         Error::Authorization(message) => {
             assert!(
@@ -1011,7 +980,7 @@ async fn test_room_description_unicode_500_chars_accepted() {
         .create_room(
             "Unicode Room".to_string(),
             desc.clone(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1038,13 +1007,7 @@ async fn test_room_description_over_500_rejected() {
     let desc = "a".repeat(501);
 
     let result = room_service
-        .create_room(
-            "Long Desc Room".to_string(),
-            desc,
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Long Desc Room".to_string(), desc, owner.id, None, None)
         .await;
 
     assert!(result.is_err());
@@ -1071,7 +1034,7 @@ async fn direct_update_room_password(
     // Update the password hash directly
     sqlx::query("UPDATE room_settings SET value = $1 WHERE room_id = $2 AND key = 'password'")
         .bind(new_password_hash)
-        .bind(room_id.as_str())
+        .bind(room_id)
         .execute(pool)
         .await
         .expect("Failed to update password hash");
@@ -1093,7 +1056,7 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
         .create_room(
             "Race Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("OriginalPassword123".to_string()),
             None,
         )
@@ -1112,11 +1075,7 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
     // This should fail because the password hash in DB has changed
     // (With distributed lock, the re-verification inside lock will catch this)
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("OriginalPassword123".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("OriginalPassword123".to_string()))
         .await;
 
     assert!(
@@ -1156,7 +1115,7 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
         .create_room(
             "Race New Password Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("OriginalPassword123".to_string()),
             None,
         )
@@ -1173,11 +1132,7 @@ async fn test_join_room_password_changed_during_join_with_correct_new_password_s
 
     // Join with the NEW password - should succeed
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("NewPassword456".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("NewPassword456".to_string()))
         .await;
 
     assert!(
@@ -1212,7 +1167,7 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
         .create_room(
             "Password Cleared Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("OriginalPassword123".to_string()),
             None,
         )
@@ -1224,16 +1179,14 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
     sqlx::query(
         r#"UPDATE room_settings SET value = '{"require_password":false,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .execute(&pool)
     .await
     .expect("Failed to update require_password");
 
     // Join should now succeed even with wrong password (password no longer required)
     // Actually, since password is no longer required, we can join without password
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(
         result.is_ok(),
@@ -1267,7 +1220,7 @@ async fn test_join_room_password_added_during_join_requires_password() {
         .create_room(
             "Password Added Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1283,7 +1236,7 @@ async fn test_join_room_password_added_during_join_requires_password() {
     sqlx::query(
         "INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, 'password', $2, 1)",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .bind(&new_hash)
     .execute(&pool)
     .await
@@ -1293,15 +1246,13 @@ async fn test_join_room_password_added_during_join_requires_password() {
     sqlx::query(
         r#"UPDATE room_settings SET value = '{"require_password":true,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .execute(&pool)
     .await
     .expect("Failed to update require_password");
 
     // Join without password should fail
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
 
     assert!(
         result.is_err(),
@@ -1319,11 +1270,7 @@ async fn test_join_room_password_added_during_join_requires_password() {
 
     // Join with correct password should succeed
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("NewPassword123".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("NewPassword123".to_string()))
         .await;
 
     assert!(
@@ -1424,20 +1371,8 @@ async fn test_concurrent_room_creation_same_name_different_users_succeeds() {
     let room_name = "Same Name Room".to_string();
 
     let (result1, result2) = tokio::join!(
-        room_service.create_room(
-            room_name.clone(),
-            "Desc1".to_string(),
-            user1.id.clone(),
-            None,
-            None
-        ),
-        room_service.create_room(
-            room_name.clone(),
-            "Desc2".to_string(),
-            user2.id.clone(),
-            None,
-            None
-        )
+        room_service.create_room(room_name.clone(), "Desc1".to_string(), user1.id, None, None),
+        room_service.create_room(room_name.clone(), "Desc2".to_string(), user2.id, None, None)
     );
 
     assert!(
@@ -1477,7 +1412,7 @@ async fn test_same_user_cannot_create_duplicate_room_name() {
         .create_room(
             "Repeated Name".to_string(),
             "Desc1".to_string(),
-            user.id.clone(),
+            user.id,
             None,
             None,
         )
@@ -1488,7 +1423,7 @@ async fn test_same_user_cannot_create_duplicate_room_name() {
         .create_room(
             "Repeated Name".to_string(),
             "Desc2".to_string(),
-            user.id.clone(),
+            user.id,
             None,
             None,
         )
@@ -1517,14 +1452,14 @@ async fn test_same_user_can_create_multiple_rooms_with_distinct_names() {
         room_service.create_room(
             "User Room A".to_string(),
             "Desc1".to_string(),
-            user.id.clone(),
+            user.id,
             None,
             None
         ),
         room_service.create_room(
             "Different Room".to_string(),
             "Desc2".to_string(),
-            user.id.clone(),
+            user.id,
             None,
             None
         )
@@ -1559,7 +1494,7 @@ async fn test_password_update_invalidates_room_cache() {
         .create_room(
             "Password Cache Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("OriginalPassword123".to_string()),
             None,
         )
@@ -1610,7 +1545,7 @@ async fn test_password_removal_clears_require_password_flag() {
         .create_room(
             "Password Remove Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("PasswordToBeRemoved".to_string()),
             None,
         )
@@ -1716,7 +1651,7 @@ async fn test_password_update_allows_join_with_new_password() {
         .create_room(
             "Password Update Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("OldPassword123".to_string()),
             None,
         )
@@ -1734,21 +1669,13 @@ async fn test_password_update_allows_join_with_new_password() {
 
     // Join with old password should fail
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("OldPassword123".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("OldPassword123".to_string()))
         .await;
     assert!(result.is_err(), "Old password should fail after update");
 
     // Join with new password should succeed
     let result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("NewPassword456".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("NewPassword456".to_string()))
         .await;
     assert!(
         result.is_ok(),
@@ -1778,7 +1705,7 @@ async fn test_ban_member_invalidates_permission_cache() {
         .create_room(
             "Ban Sync Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1787,7 +1714,7 @@ async fn test_ban_member_invalidates_permission_cache() {
 
     // Target joins the room
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -1802,12 +1729,7 @@ async fn test_ban_member_invalidates_permission_cache() {
     // Ban the target
     let member_service = room_service.member_service();
     member_service
-        .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            Some("Test ban".to_string()),
-        )
+        .ban_member(room.id, creator.id, target.id, Some("Test ban".to_string()))
         .await
         .unwrap();
 
@@ -1862,7 +1784,7 @@ async fn test_unban_member_restores_permission_access() {
         .create_room(
             "Unban Sync Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1871,12 +1793,12 @@ async fn test_unban_member_restores_permission_access() {
 
     // Target joins and then gets banned
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
     let member_service = room_service.member_service();
     member_service
-        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, creator.id, target.id, None)
         .await
         .unwrap();
 
@@ -1891,7 +1813,7 @@ async fn test_unban_member_restores_permission_access() {
 
     // Unban
     member_service
-        .unban_member(room.id.clone(), creator.id.clone(), target.id.clone())
+        .unban_member(room.id, creator.id, target.id)
         .await
         .unwrap();
 
@@ -1905,9 +1827,7 @@ async fn test_unban_member_restores_permission_access() {
     assert_eq!(member.status, MemberStatus::Left);
 
     // User should be able to join again
-    let result = room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, target.id, None).await;
     assert!(
         result.is_ok(),
         "Unbanned user should be able to join: {:?}",
@@ -1935,7 +1855,7 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
         .create_room(
             "Ban Cache Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -1944,7 +1864,7 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
 
     // Target joins and gets permissions cached
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -1958,14 +1878,12 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
     // Ban the target
     let member_service = room_service.member_service();
     member_service
-        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .ban_member(room.id, creator.id, target.id, None)
         .await
         .unwrap();
 
     // Try to rejoin - should fail because banned
-    let result = room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, target.id, None).await;
     assert!(
         result.is_err(),
         "Banned user should not be able to join even with cached permissions"
@@ -1992,7 +1910,7 @@ async fn test_settings_update_retries_on_version_conflict() {
         .create_room(
             "Retry Settings Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2000,10 +1918,10 @@ async fn test_settings_update_retries_on_version_conflict() {
         .unwrap();
 
     // Concurrent settings update from two tasks
-    let room_id1 = room.id.clone();
-    let room_id2 = room.id.clone();
-    let user_id1 = owner.id.clone();
-    let user_id2 = owner.id.clone();
+    let room_id1 = room.id;
+    let room_id2 = room.id;
+    let user_id1 = owner.id;
+    let user_id2 = owner.id;
 
     let pool1 = pool.clone();
     let update1 = tokio::spawn(async move {
@@ -2011,7 +1929,7 @@ async fn test_settings_update_retries_on_version_conflict() {
         let mut settings = room_service.get_room_settings(&room_id1).await.unwrap();
         settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
         room_service
-            .set_settings(room_id1.clone(), user_id1.clone(), settings)
+            .set_settings(room_id1, user_id1, settings)
             .await
     });
 
@@ -2021,7 +1939,7 @@ async fn test_settings_update_retries_on_version_conflict() {
         let mut settings = room_service.get_room_settings(&room_id2).await.unwrap();
         settings.max_members = synctv_core::models::room_settings::MaxMembers(50);
         room_service
-            .set_settings(room_id2.clone(), user_id2.clone(), settings)
+            .set_settings(room_id2, user_id2, settings)
             .await
     });
 
@@ -2051,7 +1969,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
         .create_room(
             "Max Retry Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2059,7 +1977,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
         .unwrap();
 
     // Manually corrupt the version to force OptimisticLockConflict on every attempt
-    let room_id_str = room.id.as_str().to_string();
+    let room_id_str = room.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -2078,9 +1996,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
     });
 
     let settings = RoomSettings::default();
-    let result = room_service
-        .set_settings(room.id.clone(), owner.id.clone(), settings)
-        .await;
+    let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = bumper.await;
@@ -2122,7 +2038,7 @@ async fn test_single_setting_update_with_retry() {
         .create_room(
             "Single Setting Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2164,7 +2080,7 @@ async fn test_password_update_with_cas_retry() {
         .create_room(
             "Password Retry Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("InitialPassword".to_string()),
             None,
         )
@@ -2192,11 +2108,7 @@ async fn test_password_update_with_cas_retry() {
         .await
         .unwrap();
     let join_result = room_service
-        .join_room(
-            room.id.clone(),
-            joiner.id.clone(),
-            Some("NewPassword123".to_string()),
-        )
+        .join_room(room.id, joiner.id, Some("NewPassword123".to_string()))
         .await;
 
     assert!(
@@ -2226,7 +2138,7 @@ async fn test_room_deletion_invalidates_caches() {
         .create_room(
             "Cache Invalidation Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2235,7 +2147,7 @@ async fn test_room_deletion_invalidates_caches() {
 
     // Member joins to populate caches
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
 
@@ -2247,10 +2159,7 @@ async fn test_room_deletion_invalidates_caches() {
         .unwrap();
 
     // Delete the room
-    room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    room_service.delete_room(room.id, owner.id).await.unwrap();
 
     // Verify room is deleted (soft-deleted, not visible via normal queries)
     let room_repo = RoomRepository::new(pool.clone());
@@ -2337,7 +2246,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .create_room(
             "Salt Room 1".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("SamePassword123".to_string()),
             None,
         )
@@ -2348,7 +2257,7 @@ async fn test_room_password_uses_unique_salt_per_room() {
         .create_room(
             "Salt Room 2".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("SamePassword123".to_string()),
             None,
         )
@@ -2403,7 +2312,7 @@ async fn test_max_members_enforced_on_join() {
         .create_room(
             "Max Members Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -2412,9 +2321,7 @@ async fn test_max_members_enforced_on_join() {
 
     // First joiner (count: 2)
     let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner1.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner1.id, None).await;
     assert!(
         result.is_ok(),
         "First joiner should succeed: {:?}",
@@ -2423,9 +2330,7 @@ async fn test_max_members_enforced_on_join() {
 
     // Second joiner (count: 3 = max)
     let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner2.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner2.id, None).await;
     assert!(
         result.is_ok(),
         "Second joiner should succeed (at limit): {:?}",
@@ -2438,9 +2343,7 @@ async fn test_max_members_enforced_on_join() {
 
     // Third joiner should fail (would exceed max_members)
     let joiner3 = user_repo.create(&make_user("max_joiner3")).await.unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner3.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner3.id, None).await;
     assert!(result.is_err(), "Third joiner should fail (exceeds max)");
 
     match result.unwrap_err() {
@@ -2472,7 +2375,7 @@ async fn test_max_members_zero_means_unlimited() {
         .create_room(
             "Unlimited Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -2485,9 +2388,7 @@ async fn test_max_members_zero_means_unlimited() {
             .create(&make_user(&format!("unlim_joiner_{i}")))
             .await
             .unwrap();
-        let result = room_service
-            .join_room(room.id.clone(), joiner.id.clone(), None)
-            .await;
+        let result = room_service.join_room(room.id, joiner.id, None).await;
         assert!(
             result.is_ok(),
             "Joiner {} should succeed (unlimited room): {:?}",
@@ -2518,7 +2419,7 @@ async fn test_max_members_enforced_at_limit_boundary() {
         .create_room(
             "Boundary Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -2530,9 +2431,7 @@ async fn test_max_members_enforced_at_limit_boundary() {
         .create(&make_user("boundary_joiner"))
         .await
         .unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result.is_err(), "Joiner should fail (room at capacity)");
 }
 
@@ -2565,7 +2464,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
         .create_room(
             "Permission Escalation Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2578,9 +2477,7 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
         PermissionBits::KICK_MEMBER, // This exceeds DEFAULT_MEMBER
     );
 
-    let result = room_service
-        .set_settings(room.id.clone(), owner.id.clone(), settings)
-        .await;
+    let result = room_service.set_settings(room.id, owner.id, settings).await;
 
     assert!(result.is_err(), "Permission escalation should be rejected");
     match result.unwrap_err() {
@@ -2621,7 +2518,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         .create_room(
             "Guest Kick Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -2631,7 +2528,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
     // Add guest as member with Guest role
     let member_service = room_service.member_service();
     member_service
-        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .add_member(room.id, guest.id, RoomRole::Guest)
         .await
         .unwrap();
 
@@ -2696,7 +2593,7 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
         .create_room(
             "Settings Notify Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2795,7 +2692,7 @@ async fn test_set_settings_returns_committed_room_settings_snapshot() {
         .create_room(
             "Settings Snapshot Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2809,7 +2706,7 @@ async fn test_set_settings_returns_committed_room_settings_snapshot() {
     };
 
     let snapshot = room_service
-        .set_settings(room.id.clone(), owner.id.clone(), updated_settings.clone())
+        .set_settings(room.id, owner.id, updated_settings.clone())
         .await
         .expect("settings update should return committed snapshot");
 
@@ -2838,7 +2735,7 @@ async fn test_set_room_settings_returns_committed_room_settings_snapshot() {
         .create_room(
             "Set Room Settings Snapshot Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2879,7 +2776,7 @@ async fn test_reset_room_settings_returns_committed_room_settings_snapshot() {
         .create_room(
             "Reset Room Settings Snapshot Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -2937,7 +2834,7 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
         .create_room(
             "Full Replace Guest Kick Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(initial_settings),
         )
@@ -2946,7 +2843,7 @@ async fn test_set_room_settings_disabling_guest_join_kicks_guests() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .add_member(room.id, guest.id, RoomRole::Guest)
         .await
         .unwrap();
     assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
@@ -3016,7 +2913,7 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
         .create_room(
             "Password Kick Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -3025,7 +2922,7 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .add_member(room.id, guest.id, RoomRole::Guest)
         .await
         .unwrap();
     assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
@@ -3093,7 +2990,7 @@ async fn test_remove_media_respects_admin_override_columns() {
         .create_room(
             "Admin Remove Media Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3102,7 +2999,7 @@ async fn test_remove_media_respects_admin_override_columns() {
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), admin.id.clone(), RoomRole::Admin)
+        .add_member(room.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
 
@@ -3113,8 +3010,8 @@ async fn test_remove_media_respects_admin_override_columns() {
              removed_permissions = 0
          WHERE room_id = $1 AND user_id = $2",
     )
-    .bind(room.id.as_str())
-    .bind(admin.id.as_str())
+    .bind(room.id)
+    .bind(admin.id)
     .bind(u64_to_i64(PermissionBits::DELETE_MEDIA_ANY))
     .execute(&pool)
     .await
@@ -3124,22 +3021,20 @@ async fn test_remove_media_respects_admin_override_columns() {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
-        room_id: room.id.clone(),
+        room_id: room.id,
         name: "Protected Media".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: Some("direct_url".to_string()),
-        creator_id: Some(owner.id.clone()),
+        creator_id: Some(owner.id),
         added_at: now,
         updated_at: now,
         version: 0,
     };
     media_repo.create(&media).await.unwrap();
 
-    let result = room_service
-        .remove_media(room.id.clone(), admin.id.clone(), media.id.clone())
-        .await;
+    let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
         matches!(result, Err(Error::Authorization(_))),
         "admin DELETE_MEDIA_ANY revoke must be enforced by transactional SQL, got: {result:?}"
@@ -3164,7 +3059,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .create_room(
             "Delete Entries Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3176,8 +3071,8 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
     let top_level_playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Folder".to_string(),
             parent_id: None,
             position: 0.0,
@@ -3195,13 +3090,13 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "root-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3212,14 +3107,14 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
     let child_media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(top_level_playlist.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(top_level_playlist.id),
+            room_id: room.id,
             name: "child-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3229,11 +3124,11 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![top_level_playlist.id.clone()],
-                media_ids: vec![root_media.id.clone()],
+                playlist_ids: vec![top_level_playlist.id],
+                media_ids: vec![root_media.id],
                 force: false,
             },
         )
@@ -3282,7 +3177,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .create_room(
             "Root Scope A".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3292,7 +3187,7 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .create_room(
             "Root Scope B".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3304,13 +3199,13 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room_a.id.clone(),
+            room_id: room_a.id,
             name: "room-a-root".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3321,13 +3216,13 @@ async fn test_get_playlist_only_returns_room_root_media() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room_b.id.clone(),
+            room_id: room_b.id,
             name: "room-b-root".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3363,7 +3258,7 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
         .create_room(
             "Delete Entries Grant".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3372,15 +3267,15 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), member.id.clone(), RoomRole::Member)
+        .add_member(room.id, member.id, RoomRole::Member)
         .await
         .unwrap();
     room_service
         .member_service()
         .grant_permission(
-            room.id.clone(),
-            owner.id.clone(),
-            member.id.clone(),
+            room.id,
+            owner.id,
+            member.id,
             PermissionBits::REORDER_PLAYLIST,
         )
         .await
@@ -3389,8 +3284,8 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Granted Delete".to_string(),
             parent_id: None,
             position: 0.0,
@@ -3406,10 +3301,10 @@ async fn test_delete_entries_allows_playlist_delete_with_granted_reorder_permiss
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            member.id.clone(),
+            room.id,
+            member.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![playlist.id.clone()],
+                playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -3446,7 +3341,7 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
         .create_room(
             "Delete Entries Revoke".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3455,15 +3350,15 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), admin.id.clone(), RoomRole::Admin)
+        .add_member(room.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
     room_service
         .member_service()
         .revoke_permission(
-            room.id.clone(),
-            owner.id.clone(),
-            admin.id.clone(),
+            room.id,
+            owner.id,
+            admin.id,
             PermissionBits::REORDER_PLAYLIST,
         )
         .await
@@ -3472,8 +3367,8 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Revoked Delete".to_string(),
             parent_id: None,
             position: 0.0,
@@ -3489,10 +3384,10 @@ async fn test_delete_entries_denies_playlist_delete_when_reorder_permission_revo
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            admin.id.clone(),
+            room.id,
+            admin.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![playlist.id.clone()],
+                playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -3526,7 +3421,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .create_room(
             "Delete Entries Media".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3535,7 +3430,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
 
     room_service
         .member_service()
-        .add_member(room.id.clone(), admin.id.clone(), RoomRole::Admin)
+        .add_member(room.id, admin.id, RoomRole::Admin)
         .await
         .unwrap();
 
@@ -3543,13 +3438,13 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "foreign-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -3559,11 +3454,11 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            admin.id.clone(),
+            room.id,
+            admin.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
-                media_ids: vec![media.id.clone()],
+                media_ids: vec![media.id],
                 force: false,
             },
         )
@@ -3590,7 +3485,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .create_room(
             "Delete Entries Notify".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3601,13 +3496,13 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "notify-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -3619,11 +3514,11 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
 
     room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
-                media_ids: vec![media.id.clone()],
+                media_ids: vec![media.id],
                 force: false,
             },
         )
@@ -3639,7 +3534,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::MediaRemoved { media_id, .. } => {
-            assert_eq!(media_id, media.id.as_str());
+            assert_eq!(media_id, media.id);
         }
         other => panic!("expected MediaRemoved event, got: {other:?}"),
     }
@@ -3661,7 +3556,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         .create_room(
             "Clear Playlist Notify".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3672,13 +3567,13 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "clear-notify-1".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -3689,13 +3584,13 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "clear-notify-2".to_string(),
             position: 1.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -3706,7 +3601,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
     let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
-        .clear_playlist(room.id.clone(), owner.id.clone())
+        .clear_playlist(room.id, owner.id)
         .await
         .unwrap();
 
@@ -3731,10 +3626,7 @@ async fn test_clear_playlist_notifies_local_media_removed_subscribers() {
 
     assert_eq!(
         removed_ids,
-        std::collections::HashSet::from([
-            media1.id.as_str().to_string(),
-            media2.id.as_str().to_string(),
-        ])
+        std::collections::HashSet::from([media1.id, media2.id])
     );
 }
 
@@ -3754,7 +3646,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .create_room(
             "Clear Playlist Playback".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3765,13 +3657,13 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "playing-root-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -3780,7 +3672,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .unwrap();
 
     room_service
-        .set_playing_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .set_playing_media(room.id, owner.id, media.id)
         .await
         .unwrap();
 
@@ -3789,12 +3681,12 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
         .get_state(&room.id)
         .await
         .unwrap();
-    assert_eq!(warm_state.playing_media_id, Some(media.id.clone()));
+    assert_eq!(warm_state.playing_media_id, Some(media.id));
 
     let mut event_rx = room_service.notification_service().subscribe();
 
     let result = room_service
-        .clear_playlist(room.id.clone(), owner.id.clone())
+        .clear_playlist(room.id, owner.id)
         .await
         .unwrap();
 
@@ -3858,7 +3750,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         .create_room(
             "Delete Entries Cascade Count".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3868,8 +3760,8 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     let parent = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Parent".to_string(),
             parent_id: None,
             position: 0.0,
@@ -3885,10 +3777,10 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     let child = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Child".to_string(),
-            parent_id: Some(parent.id.clone()),
+            parent_id: Some(parent.id),
             position: 0.0,
             source_provider: None,
             source_config: None,
@@ -3904,14 +3796,14 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     let parent_media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(parent.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(parent.id),
+            room_id: room.id,
             name: "parent-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3921,14 +3813,14 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
     let child_media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(child.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(child.id),
+            room_id: room.id,
             name: "child-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -3938,10 +3830,10 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![parent.id.clone()],
+                playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -3986,7 +3878,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         .create_room(
             "Delete Entries Cascade Notify".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -3996,8 +3888,8 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Cascade Playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -4014,14 +3906,14 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
     let media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
             name: "cascade-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -4033,10 +3925,10 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
 
     room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![playlist.id.clone()],
+                playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -4053,7 +3945,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::MediaRemoved { media_id, .. } => {
-            assert_eq!(media_id, media.id.as_str());
+            assert_eq!(media_id, media.id);
         }
         other => panic!("expected MediaRemoved event, got: {other:?}"),
     }
@@ -4075,7 +3967,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
         .create_room(
             "Delete Entries Playlist Notify".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4085,8 +3977,8 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
     let playlist = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "notify-playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -4104,10 +3996,10 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
 
     room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![playlist.id.clone()],
+                playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -4124,7 +4016,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::PlaylistDeleted { playlist_id, .. } => {
-            assert_eq!(playlist_id, playlist.id.as_str());
+            assert_eq!(playlist_id, playlist.id);
         }
         other => panic!("expected PlaylistDeleted event, got: {other:?}"),
     }
@@ -4146,7 +4038,7 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
         .create_room(
             "Delete Entries Playing Media".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4157,13 +4049,13 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "playing-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -4173,23 +4065,17 @@ async fn test_delete_entries_rejects_currently_playing_media_without_force() {
 
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
-                media_ids: vec![media.id.clone()],
+                media_ids: vec![media.id],
                 force: false,
             },
         )
@@ -4219,7 +4105,7 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
         .create_room(
             "Delete Entries Playing Playlist".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4229,8 +4115,8 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
     let parent = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "parent".to_string(),
             parent_id: None,
             position: 0.0,
@@ -4246,10 +4132,10 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
     let child = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "child".to_string(),
-            parent_id: Some(parent.id.clone()),
+            parent_id: Some(parent.id),
             position: 0.0,
             source_provider: None,
             source_config: None,
@@ -4264,14 +4150,14 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
     let media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(child.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(child.id),
+            room_id: room.id,
             name: "deep-playing-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -4281,22 +4167,16 @@ async fn test_delete_entries_rejects_ancestor_playlist_of_currently_playing_medi
 
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![parent.id.clone()],
+                playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: false,
             },
@@ -4326,7 +4206,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
         .create_room(
             "Delete Entries Force Media".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4337,13 +4217,13 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
         .create(&Media {
             id: MediaId::new(),
             playlist_id: None,
-            room_id: room.id.clone(),
+            room_id: room.id,
             name: "force-playing-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -4353,23 +4233,17 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_med
 
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
-                media_ids: vec![media.id.clone()],
+                media_ids: vec![media.id],
                 force: true,
             },
         )
@@ -4407,7 +4281,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
         .create_room(
             "Delete Entries Force Playlist".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4417,8 +4291,8 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     let parent = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "force-parent".to_string(),
             parent_id: None,
             position: 0.0,
@@ -4434,10 +4308,10 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     let child = playlist_repo
         .create(&Playlist {
             id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "force-child".to_string(),
-            parent_id: Some(parent.id.clone()),
+            parent_id: Some(parent.id),
             position: 0.0,
             source_provider: None,
             source_config: None,
@@ -4451,14 +4325,14 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
     let media = media_repo
         .create(&Media {
             id: MediaId::new(),
-            playlist_id: Some(child.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(child.id),
+            room_id: room.id,
             name: "force-deep-playing-media".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -4468,22 +4342,16 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_ancestor_pl
 
     room_service
         .playback_service()
-        .switch(
-            room.id.clone(),
-            owner.id.clone(),
-            Some(media.id.clone()),
-            None,
-            Vec::new(),
-        )
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
         .await
         .unwrap();
 
     let result = room_service
         .delete_entries(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::room::DeleteEntriesRequest {
-                playlist_ids: vec![parent.id.clone()],
+                playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: true,
             },
@@ -4529,7 +4397,7 @@ async fn test_room_name_unicode_validation() {
         .create_room(
             unicode_name.to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4555,7 +4423,7 @@ async fn test_room_name_whitespace_handling() {
         .create_room(
             name_with_spaces.to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4584,7 +4452,7 @@ async fn test_room_description_with_newlines() {
         .create_room(
             "Newline Room".to_string(),
             description.to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4608,7 +4476,7 @@ async fn test_cannot_join_closed_room() {
         .create_room(
             "Closed Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4622,9 +4490,7 @@ async fn test_cannot_join_closed_room() {
         .unwrap();
 
     // Try to join the closed room
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result.is_err(), "Should not be able to join closed room");
 
     match result.unwrap_err() {
@@ -4658,7 +4524,7 @@ async fn test_cannot_join_banned_room() {
         .create_room(
             "To Be Banned Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4667,26 +4533,19 @@ async fn test_cannot_join_banned_room() {
 
     // First, joiner joins the room
     room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .join_room(room.id, joiner.id, None)
         .await
         .unwrap();
 
     // Now ban the joiner from the room
     let member_service = room_service.member_service();
     member_service
-        .ban_member(
-            room.id.clone(),
-            owner.id.clone(),
-            joiner.id.clone(),
-            Some("Test ban".to_string()),
-        )
+        .ban_member(room.id, owner.id, joiner.id, Some("Test ban".to_string()))
         .await
         .unwrap();
 
     // Try to join again - should fail because user is banned
-    let result = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner.id, None).await;
     assert!(
         result.is_err(),
         "Should not be able to join room when banned"
@@ -4713,7 +4572,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
         .create_room(
             "Atomic Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4736,7 +4595,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
 
     let playlist_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -4747,7 +4606,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
 
     let playback_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -4768,7 +4627,7 @@ async fn test_non_creator_cannot_delete_room() {
         .create_room(
             "Non-Creator Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4776,9 +4635,7 @@ async fn test_non_creator_cannot_delete_room() {
         .unwrap();
 
     // Non-creator tries to delete the room
-    let result = room_service
-        .delete_room(room.id.clone(), other_user.id.clone())
-        .await;
+    let result = room_service.delete_room(room.id, other_user.id).await;
     assert!(
         result.is_err(),
         "Non-creator should not be able to delete room"
@@ -4806,7 +4663,7 @@ async fn test_room_admin_cannot_delete_room() {
         .create_room(
             "Room Admin Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4815,16 +4672,14 @@ async fn test_room_admin_cannot_delete_room() {
 
     member_repo
         .add(&synctv_core::models::RoomMember::new(
-            room.id.clone(),
-            room_admin.id.clone(),
+            room.id,
+            room_admin.id,
             RoomRole::Admin,
         ))
         .await
         .unwrap();
 
-    let result = room_service
-        .delete_room(room.id.clone(), room_admin.id.clone())
-        .await;
+    let result = room_service.delete_room(room.id, room_admin.id).await;
 
     assert!(
         result.is_err(),
@@ -4867,7 +4722,7 @@ async fn test_global_admin_can_delete_room_via_delete_room() {
         .create_room(
             "Global Admin Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4875,7 +4730,7 @@ async fn test_global_admin_can_delete_room_via_delete_room() {
         .unwrap();
 
     room_service
-        .delete_room(room.id.clone(), admin_user.id.clone())
+        .delete_room(room.id, admin_user.id)
         .await
         .unwrap();
 
@@ -4912,7 +4767,7 @@ async fn test_admin_delete_room_bypasses_permission_check() {
         .create_room(
             "Admin Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -4939,13 +4794,7 @@ async fn test_admin_delete_room_requires_admin_role() {
 
     let owner = user_repo.create(&make_user("owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room(
-            "Test Room".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Test Room".to_string(), String::new(), owner.id, None, None)
         .await
         .unwrap();
 
@@ -5008,7 +4857,7 @@ async fn test_admin_delete_room_requires_root_role() {
         .create_room(
             "Test Room 2".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5049,7 +4898,7 @@ async fn test_delete_nonexistent_room_returns_error() {
         .create_room(
             "To Be Deleted".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5057,15 +4906,10 @@ async fn test_delete_nonexistent_room_returns_error() {
         .unwrap();
 
     // Delete the room first
-    room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    room_service.delete_room(room.id, owner.id).await.unwrap();
 
     // Try to delete the already-deleted room - should fail
-    let result = room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await;
+    let result = room_service.delete_room(room.id, owner.id).await;
     assert!(result.is_err(), "Deleting already-deleted room should fail");
 
     match result.unwrap_err() {
@@ -5095,7 +4939,7 @@ async fn test_double_delete_room_returns_error() {
         .create_room(
             "Double Delete Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5103,15 +4947,10 @@ async fn test_double_delete_room_returns_error() {
         .unwrap();
 
     // First delete should succeed
-    room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    room_service.delete_room(room.id, owner.id).await.unwrap();
 
     // Second delete should fail
-    let result = room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await;
+    let result = room_service.delete_room(room.id, owner.id).await;
     assert!(result.is_err(), "Double delete should fail");
 }
 
@@ -5130,7 +4969,7 @@ async fn test_get_member_count_batch_efficient_query() {
             .create_room(
                 format!("Batch Room {i}"),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -5149,7 +4988,7 @@ async fn test_get_member_count_batch_efficient_query() {
     // Each room should have 1 member (the creator)
     for room_id in &room_ids {
         assert_eq!(
-            counts.get(room_id.as_str()).unwrap_or(&0),
+            counts.get(room_id).unwrap_or(&0),
             &1,
             "Each room should have 1 member"
         );
@@ -5169,7 +5008,7 @@ async fn test_room_exists_is_efficient() {
         .create_room(
             "Exists Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5200,7 +5039,7 @@ async fn test_list_rooms_by_creator() {
             .create_room(
                 format!("Owner Room {i}"),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -5214,7 +5053,7 @@ async fn test_list_rooms_by_creator() {
             .create_room(
                 format!("Other Room {i}"),
                 String::new(),
-                other.id.clone(),
+                other.id,
                 None,
                 None,
             )
@@ -5255,7 +5094,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
         .create_room(
             "Visible Room".to_string(),
             String::new(),
-            active_owner.id.clone(),
+            active_owner.id,
             None,
             None,
         )
@@ -5265,7 +5104,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
         .create_room(
             "Hidden Room".to_string(),
             String::new(),
-            inactive_owner.id.clone(),
+            inactive_owner.id,
             None,
             None,
         )
@@ -5321,7 +5160,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
         .create_room(
             "Joined Visible Room".to_string(),
             String::new(),
-            active_owner.id.clone(),
+            active_owner.id,
             None,
             None,
         )
@@ -5331,7 +5170,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
         .create_room(
             "Joined Hidden Room".to_string(),
             String::new(),
-            inactive_owner.id.clone(),
+            inactive_owner.id,
             None,
             None,
         )
@@ -5339,11 +5178,11 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
         .unwrap();
 
     room_service
-        .join_room(visible_room.id.clone(), member.id.clone(), None)
+        .join_room(visible_room.id, member.id, None)
         .await
         .unwrap();
     room_service
-        .join_room(hidden_room.id.clone(), member.id.clone(), None)
+        .join_room(hidden_room.id, member.id, None)
         .await
         .unwrap();
 
@@ -5393,7 +5232,7 @@ async fn test_list_rooms_pagination() {
             .create_room(
                 format!("Page Room {i:02}"),
                 String::new(),
-                owner.id.clone(),
+                owner.id,
                 None,
                 None,
             )
@@ -5449,7 +5288,7 @@ async fn test_guest_cannot_join_password_protected_room() {
         .create_room(
             "Guest Password Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             Some("SecretPassword123".to_string()),
             Some(settings),
         )
@@ -5496,7 +5335,7 @@ async fn test_check_guest_allowed_when_disabled_globally() {
         .create_room(
             "Guest Disabled Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -5527,7 +5366,7 @@ async fn test_update_room_description_success() {
         .create_room(
             "Description Update Room".to_string(),
             "Original description".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5562,7 +5401,7 @@ async fn test_update_room_description_too_long_fails() {
         .create_room(
             "Description Long Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5604,7 +5443,7 @@ async fn test_update_room_description_permission_denied() {
         .create_room(
             "Permission Check Room".to_string(),
             "Original description".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5652,7 +5491,7 @@ async fn test_update_room_description_owner_allowed() {
         .create_room(
             "Owner Update Room".to_string(),
             "Original".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5686,7 +5525,7 @@ async fn test_join_room_idempotent_same_user() {
         .create_room(
             "Idempotent Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5694,18 +5533,14 @@ async fn test_join_room_idempotent_same_user() {
         .unwrap();
 
     // First join
-    let result1 = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result1 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result1.is_ok(), "First join should succeed");
 
     // Get member count after first join
     let count1 = member_repo.count_by_room(&room.id).await.unwrap();
 
     // Second join (idempotent)
-    let result2 = room_service
-        .join_room(room.id.clone(), joiner.id.clone(), None)
-        .await;
+    let result2 = room_service.join_room(room.id, joiner.id, None).await;
     assert!(result2.is_ok(), "Second join should succeed (idempotent)");
 
     // Member count should be the same
@@ -5738,7 +5573,7 @@ async fn test_max_members_read_from_room_settings_on_join() {
         .create_room(
             "Settings Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5758,9 +5593,7 @@ async fn test_max_members_read_from_room_settings_on_join() {
             .create(&make_user(&format!("settings_joiner_{i}")))
             .await
             .unwrap();
-        let result = room_service
-            .join_room(room.id.clone(), joiner.id.clone(), None)
-            .await;
+        let result = room_service.join_room(room.id, joiner.id, None).await;
         assert!(
             result.is_ok(),
             "Joiner {} should succeed: {:?}",
@@ -5778,9 +5611,7 @@ async fn test_max_members_read_from_room_settings_on_join() {
         .create(&make_user("settings_joiner_101"))
         .await
         .unwrap();
-    let result = room_service
-        .join_room(room.id.clone(), joiner101.id.clone(), None)
-        .await;
+    let result = room_service.join_room(room.id, joiner101.id, None).await;
     assert!(result.is_err(), "101st joiner should fail (exceeds max)");
 
     match result.unwrap_err() {
@@ -5822,7 +5653,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
         .create_room(
             "Concurrent Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -5846,12 +5677,12 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     let mut handles = Vec::new();
     for user in users {
         let room_service = room_service.clone();
-        let room_id = room.id.clone();
+        let room_id = room.id;
         let success_count = Arc::clone(&success_count);
         let failure_count = Arc::clone(&failure_count);
 
         let handle = tokio::spawn(async move {
-            let result = room_service.join_room(room_id, user.id.clone(), None).await;
+            let result = room_service.join_room(room_id, user.id, None).await;
             match result {
                 Ok(_) => {
                     success_count.fetch_add(1, Ordering::SeqCst);
@@ -5932,7 +5763,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
         .create_room(
             "Unlimited Room Explicit".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -5952,9 +5783,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
             .create(&make_user(&format!("unlimited_explicit_{i}")))
             .await
             .unwrap();
-        let result = room_service
-            .join_room(room.id.clone(), joiner.id.clone(), None)
-            .await;
+        let result = room_service.join_room(room.id, joiner.id, None).await;
         assert!(
             result.is_ok(),
             "Joiner {} should succeed (unlimited room): {:?}",
@@ -5989,7 +5818,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         .create_room(
             "Cleanup Test Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -5998,7 +5827,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     // Add a member
     room_service
-        .join_room(room.id.clone(), member1.id.clone(), None)
+        .join_room(room.id, member1.id, None)
         .await
         .unwrap();
 
@@ -6006,11 +5835,11 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let playlist = synctv_core::models::Playlist {
         id: synctv_core::models::PlaylistId::new(),
-        room_id: room.id.clone(),
+        room_id: room.id,
         parent_id: None,
         name: "Test Playlist".to_string(),
         position: 0.0,
-        creator_id: Some(owner.id.clone()),
+        creator_id: Some(owner.id),
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
@@ -6023,14 +5852,14 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     let now = chrono::Utc::now();
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
         name: "Test Media".to_string(),
         position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: Some("direct_url".to_string()),
-        creator_id: Some(owner.id.clone()),
+        creator_id: Some(owner.id),
         added_at: now,
         updated_at: now,
         version: 0,
@@ -6040,7 +5869,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Verify related data exists before deletion
     let member_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6051,7 +5880,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     let playlist_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6059,7 +5888,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     let media_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6067,7 +5896,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     let settings_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_settings WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6075,22 +5904,19 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     let playback_count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
     assert_eq!(playback_count_before, 1, "Should have playback state");
 
     // Soft-delete the room
-    room_service
-        .delete_room(room.id.clone(), owner.id.clone())
-        .await
-        .unwrap();
+    room_service.delete_room(room.id, owner.id).await.unwrap();
 
     // Verify room row exists but is soft-deleted
     let deleted_at: Option<chrono::DateTime<Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6102,7 +5928,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Members should be immediately deleted
     let member_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6114,7 +5940,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Playlists should be immediately deleted together with their nested media.
     let playlist_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6126,7 +5952,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Media should be immediately deleted
     let media_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6138,7 +5964,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Settings should be immediately deleted
     let settings_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_settings WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6150,7 +5976,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Playback state should be immediately deleted
     let playback_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6162,7 +5988,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     // Chat messages should be immediately deleted
     let chat_count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE room_id = $1")
-            .bind(room.id.as_str())
+            .bind(room.id)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -6173,7 +5999,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 
     // Verify room row still exists (soft-deleted, not hard-deleted)
     let room_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
-        .bind(room.id.as_str())
+        .bind(room.id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -6201,7 +6027,7 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
         .create_room(
             "Orphaned Room 1".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6218,7 +6044,7 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
 
     // Soft-delete the creator row directly to simulate a pre-existing orphaned room.
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id.as_str())
+        .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -6261,7 +6087,7 @@ async fn test_admin_delete_orphaned_room_requires_admin_role() {
         .create_room(
             "Orphaned Room Non Admin".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6274,7 +6100,7 @@ async fn test_admin_delete_orphaned_room_requires_admin_role() {
         .unwrap();
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id.as_str())
+        .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -6312,7 +6138,7 @@ async fn test_admin_delete_orphaned_room_creator_banned() {
         .create_room(
             "Banned Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6363,7 +6189,7 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
         .create_room(
             "Active Creator Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6408,7 +6234,7 @@ async fn test_admin_delete_orphaned_room_rejects_non_admin() {
         .create_room(
             "Orphaned Room Non Admin".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6421,7 +6247,7 @@ async fn test_admin_delete_orphaned_room_rejects_non_admin() {
         .unwrap();
 
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id.as_str())
+        .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -6458,7 +6284,7 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
         .create_room(
             "Already Deleted Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6471,7 +6297,7 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
 
     // Soft-delete the creator row directly to leave the room orphaned.
     sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1")
-        .bind(creator.id.as_str())
+        .bind(creator.id)
         .execute(&pool)
         .await
         .unwrap();
@@ -6501,7 +6327,7 @@ async fn test_admin_delete_orphaned_room_nonexistent_room() {
         .create(&make_user("admin_nonexistent"))
         .await
         .unwrap();
-    let fake_room_id = RoomId::from_string(synctv_common::snanoid!(12));
+    let fake_room_id = RoomId::new();
 
     let result = room_service
         .admin_delete_orphaned_room(&fake_room_id, &admin.id)
@@ -6562,7 +6388,7 @@ async fn test_create_room_rejects_no_password_when_must_need_pwd() {
         .create_room(
             "No Pwd Room".to_string(),
             "Should fail".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -6601,7 +6427,7 @@ async fn test_create_room_allows_password_when_must_need_pwd() {
         .create_room(
             "Pwd Room".to_string(),
             "Should succeed".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("StrongPassword123".to_string()),
             None,
         )
@@ -6634,7 +6460,7 @@ async fn test_create_room_rejects_password_when_must_no_need_pwd() {
         .create_room(
             "Pwd Room Fail".to_string(),
             "Should fail".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("UnwantedPassword123".to_string()),
             None,
         )
@@ -6673,7 +6499,7 @@ async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
         .create_room(
             "Open Room".to_string(),
             "Should succeed".to_string(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -6708,7 +6534,7 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
         .create_room(
             "Ownership Transfer Room".to_string(),
             "transfer test".to_string(),
-            old_owner.id.clone(),
+            old_owner.id,
             None,
             None,
         )
@@ -6716,12 +6542,12 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), new_owner.id.clone(), None)
+        .join_room(room.id, new_owner.id, None)
         .await
         .unwrap();
 
     let updated_room = room_service
-        .transfer_room_ownership(room.id.clone(), old_owner.id.clone(), new_owner.id.clone())
+        .transfer_room_ownership(room.id, old_owner.id, new_owner.id)
         .await
         .expect("room ownership transfer should succeed");
 
@@ -6765,7 +6591,7 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
         .create_room(
             "Transfer Source Room".to_string(),
             String::new(),
-            old_owner.id.clone(),
+            old_owner.id,
             None,
             None,
         )
@@ -6776,7 +6602,7 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
         .create_room(
             "Already Owned Room".to_string(),
             String::new(),
-            new_owner.id.clone(),
+            new_owner.id,
             None,
             None,
         )
@@ -6784,16 +6610,12 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
         .unwrap();
 
     room_service
-        .join_room(room_to_transfer.id.clone(), new_owner.id.clone(), None)
+        .join_room(room_to_transfer.id, new_owner.id, None)
         .await
         .unwrap();
 
     let err = room_service
-        .transfer_room_ownership(
-            room_to_transfer.id.clone(),
-            old_owner.id.clone(),
-            new_owner.id.clone(),
-        )
+        .transfer_room_ownership(room_to_transfer.id, old_owner.id, new_owner.id)
         .await
         .expect_err("ownership transfer should fail when new owner reached room limit");
 
@@ -6822,7 +6644,7 @@ async fn test_create_room_respects_max_rooms_per_user() {
         .create_room(
             "First Limited Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -6833,7 +6655,7 @@ async fn test_create_room_respects_max_rooms_per_user() {
         .create_room(
             "Second Limited Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -6861,7 +6683,7 @@ async fn test_set_member_role_only_creator_can_change_roles() {
         .create_room(
             "Role Test Room".to_string(),
             "Testing roles".to_string(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6870,35 +6692,25 @@ async fn test_set_member_role_only_creator_can_change_roles() {
 
     // Join admin and member
     room_service
-        .join_room(room.id.clone(), admin_user.id.clone(), None)
+        .join_room(room.id, admin_user.id, None)
         .await
         .unwrap();
     room_service
-        .join_room(room.id.clone(), member_user.id.clone(), None)
+        .join_room(room.id, member_user.id, None)
         .await
         .unwrap();
 
     // Creator promotes admin_user to Admin
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            admin_user.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, admin_user.id, RoomRole::Admin)
         .await
         .unwrap();
 
     // Admin tries to change member_user's role -- should fail (creator-only)
     let result = room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            admin_user.id.clone(),
-            member_user.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, admin_user.id, member_user.id, RoomRole::Admin)
         .await;
 
     assert!(
@@ -6927,7 +6739,7 @@ async fn test_ban_member_completes_quickly() {
         .create_room(
             "Ban Test Room".to_string(),
             "Testing ban".to_string(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -6935,7 +6747,7 @@ async fn test_ban_member_completes_quickly() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -6943,12 +6755,7 @@ async fn test_ban_member_completes_quickly() {
     let start = std::time::Instant::now();
     room_service
         .member_service()
-        .ban_member(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            Some("test ban".to_string()),
-        )
+        .ban_member(room.id, creator.id, target.id, Some("test ban".to_string()))
         .await
         .unwrap();
     let elapsed = start.elapsed();

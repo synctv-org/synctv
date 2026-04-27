@@ -7,13 +7,13 @@
 
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
-use synctv_core::models::{generate_id, PageParams};
+use synctv_core::models::{PageParams, UserId};
 use synctv_core::repository::{AuditLogQuery, AuditLogRepository};
 use synctv_core_testing::create_test_pool;
 /// Insert an audit log directly via SQL and return the generated id.
 async fn insert_audit_log(
     pool: &PgPool,
-    actor_id: Option<&str>,
+    actor_id: Option<UserId>,
     actor_username: Option<&str>,
     action: &str,
     target_type: Option<&str>,
@@ -48,24 +48,21 @@ async fn test_list_filter_by_actor_id() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    let actor_a = generate_id(); // 12-char base62 ID
-    let actor_b = generate_id();
+    let actor_a = UserId::new();
+    let actor_b = UserId::new();
 
-    insert_audit_log(&pool, Some(&actor_a), None, "login", None, None, now).await;
-    insert_audit_log(&pool, Some(&actor_b), None, "login", None, None, now).await;
+    insert_audit_log(&pool, Some(actor_a), None, "login", None, None, now).await;
+    insert_audit_log(&pool, Some(actor_b), None, "login", None, None, now).await;
 
     let query = AuditLogQuery {
-        actor_id: Some(actor_a.clone()),
+        actor_id: Some(actor_a),
         from: Some(now - Duration::hours(1)),
         ..Default::default()
     };
     let (rows, total) = repo.list(&query).await.unwrap();
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].actor_id.as_deref().map(str::trim),
-        Some(actor_a.as_str())
-    );
+    assert_eq!(rows[0].actor_id, Some(actor_a));
 }
 
 #[tokio::test]
@@ -170,13 +167,13 @@ async fn test_list_all_filters_combined() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    let actor_admin_1 = generate_id();
-    let actor_admin_2 = generate_id();
+    let actor_admin_1 = UserId::new();
+    let actor_admin_2 = UserId::new();
 
     // The target row
     insert_audit_log(
         &pool,
-        Some(&actor_admin_1),
+        Some(actor_admin_1),
         Some("admin"),
         "ban_user",
         Some("user"),
@@ -188,7 +185,7 @@ async fn test_list_all_filters_combined() {
     // Decoy rows
     insert_audit_log(
         &pool,
-        Some(&actor_admin_1),
+        Some(actor_admin_1),
         None,
         "ban_user",
         Some("room"),
@@ -198,7 +195,7 @@ async fn test_list_all_filters_combined() {
     .await;
     insert_audit_log(
         &pool,
-        Some(&actor_admin_2),
+        Some(actor_admin_2),
         None,
         "ban_user",
         Some("user"),
@@ -208,7 +205,7 @@ async fn test_list_all_filters_combined() {
     .await;
     insert_audit_log(
         &pool,
-        Some(&actor_admin_1),
+        Some(actor_admin_1),
         None,
         "delete_user",
         Some("user"),
@@ -218,7 +215,7 @@ async fn test_list_all_filters_combined() {
     .await;
 
     let query = AuditLogQuery {
-        actor_id: Some(actor_admin_1.clone()),
+        actor_id: Some(actor_admin_1),
         action: Some("ban_user".to_string()),
         target_type: Some("user".to_string()),
         target_id: Some("user_999".to_string()),

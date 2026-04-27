@@ -233,10 +233,13 @@ fn build_migration_lock_from_runtime(
         return Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool));
     }
 
-    Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
-        shared_runtime.expect("checked is_some above"),
-        false,
-    ))
+    match shared_runtime {
+        Some(shared_runtime) => Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
+            shared_runtime,
+            false,
+        )),
+        None => Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool)),
+    }
 }
 
 #[must_use]
@@ -389,8 +392,13 @@ pub async fn init_services_with_options(
     );
 
     // Initialize username cache (using config values)
-    let username_cache_capacity = usize::try_from(config.cache.username_cache_capacity)
-        .expect("username cache capacity should fit into usize");
+    let username_cache_capacity =
+        usize::try_from(config.cache.username_cache_capacity).map_err(|_| {
+            anyhow::anyhow!(
+                "cache.username_cache_capacity={} exceeds platform usize::MAX",
+                config.cache.username_cache_capacity
+            )
+        })?;
     let username_cache = UsernameCache::new(
         cache_l2.clone(),
         format!("{}username:", config.redis.key_prefix),
@@ -536,7 +544,7 @@ pub async fn init_services_with_options(
         &shared_state_profile,
         &config.redis.deployment_mode,
         config.cache.l2_ttl_seconds,
-    );
+    )?;
 
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
@@ -910,11 +918,11 @@ fn build_room_service_runtime(
     profile: &SharedStateProfile,
     deployment_mode: &crate::config::RedisDeploymentMode,
     cache_l2_ttl_seconds: u64,
-) -> RoomServiceRuntime {
+) -> Result<RoomServiceRuntime, anyhow::Error> {
     let distributed_lock = if matches!(profile.state_mode(), SharedStateMode::SharedRequired) {
-        let redis_runtime = profile.require_shared_runtime("room coordination locking").expect(
-            "cluster.enabled=true requires shared runtime and is validated before service initialization",
-        );
+        let redis_runtime = profile
+            .require_shared_runtime("room coordination locking")
+            .map_err(anyhow::Error::from)?;
         Some(
             Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
                 redis_runtime,
@@ -928,21 +936,24 @@ fn build_room_service_runtime(
         None
     };
 
-    let playback_l2_cache = profile.shared_runtime().map(|redis_runtime| {
-        crate::cache::PlaybackStateCache::new(
-            Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime)),
-            crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
-            crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
-            cache_l2_ttl_seconds,
-            format!("{}playback:", profile.key_prefix()),
-        )
-        .expect("playback L2 cache configuration should be valid")
-    });
+    let playback_l2_cache = profile
+        .shared_runtime()
+        .map(|redis_runtime| {
+            crate::cache::PlaybackStateCache::new(
+                Arc::new(crate::cache::RedisCacheL2::from_runtime(redis_runtime)),
+                crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+                crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+                cache_l2_ttl_seconds,
+                format!("{}playback:", profile.key_prefix()),
+            )
+        })
+        .transpose()
+        .map_err(anyhow::Error::from)?;
 
-    RoomServiceRuntime {
+    Ok(RoomServiceRuntime {
         distributed_lock,
         playback_l2_cache,
-    }
+    })
 }
 
 fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
@@ -1387,7 +1398,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
 
         assert!(room_service.has_brute_force_service());
@@ -1479,7 +1491,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
         assert!(
             !standalone_room_service.has_distributed_lock(),
@@ -1508,7 +1521,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
         assert!(
             cluster_room_service.has_distributed_lock(),
@@ -1578,7 +1592,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
 
         assert!(room_service.has_settings_registry());
@@ -1632,7 +1647,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
 
         assert!(
@@ -1690,7 +1706,8 @@ mod tests {
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
                 Config::default().cache.l2_ttl_seconds,
-            ),
+            )
+            .expect("room service runtime should build"),
         });
 
         assert!(

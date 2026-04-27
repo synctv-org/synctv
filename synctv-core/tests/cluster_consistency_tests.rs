@@ -132,7 +132,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -181,7 +181,7 @@ async fn setup_test_room(pool: &PgPool) -> (User, Room) {
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -218,7 +218,7 @@ async fn test_permission_change_cross_replica_sync() {
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -345,7 +345,7 @@ async fn test_permission_cache_hit_on_same_node() {
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -555,7 +555,7 @@ async fn test_playback_state_invalidation_message_content() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::PlaybackState { room_id: r } => {
-                    assert_eq!(r, room_id.as_str());
+                    assert_eq!(r, room_id.to_string());
                 }
                 _ => panic!("Expected PlaybackState message, got: {msg:?}"),
             }
@@ -687,7 +687,7 @@ async fn test_room_settings_invalidation_message_broadcast() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::RoomSettings { room_id: r } => {
-                    assert_eq!(r, room_id.as_str());
+                    assert_eq!(r, room_id.to_string());
                 }
                 _ => panic!("Expected RoomSettings message, got: {msg:?}"),
             }
@@ -730,7 +730,7 @@ async fn test_concurrent_invalidation_messages() {
     let user1 = UserId::new();
 
     let s1 = service1.clone();
-    let r1 = room1.clone();
+    let r1 = room1;
     let h1 = tokio::spawn(async move {
         s1.invalidate_room(&r1)
             .await
@@ -738,7 +738,7 @@ async fn test_concurrent_invalidation_messages() {
     });
 
     let s2 = service1.clone();
-    let r2 = room2.clone();
+    let r2 = room2;
     let h2 = tokio::spawn(async move {
         s2.invalidate_room(&r2)
             .await
@@ -746,7 +746,7 @@ async fn test_concurrent_invalidation_messages() {
     });
 
     let s3 = service1.clone();
-    let u1 = user1.clone();
+    let u1 = user1;
     let h3 = tokio::spawn(async move {
         s3.invalidate_user(&u1)
             .await
@@ -814,7 +814,7 @@ async fn test_cache_consistency_without_redis() {
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await

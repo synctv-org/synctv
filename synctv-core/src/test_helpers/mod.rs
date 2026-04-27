@@ -5,17 +5,28 @@
 
 use crate::models::{PlaylistId, RoomId, UserId, UserRole, UserStatus};
 use chrono::Utc;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+fn stable_test_id(id: &str) -> i64 {
+    if let Ok(parsed) = id.parse::<i64>() {
+        return parsed.max(1);
+    }
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    i64::try_from((hasher.finish() % (i64::MAX as u64 - 1)) + 1).expect("bounded positive id")
+}
 
 /// Create a test user ID
 #[must_use]
 pub fn test_user_id(id: &str) -> UserId {
-    UserId::from_string(id.to_string())
+    UserId::from(stable_test_id(id))
 }
 
 /// Create a test room ID
 #[must_use]
 pub fn test_room_id(id: &str) -> RoomId {
-    RoomId(id.to_string())
+    RoomId::from(stable_test_id(id))
 }
 
 /// Generate a random user ID for testing
@@ -26,7 +37,7 @@ pub fn random_user_id() -> UserId {
 
 /// Generate a random room ID for testing
 pub fn random_room_id() -> RoomId {
-    RoomId(synctv_common::snanoid!(12))
+    RoomId::new()
 }
 
 /// Test fixture builder for User
@@ -219,7 +230,7 @@ impl Default for RoomFixture {
 
 /// Test fixture builder for chat messages
 pub struct ChatMessageFixture {
-    id: String,
+    id: i64,
     room_id: RoomId,
     user_id: UserId,
     content: String,
@@ -228,7 +239,7 @@ pub struct ChatMessageFixture {
 impl ChatMessageFixture {
     pub fn new() -> Self {
         Self {
-            id: synctv_common::snanoid!(12),
+            id: 0,
             room_id: random_room_id(),
             user_id: random_user_id(),
             content: "Test message".to_string(),
@@ -237,7 +248,7 @@ impl ChatMessageFixture {
 
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
-        self.id = id.to_string();
+        self.id = stable_test_id(id);
         self
     }
 
@@ -392,13 +403,13 @@ pub async fn create_top_level_playlist_hierarchy(
     room_id: RoomId,
     child_name: &str,
 ) -> (crate::models::Playlist, crate::models::Playlist) {
-    let top_level = PlaylistFixture::new().with_room_id(room_id.clone()).build();
+    let top_level = PlaylistFixture::new().with_room_id(room_id).build();
     let top_level = playlist_repo
         .create(&top_level)
         .await
         .expect("Failed to create top-level playlist");
 
-    let child = PlaylistFixture::new_child(top_level.id.clone())
+    let child = PlaylistFixture::new_child(top_level.id)
         .with_room_id(room_id)
         .with_name(child_name)
         .build();
@@ -472,7 +483,7 @@ mod tests {
         let room = RoomFixture::new()
             .with_name("My Room")
             .with_description("Test description")
-            .with_owner(owner_id.clone())
+            .with_owner(owner_id)
             .build();
 
         assert_eq!(room.name, "My Room");
@@ -485,8 +496,8 @@ mod tests {
         let room_id = test_room_id("room1");
         let user_id = test_user_id("user1");
         let message = ChatMessageFixture::new()
-            .with_room_id(room_id.clone())
-            .with_user_id(user_id.clone())
+            .with_room_id(room_id)
+            .with_user_id(user_id)
             .with_content("Hello, world!")
             .build();
 

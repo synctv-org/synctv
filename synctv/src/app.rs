@@ -1321,9 +1321,10 @@ mod tests {
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
-        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-        OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
+        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, ExternalIdsConfig,
+        GrpcRateLimitConfig, HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+        MediaProvidersConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig,
+        WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1477,6 +1478,7 @@ mod tests {
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
         }
     }
 
@@ -1878,14 +1880,12 @@ mod tests {
             .expect("cluster mode should build shared realtime connection manager");
 
         manager
-            .register(
-                "conn-1".to_string(),
-                UserId::from_string("user-1".to_string()),
-            )
+            .register("conn-1".to_string(), UserId::from(111_001))
             .await
             .expect("Connection registration should succeed");
+        let room_id = RoomId::from(111_002);
         manager
-            .join_room("conn-1", RoomId::from_string("room-1".to_string()))
+            .join_room("conn-1", RoomId::from(111_002))
             .await
             .expect("Room join should succeed");
 
@@ -1893,7 +1893,7 @@ mod tests {
             .await
             .expect("Verification connection should be created");
         let count: i64 = verify_conn
-            .get(format!("{prefix}connections:room:room-1"))
+            .get(format!("{prefix}connections:room:{room_id}"))
             .await
             .expect("Redis room counter should exist when ConnectionManager is wired");
 
@@ -1926,10 +1926,7 @@ mod tests {
             .expect("cluster mode should preserve shared runtime wiring");
 
         manager
-            .register(
-                "conn-1".to_string(),
-                UserId::from_string("user-1".to_string()),
-            )
+            .register("conn-1".to_string(), UserId::from(111_001))
             .await
             .expect("connection registration should succeed");
 
@@ -1938,8 +1935,9 @@ mod tests {
             .expect("replacement app connection manager should be created");
         *shared_conn.write().await = replacement_conn;
 
+        let room_id = RoomId::from(111_003);
         manager
-            .join_room("conn-1", RoomId::from_string("room-2".to_string()))
+            .join_room("conn-1", RoomId::from(111_003))
             .await
             .expect("room join after shared connection swap should succeed");
 
@@ -1947,7 +1945,7 @@ mod tests {
             .await
             .expect("verification connection should be created");
         let count: i64 = verify_conn
-            .get(format!("{prefix}connections:room:room-2"))
+            .get(format!("{prefix}connections:room:{room_id}"))
             .await
             .expect("swapped shared Redis handle should still write distributed room counters");
 
@@ -1980,14 +1978,11 @@ mod tests {
             .expect("standalone mode should build local connection manager");
 
         manager
-            .register(
-                "conn-1".to_string(),
-                UserId::from_string("user-1".to_string()),
-            )
+            .register("conn-1".to_string(), UserId::from(111_001))
             .await
             .expect("Standalone registration should succeed");
         manager
-            .join_room("conn-1", RoomId::from_string("room-1".to_string()))
+            .join_room("conn-1", RoomId::from(111_002))
             .await
             .expect("Standalone room join should succeed");
 

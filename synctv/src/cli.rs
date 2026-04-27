@@ -4010,7 +4010,7 @@ fn execute_config(config_command: ConfigCommand) -> Result<()> {
         }
         ConfigSubcommand::Show(args) => {
             let config = context.config()?;
-            let rendered = render_config_for_display(&config);
+            let rendered = render_config_for_display(&config)?;
             match args.output {
                 ConfigOutputFormat::Yaml => print_yaml(&rendered)?,
                 ConfigOutputFormat::Json => {
@@ -6374,10 +6374,10 @@ fn database_status_summary(
     lines.join("\n")
 }
 
-fn render_config_for_display(config: &synctv_core::Config) -> Value {
-    let mut value = serde_json::to_value(config).expect("config should serialize");
+fn render_config_for_display(config: &synctv_core::Config) -> Result<Value> {
+    let mut value = serde_json::to_value(config).context("config should serialize for display")?;
     redact_config_value(&mut value);
-    value
+    Ok(value)
 }
 
 trait ToHuman {
@@ -12213,7 +12213,8 @@ mod tests {
 
     #[test]
     fn rendered_config_redacts_secrets_and_masks_connection_urls() {
-        let rendered = render_config_for_display(&sample_config());
+        let rendered = render_config_for_display(&sample_config())
+            .expect("sample config should serialize for display");
         let rendered_text =
             serde_json::to_string(&rendered).expect("rendered config should serialize");
 

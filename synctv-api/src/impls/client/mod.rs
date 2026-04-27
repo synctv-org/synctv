@@ -68,11 +68,6 @@ use crate::room_lifecycle_fanout::{
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 
-fn parse_external_room_id(room_id: &str) -> Result<RoomId, ApiError> {
-    crate::room_id_validation::parse_room_id(room_id)
-        .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))
-}
-
 /// Validate a password that is being **set** (create room, set password, update settings).
 pub(crate) fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
     // Reject passwords that are purely whitespace. A password of e.g. " "
@@ -122,6 +117,7 @@ pub struct ClientApiConfig {
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
 }
 
 /// Client API implementation
@@ -165,12 +161,16 @@ pub struct ClientApiImpl {
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
+    /// Shared sqids codec for API-facing resource identifiers.
+    pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub request_executor: Option<Arc<RequestExecutor>>,
 }
 
 impl ClientApiImpl {
-    fn parse_room_id(room_id: &str) -> Result<RoomId, ApiError> {
-        parse_external_room_id(room_id)
+    fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {
+        self.public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|err| ApiError::InvalidInput(format!("Invalid room_id: {err}")))
     }
 
     pub(crate) fn map_room_access_error(err: synctv_core::Error) -> ApiError {
@@ -219,6 +219,7 @@ impl ClientApiImpl {
         >,
         providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
+        public_id_codec: Arc<crate::PublicIdCodec>,
     ) -> Self {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
@@ -270,6 +271,7 @@ impl ClientApiImpl {
             signing_key: None,
             provider_stores: None,
             jwt_validator,
+            public_id_codec,
             request_executor: None,
         }
     }
@@ -328,6 +330,7 @@ impl ClientApiImpl {
             signing_key: None,
             provider_stores: config.provider_stores,
             jwt_validator,
+            public_id_codec: config.public_id_codec,
             request_executor: None,
         }
     }

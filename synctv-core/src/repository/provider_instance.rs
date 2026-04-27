@@ -2,7 +2,8 @@
 // Database access layer for provider instance configuration management.
 
 use crate::models::{
-    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
+    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, UserId,
+    UserProviderCredential,
 };
 use crate::service::CredentialEncryption;
 use crate::Result;
@@ -435,7 +436,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Get all credentials for a user (decrypted)
-    pub async fn get_by_user(&self, user_id: &str) -> Result<Vec<UserProviderCredential>> {
+    pub async fn get_by_user(&self, user_id: UserId) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 ORDER BY created_at DESC"
         )
@@ -447,7 +448,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Get credential by ID (decrypted)
-    pub async fn get_by_id(&self, id: &str) -> Result<Option<UserProviderCredential>> {
+    pub async fn get_by_id(&self, id: i64) -> Result<Option<UserProviderCredential>> {
         let cred = sqlx::query_as::<_, UserProviderCredential>(
             "SELECT * FROM user_media_provider_credentials WHERE id = $1",
         )
@@ -464,7 +465,7 @@ impl UserProviderCredentialRepository {
     /// Get user credential for a specific provider and server (decrypted)
     pub async fn get_by_provider_and_server(
         &self,
-        user_id: &str,
+        user_id: UserId,
         provider: &str,
         server_id: &str,
     ) -> Result<Option<UserProviderCredential>> {
@@ -486,7 +487,7 @@ impl UserProviderCredentialRepository {
     /// Get all credentials for a specific provider type (decrypted)
     pub async fn get_by_provider(
         &self,
-        user_id: &str,
+        user_id: UserId,
         provider: &str,
     ) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
@@ -501,18 +502,21 @@ impl UserProviderCredentialRepository {
     }
 
     /// Create a new user credential (encrypts before storage)
-    pub async fn create(&self, credential: &UserProviderCredential) -> Result<()> {
+    pub async fn create(
+        &self,
+        credential: &UserProviderCredential,
+    ) -> Result<UserProviderCredential> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
 
-        sqlx::query(
+        let created = sqlx::query_as::<_, UserProviderCredential>(
             r"
             INSERT INTO user_media_provider_credentials
-            (id, user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
             ",
         )
-        .bind(&credential.id)
-        .bind(&credential.user_id)
+        .bind(credential.user_id)
         .bind(&credential.provider)
         .bind(&credential.server_id)
         .bind(Self::normalize_provider_instance_name_for_db(
@@ -520,10 +524,10 @@ impl UserProviderCredentialRepository {
         ))
         .bind(&encrypted_data)
         .bind(credential.expires_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(())
+        self.decrypt_in_credential(created)
     }
 
     /// Insert or replace the credential for a `(user_id, provider, server_id)` binding.
@@ -533,24 +537,24 @@ impl UserProviderCredentialRepository {
     pub async fn upsert_by_user_provider_server(
         &self,
         credential: &UserProviderCredential,
-    ) -> Result<()> {
+    ) -> Result<UserProviderCredential> {
         let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
 
-        sqlx::query(
+        let upserted = sqlx::query_as::<_, UserProviderCredential>(
             r"
             INSERT INTO user_media_provider_credentials
-            (id, user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (user_id, provider, server_id)
             DO UPDATE SET
                 provider_instance_name = EXCLUDED.provider_instance_name,
                 credential_data = EXCLUDED.credential_data,
                 expires_at = EXCLUDED.expires_at,
                 updated_at = NOW()
+            RETURNING *
             ",
         )
-        .bind(&credential.id)
-        .bind(&credential.user_id)
+        .bind(credential.user_id)
         .bind(&credential.provider)
         .bind(&credential.server_id)
         .bind(Self::normalize_provider_instance_name_for_db(
@@ -558,10 +562,10 @@ impl UserProviderCredentialRepository {
         ))
         .bind(&encrypted_data)
         .bind(credential.expires_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(())
+        self.decrypt_in_credential(upserted)
     }
 
     /// Update an existing user credential (encrypts before storage)
@@ -575,7 +579,7 @@ impl UserProviderCredentialRepository {
             WHERE id = $1
             "
         )
-        .bind(&credential.id)
+        .bind(credential.id)
         .bind(Self::normalize_provider_instance_name_for_db(
             credential.provider_instance_name.as_deref(),
         ))
@@ -595,7 +599,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Delete a user credential
-    pub async fn delete(&self, id: &str) -> Result<()> {
+    pub async fn delete(&self, id: i64) -> Result<()> {
         let result = sqlx::query("DELETE FROM user_media_provider_credentials WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -611,7 +615,7 @@ impl UserProviderCredentialRepository {
     }
 
     /// Delete all credentials for a user and provider
-    pub async fn delete_by_user_and_provider(&self, user_id: &str, provider: &str) -> Result<()> {
+    pub async fn delete_by_user_and_provider(&self, user_id: UserId, provider: &str) -> Result<()> {
         let result = sqlx::query(
             "DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2",
         )

@@ -63,7 +63,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -124,8 +124,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
 
     // Add owner as member
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member =
-        synctv_core::models::RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = synctv_core::models::RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -198,7 +197,7 @@ async fn test_concurrent_ban_unban_same_user() {
 
     // 5 tasks try to ban, 5 try to revoke the active ban concurrently.
     let barrier = Arc::new(Barrier::new(10));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     let mut handles = Vec::with_capacity(10);
 
@@ -206,7 +205,7 @@ async fn test_concurrent_ban_unban_same_user() {
     for _ in 0..5 {
         let repo_clone = user_repo.clone();
         let barrier_clone = barrier.clone();
-        let uid = user_id.clone();
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -221,7 +220,7 @@ async fn test_concurrent_ban_unban_same_user() {
     for _ in 0..5 {
         let repo_clone = user_repo.clone();
         let barrier_clone = barrier.clone();
-        let uid = user_id.clone();
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -305,7 +304,7 @@ async fn test_concurrent_room_status_changes() {
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
 
     let (_owner, room) = setup_test_room(&pool, "Status Change Room").await;
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 tasks try different status changes
     let barrier = Arc::new(Barrier::new(10));
@@ -326,7 +325,7 @@ async fn test_concurrent_room_status_changes() {
     for status in statuses {
         let repo_clone = room_repo.clone();
         let barrier_clone = barrier.clone();
-        let rid = room_id.clone();
+        let rid = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -359,14 +358,14 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
         .expect("Failed to create user");
 
     let barrier = Arc::new(Barrier::new(5));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // 5 concurrent updates to the same user
     let mut handles = Vec::with_capacity(5);
     for i in 0..5 {
         let repo_clone = Arc::new(UserRepository::new(pool.clone()));
         let barrier_clone = barrier.clone();
-        let uid = user_id.clone();
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -467,12 +466,12 @@ async fn test_optimistic_lock_retry_succeeds() {
         .expect("Failed to create user");
 
     let barrier = Arc::new(Barrier::new(2));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // Task 1: Update without retry
     let repo1 = user_repo.clone();
     let barrier1 = barrier.clone();
-    let uid1 = user_id.clone();
+    let uid1 = user_id;
 
     let handle1 = tokio::spawn(async move {
         barrier1.wait().await;
@@ -485,7 +484,7 @@ async fn test_optimistic_lock_retry_succeeds() {
     // Task 2: Update with retry
     let repo2 = user_repo.clone();
     let barrier2 = barrier.clone();
-    let uid2 = user_id.clone();
+    let uid2 = user_id;
 
     let handle2 = tokio::spawn(async move {
         barrier2.wait().await;
@@ -542,14 +541,14 @@ async fn test_high_concurrency_status_updates() {
         .expect("Failed to create user");
 
     let barrier = Arc::new(Barrier::new(50));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // 50 concurrent ban/unban attempts should not corrupt account facts.
     let mut handles = Vec::with_capacity(50);
     for i in 0..50 {
         let repo_clone = user_repo.clone();
         let barrier_clone = barrier.clone();
-        let uid = user_id.clone();
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -631,14 +630,14 @@ async fn test_concurrent_room_ban_with_members_joining() {
     );
     member_service.set_room_settings_repo(room_settings_repo);
 
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 join tasks
     let mut join_handles = Vec::with_capacity(10);
     for user in users {
         let ms = member_service.clone();
         let bc = barrier.clone();
-        let rid = room_id.clone();
+        let rid = room_id;
 
         let handle = tokio::spawn(async move {
             bc.wait().await;
@@ -652,7 +651,7 @@ async fn test_concurrent_room_ban_with_members_joining() {
     // 1 ban task
     let rr = room_repo.clone();
     let bc = barrier.clone();
-    let rid = room_id.clone();
+    let rid = room_id;
 
     let ban_handle = tokio::spawn(async move {
         bc.wait().await;
@@ -700,14 +699,14 @@ async fn test_concurrent_room_settings_update() {
         .expect("Failed to create settings");
 
     let barrier = Arc::new(Barrier::new(10));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 concurrent settings updates
     let mut handles = Vec::with_capacity(10);
     for i in 0..10 {
         let repo = room_settings_repo.clone();
         let bc = barrier.clone();
-        let rid = room_id.clone();
+        let rid = room_id;
 
         let handle = tokio::spawn(async move {
             bc.wait().await;
@@ -785,14 +784,14 @@ async fn test_concurrent_role_updates_same_user() {
         .expect("Failed to create user");
 
     let barrier = Arc::new(Barrier::new(5));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // 5 concurrent role updates
     let mut handles = Vec::with_capacity(5);
     for _ in 0..5 {
         let repo = user_repo.clone();
         let bc = barrier.clone();
-        let uid = user_id.clone();
+        let uid = user_id;
 
         let handle = tokio::spawn(async move {
             bc.wait().await;

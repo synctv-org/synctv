@@ -268,7 +268,7 @@ enum SelectResult {
 /// - Graceful degradation: logs warnings but continues operation on non-critical failures
 /// - Connection health checks: periodic PING to detect stale connections
 ///
-/// Channel naming: `room:{room_id`} for room-specific events
+/// Channel naming: `room:{room_id}` for room-specific events
 pub struct RedisPubSub {
     redis_runtime: Arc<dyn RedisCoordinationRuntime>,
     /// Shared multiplexed connection for non-Pub/Sub operations (stream reads).
@@ -453,7 +453,7 @@ impl RedisPubSub {
     }
 
     /// Build the Redis Stream key for a specific room
-    fn room_stream_key(&self, room_id: &str) -> String {
+    fn room_stream_key(&self, room_id: impl std::fmt::Display) -> String {
         format!("{}room:{}:events", self.key_prefix, room_id)
     }
 
@@ -469,7 +469,7 @@ impl RedisPubSub {
     }
 
     /// Build the room Pub/Sub channel
-    fn room_pubsub_channel(&self, room_id: &str) -> String {
+    fn room_pubsub_channel(&self, room_id: impl std::fmt::Display) -> String {
         format!("{}room:{room_id}", self.key_prefix)
     }
 
@@ -490,7 +490,7 @@ impl RedisPubSub {
         format!("{start_ms}-0")
     }
 
-    /// Extract room_id from a channel name (e.g., "synctv:room:abc" -> Some("abc"))
+    /// Extract room_id from a channel name (e.g., "synctv:room:42" -> Some("42"))
     fn extract_room_id_from_channel<'a>(&self, channel: &'a str) -> Option<&'a str> {
         let room_prefix = format!("{}room:", self.key_prefix);
         channel.strip_prefix(&room_prefix)
@@ -1000,7 +1000,7 @@ impl RedisPubSub {
             // Track pending room subscriptions that arrived during disconnection.
             // These rooms were activated while we were disconnected and need to be
             // subscribed on reconnect. Deactivations remove rooms from this set.
-            let mut pending_subscriptions: HashSet<String> = HashSet::new();
+            let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
             let mut subscriber_ready_tx = Some(subscriber_ready_tx);
 
             loop {
@@ -1017,10 +1017,10 @@ impl RedisPubSub {
                 while let Ok(ev) = lifecycle_rx.try_recv() {
                     match ev {
                         RoomLifecycleEvent::RoomActivated(room_id) => {
-                            pending_subscriptions.insert(room_id.as_str().to_string());
+                            pending_subscriptions.insert(room_id);
                         }
                         RoomLifecycleEvent::RoomDeactivated(room_id) => {
-                            pending_subscriptions.remove(room_id.as_str());
+                            pending_subscriptions.remove(&room_id);
                         }
                     }
                 }
@@ -1136,7 +1136,7 @@ impl RedisPubSub {
         stream_cursors: &mut HashMap<String, String>,
         is_first_connect: &mut bool,
         lifecycle_rx: &mut broadcast::Receiver<RoomLifecycleEvent>,
-        pending_subscriptions: &mut HashSet<String>,
+        pending_subscriptions: &mut HashSet<RoomId>,
         subscriber_ready_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
     ) -> SubscriberExit {
         let mut pubsub = match timeout(
@@ -1184,16 +1184,13 @@ impl RedisPubSub {
         // (instead of psubscribe("{prefix}room:*") which receives all rooms globally)
         // Also include pending_subscriptions (rooms activated during disconnection)
         let active_rooms = self.message_hub.active_room_ids();
-        let mut subscribed_rooms: HashSet<String> = HashSet::new();
+        let mut subscribed_rooms: HashSet<RoomId> = HashSet::new();
 
         // Merge active rooms with pending subscriptions (rooms that were activated
         // while we were disconnected). This ensures we don't lose subscriptions
         // to rooms that became active during the disconnection period.
-        let mut rooms_to_subscribe: HashSet<String> = active_rooms
-            .iter()
-            .map(|rid| rid.as_str().to_string())
-            .collect();
-        rooms_to_subscribe.extend(pending_subscriptions.iter().cloned());
+        let mut rooms_to_subscribe: HashSet<RoomId> = active_rooms.iter().copied().collect();
+        rooms_to_subscribe.extend(pending_subscriptions.iter().copied());
 
         if !rooms_to_subscribe.is_empty() {
             let room_channels: Vec<String> = rooms_to_subscribe
@@ -1213,7 +1210,7 @@ impl RedisPubSub {
             {
                 Ok(Ok(())) => {
                     for rid in &rooms_to_subscribe {
-                        subscribed_rooms.insert(rid.clone());
+                        subscribed_rooms.insert(*rid);
                     }
                     // Clear pending subscriptions after successful subscribe
                     // (they are now in subscribed_rooms)
@@ -1287,7 +1284,7 @@ impl RedisPubSub {
             // gaps are not.
             let mut streams_to_catchup: Vec<String> = active_rooms
                 .iter()
-                .map(|rid| self.room_stream_key(rid.as_str()))
+                .map(|rid| self.room_stream_key(rid))
                 .collect();
             streams_to_catchup.push(self.admin_stream_key());
 
@@ -1408,7 +1405,7 @@ impl RedisPubSub {
             let admin_sk = self.admin_stream_key();
             let active_stream_keys_set: HashSet<String> = active_rooms
                 .iter()
-                .map(|rid| self.room_stream_key(rid.as_str()))
+                .map(|rid| self.room_stream_key(rid))
                 .collect();
             stream_cursors
                 .retain(|key, _| *key == admin_sk || active_stream_keys_set.contains(key));
@@ -1424,7 +1421,7 @@ impl RedisPubSub {
             // Add cursors for any new rooms that appeared while disconnected.
             // Use catchup_start_id for new rooms to avoid reading all history.
             for rid in &active_rooms {
-                let key = self.room_stream_key(rid.as_str());
+                let key = self.room_stream_key(rid);
                 stream_cursors
                     .entry(key)
                     .or_insert_with(|| catchup_start.clone());
@@ -1434,7 +1431,7 @@ impl RedisPubSub {
             let active_stream_keys: Vec<String> = {
                 let mut keys: Vec<String> = active_rooms
                     .iter()
-                    .map(|rid| self.room_stream_key(rid.as_str()))
+                    .map(|rid| self.room_stream_key(rid))
                     .collect();
                 keys.push(admin_sk);
                 keys
@@ -1600,9 +1597,8 @@ impl RedisPubSub {
                     for ev in events {
                         match ev {
                             RoomLifecycleEvent::RoomActivated(room_id) => {
-                                let room_id_str = room_id.as_str().to_string();
-                                if subscribed_rooms.insert(room_id_str.clone()) {
-                                    let channel = self.room_pubsub_channel(&room_id_str);
+                                if subscribed_rooms.insert(room_id) {
+                                    let channel = self.room_pubsub_channel(room_id);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.subscribe(&channel),
@@ -1617,11 +1613,11 @@ impl RedisPubSub {
                                             // the entire stream history). The deduplicator
                                             // handles any overlap between live PubSub
                                             // delivery and the snapshotted cursor.
-                                            let sk = self.room_stream_key(&room_id_str);
+                                            let sk = self.room_stream_key(room_id);
                                             match self.get_latest_stream_id_for(&sk).await {
                                                 Ok(Some(id)) => {
                                                     debug!(
-                                                        room_id = %room_id_str,
+                                                        room_id = %room_id,
                                                         stream_id = %id,
                                                         "Dynamically subscribed to room channel, cursor snapshotted"
                                                     );
@@ -1629,7 +1625,7 @@ impl RedisPubSub {
                                                 }
                                                 Ok(None) => {
                                                     debug!(
-                                                        room_id = %room_id_str,
+                                                        room_id = %room_id,
                                                         "Dynamically subscribed to room channel (empty stream)"
                                                     );
                                                     stream_cursors.insert(sk, "0".to_string());
@@ -1637,7 +1633,7 @@ impl RedisPubSub {
                                                 Err(e) => {
                                                     warn!(
                                                         error = %e,
-                                                        room_id = %room_id_str,
+                                                        room_id = %room_id,
                                                         "Dynamically subscribed but failed to snapshot cursor, using catchup_start_id"
                                                     );
                                                     stream_cursors
@@ -1648,25 +1644,24 @@ impl RedisPubSub {
                                         Ok(Err(e)) => {
                                             warn!(
                                                 error = %e,
-                                                room_id = %room_id_str,
+                                                room_id = %room_id,
                                                 "Failed to subscribe to room channel"
                                             );
-                                            subscribed_rooms.remove(&room_id_str);
+                                            subscribed_rooms.remove(&room_id);
                                         }
                                         Err(_) => {
                                             warn!(
-                                                room_id = %room_id_str,
+                                                room_id = %room_id,
                                                 "Timed out subscribing to room channel"
                                             );
-                                            subscribed_rooms.remove(&room_id_str);
+                                            subscribed_rooms.remove(&room_id);
                                         }
                                     }
                                 }
                             }
                             RoomLifecycleEvent::RoomDeactivated(room_id) => {
-                                let room_id_str = room_id.as_str().to_string();
-                                if subscribed_rooms.remove(&room_id_str) {
-                                    let channel = self.room_pubsub_channel(&room_id_str);
+                                if subscribed_rooms.remove(&room_id) {
+                                    let channel = self.room_pubsub_channel(room_id);
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.unsubscribe(&channel),
@@ -1675,22 +1670,21 @@ impl RedisPubSub {
                                     {
                                         Ok(Ok(())) => {
                                             debug!(
-                                                room_id = %room_id_str,
+                                                room_id = %room_id,
                                                 "Dynamically unsubscribed from room channel"
                                             );
-                                            stream_cursors
-                                                .remove(&self.room_stream_key(&room_id_str));
+                                            stream_cursors.remove(&self.room_stream_key(room_id));
                                         }
                                         Ok(Err(e)) => {
                                             warn!(
                                                 error = %e,
-                                                room_id = %room_id_str,
+                                                room_id = %room_id,
                                                 "Failed to unsubscribe from room channel"
                                             );
                                         }
                                         Err(_) => {
                                             warn!(
-                                                room_id = %room_id_str,
+                                                room_id = %room_id,
                                                 "Timed out unsubscribing from room channel"
                                             );
                                         }
@@ -1747,20 +1741,16 @@ impl RedisPubSub {
     async fn resync_room_subscriptions(
         &self,
         pubsub: &mut redis::aio::PubSub,
-        subscribed_rooms: &mut HashSet<String>,
+        subscribed_rooms: &mut HashSet<RoomId>,
         stream_cursors: &mut HashMap<String, String>,
     ) {
-        let active_rooms: HashSet<String> = self
-            .message_hub
-            .active_room_ids()
-            .into_iter()
-            .map(|rid| rid.as_str().to_string())
-            .collect();
+        let active_rooms: HashSet<RoomId> =
+            self.message_hub.active_room_ids().into_iter().collect();
 
         // Subscribe to newly active rooms
-        let new_rooms: Vec<String> = active_rooms.difference(subscribed_rooms).cloned().collect();
+        let new_rooms: Vec<RoomId> = active_rooms.difference(subscribed_rooms).copied().collect();
         for room_id in new_rooms {
-            let channel = self.room_pubsub_channel(&room_id);
+            let channel = self.room_pubsub_channel(room_id);
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
                 pubsub.subscribe(&channel),
@@ -1768,10 +1758,10 @@ impl RedisPubSub {
             .await
             {
                 Ok(Ok(())) => {
-                    subscribed_rooms.insert(room_id.clone());
+                    subscribed_rooms.insert(room_id);
                     // Snapshot stream cursor for the newly subscribed room so that
                     // reconnect catch-up reads from the right position instead of "0".
-                    let sk = self.room_stream_key(&room_id);
+                    let sk = self.room_stream_key(room_id);
                     match self.get_latest_stream_id_for(&sk).await {
                         Ok(Some(id)) => {
                             debug!(
@@ -1874,7 +1864,10 @@ impl RedisPubSub {
 
         // Extract room_id from channel name ({prefix}room:{room_id})
         if let Some(room_id_str) = self.extract_room_id_from_channel(channel) {
-            let room_id = RoomId::from_string(room_id_str.to_string());
+            let Ok(room_id) = room_id_str.parse::<RoomId>() else {
+                tracing::warn!(room_id = %room_id_str, "Ignoring invalid room id from Redis pubsub channel");
+                return;
+            };
 
             // Forward kick/leave events to admin channel for cross-replica disconnect handling.
             // UserLeft is included so other replicas disconnect the user's connections
@@ -1896,16 +1889,16 @@ impl RedisPubSub {
                     ClusterEvent::PermissionChanged { target_user_id, .. } => {
                         perm_svc.invalidate_cache(&room_id, target_user_id).await;
                         debug!(
-                            room_id = %room_id.as_str(),
-                            user_id = %target_user_id.as_str(),
+                            room_id = %room_id,
+                            user_id = %target_user_id,
                             "Invalidated permission cache (cross-replica)"
                         );
                     }
                     ClusterEvent::UserLeft { user_id, .. } => {
                         perm_svc.invalidate_cache(&room_id, user_id).await;
                         debug!(
-                            room_id = %room_id.as_str(),
-                            user_id = %user_id.as_str(),
+                            room_id = %room_id,
+                            user_id = %user_id,
                             "Invalidated permission cache on UserLeft (cross-replica)"
                         );
                     }
@@ -1915,7 +1908,7 @@ impl RedisPubSub {
                     | ClusterEvent::RoomOwnerInactive { .. } => {
                         perm_svc.invalidate_room_cache(&room_id).await;
                         debug!(
-                            room_id = %room_id.as_str(),
+                            room_id = %room_id,
                             "Invalidated room permission cache (cross-replica)"
                         );
                     }
@@ -1930,28 +1923,24 @@ impl RedisPubSub {
             if self.cache_invalidation.is_some() {
                 match &event {
                     ClusterEvent::RoomSettingsChanged { .. } | ClusterEvent::RoomCreated { .. } => {
-                        self.invalidate_cache_targets(&[CacheTarget::Room {
-                            room_id: room_id.as_str().to_string(),
-                        }]);
+                        self.invalidate_cache_targets(&[CacheTarget::Room { room_id }]);
                     }
                     ClusterEvent::RoomDeleted { .. }
                     | ClusterEvent::RoomBanned { .. }
                     | ClusterEvent::RoomOwnerInactive { .. } => {
                         // Invalidate both room cache and playback state cache
-                        self.invalidate_cache_targets(&[CacheTarget::Room {
-                            room_id: room_id.as_str().to_string(),
-                        }]);
+                        self.invalidate_cache_targets(&[CacheTarget::Room { room_id }]);
                         // PlaybackState is a separate moka cache; invalidate it
                         // directly via the CacheInvalidationService.
                         if let Some(ref cache_svc) = self.cache_invalidation {
                             if let Err(e) =
                                 cache_svc.broadcast_local(InvalidationMessage::PlaybackState {
-                                    room_id: room_id.as_str().to_string(),
+                                    room_id: room_id.to_string(),
                                 })
                             {
                                 tracing::warn!(
                                     error = %e,
-                                    room_id = %room_id.as_str(),
+                                    room_id = %room_id,
                                     "Failed to broadcast PlaybackState invalidation for deleted room"
                                 );
                             }
@@ -1975,33 +1964,34 @@ impl RedisPubSub {
                 // Remove all local subscriptions for the deleted room
                 self.message_hub.remove_room(&room_id);
                 info!(
-                    room_id = %room_id.as_str(),
+                    room_id = %room_id,
                     notified = sent_count,
                     "Handled RoomDeleted: notified local subscribers and cleaned up room"
                 );
                 return;
             }
 
-            // Route WebRTC signaling to the specific target connection instead of
-            // broadcasting to all subscribers. The sender side validates
-            // "user_id:conn_id", but defensive routing here also supports the
-            // historical conn_id-only form by treating the whole field as a
-            // connection ID rather than mis-routing it as a user-targeted send.
+            // Route WebRTC signaling to the specific target connection instead
+            // of broadcasting SDP/ICE data to all room subscribers.
             if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
-                let to_owned = to.clone();
-                let target_conn = to_owned.rsplit_once(':').map_or_else(
-                    || to_owned.clone(),
-                    |(_target_user, conn_id)| conn_id.to_string(),
-                );
+                let Some((_target_user, target_conn)) = to.rsplit_once(':') else {
+                    warn!(
+                        room_id = %room_id,
+                        target = %to,
+                        "Dropping malformed WebRTC signaling target"
+                    );
+                    return;
+                };
+                let target_conn = target_conn.to_string();
                 let sent = self
                     .message_hub
                     .broadcast_to_connection(&room_id, &target_conn, event)
                     .await;
                 debug!(
-                    room_id = %room_id.as_str(),
-                    target_connection = %target_conn,
-                    sent = sent,
-                    "Routed WebRTC signaling to specific connection"
+                        room_id = %room_id,
+                        target_connection = %target_conn,
+                        sent = sent,
+                        "Routed WebRTC signaling to specific connection"
                 );
                 return;
             }
@@ -2010,7 +2000,7 @@ impl RedisPubSub {
             let sent_count = self.message_hub.broadcast(&room_id, &event);
 
             debug!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 local_subscribers = sent_count,
                 "Forwarded Redis event to local subscribers"
             );
@@ -2030,13 +2020,13 @@ impl RedisPubSub {
         for target in targets {
             let msg = match target {
                 CacheTarget::User { user_id } => InvalidationMessage::User {
-                    user_id: user_id.clone(),
+                    user_id: user_id.to_string(),
                 },
                 CacheTarget::Username { user_id } => InvalidationMessage::Username {
-                    user_id: user_id.clone(),
+                    user_id: user_id.to_string(),
                 },
                 CacheTarget::Room { room_id } => InvalidationMessage::Room {
-                    room_id: room_id.clone(),
+                    room_id: room_id.to_string(),
                 },
                 CacheTarget::All => InvalidationMessage::All,
             };
@@ -2076,7 +2066,7 @@ impl RedisPubSub {
         stream_max_length: usize,
     ) -> Result<usize> {
         let channel = if let Some(room_id) = event.room_id() {
-            format!("{key_prefix}room:{}", room_id.as_str())
+            format!("{key_prefix}room:{room_id}")
         } else {
             format!("{key_prefix}admin:events")
         };
@@ -2093,7 +2083,7 @@ impl RedisPubSub {
         // Stream key for reliable delivery (catch-up after disconnect)
         // Room events go to {prefix}room:{room_id}:events, admin events to {prefix}admin:events:stream
         let stream_key = if let Some(room_id) = event.room_id() {
-            format!("{key_prefix}room:{}:events", room_id.as_str())
+            format!("{key_prefix}room:{room_id}:events")
         } else {
             format!("{key_prefix}admin:events:stream")
         };
@@ -2466,6 +2456,7 @@ struct EventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::events::WebRTCSignalKind;
     use crate::sync::{RoomMessageHub, RoomMessageRuntime};
     use chrono::Utc;
     use synctv_core::models::id::UserId;
@@ -2527,8 +2518,8 @@ mod tests {
     fn test_event_envelope_serialization() {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from_string("room123".to_string()),
-            user_id: UserId::from_string("user456".to_string()),
+            room_id: RoomId::from(10_000_140),
+            user_id: UserId::from(10_000_141),
             username: "testuser".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
@@ -2555,10 +2546,10 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup() {
         let message_hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from_string("deleted-room".to_string());
-        let user_id = UserId::from_string("user-1".to_string());
+        let room_id = RoomId::from(10_000_146);
+        let user_id = UserId::from(10_000_147);
         let mut rx = message_hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn-1".to_string())
+            .subscribe(room_id, user_id, "conn-1".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -2567,8 +2558,8 @@ mod tests {
                 &room_id,
                 &ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: user_id.clone(),
+                    room_id,
+                    user_id,
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
@@ -2594,16 +2585,15 @@ mod tests {
 
         let event = ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            deleted_by: user_id.clone(),
+            room_id,
+            deleted_by: user_id,
             timestamp: Utc::now(),
         };
 
-        let room_for_task = room_id.clone();
+        let room_for_task = room_id;
+        let channel = format!("synctv:room:{room_id}");
         let dispatch_task = tokio::spawn(async move {
-            pubsub
-                .dispatch_event("synctv:room:deleted-room", event)
-                .await;
+            pubsub.dispatch_event(&channel, event).await;
         });
 
         tokio::task::yield_now().await;
@@ -2740,10 +2730,10 @@ mod tests {
         // the Redis room channel.
         // IMPORTANT: subscribe() is async and must be awaited to actually register
         // the subscription and send the lifecycle event.
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("test_user".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user_id = UserId::from(10_000_148);
         let mut rx = message_hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .subscribe(room_id, user_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -2754,8 +2744,8 @@ mod tests {
         // Publish event from node1
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id,
+            user_id,
             username: "testuser".to_string(),
             message: "Hello from node1!".to_string(),
             timestamp: Utc::now(),
@@ -3135,10 +3125,10 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Subscribe a client to room1 - this activates the room
-        let room1_id = RoomId::from_string("test_room_1".to_string());
-        let user1_id = UserId::from_string("test_user_1".to_string());
+        let room1_id = RoomId::from(10_000_149);
+        let user1_id = UserId::from(10_000_150);
         let mut rx1 = message_hub
-            .subscribe(room1_id.clone(), user1_id.clone(), "conn1".to_string())
+            .subscribe(room1_id, user1_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -3147,8 +3137,8 @@ mod tests {
             &mut rx1,
             || ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room1_id.clone(),
-                user_id: user1_id.clone(),
+                room_id: room1_id,
+                user_id: user1_id,
                 username: "testuser1".to_string(),
                 message: "Hello from room1!".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -3161,10 +3151,10 @@ mod tests {
         assert_eq!(received.event_type(), "chat_message");
 
         // Now subscribe a client to room2 - this is a second room activation
-        let room2_id = RoomId::from_string("test_room_2".to_string());
-        let user2_id = UserId::from_string("test_user_2".to_string());
+        let room2_id = RoomId::from(10_000_151);
+        let user2_id = UserId::from(10_000_152);
         let mut rx2 = message_hub
-            .subscribe(room2_id.clone(), user2_id.clone(), "conn2".to_string())
+            .subscribe(room2_id, user2_id, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -3173,8 +3163,8 @@ mod tests {
             &mut rx2,
             || ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room2_id.clone(),
-                user_id: user2_id.clone(),
+                room_id: room2_id,
+                user_id: user2_id,
                 username: "testuser2".to_string(),
                 message: "Hello from room2!".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -3196,26 +3186,26 @@ mod tests {
     /// This verifies that lifecycle events during disconnection are properly tracked.
     #[test]
     fn test_pending_subscriptions_tracks_lifecycle_events() {
-        let mut pending_subscriptions: HashSet<String> = HashSet::new();
+        let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
 
         // Simulate room activations during disconnection
-        let room1 = RoomId::from_string("room1".to_string());
-        let room2 = RoomId::from_string("room2".to_string());
-        let room3 = RoomId::from_string("room3".to_string());
+        let room1 = RoomId::from(10_000_092);
+        let room2 = RoomId::from(10_000_094);
+        let room3 = RoomId::from(10_000_153);
 
         // Room activated
-        pending_subscriptions.insert(room1.as_str().to_string());
-        pending_subscriptions.insert(room2.as_str().to_string());
+        pending_subscriptions.insert(room1);
+        pending_subscriptions.insert(room2);
         assert_eq!(pending_subscriptions.len(), 2);
 
         // Room deactivated before reconnect (should be removed)
-        pending_subscriptions.remove(room2.as_str());
+        pending_subscriptions.remove(&room2);
         assert_eq!(pending_subscriptions.len(), 1);
-        assert!(pending_subscriptions.contains("room1"));
-        assert!(!pending_subscriptions.contains("room2"));
+        assert!(pending_subscriptions.contains(&room1));
+        assert!(!pending_subscriptions.contains(&room2));
 
         // Another room activated
-        pending_subscriptions.insert(room3.as_str().to_string());
+        pending_subscriptions.insert(room3);
         assert_eq!(pending_subscriptions.len(), 2);
 
         // After reconnect and successful subscription, clear the set
@@ -3226,29 +3216,24 @@ mod tests {
     /// Unit test verifying the merge of active_rooms with pending_subscriptions.
     #[test]
     fn test_pending_subscriptions_merges_with_active_rooms() {
-        let active_rooms: Vec<RoomId> = vec![
-            RoomId::from_string("active_room1".to_string()),
-            RoomId::from_string("active_room2".to_string()),
-        ];
+        let active_rooms: Vec<RoomId> = vec![RoomId::from(10_000_154), RoomId::from(10_000_155)];
 
         // Simulate a room that was activated during disconnection
         // but is NOT in the current active_rooms (edge case - room became inactive)
-        let mut pending_subscriptions: HashSet<String> = HashSet::new();
-        pending_subscriptions.insert("pending_room".to_string());
-        pending_subscriptions.insert("active_room1".to_string()); // Already active, but also pending
+        let pending_room = RoomId::from(10_000_156);
+        let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
+        pending_subscriptions.insert(pending_room);
+        pending_subscriptions.insert(active_rooms[0]); // Already active, but also pending
 
         // Merge logic (same as in run_subscriber)
-        let mut rooms_to_subscribe: HashSet<String> = active_rooms
-            .iter()
-            .map(|rid| rid.as_str().to_string())
-            .collect();
-        rooms_to_subscribe.extend(pending_subscriptions.iter().cloned());
+        let mut rooms_to_subscribe: HashSet<RoomId> = active_rooms.iter().copied().collect();
+        rooms_to_subscribe.extend(pending_subscriptions.iter().copied());
 
         // Should contain both active rooms and pending room
         assert_eq!(rooms_to_subscribe.len(), 3);
-        assert!(rooms_to_subscribe.contains("active_room1"));
-        assert!(rooms_to_subscribe.contains("active_room2"));
-        assert!(rooms_to_subscribe.contains("pending_room"));
+        assert!(rooms_to_subscribe.contains(&active_rooms[0]));
+        assert!(rooms_to_subscribe.contains(&active_rooms[1]));
+        assert!(rooms_to_subscribe.contains(&pending_room));
 
         // After successful subscription, clear pending
         pending_subscriptions.clear();
@@ -3288,7 +3273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_event_routes_conn_id_only_webrtc_to_specific_connection() {
+    async fn test_dispatch_event_drops_malformed_webrtc_target() {
         let message_hub = Arc::new(RoomMessageHub::new());
         let (admin_tx, _) = broadcast::channel(256);
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
@@ -3308,25 +3293,25 @@ mod tests {
         )
         .unwrap();
 
-        let room_id = RoomId::from_string("dispatch-room".to_string());
-        let user1 = synctv_core::models::id::UserId::from_string("user1".to_string());
-        let user2 = synctv_core::models::id::UserId::from_string("user2".to_string());
+        let room_id = RoomId::from(10_000_156);
+        let user1 = synctv_core::models::id::UserId::from(10_000_010);
+        let user2 = synctv_core::models::id::UserId::from(10_000_095);
         let mut rx1 = message_hub
-            .subscribe(room_id.clone(), user1, "conn1".to_string())
+            .subscribe(room_id, user1, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let mut rx2 = message_hub
-            .subscribe(room_id.clone(), user2, "conn2".to_string())
+            .subscribe(room_id, user2, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
 
         pubsub
             .dispatch_event(
-                "synctv:room:dispatch-room",
+                &format!("synctv:room:{room_id}"),
                 ClusterEvent::WebRTCSignaling {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    message_type: "offer".to_string(),
+                    room_id,
+                    message_type: WebRTCSignalKind::Offer,
                     from: "user1|conn1".to_string(),
                     to: "conn2".to_string(),
                     data: "SDP".to_string(),
@@ -3335,16 +3320,16 @@ mod tests {
             )
             .await;
 
-        let target = tokio::time::timeout(Duration::from_millis(100), rx2.recv())
-            .await
-            .expect("target connection should receive event")
-            .expect("target channel should remain open");
-        assert!(matches!(target, ClusterEvent::WebRTCSignaling { .. }));
+        let target = tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await;
+        assert!(
+            target.is_err(),
+            "malformed WebRTC target must not be routed to the target connection"
+        );
 
         let non_target = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
         assert!(
             non_target.is_err(),
-            "non-target connection must not receive conn_id-only signaling"
+            "malformed WebRTC target must not be broadcast to non-target connections"
         );
     }
 
@@ -3369,10 +3354,10 @@ mod tests {
         )
         .unwrap();
 
-        let room_id = RoomId::from_string("dedup-room".to_string());
-        let user_id = synctv_core::models::id::UserId::from_string("dedup-user".to_string());
+        let room_id = RoomId::from(10_000_157);
+        let user_id = synctv_core::models::id::UserId::from(10_000_158);
         let mut rx = message_hub
-            .subscribe(room_id.clone(), user_id.clone(), "dedup-conn".to_string())
+            .subscribe(room_id, user_id, "dedup-conn".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -3388,9 +3373,11 @@ mod tests {
         };
 
         pubsub
-            .dispatch_event("synctv:room:dedup-room", event.clone())
+            .dispatch_event(&format!("synctv:room:{room_id}"), event.clone())
             .await;
-        pubsub.dispatch_event("synctv:room:dedup-room", event).await;
+        pubsub
+            .dispatch_event(&format!("synctv:room:{room_id}"), event)
+            .await;
 
         let first = tokio::time::timeout(Duration::from_millis(100), rx.recv())
             .await

@@ -88,7 +88,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -131,7 +131,7 @@ async fn setup_test_room(
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -152,7 +152,6 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
         .find(|m| m.role == RoomRole::Creator)
         .expect("Creator should exist")
         .user_id
-        .clone()
 }
 
 /// Test concurrent join operations respect `max_members` limit.
@@ -202,14 +201,14 @@ async fn test_concurrent_join_respects_max_members() {
 
     // Use barrier to synchronize all joins
     let barrier = Arc::new(Barrier::new(30));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // Spawn 30 concurrent join tasks
     let mut handles = Vec::with_capacity(30);
     for user in users {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -249,7 +248,7 @@ async fn test_concurrent_join_respects_max_members() {
     let member_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members");
@@ -281,7 +280,7 @@ async fn test_concurrent_role_update_member_to_admin() {
             .create(&make_user(&format!("member_{i}")))
             .await
             .expect("Failed to create user");
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
@@ -307,14 +306,13 @@ async fn test_concurrent_role_update_member_to_admin() {
 
     // Use barrier for concurrent updates
     let barrier = Arc::new(Barrier::new(10));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     let mut handles = Vec::with_capacity(10);
     for user in member_users {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
-        let operator_id = operator_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -376,7 +374,7 @@ async fn test_concurrent_role_update_equal_role_rejected() {
         .create(&make_user("admin1"))
         .await
         .expect("Failed to create admin1");
-    let admin1_member = RoomMember::new(room.id.clone(), admin1.id.clone(), RoomRole::Admin);
+    let admin1_member = RoomMember::new(room.id, admin1.id, RoomRole::Admin);
     member_repo
         .add(&admin1_member)
         .await
@@ -386,7 +384,7 @@ async fn test_concurrent_role_update_equal_role_rejected() {
         .create(&make_user("admin2"))
         .await
         .expect("Failed to create admin2");
-    let admin2_member = RoomMember::new(room.id.clone(), admin2.id.clone(), RoomRole::Admin);
+    let admin2_member = RoomMember::new(room.id, admin2.id, RoomRole::Admin);
     member_repo
         .add(&admin2_member)
         .await
@@ -407,22 +405,12 @@ async fn test_concurrent_role_update_equal_role_rejected() {
 
     // Admin1 tries to demote Admin2
     let result1 = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin1.id.clone(),
-            admin2.id.clone(),
-            RoomRole::Member,
-        )
+        .set_member_role(room.id, admin1.id, admin2.id, RoomRole::Member)
         .await;
 
     // Admin2 tries to demote Admin1
     let result2 = member_service
-        .set_member_role(
-            room.id.clone(),
-            admin2.id.clone(),
-            admin1.id.clone(),
-            RoomRole::Member,
-        )
+        .set_member_role(room.id, admin2.id, admin1.id, RoomRole::Member)
         .await;
 
     // Both should fail due to equal role hierarchy
@@ -453,7 +441,7 @@ async fn test_concurrent_permission_grant() {
             .create(&make_user(&format!("perm_member_{i}")))
             .await
             .expect("Failed to create user");
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
@@ -478,14 +466,13 @@ async fn test_concurrent_permission_grant() {
 
     // Use barrier for concurrent operations
     let barrier = Arc::new(Barrier::new(5));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     let mut handles = Vec::with_capacity(5);
     for (i, user) in member_users.into_iter().enumerate() {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
-        let operator_id = operator_id.clone();
+        let room_id_clone = room_id;
 
         // Grant different permissions to each member
         let permission = match i {
@@ -543,7 +530,7 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
         .create(&make_user("target_member"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target_user.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -565,16 +552,15 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
 
     // Use barrier for concurrent updates
     let barrier = Arc::new(Barrier::new(10));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 concurrent updates to the same member
     let mut handles = Vec::with_capacity(10);
     for i in 0..10 {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
-        let operator_id = operator_id.clone();
-        let target_id = target_user.id.clone();
+        let room_id_clone = room_id;
+        let target_id = target_user.id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -636,7 +622,7 @@ async fn test_optimistic_lock_conflict_on_role_update() {
         .create(&make_user("role_target"))
         .await
         .expect("Failed to create target");
-    let target_member = RoomMember::new(room.id.clone(), target_user.id.clone(), RoomRole::Member);
+    let target_member = RoomMember::new(room.id, target_user.id, RoomRole::Member);
     member_repo
         .add(&target_member)
         .await
@@ -647,8 +633,8 @@ async fn test_optimistic_lock_conflict_on_role_update() {
 
     // Concurrently update the same member's role (Creator -> Admin, then Admin -> Member)
     // Use a version bumper to simulate conflicts
-    let room_id_str = room.id.as_str().to_string();
-    let target_id_str = target_user.id.as_str().to_string();
+    let room_id_str = room.id.to_string();
+    let target_id_str = target_user.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -680,12 +666,7 @@ async fn test_optimistic_lock_conflict_on_role_update() {
     member_service.set_room_settings_repo(room_settings_repo);
 
     let result = member_service
-        .set_member_role(
-            room.id.clone(),
-            operator_id.clone(),
-            target_user.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, operator_id, target_user.id, RoomRole::Admin)
         .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -730,7 +711,7 @@ async fn test_concurrent_leave_and_rejoin() {
             .create(&make_user(&format!("initial_{i}")))
             .await
             .expect("Failed to create user");
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
@@ -762,7 +743,7 @@ async fn test_concurrent_leave_and_rejoin() {
 
     // Use barrier for synchronization
     let barrier = Arc::new(Barrier::new(20));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 leave + 10 join = 20 concurrent operations
     let mut leave_handles = Vec::with_capacity(10);
@@ -772,7 +753,7 @@ async fn test_concurrent_leave_and_rejoin() {
     for user in initial_members {
         let member_repo_clone = member_repo.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -785,7 +766,7 @@ async fn test_concurrent_leave_and_rejoin() {
     for user in new_users {
         let member_service_clone = member_service.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -823,7 +804,7 @@ async fn test_concurrent_leave_and_rejoin() {
     let final_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members");

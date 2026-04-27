@@ -6,16 +6,22 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_cluster::sync::events::ClusterEvent;
+use synctv_cluster::sync::events::{ClusterEvent, WebRTCSignalKind};
 use synctv_cluster::{ConnectionManager, RoomMessageHub};
 use synctv_core::models::id::{RoomId, UserId};
 
+fn stable_test_id(s: &str) -> i64 {
+    s.bytes().fold(0_i64, |acc, byte| {
+        (acc * 131 + i64::from(byte)) % 900_000_000
+    }) + 1
+}
+
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_test_id(s))
 }
 
 // Test 1: ICE candidate exchange
@@ -27,7 +33,7 @@ fn test_ice_candidate_event_serialization() {
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        message_type: "ice_candidate".to_string(),
+        message_type: WebRTCSignalKind::IceCandidate,
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
         data:
@@ -59,7 +65,7 @@ fn test_ice_candidate_event_serialization() {
         ..
     } = decoded
     {
-        assert_eq!(message_type, "ice_candidate");
+        assert_eq!(message_type, WebRTCSignalKind::IceCandidate);
         assert_eq!(from, "user1|conn1");
         assert_eq!(to, "user2:conn2");
         assert!(data.contains("candidate:"));
@@ -78,20 +84,20 @@ async fn test_ice_candidate_routing() {
 
     // Both users subscribe
     let mut rx1 = hub
-        .subscribe(room.clone(), user1.clone(), "conn1".to_string())
+        .subscribe(room, user1, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), user2.clone(), "conn2".to_string())
+        .subscribe(room, user2, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "ice_candidate".to_string(),
-        from: format!("{}|conn1", user1.as_str()),
-        to: format!("{}:conn2", user2.as_str()),
+        room_id: room,
+        message_type: WebRTCSignalKind::IceCandidate,
+        from: format!("{user1}|conn1"),
+        to: format!("{user2}:conn2"),
         data: r#"{"candidate":"test"}"#.to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -113,42 +119,36 @@ async fn test_ice_candidate_routing() {
 }
 
 #[tokio::test]
-async fn test_ice_candidate_routing_supports_conn_id_only_target() {
+async fn test_ice_candidate_routing_uses_explicit_target_connection() {
     let hub = RoomMessageHub::new();
     let room = rid("room1");
     let user1 = uid("user1");
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room.clone(), user1.clone(), "conn1".to_string())
+        .subscribe(room, user1, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), user2.clone(), "conn2".to_string())
+        .subscribe(room, user2, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "ice_candidate".to_string(),
-        from: format!("{}|conn1", user1.as_str()),
-        to: "conn2".to_string(),
+        room_id: room,
+        message_type: WebRTCSignalKind::IceCandidate,
+        from: format!("{user1}|conn1"),
+        to: format!("{user2}:conn2"),
         data: r#"{"candidate":"test"}"#.to_string(),
         timestamp: chrono::Utc::now(),
     };
 
     let sent = hub.broadcast_to_connection(&room, "conn2", event).await;
-    assert_eq!(
-        sent, 1,
-        "conn_id-only signaling should still target one connection"
-    );
+    assert_eq!(sent, 1, "signaling should target one connection");
 
     let result = tokio::time::timeout(Duration::from_millis(100), rx2.recv()).await;
-    assert!(
-        result.is_ok(),
-        "target connection should receive conn_id-only signal"
-    );
+    assert!(result.is_ok(), "target connection should receive signal");
 
     let result = tokio::time::timeout(Duration::from_millis(100), rx1.recv()).await;
     assert!(
@@ -174,7 +174,7 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        message_type: "offer".to_string(),
+        message_type: WebRTCSignalKind::Offer,
         from: "caller|conn1".to_string(),
         to: "callee:conn2".to_string(),
         data: offer_sdp.to_string(),
@@ -189,7 +189,7 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
         message_type, data, ..
     } = decoded
     {
-        assert_eq!(message_type, "offer");
+        assert_eq!(message_type, WebRTCSignalKind::Offer);
         assert!(data.contains("v=0"));
     } else {
         panic!("Expected WebRTCSignaling variant");
@@ -210,7 +210,7 @@ a=group:BUNDLE 0 1
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        message_type: "answer".to_string(),
+        message_type: WebRTCSignalKind::Answer,
         from: "callee|conn2".to_string(),
         to: "caller:conn1".to_string(),
         data: answer_sdp.to_string(),
@@ -222,7 +222,7 @@ a=group:BUNDLE 0 1
 
     let decoded: ClusterEvent = serde_json::from_str(&json).expect("Should deserialize");
     if let ClusterEvent::WebRTCSignaling { message_type, .. } = decoded {
-        assert_eq!(message_type, "answer");
+        assert_eq!(message_type, WebRTCSignalKind::Answer);
     } else {
         panic!("Expected WebRTCSignaling variant");
     }
@@ -237,21 +237,21 @@ async fn test_sdp_offer_answer_flow() {
     let callee = uid("callee");
 
     let mut rx_caller = hub
-        .subscribe(room.clone(), caller.clone(), "conn1".to_string())
+        .subscribe(room, caller, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx_callee = hub
-        .subscribe(room.clone(), callee.clone(), "conn2".to_string())
+        .subscribe(room, callee, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Caller sends offer
     let offer = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "offer".to_string(),
-        from: format!("{}|conn1", caller.as_str()),
-        to: format!("{}:conn2", callee.as_str()),
+        room_id: room,
+        message_type: WebRTCSignalKind::Offer,
+        from: format!("{caller}|conn1"),
+        to: format!("{callee}:conn2"),
         data: "OFFER_SDP".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -264,10 +264,10 @@ async fn test_sdp_offer_answer_flow() {
     // Callee sends answer
     let answer = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "answer".to_string(),
-        from: format!("{}|conn2", callee.as_str()),
-        to: format!("{}:conn1", caller.as_str()),
+        room_id: room,
+        message_type: WebRTCSignalKind::Answer,
+        from: format!("{callee}|conn2"),
+        to: format!("{caller}:conn1"),
         data: "ANSWER_SDP".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -330,19 +330,19 @@ async fn test_webrtc_join_leave_broadcast() {
     let user2 = uid("user2");
 
     let mut rx1 = hub
-        .subscribe(room.clone(), user1.clone(), "conn1".to_string())
+        .subscribe(room, user1, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), user2.clone(), "conn2".to_string())
+        .subscribe(room, user2, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
 
     // User1 joins WebRTC
     let join_event = ClusterEvent::WebRTCJoin {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user1.clone(),
+        room_id: room,
+        user_id: user1,
         conn_id: "conn1".to_string(),
         username: "user1".to_string(),
         timestamp: chrono::Utc::now(),
@@ -358,8 +358,8 @@ async fn test_webrtc_join_leave_broadcast() {
     // User1 leaves WebRTC
     let leave_event = ClusterEvent::WebRTCLeave {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        user_id: user1.clone(),
+        room_id: room,
+        user_id: user1,
         conn_id: "conn1".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -381,14 +381,10 @@ async fn test_rtc_connection_tracking() {
     let user1 = uid("user1");
     let user2 = uid("user2");
 
-    mgr.register("conn1".to_string(), user1.clone())
-        .await
-        .unwrap();
-    mgr.register("conn2".to_string(), user2.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
-    mgr.join_room("conn2", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user1).await.unwrap();
+    mgr.register("conn2".to_string(), user2).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
+    mgr.join_room("conn2", room).await.unwrap();
 
     // Initially no RTC connections
     let rtc = mgr.get_rtc_connections(&room);
@@ -431,28 +427,18 @@ fn test_signaling_from_field_format() {
     assert_eq!(parts[1], "conn789");
 }
 
-/// Test to field parsing (`user_id:conn_id` or just `conn_id`).
+/// Test to field parsing (`public_user_id:conn_id`).
 #[test]
 fn test_signaling_to_field_format() {
-    // Full format: user_id:conn_id
     let to = "user123:conn456";
-    let (conn_id, user_id) = if let Some((uid, cid)) = to.rsplit_once(':') {
-        (cid.to_string(), Some(uid.to_string()))
-    } else {
-        (to.to_string(), None)
-    };
+    let (user_id, conn_id) = to
+        .rsplit_once(':')
+        .expect("signaling target must include user_id and conn_id");
+    assert_eq!(user_id, "user123");
     assert_eq!(conn_id, "conn456");
-    assert_eq!(user_id, Some("user123".to_string()));
 
-    // Short format: just conn_id
     let to_short = "conn789";
-    let (conn_id, user_id) = if let Some((uid, cid)) = to_short.rsplit_once(':') {
-        (cid.to_string(), Some(uid.to_string()))
-    } else {
-        (to_short.to_string(), None)
-    };
-    assert_eq!(conn_id, "conn789");
-    assert!(user_id.is_none());
+    assert!(to_short.rsplit_once(':').is_none());
 }
 
 // Test 6: Multi-user signaling
@@ -465,23 +451,23 @@ async fn test_multi_user_signaling() {
 
     // 3 users in same room
     let mut rx1 = hub
-        .subscribe(room.clone(), uid("user1"), "conn1".to_string())
+        .subscribe(room, uid("user1"), "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), uid("user2"), "conn2".to_string())
+        .subscribe(room, uid("user2"), "conn2".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room.clone(), uid("user3"), "conn3".to_string())
+        .subscribe(room, uid("user3"), "conn3".to_string())
         .await
         .expect("subscribe should succeed");
 
     // User1 sends ICE candidate to user2 only
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "ice_candidate".to_string(),
+        room_id: room,
+        message_type: WebRTCSignalKind::IceCandidate,
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
         data: "ICE_DATA".to_string(),
@@ -509,7 +495,7 @@ fn test_signaling_event_timestamp() {
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
-        message_type: "offer".to_string(),
+        message_type: WebRTCSignalKind::Offer,
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
         data: "SDP".to_string(),
@@ -535,10 +521,8 @@ async fn test_connection_cleanup_on_webrtc_leave() {
     let room = rid("room1");
     let user = uid("user1");
 
-    mgr.register("conn1".to_string(), user.clone())
-        .await
-        .unwrap();
-    mgr.join_room("conn1", room.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user).await.unwrap();
+    mgr.join_room("conn1", room).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
     // RTC connection exists
@@ -561,7 +545,7 @@ fn test_webrtc_signaling_not_critical() {
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
-        message_type: "ice_candidate".to_string(),
+        message_type: WebRTCSignalKind::IceCandidate,
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
         data: "{}".to_string(),
@@ -591,7 +575,7 @@ fn test_large_sdp_payload() {
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("room1"),
-        message_type: "offer".to_string(),
+        message_type: WebRTCSignalKind::Offer,
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
         data: large_sdp.clone(),
@@ -620,25 +604,25 @@ async fn test_broadcast_to_user_all_connections() {
 
     // Same user with multiple connections (e.g., multiple tabs)
     let mut rx1 = hub
-        .subscribe(room.clone(), user.clone(), "conn1".to_string())
+        .subscribe(room, user, "conn1".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx2 = hub
-        .subscribe(room.clone(), user.clone(), "conn2".to_string())
+        .subscribe(room, user, "conn2".to_string())
         .await
         .expect("subscribe should succeed");
     let mut rx3 = hub
-        .subscribe(room.clone(), user.clone(), "conn3".to_string())
+        .subscribe(room, user, "conn3".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Broadcast to user (all connections)
     let event = ClusterEvent::WebRTCSignaling {
         event_id: synctv_common::snanoid!(16),
-        room_id: room.clone(),
-        message_type: "offer".to_string(),
+        room_id: room,
+        message_type: WebRTCSignalKind::Offer,
         from: "other|conn0".to_string(),
-        to: format!("{}:conn1", user.as_str()), // Target first connection
+        to: format!("{user}:conn1"), // Target first connection
         data: "SDP".to_string(),
         timestamp: chrono::Utc::now(),
     };

@@ -21,7 +21,7 @@ async fn test_user_registration_and_authentication() {
         .unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
-    assert_eq!(claims.sub, user_id.as_str());
+    assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_access_token());
 
     // Generate refresh token
@@ -30,7 +30,7 @@ async fn test_user_registration_and_authentication() {
         .unwrap();
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
-    assert_eq!(claims.sub, user_id.as_str());
+    assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_refresh_token());
 }
 
@@ -125,9 +125,9 @@ async fn test_publish_key_generation_and_validation() {
         .generate_publish_key(&room_id, &media_id, &user_id)
         .expect("Failed to generate publish key");
 
-    assert_eq!(key.room_id, room_id.as_str());
-    assert_eq!(key.media_id, media_id.as_str());
-    assert_eq!(key.user_id, user_id.as_str());
+    assert_eq!(key.room_id, room_id.to_string());
+    assert_eq!(key.media_id, media_id.to_string());
+    assert_eq!(key.user_id, user_id.to_string());
     assert!(key.expires_at > 0);
     assert!(!key.token.is_empty());
 
@@ -136,9 +136,9 @@ async fn test_publish_key_generation_and_validation() {
         .await
         .expect("Failed to validate publish key");
 
-    assert_eq!(claims.room_id, room_id.as_str());
-    assert_eq!(claims.media_id, media_id.as_str());
-    assert_eq!(claims.user_id, user_id.as_str());
+    assert_eq!(claims.room_id, room_id.to_string());
+    assert_eq!(claims.media_id, media_id.to_string());
+    assert_eq!(claims.user_id, user_id.to_string());
     assert!(claims.perm_start_live);
 }
 
@@ -163,7 +163,7 @@ async fn test_publish_key_room_media_verification() {
         .verify_publish_key_for_stream(&key.token, &room_id, &media_id)
         .await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().as_str(), user_id.as_str());
+    assert_eq!(result.unwrap(), user_id);
 
     // Verify for wrong room
     let wrong_room = RoomId::new();
@@ -240,7 +240,7 @@ fn test_playlist_model() {
         room_id: RoomId::new(),
         creator_id: Some(UserId::new()),
         name: "My Folder".to_string(),
-        parent_id: Some(root.id.clone()),
+        parent_id: Some(root.id),
         position: 0.0,
         source_provider: None,
         source_config: None,
@@ -278,18 +278,18 @@ fn test_id_generation_uniqueness() {
 
     let id1 = RoomId::new();
     let id2 = RoomId::new();
-    assert_ne!(id1.as_str(), id2.as_str());
+    assert_ne!(id1, id2);
 
     let mid1 = MediaId::new();
     let mid2 = MediaId::new();
-    assert_ne!(mid1.as_str(), mid2.as_str());
+    assert_ne!(mid1, mid2);
 
     let pid1 = PlaylistId::new();
     let pid2 = PlaylistId::new();
-    assert_ne!(pid1.as_str(), pid2.as_str());
+    assert_ne!(pid1, pid2);
 
-    let room_id = RoomId::from_string("test_room_123".to_string());
-    assert_eq!(room_id.as_str(), "test_room_123");
+    let room_id = RoomId::from(10_000_000);
+    assert_eq!(room_id.to_string(), "10000000");
 }
 
 // Note: Role is intentionally NOT stored in JWT claims (security design).
@@ -307,7 +307,7 @@ async fn test_jwt_token_types() {
         .unwrap();
 
     let claims = jwt_service.verify_access_token(&access_token).unwrap();
-    assert_eq!(claims.sub, user_id.as_str());
+    assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_access_token());
 
     // Generate refresh token
@@ -316,7 +316,7 @@ async fn test_jwt_token_types() {
         .unwrap();
 
     let claims = jwt_service.verify_refresh_token(&refresh_token).unwrap();
-    assert_eq!(claims.sub, user_id.as_str());
+    assert_eq!(claims.sub, user_id.to_string());
     assert!(claims.is_refresh_token());
 }
 
@@ -387,14 +387,14 @@ async fn test_e2e_user_auth_flow() {
         .verify_access_token(&access_token)
         .expect("Failed to verify access token");
 
-    assert_eq!(access_claims.sub, user_id.as_str());
+    assert_eq!(access_claims.sub, user_id.to_string());
     assert!(access_claims.is_access_token());
 
     let refresh_claims = jwt_service
         .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
 
-    assert_eq!(refresh_claims.sub, user_id.as_str());
+    assert_eq!(refresh_claims.sub, user_id.to_string());
     assert!(refresh_claims.is_refresh_token());
 
     let new_access_token = jwt_service
@@ -405,7 +405,7 @@ async fn test_e2e_user_auth_flow() {
         .verify_access_token(&new_access_token)
         .expect("Failed to verify new access token");
 
-    assert_eq!(new_claims.sub, user_id.as_str());
+    assert_eq!(new_claims.sub, user_id.to_string());
     assert!(new_claims.exp > new_claims.iat);
 }
 
@@ -426,9 +426,9 @@ async fn test_e2e_publish_key_workflow() {
         .generate_publish_key(&room_id, &media_id, &user_id)
         .expect("Failed to generate publish key");
 
-    assert_eq!(publish_key.room_id, room_id.as_str());
-    assert_eq!(publish_key.media_id, media_id.as_str());
-    assert_eq!(publish_key.user_id, user_id.as_str());
+    assert_eq!(publish_key.room_id, room_id.to_string());
+    assert_eq!(publish_key.media_id, media_id.to_string());
+    assert_eq!(publish_key.user_id, user_id.to_string());
     assert!(!publish_key.token.is_empty());
 
     let claims = publish_key_service
@@ -436,8 +436,8 @@ async fn test_e2e_publish_key_workflow() {
         .await
         .expect("Failed to validate publish key");
 
-    assert_eq!(claims.room_id, room_id.as_str());
-    assert_eq!(claims.media_id, media_id.as_str());
+    assert_eq!(claims.room_id, room_id.to_string());
+    assert_eq!(claims.media_id, media_id.to_string());
     assert!(claims.perm_start_live);
 
     // Test 2: verify_publish_key_for_stream (requires a new token since publish keys are single-use)
@@ -450,7 +450,7 @@ async fn test_e2e_publish_key_workflow() {
         .await
         .expect("Failed to verify publish key for stream");
 
-    assert_eq!(verified_user_id.as_str(), user_id.as_str());
+    assert_eq!(verified_user_id.to_string(), user_id.to_string());
 
     // Test 3: verify that room mismatch fails
     let wrong_room = RoomId::new();
@@ -491,8 +491,8 @@ async fn test_e2e_playlist_hierarchy() {
 
     let root = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id,
+        creator_id: Some(creator_id),
         name: String::new(),
         parent_id: None,
         position: 0.0,
@@ -510,10 +510,10 @@ async fn test_e2e_playlist_hierarchy() {
 
     let static_folder = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id,
+        creator_id: Some(creator_id),
         name: "Movies".to_string(),
-        parent_id: Some(root.id.clone()),
+        parent_id: Some(root.id),
         position: 0.0,
         source_provider: None,
         source_config: None,
@@ -533,7 +533,7 @@ async fn test_e2e_playlist_hierarchy() {
         room_id,
         creator_id: Some(creator_id),
         name: "Alist Movies".to_string(),
-        parent_id: Some(root.id.clone()),
+        parent_id: Some(root.id),
         position: 1.0,
         source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({
@@ -572,7 +572,7 @@ async fn test_e2e_multiple_users_concurrent_auth() {
                 .verify_access_token(&token)
                 .expect("Failed to verify token");
 
-            assert_eq!(claims.sub, user_id.as_str());
+            assert_eq!(claims.sub, user_id.to_string());
             (user_id, claims)
         });
         handles.push(handle);
@@ -637,9 +637,9 @@ async fn test_e2e_id_generation_collision_resistance() {
         let media = MediaId::new();
         let playlist = PlaylistId::new();
 
-        assert!(room_ids.insert(room.as_str().to_string()));
-        assert!(media_ids.insert(media.as_str().to_string()));
-        assert!(playlist_ids.insert(playlist.as_str().to_string()));
+        assert!(room_ids.insert(room.to_string()));
+        assert!(media_ids.insert(media.to_string()));
+        assert!(playlist_ids.insert(playlist.to_string()));
     }
 
     assert_eq!(room_ids.len(), 1000);

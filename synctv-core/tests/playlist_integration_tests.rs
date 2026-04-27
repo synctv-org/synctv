@@ -42,7 +42,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -62,10 +62,10 @@ fn make_playlist(
 ) -> Playlist {
     Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
-        parent_id: parent_id.cloned(),
+        parent_id: parent_id.copied(),
         position: f64::from(position),
         source_provider: None,
         source_config: None,
@@ -243,8 +243,8 @@ async fn test_cycle_prevention_trigger() {
 
     // Try to set root's parent to grandchild, creating a cycle: root -> child -> grandchild -> root
     let result = sqlx::query("UPDATE playlists SET parent_id = $1 WHERE id = $2")
-        .bind(grandchild.id.as_str())
-        .bind(root.id.as_str())
+        .bind(grandchild.id)
+        .bind(root.id)
         .execute(&pool)
         .await;
 
@@ -326,10 +326,10 @@ async fn test_next_append_position_uses_sparse_floating_positions() {
         .create_with_executor(
             &Playlist {
                 id: PlaylistId::new(),
-                room_id: room.id.clone(),
+                room_id: room.id,
                 creator_id: None,
                 name: "Auto1".to_string(),
-                parent_id: Some(root.id.clone()),
+                parent_id: Some(root.id),
                 position: first_position,
                 source_provider: None,
                 source_config: None,
@@ -558,10 +558,10 @@ async fn test_cross_room_parent_id_rejected() {
     // This should be rejected by the database trigger (trigger_validate_parent_same_room)
     let cross_room_child = Playlist {
         id: PlaylistId::new(),
-        room_id: room_b.id.clone(), // Child belongs to Room B
+        room_id: room_b.id, // Child belongs to Room B
         creator_id: None,
         name: "Cross Room Child".to_string(),
-        parent_id: Some(root_a.id.clone()), // But parent is in Room A - INVALID!
+        parent_id: Some(root_a.id), // But parent is in Room A - INVALID!
         position: 0.0,
         source_provider: None,
         source_config: None,
@@ -849,8 +849,8 @@ async fn test_get_by_room_paginated_large_dataset() {
     assert_eq!(page2.len(), 50, "Second page should have 50 items");
 
     // Verify no overlap between pages
-    let page1_ids: std::collections::HashSet<_> = page1.iter().map(|p| p.id.clone()).collect();
-    let page2_ids: std::collections::HashSet<_> = page2.iter().map(|p| p.id.clone()).collect();
+    let page1_ids: std::collections::HashSet<_> = page1.iter().map(|p| p.id).collect();
+    let page2_ids: std::collections::HashSet<_> = page2.iter().map(|p| p.id).collect();
     let intersection: Vec<_> = page1_ids.intersection(&page2_ids).collect();
     assert!(
         intersection.is_empty(),

@@ -1467,7 +1467,7 @@ mod auth_flow {
         let claims = jwt
             .verify_access_token(&access_token)
             .expect("access token valid");
-        assert_eq!(claims.sub, user_id.as_str());
+        assert_eq!(claims.sub, user_id.to_string());
         assert!(claims.is_access_token());
 
         assert!(jwt.verify_refresh_token(&access_token).is_err());
@@ -1475,7 +1475,7 @@ mod auth_flow {
         let refresh_claims = jwt
             .verify_refresh_token(&refresh_token)
             .expect("refresh token valid");
-        assert_eq!(refresh_claims.sub, user_id.as_str());
+        assert_eq!(refresh_claims.sub, user_id.to_string());
         assert!(refresh_claims.is_refresh_token());
 
         let new_access = jwt
@@ -1484,7 +1484,7 @@ mod auth_flow {
         let new_claims = jwt
             .verify_access_token(&new_access)
             .expect("new access token valid");
-        assert_eq!(new_claims.sub, user_id.as_str());
+        assert_eq!(new_claims.sub, user_id.to_string());
     }
 
     /// Verify that tokens signed by one secret are rejected by another

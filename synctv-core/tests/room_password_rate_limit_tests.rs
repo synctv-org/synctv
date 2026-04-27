@@ -107,7 +107,7 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
         .create_room(
             "Protected Room".to_string(),
             "A password-protected room".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -171,7 +171,7 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
         .create_room(
             "Room One".to_string(),
             "First room".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("Password1".to_string()),
             None,
         )
@@ -182,7 +182,7 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
         .create_room(
             "Room Two".to_string(),
             "Second room".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("Password2".to_string()),
             None,
         )
@@ -239,7 +239,7 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
         .create_room(
             "Expiry Test Room".to_string(),
             "Testing lockout expiry".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -301,7 +301,7 @@ async fn test_successful_password_verification_resets_failure_counter() {
         .create_room(
             "Reset Test Room".to_string(),
             "Testing counter reset".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -363,7 +363,7 @@ async fn test_room_password_rate_limit_without_ip() {
         .create_room(
             "No IP Room".to_string(),
             "Testing room-only rate limit".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )
@@ -415,7 +415,7 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
         .create_room(
             "Fallback Test Room".to_string(),
             "Testing fallback mode behavior".to_string(),
-            owner.id.clone(),
+            owner.id,
             Some("CorrectPassword123".to_string()),
             None,
         )

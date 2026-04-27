@@ -15,11 +15,18 @@ use synctv_core::SharedStateProfile;
 use synctv_core_testing::test_redis_key_prefix;
 
 fn uid(s: &str) -> UserId {
-    UserId::from_string(s.to_string())
+    UserId::from(stable_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from_string(s.to_string())
+    RoomId::from(stable_id(s))
+}
+
+fn stable_id(s: &str) -> i64 {
+    i64::from(
+        s.bytes()
+            .fold(1u16, |acc, byte| acc.wrapping_add(u16::from(byte))),
+    )
 }
 
 async fn redis_connection(redis_url: &str) -> redis::aio::ConnectionManager {
@@ -115,7 +122,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
     let target_room = rid("room_b");
     let result = tokio::time::timeout(
         Duration::from_secs(3),
-        manager.join_room("conn1", target_room.clone()),
+        manager.join_room("conn1", target_room),
     )
     .await
     .expect("join_room should not hang when Redis disappears");
@@ -128,12 +135,7 @@ async fn test_join_room_rejects_when_distributed_room_limit_state_unavailable() 
     let conn = manager
         .get_connection("conn1")
         .expect("connection should remain tracked");
-    assert_eq!(
-        conn.room_id
-            .as_ref()
-            .map(synctv_core::models::RoomId::as_str),
-        Some("room_a")
-    );
+    assert_eq!(conn.room_id, Some(rid("room_a")));
 }
 
 #[tokio::test]
@@ -211,8 +213,9 @@ async fn test_register_rejects_when_distributed_total_limit_is_reached() {
         .get(format!("{prefix}connections:total"))
         .await
         .unwrap_or(0);
+    let user2 = uid("user2");
     let user2_count: i64 = verify_conn
-        .get(format!("{prefix}connections:user:user2"))
+        .get(format!("{prefix}connections:user:{user2}"))
         .await
         .unwrap_or(0);
 
@@ -243,11 +246,11 @@ async fn test_join_room_move_removes_old_room_from_distributed_index() {
         .await
         .expect("registration should succeed");
     manager
-        .join_room("conn1", room_a.clone())
+        .join_room("conn1", room_a)
         .await
         .expect("initial room join should succeed");
     manager
-        .join_room("conn1", room_b.clone())
+        .join_room("conn1", room_b)
         .await
         .expect("moving to another room should succeed");
 
@@ -303,23 +306,23 @@ async fn test_join_room_rejection_rolls_back_distributed_room_counter() {
         .expect("conn_b registration should succeed");
 
     manager
-        .join_room("conn_a", room_a.clone())
+        .join_room("conn_a", room_a)
         .await
         .expect("conn_a should join room_a");
     manager
-        .join_room("conn_b", room_b.clone())
+        .join_room("conn_b", room_b)
         .await
         .expect("conn_b should join room_b");
 
     let err = manager
-        .join_room("conn_a", room_b.clone())
+        .join_room("conn_a", room_b)
         .await
         .expect_err("room move must fail when target room is full");
     assert!(err.contains("Room at capacity"), "unexpected error: {err}");
 
     let mut verify_conn = redis_connection(&redis.redis_url).await;
     let room_b_count: i64 = verify_conn
-        .get(format!("{prefix}connections:room:room_b"))
+        .get(format!("{prefix}connections:room:{room_b}"))
         .await
         .unwrap_or(0);
 

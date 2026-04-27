@@ -42,14 +42,14 @@ async fn test_cross_replica_subscription_visibility() {
     let hub_a = create_hub(&redis.redis_url, "test1:").await;
     let hub_b = create_hub(&redis.redis_url, "test1:").await;
 
-    let room_id = RoomId::from_string("sync_room".to_string());
-    let user_id = UserId::from_string("user_a".to_string());
+    let room_id = RoomId::from(10_000_070);
+    let user_id = UserId::from(10_000_003);
 
     // Subscribe on hub A
     let (_rx, conn_id) = {
         let connection_id = "conn_a_1".to_string();
         let rx = hub_a
-            .subscribe(room_id.clone(), user_id.clone(), connection_id.clone())
+            .subscribe(room_id, user_id, connection_id.clone())
             .await
             .expect("subscribe should succeed");
         (rx, connection_id)
@@ -66,7 +66,7 @@ async fn test_cross_replica_subscription_visibility() {
     );
 
     let (sub_user_id, sub_conn_id) = &distributed_subs[0];
-    assert_eq!(sub_user_id.as_str(), "user_a");
+    assert_eq!(*sub_user_id, user_id);
     assert_eq!(sub_conn_id, &conn_id);
 
     // Hub B's local view should be empty (no local subscribers)
@@ -90,13 +90,13 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     let hub_a = create_hub(&redis.redis_url, "test2:").await;
     let hub_b = create_hub(&redis.redis_url, "test2:").await;
 
-    let room_id = RoomId::from_string("unsub_room".to_string());
-    let user_id = UserId::from_string("temp_user".to_string());
+    let room_id = RoomId::from(10_000_071);
+    let user_id = UserId::from(10_000_072);
 
     // Subscribe on hub A
     let conn_id = "conn_unsub_1".to_string();
     let _rx = hub_a
-        .subscribe(room_id.clone(), user_id.clone(), conn_id.clone())
+        .subscribe(room_id, user_id, conn_id.clone())
         .await
         .expect("subscribe should succeed");
 
@@ -135,16 +135,16 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
     let hub_a = create_hub(&redis.redis_url, "test2b:").await;
     let hub_b = create_hub(&redis.redis_url, "test2b:").await;
 
-    let room_id = RoomId::from_string("removed_room".to_string());
-    let user_a = UserId::from_string("remove_user_a".to_string());
-    let user_b = UserId::from_string("remove_user_b".to_string());
+    let room_id = RoomId::from(10_000_073);
+    let user_a = UserId::from(10_000_074);
+    let user_b = UserId::from(10_000_075);
 
     let _rx1 = hub_a
-        .subscribe(room_id.clone(), user_a, "remove_conn_1".to_string())
+        .subscribe(room_id, user_a, "remove_conn_1".to_string())
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(room_id.clone(), user_b, "remove_conn_2".to_string())
+        .subscribe(room_id, user_b, "remove_conn_2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -179,33 +179,21 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let hub_a = create_hub(&redis.redis_url, "test3:").await;
     let hub_b = create_hub(&redis.redis_url, "test3:").await;
 
-    let room_id = RoomId::from_string("multi_user_room".to_string());
+    let room_id = RoomId::from(10_000_076);
 
     // Subscribe 2 users on hub A
     let _rx1 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("user_a1".to_string()),
-            "conn_a1".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_077), "conn_a1".to_string())
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("user_a2".to_string()),
-            "conn_a2".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_078), "conn_a2".to_string())
         .await
         .expect("subscribe should succeed");
 
     // Subscribe 1 user on hub B
     let _rx3 = hub_b
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("user_b1".to_string()),
-            "conn_b1".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_079), "conn_b1".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -268,12 +256,12 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     let mut lifecycle_rx = hub_a.subscribe_lifecycle();
 
-    let room_id = RoomId::from_string("lifecycle_room".to_string());
-    let user_id = UserId::from_string("lifecycle_user".to_string());
+    let room_id = RoomId::from(10_000_080);
+    let user_id = UserId::from(10_000_081);
 
     // First subscriber should trigger RoomActivated
     let _rx = hub_a
-        .subscribe(room_id.clone(), user_id.clone(), "lc_conn_1".to_string())
+        .subscribe(room_id, user_id, "lc_conn_1".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -284,7 +272,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     match event {
         RoomLifecycleEvent::RoomActivated(rid) => {
-            assert_eq!(rid.as_str(), "lifecycle_room");
+            assert_eq!(rid, room_id);
         }
         other @ RoomLifecycleEvent::RoomDeactivated(_) => {
             panic!("Expected RoomActivated, got {other:?}")
@@ -293,11 +281,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     // Second subscriber in same room should NOT trigger another RoomActivated
     let _rx2 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("lifecycle_user_2".to_string()),
-            "lc_conn_2".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_082), "lc_conn_2".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -326,7 +310,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     match deactivate {
         RoomLifecycleEvent::RoomDeactivated(rid) => {
-            assert_eq!(rid.as_str(), "lifecycle_room");
+            assert_eq!(rid, room_id);
         }
         other @ RoomLifecycleEvent::RoomActivated(_) => {
             panic!("Expected RoomDeactivated, got {other:?}")
@@ -344,31 +328,19 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let hub_a = create_hub(&redis.redis_url, "test5:").await;
     let hub_b = create_hub(&redis.redis_url, "test5:").await;
 
-    let room_id = RoomId::from_string("recover_room".to_string());
+    let room_id = RoomId::from(10_000_083);
 
     // Subscribe 3 users on hub A
     let _rx1 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("rec_user_1".to_string()),
-            "rec_conn_1".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_084), "rec_conn_1".to_string())
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("rec_user_2".to_string()),
-            "rec_conn_2".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_085), "rec_conn_2".to_string())
         .await
         .expect("subscribe should succeed");
     let _rx3 = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("rec_user_3".to_string()),
-            "rec_conn_3".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_086), "rec_conn_3".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -413,34 +385,26 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     let hub_a = create_hub(&redis.redis_url, "test6:").await;
     let hub_b = create_hub(&redis.redis_url, "test6:").await;
 
-    let room_id = RoomId::from_string("concurrent_room".to_string());
+    let room_id = RoomId::from(10_000_087);
 
     // Subscribe 5 users on hub A and 5 on hub B concurrently
     let mut handles = Vec::new();
     for i in 0..5 {
         let hub = hub_a.clone();
-        let rid = room_id.clone();
+        let rid = room_id;
         handles.push(tokio::spawn(async move {
             let _rx = hub
-                .subscribe(
-                    rid,
-                    UserId::from_string(format!("user_a_{i}")),
-                    format!("conn_a_{i}"),
-                )
+                .subscribe(rid, UserId::from(150_000 + i), format!("conn_a_{i}"))
                 .await
                 .expect("subscribe should succeed");
         }));
     }
     for i in 0..5 {
         let hub = hub_b.clone();
-        let rid = room_id.clone();
+        let rid = room_id;
         handles.push(tokio::spawn(async move {
             let _rx = hub
-                .subscribe(
-                    rid,
-                    UserId::from_string(format!("user_b_{i}")),
-                    format!("conn_b_{i}"),
-                )
+                .subscribe(rid, UserId::from(160_000 + i), format!("conn_b_{i}"))
                 .await
                 .expect("subscribe should succeed");
         }));
@@ -489,22 +453,14 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     let hub_a = create_hub(&redis.redis_url, "test7:").await;
     let hub_b = create_hub(&redis.redis_url, "test7:").await;
 
-    let room_id = RoomId::from_string("shared_room".to_string());
+    let room_id = RoomId::from(10_000_011);
 
     let _rx_a = hub_a
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("user_a".to_string()),
-            "conn_a".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_003), "conn_a".to_string())
         .await
         .expect("subscribe should succeed");
     let _rx_b = hub_b
-        .subscribe(
-            room_id.clone(),
-            UserId::from_string("user_b".to_string()),
-            "conn_b".to_string(),
-        )
+        .subscribe(room_id, UserId::from(10_000_004), "conn_b".to_string())
         .await
         .expect("subscribe should succeed");
 
@@ -550,31 +506,32 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let prefix = "test8:";
 
     let hub = create_hub(&redis.redis_url, prefix).await;
-    let room_id = RoomId::from_string("prune_room".to_string());
+    let room_id = RoomId::from(10_000_088);
 
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
     let mut conn = redis::aio::ConnectionManager::new(client)
         .await
         .expect("redis connection");
 
-    let room_key = format!("{prefix}room_hub:room:{}", room_id.as_str());
+    let room_key = format!("{prefix}room_hub:room:{room_id}");
     let valid_conn_key = format!("{prefix}room_hub:conn:conn_valid");
     let wrong_room_conn_key = format!("{prefix}room_hub:conn:conn_wrong_room");
+    let valid_user_id = UserId::from(10_000_089);
 
     let _: () = conn
-        .hset(&room_key, "conn_missing", "user_missing")
+        .hset(&room_key, "conn_missing", 10_000_099i64)
         .await
         .unwrap();
     let _: () = conn
-        .hset(&room_key, "conn_wrong_room", "user_wrong")
+        .hset(&room_key, "conn_wrong_room", 10_000_098i64)
         .await
         .unwrap();
     let _: () = conn
-        .hset(&room_key, "conn_valid", "user_valid")
+        .hset(&room_key, "conn_valid", valid_user_id.get())
         .await
         .unwrap();
-    let _: () = conn.set(&valid_conn_key, room_id.as_str()).await.unwrap();
-    let _: () = conn.set(&wrong_room_conn_key, "other_room").await.unwrap();
+    let _: () = conn.set(&valid_conn_key, room_id.get()).await.unwrap();
+    let _: () = conn.set(&wrong_room_conn_key, 10_000_092i64).await.unwrap();
     let _: () = conn.expire(&room_key, 180).await.unwrap();
     let _: () = conn.expire(&valid_conn_key, 180).await.unwrap();
     let _: () = conn.expire(&wrong_room_conn_key, 180).await.unwrap();
@@ -582,17 +539,14 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let subscribers = hub.get_room_subscribers_cluster_wide(&room_id).await;
     assert_eq!(
         subscribers,
-        vec![(
-            UserId::from_string("user_valid".to_string()),
-            "conn_valid".to_string()
-        )],
+        vec![(valid_user_id, "conn_valid".to_string())],
         "distributed room lookup must prune missing and wrong-room hash members"
     );
 
-    let remaining_members: Vec<(String, String)> = conn.hgetall(&room_key).await.unwrap();
+    let remaining_members: Vec<(String, i64)> = conn.hgetall(&room_key).await.unwrap();
     assert_eq!(
         remaining_members,
-        vec![("conn_valid".to_string(), "user_valid".to_string())],
+        vec![("conn_valid".to_string(), valid_user_id.get())],
         "room hash should retain only valid subscribers after lazy pruning"
     );
 }
@@ -611,12 +565,14 @@ async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
         .await
         .expect("redis connection");
 
-    let live_room_key = format!("{prefix}room_hub:room:live_room");
-    let stale_room_key = format!("{prefix}room_hub:room:stale_room");
+    let live_room_id = RoomId::from(10_000_093);
+    let live_user_id = UserId::from(10_000_094);
+    let live_room_key = format!("{prefix}room_hub:room:{live_room_id}");
+    let stale_room_key = format!("{prefix}room_hub:room:10000095");
     let room_index_directory_key = format!("{prefix}room_hub:room_index");
 
     let _: () = conn
-        .hset(&live_room_key, "conn_live", "user_live")
+        .hset(&live_room_key, "conn_live", live_user_id.get())
         .await
         .unwrap();
     let _: () = conn.expire(&live_room_key, 180).await.unwrap();
@@ -655,11 +611,11 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let prefix = "test10:";
 
     let hub = create_hub(&redis.redis_url, prefix).await;
-    let room_id = RoomId::from_string("room_ttl".to_string());
-    let user_id = UserId::from_string("user_ttl".to_string());
+    let room_id = RoomId::from(10_000_090);
+    let user_id = UserId::from(10_000_091);
 
     let _rx = hub
-        .subscribe(room_id.clone(), user_id, "conn_ttl".to_string())
+        .subscribe(room_id, user_id, "conn_ttl".to_string())
         .await
         .expect("subscribe should succeed");
 

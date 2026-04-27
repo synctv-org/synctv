@@ -12,6 +12,7 @@ use super::{
     store::VersionedPlayback,
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
+use crate::models::{MediaId, RoomId};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -78,14 +79,14 @@ impl LiveProxyProvider {
 
     fn resolve_live_binding<'a>(
         ctx: &'a ProviderContext<'a>,
-    ) -> Result<(&'a str, &'a str), ProviderError> {
-        let room_id = ctx.room_id.ok_or_else(|| {
+    ) -> Result<(&'a RoomId, &'a MediaId), ProviderError> {
+        let room_id = ctx.room_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
                 "Missing room_id in provider context for live proxy playback".to_string(),
             )
         })?;
 
-        let media_id = ctx.media_id.ok_or_else(|| {
+        let media_id = ctx.media_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
                 "Missing media_id in provider context for live proxy playback".to_string(),
             )
@@ -117,7 +118,7 @@ impl LiveProxyProvider {
     fn build_proxy_action(
         rest: &str,
         versioned: &VersionedPlayback,
-        verified_claims: Option<&crate::service::proxy_signature::ProxyUrlClaims>,
+        ctx: &ProxyRequestContext<'_>,
     ) -> Result<ProxyAction, ProviderError> {
         let room_id = versioned
             .result
@@ -131,32 +132,46 @@ impl LiveProxyProvider {
             .get("media_id")
             .and_then(|value| value.as_str())
             .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".into()))?;
+        let room_id = super::proxy::parse_proxy_room_id(
+            &ctx.services.public_id_codec,
+            room_id,
+            "live playback metadata",
+        )?;
+        let media_id = super::proxy::parse_proxy_media_id(
+            &ctx.services.public_id_codec,
+            media_id,
+            "live playback metadata",
+        )?;
 
         match rest {
             stream if stream == "stream" || stream.starts_with("stream/") => {
-                let claims = verified_claims.ok_or_else(|| {
+                let claims = ctx.verified_claims.ok_or_else(|| {
                     ProviderError::ApiError("Missing verified proxy claims".into())
                 })?;
                 Ok(ProxyAction::LiveFlv {
                     provider_name: Self::NAME.to_string(),
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
-                    user_id: claims.user_id.clone(),
+                    room_id,
+                    media_id,
+                    user_id: super::proxy::parse_proxy_user_id(
+                        &ctx.services.public_id_codec,
+                        &claims.user_id,
+                        "live proxy claims",
+                    )?,
                     expires_at: claims.expires_at,
                 })
             }
             "m3u8" => Ok(ProxyAction::LiveHlsPlaylist {
                 provider_name: Self::NAME.to_string(),
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
+                room_id,
+                media_id,
                 version: versioned.version.clone(),
             }),
             segment if segment.starts_with("segment/") => {
                 let segment_name = segment.trim_start_matches("segment/");
                 let disguised_as_png = segment_name.ends_with(".png");
                 Ok(ProxyAction::LiveHlsSegment {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.to_string(),
+                    room_id,
+                    media_id,
                     segment_name: segment_name.to_string(),
                     disguised_as_png,
                 })
@@ -186,7 +201,7 @@ impl MediaProvider for LiveProxyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
         Self::validate_live_source_url(source_url)?;
 
-        let mut result = super::build_live_playback(media_id, room_id);
+        let mut result = super::build_live_playback(*media_id, *room_id);
         let redacted_host = url::Url::parse(source_url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
@@ -236,21 +251,22 @@ impl ProviderProxy for LiveProxyProvider {
             .ok_or(ProviderError::NotFound)?;
         let versioned =
             super::proxy::lookup_versioned(ctx.store, version, ctx.request_context).await?;
-        Self::build_proxy_action(rest, &versioned, ctx.verified_claims)
+        Self::build_proxy_action(rest, &versioned, ctx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{MediaId, RoomId, UserId};
     use serde_json::json;
 
     #[tokio::test]
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
         let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test")
-            .with_room_id("room-123")
-            .with_media_id("media-456");
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100));
 
         let source_config = json!({
             "url": "rtmp://secret-internal-server.local/live/stream-key"
@@ -289,8 +305,8 @@ mod tests {
     async fn test_live_proxy_metadata_contains_provider_tag() {
         let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test")
-            .with_room_id("room-1")
-            .with_media_id("media-1");
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100));
 
         let source_config = json!({
             "url": "rtmp://example.com/live/stream"
@@ -316,9 +332,9 @@ mod tests {
         let provider = LiveProxyProvider::new();
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("synctv")
-            .with_user_id("user1")
-            .with_room_id("room1")
-            .with_media_id("media1")
+            .with_user_id(UserId::from(1))
+            .with_room_id(RoomId::from(10))
+            .with_media_id(MediaId::from(100))
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
         let result = provider

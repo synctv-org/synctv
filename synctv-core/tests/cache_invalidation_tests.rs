@@ -102,8 +102,8 @@ async fn test_cache_invalidation_broadcast_received() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::UserPermission { room_id: r, user_id: u } => {
-                    assert_eq!(r, room_id.as_str());
-                    assert_eq!(u, user_id.as_str());
+                    assert_eq!(r, room_id.to_string());
+                    assert_eq!(u, user_id.to_string());
                 }
                 _ => panic!("Unexpected message type"),
             }
@@ -183,7 +183,7 @@ async fn test_cache_invalidation_room_permission() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::RoomPermission { room_id: r } => {
-                    assert_eq!(r, room_id.as_str());
+                    assert_eq!(r, room_id.to_string());
                 }
                 _ => panic!("Expected RoomPermission message"),
             }
@@ -380,7 +380,7 @@ async fn test_cache_invalidation_playback_state() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::PlaybackState { room_id: r } => {
-                    assert_eq!(r, room_id.as_str());
+                    assert_eq!(r, room_id.to_string());
                 }
                 _ => panic!("Expected PlaybackState message"),
             }
@@ -427,7 +427,7 @@ async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcast
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::Room { room_id: r } => {
-                    assert_eq!(r, room_id.as_str());
+                    assert_eq!(r, room_id.to_string());
                 }
                 other => panic!("Expected Room invalidation, got {other:?}"),
             }
@@ -740,7 +740,6 @@ async fn test_cache_invalidation_after_commit() {
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());
     room_service.set_playback_cache_invalidation(invalidation_service.clone());
-    let room_service = room_service;
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -748,7 +747,7 @@ async fn test_cache_invalidation_after_commit() {
     let user_id = UserId::new();
     let _user = user_repo
         .create(&User {
-            id: user_id.clone(),
+            id: user_id,
             username: "test_user".to_string(),
             email: Some("test@example.com".to_string()),
             password_hash: "hash".to_string(),
@@ -773,10 +772,10 @@ async fn test_cache_invalidation_after_commit() {
     let room_id = RoomId::new();
     let _room = room_repo
         .create(&Room {
-            id: room_id.clone(),
+            id: room_id,
             name: "Test Room".to_string(),
             description: "A test room".to_string(),
-            created_by: user_id.clone(),
+            created_by: user_id,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -792,8 +791,8 @@ async fn test_cache_invalidation_after_commit() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let _member = member_repo
         .add(&RoomMember {
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id,
+            user_id,
             role: synctv_core::models::RoomRole::Creator,
             status: synctv_core::models::MemberStatus::Active,
             added_permissions: 0,
@@ -817,7 +816,7 @@ async fn test_cache_invalidation_after_commit() {
     // Now delete the room - invalidation must not become observable until
     // the soft delete is already committed.
     room_service
-        .delete_room(room_id.clone(), user_id.clone())
+        .delete_room(room_id, user_id)
         .await
         .expect("Failed to delete room");
 
@@ -834,13 +833,13 @@ async fn test_cache_invalidation_after_commit() {
     })
     .await
     .expect("timed out waiting for room invalidation");
-    assert_eq!(observed_room_id, room_id.as_str());
+    assert_eq!(observed_room_id, room_id.to_string());
 
     // At the moment invalidation becomes observable, the DB mutation must
     // already be committed.
     let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM rooms WHERE id = $1")
-            .bind(room_id.as_str())
+            .bind(room_id)
             .fetch_optional(&pool)
             .await
             .expect("Failed to query room")
@@ -906,7 +905,6 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     ));
     room_service.set_cache_invalidation(invalidation_service.clone());
     room_service.set_playback_cache_invalidation(invalidation_service.clone());
-    let room_service = room_service;
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -914,7 +912,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let user_id = UserId::new();
     let _user = user_repo
         .create(&User {
-            id: user_id.clone(),
+            id: user_id,
             username: "test_user_rollback".to_string(),
             email: Some("test2@example.com".to_string()),
             password_hash: "hash".to_string(),
@@ -939,10 +937,10 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let room_id = RoomId::new();
     let _room = room_repo
         .create(&Room {
-            id: room_id.clone(),
+            id: room_id,
             name: "Test Room Rollback".to_string(),
             description: "A test room for rollback".to_string(),
-            created_by: user_id.clone(),
+            created_by: user_id,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -975,7 +973,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
          SET deleted_at = $2, updated_at = $2
          WHERE id = $1 AND deleted_at IS NULL",
     )
-    .bind(room_id.as_str())
+    .bind(room_id)
     .bind(chrono::Utc::now())
     .execute(&mut *tx)
     .await

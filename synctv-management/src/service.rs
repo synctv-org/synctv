@@ -122,6 +122,7 @@ pub struct ManagementServiceImpl {
     emby_api: Arc<EmbyApiImpl>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
+    public_id_codec: Arc<synctv_core::PublicIdCodec>,
 }
 
 pub struct ManagementServiceDependencies {
@@ -153,6 +154,8 @@ impl ManagementServiceImpl {
             management_auth_token,
         } = deps;
 
+        let public_id_codec = admin_api.public_id_codec.clone();
+
         Self {
             config,
             user_service,
@@ -164,6 +167,7 @@ impl ManagementServiceImpl {
             emby_api,
             lifecycle_controller,
             access_controller: ManagementAccessController::new(&management_auth_token),
+            public_id_codec,
         }
     }
 
@@ -173,7 +177,7 @@ impl ManagementServiceImpl {
     ) -> Result<ValidatedManagementUser, Status> {
         self.access_controller.authorize(request)?;
         Ok(ValidatedManagementUser {
-            user_id: UserId::from_string(LOCAL_MANAGEMENT_ACTOR_USER_ID.to_string()),
+            user_id: LOCAL_MANAGEMENT_ACTOR_USER_ID,
             role: CoreUserRole::Root,
         })
     }
@@ -230,6 +234,13 @@ impl ManagementServiceImpl {
                         Ok(String::new())
                     }
                 } else {
+                    self.public_id_codec
+                        .decode_user_id(trimmed)
+                        .map_err(|error| {
+                            Status::invalid_argument(format!(
+                                "{field_name}.user_id is invalid: {error}"
+                            ))
+                        })?;
                     Ok(trimmed.to_string())
                 }
             }
@@ -249,7 +260,11 @@ impl ManagementServiceImpl {
                     .get_user_by_username(username)
                     .await
                     .map_err(map_management_user_lookup_error)?;
-                Ok(user.id.to_string())
+                self.public_id_codec
+                    .encode_user_id(user.id)
+                    .map_err(|error| {
+                        Status::internal(format!("failed to encode resolved user id: {error}"))
+                    })
             }
             None => {
                 if required {
@@ -263,22 +278,26 @@ impl ManagementServiceImpl {
         }
     }
 
-    async fn resolve_client_actor_user_id(&self, actor: Option<UserRef>) -> Result<String, Status> {
+    async fn resolve_client_actor_user_id(&self, actor: Option<UserRef>) -> Result<UserId, Status> {
         let actor_user_id = self.resolve_required_user_ref(actor, "actor").await?;
+        let actor_user_id = self
+            .public_id_codec
+            .decode_user_id(&actor_user_id)
+            .map_err(|error| Status::invalid_argument(format!("Invalid actor.user_id: {error}")))?;
         let user = self
             .user_service
-            .get_user(&UserId::from_string(actor_user_id))
+            .get_user(&actor_user_id)
             .await
             .map_err(map_management_user_lookup_error)?;
         validate_client_actor_user(&user)?;
-        Ok(user.id.to_string())
+        Ok(user.id)
     }
 
     async fn resolve_client_actor_and_request<T>(
         &self,
         actor: Option<UserRef>,
         request: Option<T>,
-    ) -> Result<(String, T), Status> {
+    ) -> Result<(UserId, T), Status> {
         let actor_user_id = self.resolve_client_actor_user_id(actor).await?;
         let request = Self::required_nested_request(request, "request")?;
         Ok((actor_user_id, request))
@@ -452,12 +471,19 @@ impl ManagementServiceImpl {
                     }
 
                     match self.user_service.get_user_by_username(username).await {
-                        Ok(user) => {
-                            let user_id = user.id.to_string();
-                            if seen.insert(user_id.clone()) {
-                                resolved.push(user_id);
+                        Ok(user) => match self.public_id_codec.encode_user_id(user.id) {
+                            Ok(user_id) => {
+                                if seen.insert(user_id.clone()) {
+                                    resolved.push(user_id);
+                                }
                             }
-                        }
+                            Err(error) => {
+                                failures.push(Self::batch_user_ref_failure(
+                                    username,
+                                    format!("Failed to encode resolved user id: {error}"),
+                                ));
+                            }
+                        },
                         Err(synctv_core::Error::NotFound(_)) => {
                             failures.push(Self::batch_user_ref_failure(
                                 username,
@@ -481,10 +507,10 @@ impl ManagementServiceImpl {
                         ));
                         continue;
                     }
-                    if !Self::is_management_user_id(trimmed) {
+                    if let Err(error) = self.public_id_codec.decode_user_id(trimmed) {
                         failures.push(Self::batch_user_ref_failure(
                             trimmed,
-                            "user_id must be a 12-character base62 ID",
+                            format!("user_id is invalid: {error}"),
                         ));
                         continue;
                     }
@@ -545,10 +571,6 @@ impl ManagementServiceImpl {
             failed: i32::try_from(failures.len()).unwrap_or(i32::MAX),
             results: failures,
         }
-    }
-
-    fn is_management_user_id(value: &str) -> bool {
-        value.len() == 12 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
@@ -1802,8 +1824,7 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let actor_user_id =
-            UserId::from_string(self.resolve_client_actor_user_id(req.actor).await?);
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
             .admin_api
             .create_publish_key_for_actor(

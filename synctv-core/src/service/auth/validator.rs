@@ -63,7 +63,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_and_extract_user_id(&self, token: &str) -> Result<UserId> {
         let claims = self.validate_token(token)?;
-        Ok(UserId::from_string(claims.sub))
+        claims.sub.parse().map_err(crate::Error::Internal)
     }
 }
 
@@ -103,7 +103,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_http_extract_user_id(&self, auth_header: &str) -> Result<UserId> {
         let claims = self.validate_http(auth_header)?;
-        Ok(UserId::from_string(claims.sub))
+        claims.sub.parse().map_err(crate::Error::Internal)
     }
 }
 
@@ -160,7 +160,7 @@ impl JwtValidator {
     /// User ID extracted from the token
     pub fn validate_grpc_extract_user_id(&self, metadata: &MetadataMap) -> Result<UserId> {
         let claims = self.validate_grpc(metadata)?;
-        Ok(UserId::from_string(claims.sub))
+        claims.sub.parse().map_err(crate::Error::Internal)
     }
 
     /// Validate JWT from gRPC metadata and return as gRPC Status
@@ -206,9 +206,9 @@ mod tests {
         )
     }
 
-    fn create_test_token(jwt_service: &JwtService, user_id: &str) -> String {
+    fn create_test_token(jwt_service: &JwtService, user_id: i64) -> String {
         use super::super::jwt::TokenType;
-        let user_id = UserId::from_string(user_id.to_string());
+        let user_id = UserId::from(user_id);
         jwt_service
             .sign_token(&user_id, TokenType::Access, 0)
             .unwrap()
@@ -234,11 +234,11 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user123");
+        let token = create_test_token(&jwt_service, 98_001);
 
         // Valid token
         let claims = validator.validate_token(&token).unwrap();
-        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.sub, "98001");
 
         // Invalid token
         let result = validator.validate_token("invalid.token.here");
@@ -250,11 +250,11 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user456");
+        let token = create_test_token(&jwt_service, 98_002);
 
         // Valid HTTP authorization header
         let claims = validator.validate_http(&format!("Bearer {token}")).unwrap();
-        assert_eq!(claims.sub, "user456");
+        assert_eq!(claims.sub, "98002");
 
         // Invalid format
         let result = validator.validate_http("Basic invalid");
@@ -266,12 +266,12 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user789");
+        let token = create_test_token(&jwt_service, 98_003);
 
         let user_id = validator
             .validate_http_extract_user_id(&format!("Bearer {token}"))
             .unwrap();
-        assert_eq!(user_id.as_str(), "user789");
+        assert_eq!(user_id.to_string(), "98003");
     }
 
     #[test]
@@ -279,14 +279,14 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user999");
+        let token = create_test_token(&jwt_service, 98_004);
 
         // Valid gRPC metadata
         let mut metadata = MetadataMap::new();
         metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let claims = validator.validate_grpc(&metadata).unwrap();
-        assert_eq!(claims.sub, "user999");
+        assert_eq!(claims.sub, "98004");
 
         // Missing authorization
         let metadata = MetadataMap::new();
@@ -299,13 +299,13 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user111");
+        let token = create_test_token(&jwt_service, 98_005);
 
         let mut metadata = MetadataMap::new();
         metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let user_id = validator.validate_grpc_extract_user_id(&metadata).unwrap();
-        assert_eq!(user_id.as_str(), "user111");
+        assert_eq!(user_id.to_string(), "98005");
     }
 
     #[test]
@@ -313,14 +313,14 @@ mod tests {
         let jwt_service = create_test_jwt_service();
         let validator = JwtValidator::new(jwt_service.clone());
 
-        let token = create_test_token(&jwt_service, "user222");
+        let token = create_test_token(&jwt_service, 98_006);
 
         // Valid token
         let mut metadata = MetadataMap::new();
         metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let claims = validator.validate_grpc_as_status(&metadata).unwrap();
-        assert_eq!(claims.sub, "user222");
+        assert_eq!(claims.sub, "98006");
 
         // Invalid token
         let mut metadata = MetadataMap::new();

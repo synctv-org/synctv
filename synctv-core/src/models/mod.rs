@@ -1,3 +1,112 @@
+macro_rules! sort_field_enum {
+    (
+        $(#[$enum_meta:meta])*
+        pub enum $name:ident {
+            $(
+                $variant:ident => {
+                    display: $display:literal,
+                    sql: $sql:literal
+                    $(, aliases: [$($alias:literal),* $(,)?])?
+                }
+            ),+ $(,)?
+        }
+        default = $default:ident;
+        error = $error:literal;
+    ) => {
+        $(#[$enum_meta])*
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::$default
+            }
+        }
+
+        impl $name {
+            #[must_use]
+            pub const fn as_sql(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $sql),+
+                }
+            }
+
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $display),+
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                let normalized = raw.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    $($display $(| $($alias)|*)? => Ok(Self::$variant),)+
+                    other => Err(format!("{}: {other}", $error)),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str((*self).as_str())
+            }
+        }
+    };
+}
+
+macro_rules! sqlx_i16_enum {
+    ($name:ident, $error:literal, { $($variant:ident = $value:literal),+ $(,)? }) => {
+        impl From<$name> for i16 {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => $value),+
+                }
+            }
+        }
+
+        impl std::convert::TryFrom<i16> for $name {
+            type Error = String;
+
+            fn try_from(value: i16) -> Result<Self, Self::Error> {
+                match value {
+                    $($value => Ok($name::$variant),)+
+                    other => Err(format!("{}: {other}", $error)),
+                }
+            }
+        }
+
+        impl sqlx::Type<sqlx::Postgres> for $name {
+            fn type_info() -> sqlx::postgres::PgTypeInfo {
+                <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
+            }
+        }
+
+        impl sqlx::Encode<'_, sqlx::Postgres> for $name {
+            fn encode_by_ref(
+                &self,
+                buf: &mut sqlx::postgres::PgArgumentBuffer,
+            ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+                <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&i16::from(*self), buf)
+            }
+        }
+
+        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $name {
+            fn decode(
+                value: sqlx::postgres::PgValueRef<'r>,
+            ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+                Self::try_from(value).map_err(Into::into)
+            }
+        }
+    };
+}
+
 pub mod chat;
 pub mod id;
 pub mod media;
@@ -17,7 +126,10 @@ pub mod settings;
 pub mod user;
 
 pub use chat::{ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest};
-pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId, ID_LENGTH};
+pub use id::{
+    generate_id, generate_invite_code, BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId,
+    TypedId, UserId, INVITE_CODE_LENGTH,
+};
 pub use media::{
     Danmaku, Media, MediaListQuery, MediaListSortBy, PlaybackInfo, PlaybackResult, PlaybackUrl,
     PlaybackUrlMetadata, ProviderType, Subtitle, SubtitleUrl,
@@ -60,3 +172,102 @@ pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
     UserRole, UserStatus,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! assert_sort_field {
+        ($ty:ty, $variant:expr, $display:literal, $sql:literal $(, $alias:literal)?) => {
+            assert_eq!($variant.as_str(), $display);
+            assert_eq!($variant.to_string(), $display);
+            assert_eq!($variant.as_sql(), $sql);
+            assert_eq!($display.parse::<$ty>().unwrap(), $variant);
+            $(assert_eq!($alias.parse::<$ty>().unwrap(), $variant);)?
+        };
+    }
+
+    #[test]
+    fn list_sort_fields_roundtrip_display_parse_and_sql() {
+        assert_sort_field!(MediaListSortBy, MediaListSortBy::Name, "name", "name");
+        assert_sort_field!(
+            MediaListSortBy,
+            MediaListSortBy::ProviderInstanceName,
+            "provider_instance_name",
+            "provider_instance_name",
+            "providerinstancename"
+        );
+        assert_eq!(MediaListSortBy::default(), MediaListSortBy::Position);
+
+        assert_sort_field!(
+            PlaylistListSortBy,
+            PlaylistListSortBy::CreatedAt,
+            "created_at",
+            "created_at",
+            "createdat"
+        );
+        assert_eq!(PlaylistListSortBy::default(), PlaylistListSortBy::Position);
+
+        assert_sort_field!(
+            RoomListSortBy,
+            RoomListSortBy::LastActivityAt,
+            "last_activity_at",
+            "r.last_activity_at",
+            "lastactivityat"
+        );
+        assert_eq!(RoomListSortBy::default(), RoomListSortBy::CreatedAt);
+
+        assert_sort_field!(
+            RoomMemberListSortBy,
+            RoomMemberListSortBy::JoinedAt,
+            "joined_at",
+            "rm.joined_at",
+            "joinedat"
+        );
+        assert_eq!(
+            RoomMemberListSortBy::default(),
+            RoomMemberListSortBy::JoinedAt
+        );
+
+        assert_sort_field!(
+            MyRoomListSortBy,
+            MyRoomListSortBy::LastActivityAt,
+            "last_activity_at",
+            "r.last_activity_at",
+            "lastactivityat"
+        );
+        assert_eq!(MyRoomListSortBy::default(), MyRoomListSortBy::JoinedAt);
+
+        assert_sort_field!(
+            NotificationListSortBy,
+            NotificationListSortBy::UpdatedAt,
+            "updated_at",
+            "updated_at",
+            "updatedat"
+        );
+        assert_eq!(
+            NotificationListSortBy::default(),
+            NotificationListSortBy::CreatedAt
+        );
+
+        assert_sort_field!(
+            ProviderInstanceListSortBy,
+            ProviderInstanceListSortBy::Endpoint,
+            "endpoint",
+            "endpoint"
+        );
+        assert_eq!(
+            ProviderInstanceListSortBy::default(),
+            ProviderInstanceListSortBy::CreatedAt
+        );
+
+        assert_sort_field!(
+            UserListSortBy,
+            UserListSortBy::UpdatedAt,
+            "updated_at",
+            "updated_at",
+            "updatedat"
+        );
+        assert_eq!(UserListSortBy::default(), UserListSortBy::CreatedAt);
+    }
+}

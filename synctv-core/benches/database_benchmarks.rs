@@ -151,7 +151,7 @@ fn make_room(name: &str, owner_id: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: String::new(),
-        created_by: owner_id.clone(),
+        created_by: *owner_id,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -168,10 +168,10 @@ fn make_playlist(room_id: &RoomId, parent_id: Option<&PlaylistId>, name: &str) -
     let now = Utc::now();
     Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: name.to_string(),
-        parent_id: parent_id.cloned(),
+        parent_id: parent_id.copied(),
         position: 0.0,
         source_provider: None,
         source_config: None,
@@ -262,8 +262,8 @@ fn bench_list_media_with_data(c: &mut Criterion) {
         for i in 0..media_count {
             let media = Media {
                 id: MediaId::new(),
-                playlist_id: Some(playlist.id.clone()),
-                room_id: room.id.clone(),
+                playlist_id: Some(playlist.id),
+                room_id: room.id,
                 creator_id: None,
                 name: format!("media_{media_count}_{i}"),
                 position: f64::from(i),
@@ -333,7 +333,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
 
         group.bench_with_input(bench_id, &batch_size, |b, &batch_size| {
             b.iter_custom(|iters| {
-                let room_id = room.id.clone();
+                let room_id = room.id;
 
                 rt.block_on(async {
                     let start = Instant::now();
@@ -345,8 +345,8 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                         for i in 0..batch_size {
                             let media = Media {
                                 id: MediaId::new(),
-                                playlist_id: Some(new_playlist.id.clone()),
-                                room_id: room_id.clone(),
+                                playlist_id: Some(new_playlist.id),
+                                room_id,
                                 creator_id: None,
                                 name: format!("batch_media_{i}"),
                                 position: f64::from(i),
@@ -392,7 +392,7 @@ fn bench_index_effectiveness(c: &mut Criterion) {
         let user = rt
             .block_on(user_repo.create(&make_user(&format!("member_{i}"))))
             .unwrap();
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         rt.block_on(member_repo.add(&member)).unwrap();
     }
 

@@ -76,7 +76,7 @@ async fn deliver_reliable_event(
         Ok(Ok(())) => ReliableDeliveryOutcome::Delivered,
         Ok(Err(e)) => {
             warn!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 connection_id = %connection_id,
                 event_type = %event_type,
                 "Failed to deliver reliable event (channel closed): {e}"
@@ -85,7 +85,7 @@ async fn deliver_reliable_event(
         }
         Err(_) => {
             warn!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 connection_id = %connection_id,
                 event_type = %event_type,
                 timeout_secs = CRITICAL_EVENT_SEND_TIMEOUT.as_secs(),
@@ -164,7 +164,7 @@ impl Clone for Subscriber {
     fn clone(&self) -> Self {
         Self {
             connection_id: self.connection_id.clone(),
-            user_id: self.user_id.clone(),
+            user_id: self.user_id,
             sender: self.sender.clone(),
             consecutive_drops: self.consecutive_drops.clone(),
         }
@@ -252,11 +252,7 @@ impl std::fmt::Debug for RoomMessageHub {
 
 impl RoomMessageHub {
     fn room_key(&self, room_id: &RoomId) -> String {
-        format!(
-            "{}room_hub:room:{}",
-            self.redis_key_prefix,
-            room_id.as_str()
-        )
+        format!("{}room_hub:room:{room_id}", self.redis_key_prefix)
     }
 
     fn conn_key(&self, connection_id: &str) -> String {
@@ -503,7 +499,7 @@ impl RoomMessageHub {
 
         let subscriber = Subscriber {
             connection_id: connection_id.clone(),
-            user_id: user_id.clone(),
+            user_id,
             sender: tx,
             consecutive_drops: Arc::new(AtomicU32::new(0)),
         };
@@ -516,7 +512,7 @@ impl RoomMessageHub {
         // Atomically check-and-insert using DashMap's entry API.
         // This avoids the TOCTOU race between `contains_key` + `entry().or_default()`
         // where two concurrent subscribes could both see the room as new.
-        let is_new_room = match self.rooms.entry(room_id.clone()) {
+        let is_new_room = match self.rooms.entry(room_id) {
             dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                 entry.get_mut().insert(connection_id.clone(), subscriber);
                 false
@@ -531,7 +527,7 @@ impl RoomMessageHub {
 
         // Track connection for cleanup
         self.connections
-            .insert(connection_id.clone(), (room_id.clone(), user_id.clone()));
+            .insert(connection_id.clone(), (room_id, user_id));
 
         // Persist to Redis for cross-replica visibility.
         // In Redis-backed mode this is part of the subscription contract: if the
@@ -541,13 +537,11 @@ impl RoomMessageHub {
             let room_key = self.room_key(&room_id);
             let conn_key = self.conn_key(&connection_id);
             let room_index_directory_key = self.room_index_directory_key();
-            let user_id_str = user_id.as_str().to_string();
-            let room_id_str = room_id.as_str().to_string();
             let ttl_secs = self.redis_key_ttl_secs;
 
             // Store room -> {connection_id: user_id} mapping
             if let Err(e) = conn_clone
-                .hset::<_, _, _, ()>(&room_key, &connection_id, &user_id_str)
+                .hset::<_, _, _, ()>(&room_key, &connection_id, user_id.get())
                 .await
             {
                 self.rollback_local_subscription(&room_id, &connection_id);
@@ -587,7 +581,7 @@ impl RoomMessageHub {
             }
 
             if let Err(e) = conn_clone
-                .set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs_unsigned(ttl_secs))
+                .set_ex::<_, _, ()>(&conn_key, room_id.get(), ttl_secs_unsigned(ttl_secs))
                 .await
             {
                 let _ = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id).await;
@@ -602,12 +596,12 @@ impl RoomMessageHub {
         if is_new_room {
             let _ = self
                 .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
+                .send(RoomLifecycleEvent::RoomActivated(room_id));
         }
 
         info!(
-            room_id = %room_id.as_str(),
-            user_id = %user_id.as_str(),
+            room_id = %room_id,
+            user_id = %user_id,
             connection_id = %connection_id,
             "Client subscribed to room"
         );
@@ -650,7 +644,7 @@ impl RoomMessageHub {
                 .is_some()
             {
                 room_deactivated = true;
-                debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
+                debug!(room_id = %room_id, "Room has no more subscribers, removed");
             }
 
             // Remove from Redis (best-effort, don't block unsubscribe path).
@@ -662,12 +656,12 @@ impl RoomMessageHub {
                 let conn_key = self.conn_key(connection_id);
                 let room_index_directory_key = self.room_index_directory_key();
                 let connection_id_owned = connection_id.to_string();
-                let room_id_for_retry = room_id.clone();
+                let room_id_for_retry = room_id;
                 let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
                 let connection_id_for_log = connection_id_owned.clone();
-                let room_id_for_log = room_id_for_retry.clone();
+                let room_id_for_log = room_id_for_retry;
                 let cleanup_connection_id = connection_id_owned.clone();
-                let cleanup_room_id = room_id_for_retry.clone();
+                let cleanup_room_id = room_id_for_retry;
                 let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
                 let cleanup_fut = async move {
@@ -722,7 +716,7 @@ impl RoomMessageHub {
                     pending_redis_cleanup.insert(connection_id_owned, room_id_for_retry);
                     warn!(
                         connection_id = %connection_id_for_log,
-                        room_id = %room_id_for_log.as_str(),
+                        room_id = %room_id_for_log,
                         "No Tokio runtime available for Redis unsubscribe cleanup; deferred to retry loop/TTL"
                     );
                 }
@@ -732,12 +726,12 @@ impl RoomMessageHub {
             if room_deactivated {
                 let _ = self
                     .lifecycle_tx
-                    .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+                    .send(RoomLifecycleEvent::RoomDeactivated(room_id));
             }
 
             info!(
-                room_id = %room_id.as_str(),
-                user_id = %user_id.as_str(),
+                room_id = %room_id,
+                user_id = %user_id,
                 connection_id = %connection_id,
                 "Client unsubscribed from room"
             );
@@ -781,8 +775,8 @@ impl RoomMessageHub {
                             subscriber.consecutive_drops.store(0, Ordering::Relaxed);
                             sent_count += 1;
                             debug!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
+                                room_id = %room_id,
+                                user_id = %subscriber.user_id,
                                 connection_id = %subscriber.connection_id,
                                 event_type = %event.event_type(),
                                 "Event sent to client"
@@ -793,7 +787,7 @@ impl RoomMessageHub {
                                 match block_on_reliable_delivery(
                                     subscriber.sender.clone(),
                                     event.clone(),
-                                    room_id.clone(),
+                                    *room_id,
                                     subscriber.connection_id.clone(),
                                 ) {
                                     ReliableDeliveryOutcome::Delivered
@@ -812,8 +806,8 @@ impl RoomMessageHub {
                                         + 1;
                                 if drops >= MAX_CONSECUTIVE_DROPS {
                                     warn!(
-                                        room_id = %room_id.as_str(),
-                                        user_id = %subscriber.user_id.as_str(),
+                                        room_id = %room_id,
+                                        user_id = %subscriber.user_id,
                                         connection_id = %subscriber.connection_id,
                                         consecutive_drops = drops,
                                         "Disconnecting persistently slow subscriber after {} consecutive drops",
@@ -822,8 +816,8 @@ impl RoomMessageHub {
                                     failed_connections.push(subscriber.connection_id.clone());
                                 } else {
                                     warn!(
-                                        room_id = %room_id.as_str(),
-                                        user_id = %subscriber.user_id.as_str(),
+                                        room_id = %room_id,
+                                        user_id = %subscriber.user_id,
                                         connection_id = %subscriber.connection_id,
                                         event_type = %event.event_type(),
                                         consecutive_drops = drops,
@@ -834,8 +828,8 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             warn!(
-                                room_id = %room_id.as_str(),
-                                user_id = %subscriber.user_id.as_str(),
+                                room_id = %room_id,
+                                user_id = %subscriber.user_id,
                                 connection_id = %subscriber.connection_id,
                                 "Subscriber channel closed, marking for cleanup"
                             );
@@ -855,7 +849,7 @@ impl RoomMessageHub {
 
         if sent_count > 0 {
             debug!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 sent_count = sent_count,
                 event_type = %event.event_type(),
                 "Event broadcast complete"
@@ -894,7 +888,7 @@ impl RoomMessageHub {
                                     deliver_reliable_event(
                                         subscriber.sender.clone(),
                                         event.clone(),
-                                        room_id.clone(),
+                                        *room_id,
                                         subscriber.connection_id.clone(),
                                     ),
                                 ));
@@ -960,8 +954,8 @@ impl RoomMessageHub {
                                 subscriber.consecutive_drops.store(0, Ordering::Relaxed);
                                 sent_count += 1;
                                 debug!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %subscriber.user_id.as_str(),
+                                    room_id = %room_id,
+                                    user_id = %subscriber.user_id,
                                     connection_id = %subscriber.connection_id,
                                     event_type = %event.event_type(),
                                     "Event sent to specific user"
@@ -972,7 +966,7 @@ impl RoomMessageHub {
                                     match block_on_reliable_delivery(
                                         subscriber.sender.clone(),
                                         event.clone(),
-                                        room_id.clone(),
+                                        *room_id,
                                         subscriber.connection_id.clone(),
                                     ) {
                                         ReliableDeliveryOutcome::Delivered
@@ -993,8 +987,8 @@ impl RoomMessageHub {
                                         + 1;
                                     if drops >= MAX_CONSECUTIVE_DROPS {
                                         warn!(
-                                            room_id = %room_id.as_str(),
-                                            user_id = %subscriber.user_id.as_str(),
+                                            room_id = %room_id,
+                                            user_id = %subscriber.user_id,
                                             connection_id = %subscriber.connection_id,
                                             consecutive_drops = drops,
                                             "Disconnecting persistently slow subscriber after {} consecutive drops (targeted)",
@@ -1003,8 +997,8 @@ impl RoomMessageHub {
                                         failed_connections.push(subscriber.connection_id.clone());
                                     } else {
                                         warn!(
-                                            room_id = %room_id.as_str(),
-                                            user_id = %subscriber.user_id.as_str(),
+                                            room_id = %room_id,
+                                            user_id = %subscriber.user_id,
                                             connection_id = %subscriber.connection_id,
                                             event_type = %event.event_type(),
                                             consecutive_drops = drops,
@@ -1015,8 +1009,8 @@ impl RoomMessageHub {
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 warn!(
-                                    room_id = %room_id.as_str(),
-                                    user_id = %subscriber.user_id.as_str(),
+                                    room_id = %room_id,
+                                    user_id = %subscriber.user_id,
                                     connection_id = %subscriber.connection_id,
                                     "Subscriber channel closed, marking for cleanup"
                                 );
@@ -1056,7 +1050,7 @@ impl RoomMessageHub {
                     match subscriber.sender.try_send(event.clone()) {
                         Ok(()) => {
                             debug!(
-                                room_id = %room_id.as_str(),
+                                room_id = %room_id,
                                 connection_id = %connection_id,
                                 event_type = %event_type,
                                 "Event sent to specific connection"
@@ -1068,12 +1062,12 @@ impl RoomMessageHub {
                                 TargetedDelivery::Retry {
                                     sender: subscriber.sender.clone(),
                                     event: Box::new(event),
-                                    room_id: room_id.clone(),
+                                    room_id: *room_id,
                                     connection_id: subscriber.connection_id.clone(),
                                 }
                             } else {
                                 warn!(
-                                    room_id = %room_id.as_str(),
+                                    room_id = %room_id,
                                     connection_id = %connection_id,
                                     event_type = %event_type,
                                     "Subscriber channel full, dropping targeted event"
@@ -1083,7 +1077,7 @@ impl RoomMessageHub {
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             warn!(
-                                room_id = %room_id.as_str(),
+                                room_id = %room_id,
                                 connection_id = %connection_id,
                                 "Subscriber channel closed for targeted event"
                             );
@@ -1136,7 +1130,7 @@ impl RoomMessageHub {
     /// Get all active room IDs (rooms with at least one subscriber)
     #[must_use]
     pub fn active_room_ids(&self) -> Vec<RoomId> {
-        self.rooms.iter().map(|entry| entry.key().clone()).collect()
+        self.rooms.iter().map(|entry| *entry.key()).collect()
     }
 
     /// Get total number of active connections
@@ -1156,19 +1150,19 @@ impl RoomMessageHub {
                 .values()
                 .map(|sub| {
                     self.connections.remove(&sub.connection_id);
-                    (sub.connection_id.clone(), room_id.clone())
+                    (sub.connection_id.clone(), *room_id)
                 })
                 .collect();
 
             for (connection_id, room_id) in &removed_subscribers {
-                self.schedule_redis_cleanup(connection_id.clone(), room_id.clone());
+                self.schedule_redis_cleanup(connection_id.clone(), *room_id);
             }
             // Emit lifecycle event since the room is no longer active
             let _ = self
                 .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+                .send(RoomLifecycleEvent::RoomDeactivated(*room_id));
             info!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 removed_connections = subscribers.len(),
                 "Removed all subscribers for deleted room"
             );
@@ -1185,9 +1179,9 @@ impl RoomMessageHub {
         let room_index_directory_key = self.room_index_directory_key();
         let pending_redis_cleanup = Arc::clone(&self.pending_redis_cleanup);
         let connection_id_for_log = connection_id.clone();
-        let room_id_for_log = room_id.clone();
+        let room_id_for_log = room_id;
         let cleanup_connection_id = connection_id.clone();
-        let cleanup_room_id = room_id.clone();
+        let cleanup_room_id = room_id;
         let cleanup_pending_redis_cleanup = Arc::clone(&pending_redis_cleanup);
 
         let cleanup_fut = async move {
@@ -1237,7 +1231,7 @@ impl RoomMessageHub {
             pending_redis_cleanup.insert(connection_id, room_id);
             warn!(
                 connection_id = %connection_id_for_log,
-                room_id = %room_id_for_log.as_str(),
+                room_id = %room_id_for_log,
                 "No Tokio runtime available for Redis room cleanup; deferred to retry loop/TTL"
             );
         }
@@ -1251,7 +1245,7 @@ impl RoomMessageHub {
             .map(|subscribers| {
                 subscribers
                     .values()
-                    .map(|sub| (sub.user_id.clone(), sub.connection_id.clone()))
+                    .map(|sub| (sub.user_id, sub.connection_id.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -1271,10 +1265,7 @@ impl RoomMessageHub {
             let room_index_directory_key = self.room_index_directory_key();
             let mut conn_clone = conn.snapshot().await;
 
-            match conn_clone
-                .hgetall::<_, Vec<(String, String)>>(&room_key)
-                .await
-            {
+            match conn_clone.hgetall::<_, Vec<(String, i64)>>(&room_key).await {
                 Ok(entries) => {
                     if entries.is_empty() {
                         let _: Result<(), _> =
@@ -1288,20 +1279,17 @@ impl RoomMessageHub {
                             format!("{}room_hub:conn:{}", self.redis_key_prefix, conn_id)
                         })
                         .collect();
-                    let conn_rooms = match conn_clone
-                        .mget::<_, Vec<Option<String>>>(conn_keys)
-                        .await
-                    {
+                    let conn_rooms = match conn_clone.mget::<_, Vec<Option<i64>>>(conn_keys).await {
                         Ok(conn_rooms) => conn_rooms,
                         Err(e) => {
                             warn!(
-                                room_id = %room_id.as_str(),
+                                room_id = %room_id,
                                 "Failed to validate distributed room subscribers from Redis, falling back to raw room hash: {e}"
                             );
                             return entries
                                 .into_iter()
-                                .map(|(conn_id, user_id_str)| {
-                                    (UserId::from_string(user_id_str), conn_id)
+                                .filter_map(|(conn_id, user_id)| {
+                                    (user_id > 0).then_some((UserId::from(user_id), conn_id))
                                 })
                                 .collect();
                         }
@@ -1310,11 +1298,10 @@ impl RoomMessageHub {
                     let mut subscribers = Vec::with_capacity(entries.len());
                     let mut stale_connection_ids = Vec::new();
 
-                    for ((conn_id, user_id_str), mapped_room_id) in
-                        entries.into_iter().zip(conn_rooms)
+                    for ((conn_id, user_id), mapped_room_id) in entries.into_iter().zip(conn_rooms)
                     {
-                        if mapped_room_id.as_deref() == Some(room_id.as_str()) {
-                            subscribers.push((UserId::from_string(user_id_str), conn_id));
+                        if mapped_room_id == Some(room_id.get()) && user_id > 0 {
+                            subscribers.push((UserId::from(user_id), conn_id));
                         } else {
                             stale_connection_ids.push(conn_id);
                         }
@@ -1336,14 +1323,14 @@ impl RoomMessageHub {
                                         conn_clone.srem(&room_index_directory_key, &room_key).await;
                                 }
                                 debug!(
-                                    room_id = %room_id.as_str(),
+                                    room_id = %room_id,
                                     removed_members = stale_connection_ids.len(),
                                     "Pruned stale distributed room subscribers on read"
                                 );
                             }
                             Err(e) => {
                                 warn!(
-                                    room_id = %room_id.as_str(),
+                                    room_id = %room_id,
                                     removed_members = stale_connection_ids.len(),
                                     "Failed to prune stale distributed room subscribers on read: {e}"
                                 );
@@ -1407,14 +1394,17 @@ impl RoomMessageHub {
             // Extract room_id from key
             let room_id_str =
                 key.trim_start_matches(&format!("{}room_hub:room:", self.redis_key_prefix));
-            let room_id = RoomId::from_string(room_id_str.to_string());
+            let Ok(room_id) = room_id_str.parse::<RoomId>() else {
+                tracing::warn!(room_id = %room_id_str, "Ignoring invalid room hub room key");
+                continue;
+            };
 
             // Fetch all subscribers for this room
-            let entries: Vec<(String, String)> = match conn_clone.hgetall(&key).await {
+            let entries: Vec<(String, i64)> = match conn_clone.hgetall(&key).await {
                 Ok(entries) => entries,
                 Err(e) => {
                     warn!(
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         error = %e,
                         "Failed to fetch audited room subscribers from Redis"
                     );
@@ -1430,7 +1420,7 @@ impl RoomMessageHub {
             recovered += entries.len();
 
             info!(
-                room_id = %room_id.as_str(),
+                room_id = %room_id,
                 subscriber_count = entries.len(),
                 "Audited room subscription state from Redis (observability only)"
             );
@@ -1462,11 +1452,7 @@ impl RoomMessageHub {
 
         // Collect room keys for all active rooms
         for entry in self.rooms.iter() {
-            let room_key = format!(
-                "{}room_hub:room:{}",
-                self.redis_key_prefix,
-                entry.key().as_str()
-            );
+            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, entry.key());
             keys_to_refresh.push(room_key);
         }
 
@@ -1523,7 +1509,7 @@ impl RoomMessageHub {
         let pending: Vec<(ConnectionId, RoomId)> = self
             .pending_redis_cleanup
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .map(|entry| (entry.key().clone(), *entry.value()))
             .collect();
 
         for (connection_id, room_id) in pending {
@@ -1531,11 +1517,7 @@ impl RoomMessageHub {
                 continue;
             }
 
-            let room_key = format!(
-                "{}room_hub:room:{}",
-                self.redis_key_prefix,
-                room_id.as_str()
-            );
+            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id);
             let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
 
             let mut pipe = redis::pipe();
@@ -1548,7 +1530,7 @@ impl RoomMessageHub {
                     self.pending_redis_cleanup.remove(&connection_id);
                     debug!(
                         connection_id = %connection_id,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         "Retried failed Redis subscription cleanup"
                     );
                 }
@@ -1556,7 +1538,7 @@ impl RoomMessageHub {
                     errors += 1;
                     warn!(
                         connection_id = %connection_id,
-                        room_id = %room_id.as_str(),
+                        room_id = %room_id,
                         error = %e,
                         "Failed to retry Redis subscription cleanup"
                     );
@@ -1741,12 +1723,12 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_and_broadcast() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("test_user".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user_id = UserId::from(10_000_148);
 
         // Subscribe
         let mut rx = hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .subscribe(room_id, user_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -1756,8 +1738,8 @@ mod tests {
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            room_id,
+            user_id,
             username: "testuser".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
@@ -1776,12 +1758,12 @@ mod tests {
     #[tokio::test]
     async fn test_unsubscribe() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("test_user".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user_id = UserId::from(10_000_148);
 
         // Subscribe
         let _rx = hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .subscribe(room_id, user_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         assert_eq!(hub.subscriber_count(&room_id), 1);
@@ -1796,17 +1778,17 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_subscribers() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
 
         // Subscribe two clients
         let mut rx1 = hub
-            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .subscribe(room_id, user1, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let mut rx2 = hub
-            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .subscribe(room_id, user2, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -1815,8 +1797,8 @@ mod tests {
         // Broadcast event
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            user_id: user1.clone(),
+            room_id,
+            user_id: user1,
             username: "user1".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
@@ -1838,17 +1820,17 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_to_specific_user() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
 
         // Subscribe two clients
         let mut rx1 = hub
-            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .subscribe(room_id, user1, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let mut rx2 = hub
-            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .subscribe(room_id, user2, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
 
@@ -1886,23 +1868,21 @@ mod tests {
         let hub = RoomMessageHub::new();
         let mut lifecycle_rx = hub.subscribe_lifecycle();
 
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
 
         // First subscriber triggers RoomActivated
         let _rx1 = hub
-            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .subscribe(room_id, user1, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(
-            matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room")
-        );
+        assert!(matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid == &room_id));
 
         // Second subscriber does NOT trigger RoomActivated
         let _rx2 = hub
-            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .subscribe(room_id, user2, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
         assert!(lifecycle_rx.try_recv().is_err());
@@ -1914,9 +1894,7 @@ mod tests {
         // Unsubscribe last user: triggers RoomDeactivated
         hub.unsubscribe("conn2");
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(
-            matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room")
-        );
+        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid == &room_id));
     }
 
     #[tokio::test]
@@ -1924,12 +1902,12 @@ mod tests {
         let hub = RoomMessageHub::new();
         let mut lifecycle_rx = hub.subscribe_lifecycle();
 
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user_id = UserId::from(10_000_010);
 
         // Subscribe triggers RoomActivated
         let _rx = hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .subscribe(room_id, user_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let _ = lifecycle_rx.try_recv().unwrap(); // consume RoomActivated
@@ -1937,28 +1915,26 @@ mod tests {
         // remove_room triggers RoomDeactivated
         hub.remove_room(&room_id);
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(
-            matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room")
-        );
+        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid == &room_id));
     }
 
     #[tokio::test]
     async fn test_broadcast_reliably_waits_for_critical_event_queue_space() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("room-critical".to_string());
-        let deleted_by = UserId::from_string("admin".to_string());
-        let filler_user = UserId::from_string("user".to_string());
+        let room_id = RoomId::from(10_000_159);
+        let deleted_by = UserId::from(10_000_027);
+        let filler_user = UserId::from(10_000_160);
 
         let mut rx = hub
-            .subscribe(room_id.clone(), filler_user, "conn-critical".to_string())
+            .subscribe(room_id, filler_user, "conn-critical".to_string())
             .await
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
             let event = ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: deleted_by.clone(),
+                room_id,
+                user_id: deleted_by,
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
@@ -1971,13 +1947,13 @@ mod tests {
 
         let room_deleted = ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
+            room_id,
             deleted_by,
             timestamp: Utc::now(),
         };
 
         let hub_for_task = hub.clone();
-        let room_for_task = room_id.clone();
+        let room_for_task = room_id;
         let broadcast_task = tokio::spawn(async move {
             hub_for_task
                 .broadcast_reliably(&room_for_task, room_deleted)
@@ -2023,22 +1999,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_broadcast_waits_for_critical_event_queue_space() {
         let hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from_string("room-critical-broadcast".to_string());
-        let user_id = UserId::from_string("user-critical-broadcast".to_string());
+        let room_id = RoomId::from(10_000_161);
+        let user_id = UserId::from(10_000_162);
         let mut rx = hub
-            .subscribe(
-                room_id.clone(),
-                user_id,
-                "conn-critical-broadcast".to_string(),
-            )
+            .subscribe(room_id, user_id, "conn-critical-broadcast".to_string())
             .await
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
             let event = ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: UserId::from_string("filler-user".to_string()),
+                room_id,
+                user_id: UserId::from(10_000_163),
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
@@ -2051,13 +2023,13 @@ mod tests {
 
         let critical = ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
-            room_id: room_id.clone(),
-            deleted_by: UserId::from_string("deleter".to_string()),
+            room_id,
+            deleted_by: UserId::from(10_000_164),
             timestamp: Utc::now(),
         };
 
         let hub_for_task = hub.clone();
-        let room_for_task = room_id.clone();
+        let room_for_task = room_id;
         let broadcast_task =
             tokio::spawn(async move { hub_for_task.broadcast(&room_for_task, &critical) });
 
@@ -2100,22 +2072,18 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout() {
         let hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from_string("room-reliable-timeout".to_string());
-        let user_id = UserId::from_string("user-reliable-timeout".to_string());
+        let room_id = RoomId::from(10_000_165);
+        let user_id = UserId::from(10_000_166);
         let _rx = hub
-            .subscribe(
-                room_id.clone(),
-                user_id.clone(),
-                "conn-reliable-timeout".to_string(),
-            )
+            .subscribe(room_id, user_id, "conn-reliable-timeout".to_string())
             .await
             .expect("subscribe should succeed");
 
         for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
             let event = ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                user_id: UserId::from_string("filler-user".to_string()),
+                room_id,
+                user_id: UserId::from(10_000_163),
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
@@ -2127,15 +2095,15 @@ mod tests {
         }
 
         let hub_for_task = Arc::clone(&hub);
-        let room_for_task = room_id.clone();
+        let room_for_task = room_id;
         let broadcast_task = tokio::spawn(async move {
             hub_for_task
                 .broadcast_reliably(
                     &room_for_task,
                     ClusterEvent::RoomDeleted {
                         event_id: synctv_common::snanoid!(16),
-                        room_id: room_for_task.clone(),
-                        deleted_by: UserId::from_string("deleter".to_string()),
+                        room_id: room_for_task,
+                        deleted_by: UserId::from(10_000_164),
                         timestamp: Utc::now(),
                     },
                 )
@@ -2173,19 +2141,19 @@ mod tests {
 
         runtime.block_on(async {
             let hub = RoomMessageHub::new();
-            let room_id = RoomId::from_string("room-critical-deferred".to_string());
-            let user_id = UserId::from_string("user-critical-deferred".to_string());
+            let room_id = RoomId::from(10_000_167);
+            let user_id = UserId::from(10_000_168);
 
             let mut rx = hub
-                .subscribe(room_id.clone(), user_id, "conn-critical-deferred".to_string())
+                .subscribe(room_id, user_id, "conn-critical-deferred".to_string())
                 .await
                 .expect("subscribe should succeed");
 
             for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
                 let event = ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: UserId::from_string("filler-user".to_string()),
+                    room_id,
+                    user_id: UserId::from(10_000_163),
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
@@ -2201,8 +2169,8 @@ mod tests {
 
             let event = ClusterEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                deleted_by: UserId::from_string("deleter".to_string()),
+                room_id,
+                deleted_by: UserId::from(10_000_164),
                 timestamp: Utc::now(),
             };
             let sent = hub.broadcast(
@@ -2252,13 +2220,13 @@ mod tests {
 
         runtime.block_on(async {
             let hub = RoomMessageHub::new();
-            let room_id = RoomId::from_string("room-targeted-deferred".to_string());
-            let user_id = UserId::from_string("user-targeted-deferred".to_string());
+            let room_id = RoomId::from(10_000_169);
+            let user_id = UserId::from(10_000_170);
 
             let mut rx = hub
                 .subscribe(
-                    room_id.clone(),
-                    user_id.clone(),
+                    room_id,
+                    user_id,
                     "conn-targeted-deferred".to_string(),
                 )
                 .await
@@ -2267,8 +2235,8 @@ mod tests {
             for _ in 0..SUBSCRIBER_CHANNEL_CAPACITY {
                 let event = ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: room_id.clone(),
-                    user_id: UserId::from_string("filler-user".to_string()),
+                    room_id,
+                    user_id: UserId::from(10_000_163),
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
@@ -2284,8 +2252,8 @@ mod tests {
 
             let event = ClusterEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
-                room_id: room_id.clone(),
-                deleted_by: UserId::from_string("deleter".to_string()),
+                room_id,
+                deleted_by: UserId::from(10_000_164),
                 timestamp: Utc::now(),
             };
             let sent = hub.broadcast_to_user(&room_id, &user_id, &event);
@@ -2328,11 +2296,11 @@ mod tests {
         // Verify that unsubscribe properly cleans up local state (rooms + connections)
         // even when Redis is not configured. This is the baseline behavior.
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user_id = UserId::from(10_000_010);
 
         let _rx = hub
-            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .subscribe(room_id, user_id, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         assert_eq!(hub.subscriber_count(&room_id), 1);
@@ -2350,10 +2318,8 @@ mod tests {
     async fn test_cleanup_orphaned_subscriptions_only_tracks_local_failed_cleanup() {
         let hub = RoomMessageHub::new();
 
-        hub.pending_redis_cleanup.insert(
-            "conn_local".to_string(),
-            RoomId::from_string("room_local".to_string()),
-        );
+        hub.pending_redis_cleanup
+            .insert("conn_local".to_string(), RoomId::from(10_000_171));
 
         assert_eq!(hub.pending_redis_cleanup.len(), 1);
 
@@ -2370,13 +2336,11 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_clears_stale_pending_cleanup_for_reused_connection_id() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("room_reuse".to_string());
-        let user_id = UserId::from_string("user_reuse".to_string());
+        let room_id = RoomId::from(10_000_172);
+        let user_id = UserId::from(10_000_173);
 
-        hub.pending_redis_cleanup.insert(
-            "conn_reuse".to_string(),
-            RoomId::from_string("old_room".to_string()),
-        );
+        hub.pending_redis_cleanup
+            .insert("conn_reuse".to_string(), RoomId::from(10_000_174));
 
         let _rx = hub
             .subscribe(room_id, user_id, "conn_reuse".to_string())
@@ -2487,16 +2451,16 @@ mod tests {
     async fn test_remove_room_cleans_connection_tracking() {
         // Verify that remove_room removes connections from the tracking map
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from_string("test_room".to_string());
-        let user1 = UserId::from_string("user1".to_string());
-        let user2 = UserId::from_string("user2".to_string());
+        let room_id = RoomId::from(10_000_009);
+        let user1 = UserId::from(10_000_010);
+        let user2 = UserId::from(10_000_095);
 
         let _rx1 = hub
-            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .subscribe(room_id, user1, "conn1".to_string())
             .await
             .expect("subscribe should succeed");
         let _rx2 = hub
-            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .subscribe(room_id, user2, "conn2".to_string())
             .await
             .expect("subscribe should succeed");
 

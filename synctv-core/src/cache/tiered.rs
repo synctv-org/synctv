@@ -32,7 +32,7 @@ pub trait Timestamped {
 /// This is needed for L2 key construction and for cross-replica
 /// invalidation (which passes entity IDs as plain strings).
 pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static {
-    fn as_str(&self) -> &str;
+    fn cache_key(&self) -> String;
     fn from_id(id: &str) -> Self;
 }
 
@@ -183,10 +183,10 @@ where
 
         // Check L2 cache via SingleFlight to prevent stampede
         if self.l2.is_active() {
-            let sf_key = key.as_str().to_string();
+            let sf_key = key.cache_key();
             let l2 = self.l2.clone();
             let l2_prefix = self.key_prefix.clone();
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
             let cache_type = self.cache_type.clone();
 
             // Snapshot per-key epoch + global epoch before the async
@@ -286,7 +286,7 @@ where
 
         // Update L2 cache
         if self.l2.is_active() {
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
             let json = serde_json::to_string(&value).map_err(|e| {
                 Error::Internal(format!(
                     "Failed to serialize {} for caching: {e}",
@@ -344,7 +344,7 @@ where
 
         // Then remove from L2 with retry logic
         if self.l2.is_active() {
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
             self.l2
                 .delete_with_retry_scoped(&self.key_prefix, &redis_key, 3, &self.cache_type)
                 .await?;
@@ -451,13 +451,14 @@ where
             // Build a stable singleflight key from the sorted missing key IDs.
             // Sorting ensures that {"a","b"} and {"b","a"} resolve to the same
             // in-flight request, deduplicating concurrent batch stampedes.
-            let mut sf_key_parts: Vec<&str> = missing_keys.iter().map(CacheKey::as_str).collect();
+            let mut sf_key_parts: Vec<String> =
+                missing_keys.iter().map(CacheKey::cache_key).collect();
             sf_key_parts.sort_unstable();
             let sf_key = format!("batch:{}:{}", self.cache_type, sf_key_parts.join(","));
 
             let full_keys: Vec<String> = missing_keys
                 .iter()
-                .map(|k| format!("{}{}", self.key_prefix, k.as_str()))
+                .map(|k| format!("{}{}", self.key_prefix, k.cache_key()))
                 .collect();
             let l2 = self.l2.clone();
             let l2_prefix = self.key_prefix.clone();
@@ -610,7 +611,7 @@ where
 
         // When L2 is active, use atomic set-if-newer
         if self.l2.is_active() {
-            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
 
             let new_json = serde_json::to_string(&value).map_err(|e| {
                 Error::Internal(format!(
@@ -723,9 +724,10 @@ mod tests {
     }
 
     impl CacheKey for TestId {
-        fn as_str(&self) -> &str {
-            &self.0
+        fn cache_key(&self) -> String {
+            self.0.clone()
         }
+
         fn from_id(id: &str) -> Self {
             Self(id.to_string())
         }

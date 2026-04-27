@@ -50,6 +50,7 @@ async_singleflight.workspace = true
 
 # IDs & Crypto
 uuid.workspace = true
+sqids.workspace = true
 rand.workspace = true
 sha1.workspace = true
 sha2.workspace = true

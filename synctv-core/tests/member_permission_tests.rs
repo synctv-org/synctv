@@ -90,7 +90,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
         .create_room(
             "SMP Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -98,11 +98,11 @@ async fn test_set_member_permissions_requires_grant_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -110,13 +110,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
 
     // Member does NOT have GRANT_PERMISSION by default
     let result = member_service
-        .set_member_permissions(
-            room.id.clone(),
-            member.id.clone(),
-            target.id.clone(),
-            PermissionBits::SEND_CHAT,
-            0,
-        )
+        .set_member_permissions(room.id, member.id, target.id, PermissionBits::SEND_CHAT, 0)
         .await;
 
     assert!(
@@ -143,7 +137,7 @@ async fn test_set_member_permissions_creator_can_set() {
         .create_room(
             "SMP2 Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -151,7 +145,7 @@ async fn test_set_member_permissions_creator_can_set() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -160,9 +154,9 @@ async fn test_set_member_permissions_creator_can_set() {
     // Creator has GRANT_PERMISSION
     let updated = member_service
         .set_member_permissions(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
             0,
         )
@@ -199,7 +193,7 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         .create_room(
             "SMP Admin Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -207,27 +201,22 @@ async fn test_set_member_permissions_updates_admin_override_fields_for_admin_tar
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
         .unwrap();
 
     let member_service = room_service.member_service();
     let updated = member_service
         .set_member_permissions(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             PermissionBits::USE_WEBRTC,
             PermissionBits::BAN_MEMBER,
         )
@@ -288,7 +277,7 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
         .create_room(
             "Disallow Delete Room Permission".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -296,16 +285,16 @@ async fn test_set_member_permissions_rejects_lifecycle_only_delete_room_permissi
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let err = room_service
         .member_service()
         .set_member_permissions(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             PermissionBits::DELETE_ROOM,
             0,
         )
@@ -334,7 +323,7 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
         .create_room(
             "OLR Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -342,13 +331,13 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     // Bump version concurrently to trigger retries
-    let room_id_str = room.id.as_str().to_string();
-    let target_id_str = target.id.as_str().to_string();
+    let room_id_str = room.id.to_string();
+    let target_id_str = target.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -369,9 +358,9 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     let member_service = room_service.member_service();
     let result = member_service
         .set_member_permissions(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             PermissionBits::BAN_MEMBER,
             0,
         )
@@ -412,7 +401,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         .create_room(
             "Reset Perm Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -420,7 +409,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -429,9 +418,9 @@ async fn test_reset_member_permissions_clears_all_overrides() {
     // First, set some permissions
     member_service
         .set_member_permissions(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
+            room.id,
+            creator.id,
+            target.id,
             PermissionBits::BAN_MEMBER | PermissionBits::KICK_MEMBER,
             PermissionBits::SEND_CHAT,
         )
@@ -456,7 +445,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
 
     // Reset all permissions
     let updated = member_service
-        .reset_member_permissions(room.id.clone(), creator.id.clone(), target.id.clone())
+        .reset_member_permissions(room.id, creator.id, target.id)
         .await
         .unwrap();
 
@@ -488,7 +477,7 @@ async fn test_reset_member_permissions_requires_grant_permission() {
         .create_room(
             "Reset Perm Check Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -496,11 +485,11 @@ async fn test_reset_member_permissions_requires_grant_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
@@ -508,7 +497,7 @@ async fn test_reset_member_permissions_requires_grant_permission() {
 
     // Member without GRANT_PERMISSION cannot reset
     let result = member_service
-        .reset_member_permissions(room.id.clone(), member.id.clone(), target.id.clone())
+        .reset_member_permissions(room.id, member.id, target.id)
         .await;
 
     assert!(
@@ -541,7 +530,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .create_room(
             "Grant Admin Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -549,29 +538,19 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
         .unwrap();
 
     let member_service = room_service.member_service();
     let updated = member_service
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::USE_WEBRTC,
-        )
+        .grant_permission(room.id, creator.id, target.id, PermissionBits::USE_WEBRTC)
         .await
         .unwrap();
 
@@ -586,12 +565,7 @@ async fn test_grant_and_revoke_permission_target_admin_use_admin_override_fields
     );
 
     let updated = member_service
-        .revoke_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::BAN_MEMBER,
-        )
+        .revoke_permission(room.id, creator.id, target.id, PermissionBits::BAN_MEMBER)
         .await
         .unwrap();
 
@@ -640,7 +614,7 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
         .create_room(
             "Disallow Delete Room Grant".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -648,18 +622,13 @@ async fn test_grant_permission_rejects_lifecycle_only_delete_room_permission() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     let err = room_service
         .member_service()
-        .grant_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            PermissionBits::DELETE_ROOM,
-        )
+        .grant_permission(room.id, creator.id, target.id, PermissionBits::DELETE_ROOM)
         .await
         .unwrap_err();
 
@@ -692,7 +661,7 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .create_room(
             "Stale Admin Grant".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -700,18 +669,13 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
 
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            RoomRole::Admin,
-        )
+        .set_member_role(room.id, creator.id, target.id, RoomRole::Admin)
         .await
         .unwrap();
 
@@ -723,12 +687,7 @@ async fn test_stale_admin_role_grant_fails_closed_without_writing_override_colum
 
     room_service
         .member_service()
-        .set_member_role(
-            room.id.clone(),
-            creator.id.clone(),
-            target.id.clone(),
-            RoomRole::Member,
-        )
+        .set_member_role(room.id, creator.id, target.id, RoomRole::Member)
         .await
         .unwrap();
 

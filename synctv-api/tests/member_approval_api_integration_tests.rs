@@ -9,8 +9,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        room_settings::RequireApproval, ReviewStatus, RoomSettings, SignupMethod, User, UserId,
-        UserRole, UserStatus,
+        room_settings::RequireApproval, ReviewRequestId, ReviewStatus, RoomSettings, SignupMethod,
+        User, UserId, UserRole, UserStatus,
     },
     repository::{ProviderInstanceRepository, SettingsRepository, UserRepository},
     service::{
@@ -62,6 +62,16 @@ fn make_user_service(pool: sqlx::PgPool) -> UserService {
     service
 }
 
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::default_for_tests()
+}
+
+fn review_request_public_id(id: i64) -> String {
+    public_id_codec()
+        .encode_review_request_id(ReviewRequestId::from(id))
+        .unwrap()
+}
+
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
@@ -79,6 +89,7 @@ fn make_client_api(
         None,
         None,
         None,
+        Arc::new(public_id_codec()),
     )
 }
 
@@ -118,6 +129,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         Some(publish_key_service),
         Arc::new(Config::default()),
         Arc::new(AuditService::new_unbuffered(pool)),
+        Arc::new(public_id_codec()),
     )
 }
 
@@ -156,19 +168,23 @@ async fn test_client_member_approval_api_contracts() {
         .create_room(
             "Client Approval API Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
         .await
         .unwrap();
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let add_target_public_id = codec.encode_user_id(add_target.id).unwrap();
+    let approve_target_public_id = codec.encode_user_id(approve_target.id).unwrap();
 
     let added = client_api
         .add_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::AddMemberRequest {
-                user_id: add_target.id.as_str().to_string(),
+                user_id: add_target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
             },
@@ -177,7 +193,7 @@ async fn test_client_member_approval_api_contracts() {
         .unwrap()
         .member
         .expect("add_member response member");
-    assert_eq!(added.user_id, add_target.id.as_str());
+    assert_eq!(added.user_id, add_target_public_id);
     assert_eq!(
         added.role,
         synctv_proto::common::RoomMemberRole::Member as i32
@@ -188,33 +204,30 @@ async fn test_client_member_approval_api_contracts() {
     );
 
     room_service
-        .join_room(room.id.clone(), approve_target.id.clone(), None)
+        .join_room(room.id, approve_target.id, None)
         .await
         .unwrap();
     let pending_reviews = client_api
         .list_room_join_reviews(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 10,
                 status: synctv_proto::common::ReviewStatus::Pending as i32,
-                user_id: approve_target.id.as_str().to_string(),
+                user_id: approve_target_public_id.clone(),
             },
         )
         .await
         .unwrap();
     assert_eq!(pending_reviews.total, 1);
     assert_eq!(pending_reviews.reviews.len(), 1);
-    assert_eq!(
-        pending_reviews.reviews[0].user_id,
-        approve_target.id.as_str()
-    );
+    assert_eq!(pending_reviews.reviews[0].user_id, approve_target_public_id);
     let approve_request_id = pending_reviews.reviews[0].id.clone();
     let approved = client_api
         .approve_room_join_review(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::ApproveRoomJoinReviewRequest {
                 request_id: approve_request_id,
             },
@@ -223,30 +236,30 @@ async fn test_client_member_approval_api_contracts() {
         .unwrap()
         .member
         .expect("approve_room_join_review response member");
-    assert_eq!(approved.user_id, approve_target.id.as_str());
+    assert_eq!(approved.user_id, approve_target_public_id);
     assert_eq!(
         approved.status,
         synctv_proto::common::MemberStatus::Active as i32
     );
 
     room_service
-        .join_room(room.id.clone(), reject_target.id.clone(), None)
+        .join_room(room.id, reject_target.id, None)
         .await
         .unwrap();
-    let reject_request_id: String = sqlx::query_scalar(
+    let reject_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(reject_target.id.as_str())
+    .bind(room.id)
+    .bind(reject_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     let rejected = client_api
         .reject_room_join_review(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::RejectRoomJoinReviewRequest {
-                request_id: reject_request_id.clone(),
+                request_id: review_request_public_id(reject_request_id),
                 reason: "duplicate request".to_string(),
             },
         )
@@ -257,8 +270,8 @@ async fn test_client_member_approval_api_contracts() {
     let rejected_member_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
     )
-    .bind(room.id.as_str())
-    .bind(reject_target.id.as_str())
+    .bind(room.id)
+    .bind(reject_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -272,7 +285,7 @@ async fn test_client_member_approval_api_contracts() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(rejected_status, ReviewStatus::Rejected.as_i16());
+    assert_eq!(rejected_status, i16::from(ReviewStatus::Rejected));
 }
 
 #[tokio::test]
@@ -313,7 +326,7 @@ async fn test_admin_member_approval_api_contracts() {
         .create_room(
             "Admin Approval API Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -323,8 +336,8 @@ async fn test_admin_member_approval_api_contracts() {
     let added = admin_api
         .add_member(
             synctv_proto::admin::AddMemberRequest {
-                room_id: room.id.as_str().to_string(),
-                user_id: add_target.id.as_str().to_string(),
+                room_id: public_id_codec().encode_room_id(room.id).unwrap(),
+                user_id: public_id_codec().encode_user_id(add_target.id).unwrap(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
             },
@@ -335,7 +348,10 @@ async fn test_admin_member_approval_api_contracts() {
         .unwrap()
         .member
         .expect("admin add_member response member");
-    assert_eq!(added.user_id, add_target.id.as_str());
+    assert_eq!(
+        added.user_id,
+        public_id_codec().encode_user_id(add_target.id).unwrap()
+    );
     assert_eq!(
         added.role,
         synctv_proto::common::RoomMemberRole::Member as i32
@@ -346,21 +362,21 @@ async fn test_admin_member_approval_api_contracts() {
     );
 
     room_service
-        .join_room(room.id.clone(), approve_target.id.clone(), None)
+        .join_room(room.id, approve_target.id, None)
         .await
         .unwrap();
-    let approve_request_id: String = sqlx::query_scalar(
+    let approve_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(approve_target.id.as_str())
+    .bind(room.id)
+    .bind(approve_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     let approved = admin_api
         .approve_room_join_review(
             synctv_proto::admin::ApproveRoomJoinReviewRequest {
-                request_id: approve_request_id,
+                request_id: review_request_public_id(approve_request_id),
             },
             &root_admin.id,
             &synctv_api::impls::admin::RequestContext::default(),
@@ -369,28 +385,31 @@ async fn test_admin_member_approval_api_contracts() {
         .unwrap()
         .member
         .expect("admin approve review response member");
-    assert_eq!(approved.user_id, approve_target.id.as_str());
+    assert_eq!(
+        approved.user_id,
+        public_id_codec().encode_user_id(approve_target.id).unwrap()
+    );
     assert_eq!(
         approved.status,
         synctv_proto::common::MemberStatus::Active as i32
     );
 
     room_service
-        .join_room(room.id.clone(), reject_target.id.clone(), None)
+        .join_room(room.id, reject_target.id, None)
         .await
         .unwrap();
-    let reject_request_id: String = sqlx::query_scalar(
+    let reject_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(reject_target.id.as_str())
+    .bind(room.id)
+    .bind(reject_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     let rejected = admin_api
         .reject_room_join_review(
             synctv_proto::admin::RejectRoomJoinReviewRequest {
-                request_id: reject_request_id.clone(),
+                request_id: review_request_public_id(reject_request_id),
                 reason: "policy violation".to_string(),
             },
             &root_admin.id,
@@ -403,8 +422,8 @@ async fn test_admin_member_approval_api_contracts() {
     let rejected_member_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
     )
-    .bind(room.id.as_str())
-    .bind(reject_target.id.as_str())
+    .bind(room.id)
+    .bind(reject_target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -418,7 +437,7 @@ async fn test_admin_member_approval_api_contracts() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(rejected_status, ReviewStatus::Rejected.as_i16());
+    assert_eq!(rejected_status, i16::from(ReviewStatus::Rejected));
 }
 
 #[tokio::test]
@@ -448,7 +467,7 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .create_room(
             "Stale Request-ID Review Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -456,23 +475,24 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let old_request_id: String = sqlx::query_scalar(
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
+    let old_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     client_api
         .reject_room_join_review(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::RejectRoomJoinReviewRequest {
-                request_id: old_request_id.clone(),
+                request_id: review_request_public_id(old_request_id),
                 reason: "first request rejected".to_string(),
             },
         )
@@ -480,14 +500,14 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let new_request_id: String = sqlx::query_scalar(
+    let new_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -495,10 +515,10 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
 
     let stale_approve_error = client_api
         .approve_room_join_review(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::ApproveRoomJoinReviewRequest {
-                request_id: old_request_id,
+                request_id: review_request_public_id(old_request_id),
             },
         )
         .await
@@ -513,13 +533,13 @@ async fn test_client_room_join_review_uses_request_id_not_user_id() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(new_status, ReviewStatus::Pending.as_i16());
+    assert_eq!(new_status, i16::from(ReviewStatus::Pending));
 
     let member_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -556,7 +576,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .create_room(
             "Admin Stale Request-ID Review Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -564,21 +584,21 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let old_request_id: String = sqlx::query_scalar(
+    let old_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
     admin_api
         .reject_room_join_review(
             synctv_proto::admin::RejectRoomJoinReviewRequest {
-                request_id: old_request_id.clone(),
+                request_id: review_request_public_id(old_request_id),
                 reason: "first request rejected".to_string(),
             },
             &root_admin.id,
@@ -588,14 +608,14 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let new_request_id: String = sqlx::query_scalar(
+    let new_request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -604,7 +624,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
     let stale_approve_error = admin_api
         .approve_room_join_review(
             synctv_proto::admin::ApproveRoomJoinReviewRequest {
-                request_id: old_request_id,
+                request_id: review_request_public_id(old_request_id),
             },
             &root_admin.id,
             &synctv_api::impls::admin::RequestContext::default(),
@@ -621,7 +641,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(new_status, ReviewStatus::Pending.as_i16());
+    assert_eq!(new_status, i16::from(ReviewStatus::Pending));
 }
 
 #[tokio::test]
@@ -651,7 +671,7 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
         .create_room(
             "Banned Target Review Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -659,14 +679,15 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let request_id: String = sqlx::query_scalar(
+    let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
+    let request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -678,10 +699,10 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
 
     let approve_error = client_api
         .approve_room_join_review(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::ApproveRoomJoinReviewRequest {
-                request_id: request_id.clone(),
+                request_id: review_request_public_id(request_id),
             },
         )
         .await
@@ -698,14 +719,14 @@ async fn test_room_join_review_approval_rejects_globally_banned_target() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(review_state.0, ReviewStatus::Pending.as_i16());
+    assert_eq!(review_state.0, i16::from(ReviewStatus::Pending));
     assert!(!review_state.1);
 
     let member_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2)",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -739,7 +760,7 @@ async fn test_add_member_resolves_existing_room_join_review() {
         .create_room(
             "Add Resolves Review Room".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             Some(settings),
         )
@@ -747,24 +768,27 @@ async fn test_add_member_resolves_existing_room_join_review() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), target.id.clone(), None)
+        .join_room(room.id, target.id, None)
         .await
         .unwrap();
-    let request_id: String = sqlx::query_scalar(
+    let codec = public_id_codec();
+    let room_public_id = codec.encode_room_id(room.id).unwrap();
+    let target_public_id = codec.encode_user_id(target.id).unwrap();
+    let request_id: i64 = sqlx::query_scalar(
         "SELECT id FROM room_join_requests WHERE room_id = $1 AND user_id = $2 AND reviewed_at IS NULL",
     )
-    .bind(room.id.as_str())
-    .bind(target.id.as_str())
+    .bind(room.id)
+    .bind(target.id)
     .fetch_one(&pool)
     .await
     .unwrap();
 
     client_api
         .add_member(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::AddMemberRequest {
-                user_id: target.id.as_str().to_string(),
+                user_id: target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
             },
@@ -779,18 +803,18 @@ async fn test_add_member_resolves_existing_room_join_review() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(review_state.0, ReviewStatus::Approved.as_i16());
+    assert_eq!(review_state.0, i16::from(ReviewStatus::Approved));
     assert!(review_state.1);
 
     let pending_reviews = client_api
         .list_room_join_reviews(
-            owner.id.as_str(),
-            room.id.as_str(),
+            &owner.id,
+            &room_public_id,
             synctv_proto::client::ListRoomJoinReviewsRequest {
                 page: 1,
                 page_size: 10,
                 status: synctv_proto::common::ReviewStatus::Pending as i32,
-                user_id: target.id.as_str().to_string(),
+                user_id: target_public_id,
             },
         )
         .await

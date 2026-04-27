@@ -87,7 +87,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -130,7 +130,7 @@ async fn setup_test_room(
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -180,14 +180,14 @@ async fn test_concurrent_join_respects_max_members_limit() {
 
     // Use barrier to synchronize all joins
     let barrier = Arc::new(Barrier::new(20));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // Spawn 20 concurrent join tasks
     let mut handles = Vec::with_capacity(20);
     for user in users {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -235,7 +235,7 @@ async fn test_concurrent_join_respects_max_members_limit() {
     let member_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members");
@@ -288,13 +288,13 @@ async fn test_concurrent_join_boundary_condition() {
 
     // Synchronize with barrier
     let barrier = Arc::new(Barrier::new(5));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     let mut handles = Vec::with_capacity(5);
     for user in users {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -349,7 +349,7 @@ async fn test_concurrent_room_creation_same_name_different_users() {
         let room_repo_clone = room_repo.clone();
         let barrier_clone = barrier.clone();
         let room_name_clone = room_name.to_string();
-        let user_id = user.id.clone();
+        let user_id = user.id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -397,14 +397,14 @@ async fn test_concurrent_room_creation_same_user_prevented() {
 
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
     let barrier = Arc::new(Barrier::new(5));
-    let user_id = user.id.clone();
+    let user_id = user.id;
 
     // Same user creates the same room 5 times concurrently.
     let mut handles = Vec::with_capacity(5);
     for _ in 0..5 {
         let room_repo_clone = room_repo.clone();
         let barrier_clone = barrier.clone();
-        let user_id_clone = user_id.clone();
+        let user_id_clone = user_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -451,14 +451,14 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
 
     let room_settings_repo = Arc::new(RoomSettingsRepository::new(pool.clone()));
     let barrier = Arc::new(Barrier::new(10));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     // 10 concurrent updates to different settings
     let mut handles = Vec::with_capacity(10);
     for i in 0..10 {
         let repo_clone = room_settings_repo.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -592,7 +592,7 @@ async fn test_concurrent_join_and_leave_operations() {
             .create(&make_user(&format!("join_leave_{i}")))
             .await
             .expect("Failed to create user");
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
@@ -602,7 +602,7 @@ async fn test_concurrent_join_and_leave_operations() {
 
     // Now concurrently: 5 leave, 5 new join
     let barrier = Arc::new(Barrier::new(10));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -622,8 +622,8 @@ async fn test_concurrent_join_and_leave_operations() {
     for user in users.iter().take(5) {
         let member_repo_clone = member_repo.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
-        let user_id = user.id.clone();
+        let room_id_clone = room_id;
+        let user_id = user.id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -647,7 +647,7 @@ async fn test_concurrent_join_and_leave_operations() {
     for user in new_users {
         let member_service_clone = member_service.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;
@@ -683,7 +683,7 @@ async fn test_concurrent_join_and_leave_operations() {
     let final_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members");
@@ -726,13 +726,13 @@ async fn test_concurrent_joins_respect_room_capacity() {
     member_service.set_room_settings_repo(room_settings_repo);
 
     let barrier = Arc::new(Barrier::new(100));
-    let room_id = room.id.clone();
+    let room_id = room.id;
 
     let mut handles = Vec::with_capacity(100);
     for user in users {
         let member_service_clone = member_service.clone();
         let barrier_clone = barrier.clone();
-        let room_id_clone = room_id.clone();
+        let room_id_clone = room_id;
 
         let handle = tokio::spawn(async move {
             barrier_clone.wait().await;

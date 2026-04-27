@@ -249,9 +249,10 @@ impl ClientServiceImpl {
     }
 
     #[allow(clippy::result_large_err)]
-    fn extract_room_id_from_metadata(
+    fn extract_public_room_id_from_metadata(
+        &self,
         request: &Request<impl std::fmt::Debug>,
-    ) -> Result<RoomId, Status> {
+    ) -> Result<String, Status> {
         let room_id = request
             .metadata()
             .get("x-room-id")
@@ -259,7 +260,23 @@ impl ClientServiceImpl {
             .to_str()
             .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?;
 
-        crate::room_id_validation::parse_room_id(room_id)
+        self.client_api
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))?;
+
+        Ok(room_id.to_string())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn extract_room_id_from_metadata(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
+    ) -> Result<RoomId, Status> {
+        let room_id = self.extract_public_room_id_from_metadata(request)?;
+        self.client_api
+            .public_id_codec
+            .decode_room_id(&room_id)
             .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))
     }
 
@@ -267,10 +284,21 @@ impl ClientServiceImpl {
     fn room_request_context(
         &self,
         request: &Request<impl std::fmt::Debug>,
+    ) -> Result<(crate::impls::RequestMetadata, String), Status> {
+        Ok((
+            self.request_metadata(request),
+            self.extract_public_room_id_from_metadata(request)?,
+        ))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn internal_room_request_context(
+        &self,
+        request: &Request<impl std::fmt::Debug>,
     ) -> Result<(crate::impls::RequestMetadata, RoomId), Status> {
         Ok((
             self.request_metadata(request),
-            Self::extract_room_id_from_metadata(request)?,
+            self.extract_room_id_from_metadata(request)?,
         ))
     }
 }
@@ -351,7 +379,10 @@ impl AuthService for ClientServiceImpl {
                 .map_err(map_email_flow_error)?;
 
             LoginResponse {
-                user: Some(crate::impls::client::user_to_proto(&result.user)),
+                user: Some(crate::impls::client::user_to_proto(
+                    &result.user,
+                    &self.client_api.public_id_codec,
+                )),
                 access_token: result.access_token,
                 refresh_token: result.refresh_token,
             }
@@ -462,16 +493,17 @@ impl UserService for ClientServiceImpl {
         let metadata = self.request_metadata(&request);
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api.get_profile(authenticated.user_id.as_str()).await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
+        let response =
+            executor
+                .execute_user_endpoint(
+                    &metadata,
+                    EndpointRateLimitCategory::Read,
+                    move |authenticated| async move {
+                        client_api.get_profile(&authenticated.user_id).await
+                    },
+                )
+                .await
+                .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -488,9 +520,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api
-                        .set_username(authenticated.user_id.as_str(), req)
-                        .await
+                    client_api.set_username(&authenticated.user_id, req).await
                 },
             )
             .await
@@ -511,9 +541,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api
-                        .set_password(authenticated.user_id.as_str(), req)
-                        .await
+                    client_api.set_password(&authenticated.user_id, req).await
                 },
             )
             .await
@@ -534,9 +562,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api
-                        .create_room(authenticated.user_id.as_str(), req)
-                        .await
+                    client_api.create_room(&authenticated.user_id, req).await
                 },
             )
             .await
@@ -558,9 +584,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    client_api
-                        .get_room(authenticated.user_id.as_str(), &room_id)
-                        .await
+                    client_api.get_room(&authenticated.user_id, &room_id).await
                 },
             )
             .await
@@ -585,7 +609,7 @@ impl UserService for ClientServiceImpl {
                 move |request_control, authenticated| async move {
                     client_api
                         .join_room_with_control(
-                            authenticated.user_id.as_str(),
+                            &authenticated.user_id,
                             &room_id,
                             req,
                             client_ip.as_deref(),
@@ -612,9 +636,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
-                    client_api
-                        .list_my_rooms(authenticated.user_id.as_str(), req)
-                        .await
+                    client_api.list_my_rooms(&authenticated.user_id, req).await
                 },
             )
             .await
@@ -640,7 +662,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .update_room_settings(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .update_room_settings(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -663,7 +685,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_room_members(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .get_room_members(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -686,7 +708,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .list_room_streams(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .list_room_streams(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -709,7 +731,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .add_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .add_member(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -732,11 +754,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .list_room_join_reviews(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            req,
-                        )
+                        .list_room_join_reviews(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -759,11 +777,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .approve_room_join_review(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            req,
-                        )
+                        .approve_room_join_review(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -786,11 +800,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .reject_room_join_review(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            req,
-                        )
+                        .reject_room_join_review(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -813,11 +823,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .update_member_permissions(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            req,
-                        )
+                        .update_member_permissions(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -840,7 +846,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .kick_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .kick_member(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -863,7 +869,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .ban_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .ban_member(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -886,7 +892,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .unban_member(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .unban_member(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -908,7 +914,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_room_settings(authenticated.user_id.as_str(), room_id.as_str())
+                        .get_room_settings(&authenticated.user_id, room_id.as_str())
                         .await
                 },
             )
@@ -930,7 +936,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .reset_room_settings(authenticated.user_id.as_str(), room_id.as_str())
+                        .reset_room_settings(&authenticated.user_id, room_id.as_str())
                         .await
                 },
             )
@@ -953,11 +959,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .transfer_room_ownership(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            req,
-                        )
+                        .transfer_room_ownership(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -980,7 +982,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .set_room_password(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .set_room_password(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1002,7 +1004,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .leave_room(authenticated.user_id.as_str(), room_id.as_str())
+                        .leave_room(&authenticated.user_id, room_id.as_str())
                         .await
                 },
             )
@@ -1024,7 +1026,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api
-                        .delete_room(authenticated.user_id.as_str(), room_id.as_str())
+                        .delete_room(&authenticated.user_id, room_id.as_str())
                         .await
                 },
             )
@@ -1046,7 +1048,7 @@ impl RoomService for ClientServiceImpl {
         // Extract all data from request BEFORE any await points.
         // Request<Streaming<_>> is !Sync, so holding it across.await makes
         // the future !Send, violating the tonic trait requirement.
-        let (metadata, room_id) = self.room_request_context(&request)?;
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
         let client_stream = request.into_inner();
         let executor = self.client_api.clone();
         let user_id = executor
@@ -1082,8 +1084,8 @@ impl RoomService for ClientServiceImpl {
         validate_realtime_room_access(&room)?;
 
         tracing::info!(
-            user_id = %user_id.as_str(),
-            room_id = %room_id.as_str(),
+            user_id = %user_id,
+            room_id = %room_id,
             "Client establishing MessageStream connection"
         );
 
@@ -1106,8 +1108,8 @@ impl RoomService for ClientServiceImpl {
 
         // Create StreamMessageHandler with all configuration
         let stream_handler = StreamMessageHandler::new(
-            room_id.clone(),
-            user_id.clone(),
+            room_id,
+            user_id,
             username.clone(),
             &self.room_service,
             self.chat_service.clone(),
@@ -1116,6 +1118,7 @@ impl RoomService for ClientServiceImpl {
             self.rate_limiter.clone(),
             self.rate_limit_config.clone(),
             self.content_filter.clone(),
+            self.client_api.public_id_codec.clone(),
             Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
         )
         .with_playback_snapshot_service(self.client_api.clone())
@@ -1205,7 +1208,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_chat_history(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .get_chat_history(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1218,7 +1221,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetIceServersRequest>,
     ) -> Result<Response<GetIceServersResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1240,7 +1243,7 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetNetworkQualityRequest>,
     ) -> Result<Response<GetNetworkQualityResponse>, Status> {
-        let (metadata, room_id) = self.room_request_context(&request)?;
+        let (metadata, room_id) = self.internal_room_request_context(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
         let response = executor
@@ -1272,7 +1275,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .add_media(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .add_media(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1295,7 +1298,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .delete_media(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .delete_media(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1318,7 +1321,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .delete_entries(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .delete_entries(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1341,7 +1344,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .edit_media(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .edit_media(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1364,7 +1367,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .list_playlist_items(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .list_playlist_items(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1387,7 +1390,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .move_media(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .move_media(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1409,7 +1412,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .clear_playlist(authenticated.user_id.as_str(), room_id.as_str())
+                        .clear_playlist(&authenticated.user_id, room_id.as_str())
                         .await
                 },
             )
@@ -1432,7 +1435,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .add_media_batch(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .add_media_batch(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1455,7 +1458,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .start_playback(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .start_playback(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1478,7 +1481,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .stop_playback(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .stop_playback(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1502,7 +1505,7 @@ impl RoomService for ClientServiceImpl {
                 move |request_control, authenticated| async move {
                     client_api
                         .get_playback_with_context(
-                            authenticated.user_id.as_str(),
+                            &authenticated.user_id,
                             room_id.as_str(),
                             req,
                             &request_control,
@@ -1530,7 +1533,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .create_playlist(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .create_playlist(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1554,11 +1557,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .get_playlist(
-                            authenticated.user_id.as_str(),
-                            room_id.as_str(),
-                            &playlist_id,
-                        )
+                        .get_playlist(&authenticated.user_id, room_id.as_str(), &playlist_id)
                         .await
                 },
             )
@@ -1581,7 +1580,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .update_playlist(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .update_playlist(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1604,7 +1603,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .move_playlist(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .move_playlist(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1627,7 +1626,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Media,
                 move |authenticated| async move {
                     client_api
-                        .delete_playlist(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .delete_playlist(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )
@@ -1650,7 +1649,7 @@ impl RoomService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api
-                        .list_playlists(authenticated.user_id.as_str(), room_id.as_str(), req)
+                        .list_playlists(&authenticated.user_id, room_id.as_str(), req)
                         .await
                 },
             )

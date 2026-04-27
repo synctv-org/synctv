@@ -85,7 +85,7 @@ async fn create_top_level_playlist(
 ) -> Playlist {
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
-        room_id: room_id.clone(),
+        room_id: *room_id,
         creator_id: None,
         name: "Top Level".to_string(),
         parent_id: None,
@@ -146,7 +146,7 @@ async fn test_add_media_without_permission_denied() {
         .create_room(
             "Add Media Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -154,7 +154,7 @@ async fn test_add_media_without_permission_denied() {
         .unwrap();
 
     room_service
-        .join_room(room.id.clone(), member.id.clone(), None)
+        .join_room(room.id, member.id, None)
         .await
         .unwrap();
     register_direct_url_provider(&room_service).await;
@@ -162,12 +162,7 @@ async fn test_add_media_without_permission_denied() {
     // Revoke ADD_MEDIA from member
     room_service
         .member_service()
-        .revoke_permission(
-            room.id.clone(),
-            creator.id.clone(),
-            member.id.clone(),
-            PermissionBits::ADD_MEDIA,
-        )
+        .revoke_permission(room.id, creator.id, member.id, PermissionBits::ADD_MEDIA)
         .await
         .unwrap();
 
@@ -175,16 +170,14 @@ async fn test_add_media_without_permission_denied() {
     let media_service = room_service.media_service();
 
     let request = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Forbidden Video".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/vid.mp4"}),
     };
 
-    let result = media_service
-        .add_media(room.id.clone(), member.id.clone(), request)
-        .await;
+    let result = media_service.add_media(room.id, member.id, request).await;
 
     assert!(result.is_err(), "Should fail without ADD_MEDIA permission");
     match result.unwrap_err() {
@@ -206,7 +199,7 @@ async fn test_add_media_with_permission_succeeds() {
         .create_room(
             "Add Media OK Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -218,16 +211,14 @@ async fn test_add_media_with_permission_succeeds() {
     let media_service = room_service.media_service();
 
     let request = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Good Video".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/good.mp4"}),
     };
 
-    let result = media_service
-        .add_media(room.id.clone(), creator.id.clone(), request)
-        .await;
+    let result = media_service.add_media(room.id, creator.id, request).await;
 
     assert!(result.is_ok(), "Creator should be able to add media");
     let media = result.unwrap();
@@ -250,7 +241,7 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
         .create_room(
             "Add Media Bilibili Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -262,7 +253,7 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
     let media_service = room_service.media_service();
 
     let request = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Bilibili Video".to_string(),
         source_provider: "bilibili".to_string(),
         provider_instance_name: Some("bilibili".to_string()),
@@ -278,7 +269,7 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
     };
 
     let err = media_service
-        .add_media(room.id.clone(), creator.id.clone(), request)
+        .add_media(room.id, creator.id, request)
         .await
         .expect_err("Bilibili media must reject embedded credential references");
 
@@ -304,7 +295,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
         .create_room(
             "Add Media Missing Repo".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -314,7 +305,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let request = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Bilibili Missing Repo".to_string(),
         source_provider: "bilibili".to_string(),
         provider_instance_name: Some("bilibili".to_string()),
@@ -327,7 +318,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
 
     let media = room_service
         .media_service()
-        .add_media(room.id.clone(), creator.id.clone(), request)
+        .add_media(room.id, creator.id, request)
         .await
         .expect(
             "Bilibili media should not require credential repo because anonymous playback is valid",
@@ -352,7 +343,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         .create_room(
             "Dynamic Playlist Missing Repo".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -361,7 +352,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
     register_alist_provider(&room_service).await;
 
     let request = CreatePlaylistRequest {
-        room_id: room.id.clone(),
+        room_id: room.id,
         name: "Alist Dynamic".to_string(),
         parent_id: None,
         source_provider: Some("alist".to_string()),
@@ -374,7 +365,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
 
     let err = room_service
         .playlist_service()
-        .create_playlist(room.id.clone(), creator.id.clone(), request)
+        .create_playlist(room.id, creator.id, request)
         .await
         .expect_err("credential-backed dynamic playlist should fail closed without repo wiring");
 
@@ -404,7 +395,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         .create_room(
             "Dynamic Playlist Runtime Missing Repo".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -414,8 +405,8 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
 
     let playlist = Playlist {
         id: synctv_core::models::PlaylistId::new(),
-        room_id: room.id.clone(),
-        creator_id: Some(creator.id.clone()),
+        room_id: room.id,
+        creator_id: Some(creator.id),
         name: "Persisted Alist Dynamic".to_string(),
         parent_id: None,
         position: 0.0,
@@ -437,8 +428,8 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
     let err = room_service
         .media_service()
         .list_dynamic_playlist_items(
-            room.id.clone(),
-            creator.id.clone(),
+            room.id,
+            creator.id,
             &playlist.id,
             None,
             DynamicListQuery {
@@ -469,23 +460,11 @@ async fn test_add_media_cross_room_playlist_rejected() {
     let creator = user_repo.create(&make_user("xroom_creator")).await.unwrap();
 
     let (room_a, _) = room_service
-        .create_room(
-            "Room A".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Room A".to_string(), String::new(), creator.id, None, None)
         .await
         .unwrap();
     let (room_b, _) = room_service
-        .create_room(
-            "Room B".to_string(),
-            String::new(),
-            creator.id.clone(),
-            None,
-            None,
-        )
+        .create_room("Room B".to_string(), String::new(), creator.id, None, None)
         .await
         .unwrap();
 
@@ -497,7 +476,7 @@ async fn test_add_media_cross_room_playlist_rejected() {
 
     // Try to add media to room A using room B's playlist
     let request = AddMediaRequest {
-        playlist_id: Some(playlist_b.id.clone()),
+        playlist_id: Some(playlist_b.id),
         name: "Cross Room Video".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
@@ -505,7 +484,7 @@ async fn test_add_media_cross_room_playlist_rejected() {
     };
 
     let result = media_service
-        .add_media(room_a.id.clone(), creator.id.clone(), request)
+        .add_media(room_a.id, creator.id, request)
         .await;
 
     assert!(
@@ -527,7 +506,7 @@ async fn test_add_media_batch_over_100_rejected() {
         .create_room(
             "Batch Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -540,7 +519,7 @@ async fn test_add_media_batch_over_100_rejected() {
 
     let requests: Vec<AddMediaRequest> = (0..101)
         .map(|i| AddMediaRequest {
-            playlist_id: Some(playlist.id.clone()),
+            playlist_id: Some(playlist.id),
             name: format!("Batch Video {i}"),
             source_provider: "direct_url".to_string(),
             provider_instance_name: Some("direct_url".to_string()),
@@ -549,12 +528,7 @@ async fn test_add_media_batch_over_100_rejected() {
         .collect();
 
     let result = media_service
-        .add_media_batch(
-            room.id.clone(),
-            creator.id.clone(),
-            Some(playlist.id.clone()),
-            requests,
-        )
+        .add_media_batch(room.id, creator.id, Some(playlist.id), requests)
         .await;
 
     assert!(result.is_err(), "Batch of 101 items should be rejected");
@@ -585,7 +559,7 @@ async fn test_add_media_batch_empty_returns_empty() {
         .create_room(
             "Batch Empty Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -596,12 +570,7 @@ async fn test_add_media_batch_empty_returns_empty() {
 
     let playlist = create_top_level_playlist(&pool, &room.id).await;
     let result = media_service
-        .add_media_batch(
-            room.id.clone(),
-            creator.id.clone(),
-            Some(playlist.id.clone()),
-            vec![],
-        )
+        .add_media_batch(room.id, creator.id, Some(playlist.id), vec![])
         .await;
 
     assert!(result.is_ok(), "Empty batch should succeed");
@@ -625,7 +594,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .create_room(
             "Batch 100 Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -638,7 +607,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
 
     let requests: Vec<AddMediaRequest> = (0..100)
         .map(|i| AddMediaRequest {
-            playlist_id: Some(playlist.id.clone()),
+            playlist_id: Some(playlist.id),
             name: format!("Video {i}"),
             source_provider: "direct_url".to_string(),
             provider_instance_name: Some("direct_url".to_string()),
@@ -647,12 +616,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .collect();
 
     let result = media_service
-        .add_media_batch(
-            room.id.clone(),
-            creator.id.clone(),
-            Some(playlist.id.clone()),
-            requests,
-        )
+        .add_media_batch(room.id, creator.id, Some(playlist.id), requests)
         .await;
 
     assert!(
@@ -683,7 +647,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         .create_room(
             "Edit OLR Room".to_string(),
             String::new(),
-            creator.id.clone(),
+            creator.id,
             None,
             None,
         )
@@ -696,19 +660,19 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
 
     // Add a media item
     let add_req = AddMediaRequest {
-        playlist_id: Some(playlist.id.clone()),
+        playlist_id: Some(playlist.id),
         name: "Original Name".to_string(),
         source_provider: "direct_url".to_string(),
         provider_instance_name: Some("direct_url".to_string()),
         source_config: serde_json::json!({"url": "https://example.com/edit.mp4"}),
     };
     let media = media_service
-        .add_media(room.id.clone(), creator.id.clone(), add_req)
+        .add_media(room.id, creator.id, add_req)
         .await
         .unwrap();
 
     // Continuously bump media version to trigger retry exhaustion
-    let media_id_str = media.id.as_str().to_string();
+    let media_id_str = media.id.to_string();
     let pool_clone = pool.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -724,12 +688,12 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     });
 
     let edit_req = EditMediaRequest {
-        media_id: media.id.clone(),
+        media_id: media.id,
         name: Some("Updated Name".to_string()),
     };
 
     let result = media_service
-        .edit_media(room.id.clone(), creator.id.clone(), edit_req)
+        .edit_media(room.id, creator.id, edit_req)
         .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -772,7 +736,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         .create_room(
             "Move Media Validation".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -784,14 +748,14 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
     let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
         name: "Media".to_string(),
         position: 1024.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: Some("direct_url".to_string()),
-        creator_id: Some(owner.id.clone()),
+        creator_id: Some(owner.id),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 0,
@@ -801,15 +765,15 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
     let conflicting_anchor = room_service
         .media_service()
         .move_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::media::MoveMediaRequest {
-                media_ids: vec![media.id.clone()],
+                media_ids: vec![media.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
                 all_from_scope: false,
-                before_media_id: Some(media.id.clone()),
-                after_media_id: Some(media.id.clone()),
+                before_media_id: Some(media.id),
+                after_media_id: Some(media.id),
             },
         )
         .await
@@ -833,7 +797,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
         .create_room(
             "Move Media Order".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -846,14 +810,14 @@ async fn test_move_media_reorders_using_anchor_positions() {
     let media1 = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
             name: "Media 1".to_string(),
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -863,14 +827,14 @@ async fn test_move_media_reorders_using_anchor_positions() {
     let media2 = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(playlist.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(playlist.id),
+            room_id: room.id,
             name: "Media 2".to_string(),
             position: 2048.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -881,14 +845,14 @@ async fn test_move_media_reorders_using_anchor_positions() {
     let moved = room_service
         .media_service()
         .move_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::media::MoveMediaRequest {
-                media_ids: vec![media2.id.clone()],
+                media_ids: vec![media2.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
                 all_from_scope: false,
-                before_media_id: Some(media1.id.clone()),
+                before_media_id: Some(media1.id),
                 after_media_id: None,
             },
         )
@@ -918,7 +882,7 @@ async fn test_move_media_batch_preserves_request_order() {
         .create_room(
             "Move Media Batch".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -930,14 +894,14 @@ async fn test_move_media_batch_preserves_request_order() {
 
     let make_media = |name: &str, position: f64| synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
-        playlist_id: Some(playlist.id.clone()),
-        room_id: room.id.clone(),
+        playlist_id: Some(playlist.id),
+        room_id: room.id,
         name: name.to_string(),
         position,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({}),
         provider_instance_name: Some("direct_url".to_string()),
-        creator_id: Some(owner.id.clone()),
+        creator_id: Some(owner.id),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 0,
@@ -963,14 +927,14 @@ async fn test_move_media_batch_preserves_request_order() {
     let moved = room_service
         .media_service()
         .move_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::media::MoveMediaRequest {
-                media_ids: vec![media4.id.clone(), media2.id.clone()],
+                media_ids: vec![media4.id, media2.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
                 all_from_scope: false,
-                before_media_id: Some(media1.id.clone()),
+                before_media_id: Some(media1.id),
                 after_media_id: None,
             },
         )
@@ -1007,7 +971,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
         .create_room(
             "Move Media Cross Playlist".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1018,8 +982,8 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&Playlist {
             id: synctv_core::models::PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Destination".to_string(),
             parent_id: None,
             position: 1024.0,
@@ -1037,14 +1001,14 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let moving = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(src.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(src.id),
+            room_id: room.id,
             name: "Move Me".to_string(),
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1054,14 +1018,14 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let existing = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(dst.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(dst.id),
+            room_id: room.id,
             name: "Already There".to_string(),
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1072,12 +1036,12 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
     let moved = room_service
         .media_service()
         .move_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::media::MoveMediaRequest {
-                media_ids: vec![moving.id.clone()],
+                media_ids: vec![moving.id],
                 source_playlist_id: None,
-                target_playlist_id: Some(dst.id.clone()),
+                target_playlist_id: Some(dst.id),
                 all_from_scope: false,
                 before_media_id: None,
                 after_media_id: None,
@@ -1113,7 +1077,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
         .create_room(
             "Move All Media Scope".to_string(),
             String::new(),
-            owner.id.clone(),
+            owner.id,
             None,
             None,
         )
@@ -1124,8 +1088,8 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     let dst = synctv_core::repository::PlaylistRepository::new(pool.clone())
         .create(&Playlist {
             id: synctv_core::models::PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
+            room_id: room.id,
+            creator_id: Some(owner.id),
             name: "Target".to_string(),
             parent_id: None,
             position: 1024.0,
@@ -1143,14 +1107,14 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     let _a = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(src.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(src.id),
+            room_id: room.id,
             name: "A".to_string(),
             position: 1024.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1160,14 +1124,14 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     let _b = media_repo
         .create(&synctv_core::models::Media {
             id: synctv_core::models::MediaId::new(),
-            playlist_id: Some(src.id.clone()),
-            room_id: room.id.clone(),
+            playlist_id: Some(src.id),
+            room_id: room.id,
             name: "B".to_string(),
             position: 2048.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({}),
             provider_instance_name: Some("direct_url".to_string()),
-            creator_id: Some(owner.id.clone()),
+            creator_id: Some(owner.id),
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1178,12 +1142,12 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
     let moved = room_service
         .media_service()
         .move_media(
-            room.id.clone(),
-            owner.id.clone(),
+            room.id,
+            owner.id,
             synctv_core::service::media::MoveMediaRequest {
                 media_ids: Vec::new(),
-                source_playlist_id: Some(src.id.clone()),
-                target_playlist_id: Some(dst.id.clone()),
+                source_playlist_id: Some(src.id),
+                target_playlist_id: Some(dst.id),
                 all_from_scope: true,
                 before_media_id: None,
                 after_media_id: None,

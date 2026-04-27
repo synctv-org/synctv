@@ -126,15 +126,15 @@ async fn test_get_by_ids_mixed_existing_and_deleted() {
     repo.delete(&user2.id).await.unwrap();
 
     // Query all three IDs
-    let ids = vec![user1.id.clone(), user2.id.clone(), user3.id.clone()];
+    let ids = vec![user1.id, user2.id, user3.id];
     let results = repo.get_by_ids(&ids).await.unwrap();
 
     // Should only return user1 and user3 (user2 is soft-deleted)
     assert_eq!(results.len(), 2);
-    let result_ids: Vec<String> = results.iter().map(|u| u.id.as_str().to_string()).collect();
-    assert!(result_ids.contains(&user1.id.as_str().to_string()));
-    assert!(!result_ids.contains(&user2.id.as_str().to_string()));
-    assert!(result_ids.contains(&user3.id.as_str().to_string()));
+    let result_ids: Vec<String> = results.iter().map(|u| u.id.to_string()).collect();
+    assert!(result_ids.contains(&user1.id.to_string()));
+    assert!(!result_ids.contains(&user2.id.to_string()));
+    assert!(result_ids.contains(&user3.id.to_string()));
 }
 
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn test_get_by_ids_all_deleted() {
     repo.delete(&user1.id).await.unwrap();
     repo.delete(&user2.id).await.unwrap();
 
-    let ids = vec![user1.id.clone(), user2.id.clone()];
+    let ids = vec![user1.id, user2.id];
     let results = repo.get_by_ids(&ids).await.unwrap();
 
     assert!(results.is_empty());

@@ -20,7 +20,7 @@ pub use emby::EmbyApiImpl;
 
 pub(crate) fn publish_provider_credential_changed(
     event_service: Option<&Arc<dyn crate::runtime::RealtimeEventService>>,
-    user_id: &str,
+    user_id: synctv_core::models::UserId,
     provider: &str,
     server_id: &str,
 ) {
@@ -30,7 +30,7 @@ pub(crate) fn publish_provider_credential_changed(
 
     let event = synctv_cluster::sync::ClusterEvent::ProviderCredentialChanged {
         event_id: synctv_common::snanoid!(16),
-        user_id: synctv_core::models::UserId::from_string(user_id.to_string()),
+        user_id,
         provider: provider.to_string(),
         server_id: server_id.to_string(),
         timestamp: chrono::Utc::now(),
@@ -38,7 +38,7 @@ pub(crate) fn publish_provider_credential_changed(
     let outcome = event_service.broadcast_outcome(event);
     if !outcome.delivered_to_any() || outcome.distributed_delivery_missed() {
         tracing::warn!(
-            user_id,
+            user_id = %user_id,
             provider,
             server_id,
             local_delivered = outcome.local_delivered(),

@@ -57,7 +57,7 @@ async fn test_chat_message_default_partition_routing() {
                 id: RoomId::new(),
                 name: "Partition Test Room".to_string(),
                 description: String::new(),
-                created_by: owner.id.clone(),
+                created_by: owner.id,
                 status: RoomStatus::Active,
                 is_banned: false,
                 closed_at: None,
@@ -75,9 +75,9 @@ async fn test_chat_message_default_partition_routing() {
     // This should route to the DEFAULT partition instead of failing
     let far_future = Utc::now() + Duration::days(365);
     let msg = ChatMessage {
-        id: synctv_common::snanoid!(12),
-        room_id: room.id.clone(),
-        user_id: Some(owner.id.clone()),
+        id: synctv_core::models::generate_id(),
+        room_id: room.id,
+        user_id: Some(owner.id),
         content: "Future message".to_string(),
         message_type: 1,
         created_at: far_future,
@@ -89,10 +89,11 @@ async fn test_chat_message_default_partition_routing() {
         "Message with far-future date should insert into DEFAULT partition, got: {:?}",
         created.err()
     );
+    let created = created.expect("message should be returned");
 
     // Verify we can retrieve it
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = $1")
-        .bind(&msg.id)
+        .bind(created.id)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -137,7 +138,7 @@ async fn test_audit_logs_default_partition_routing() {
     let far_future = Utc::now() + Duration::days(365 * 2);
     let result =
         sqlx::query("INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)")
-            .bind("test_actor_1")
+            .bind(UserId::from(1))
             .bind("test_action")
             .bind(far_future)
             .execute(&pool)

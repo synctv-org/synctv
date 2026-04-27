@@ -122,7 +122,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         id: RoomId::new(),
         name: name.to_string(),
         description: description.to_string(),
-        created_by: owner.clone(),
+        created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,
         closed_at: None,
@@ -150,7 +150,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    let owner_member = RoomMember::new(room.id, owner.id, RoomRole::Creator);
     member_repo
         .add(&owner_member)
         .await
@@ -297,7 +297,7 @@ async fn test_member_join_synchronized_via_redis() {
         .create(&make_user("sync_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), new_member.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, new_member.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -341,7 +341,7 @@ async fn test_member_role_change_synchronized() {
         .create(&make_user("role_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -457,7 +457,7 @@ async fn test_cache_consistency_after_partition_recovery() {
         .create(&make_user("partition_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -535,7 +535,7 @@ async fn test_operations_work_without_redis() {
         .create(&make_user("degraded_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -585,7 +585,7 @@ async fn test_room_invalidation_message_delivery() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::Room { room_id: r } => {
-                    assert_eq!(r, room_id.as_str(), "Room ID should match");
+                    assert_eq!(r, room_id.to_string(), "Room ID should match");
                 }
                 _ => panic!("Expected Room message, got: {msg:?}"),
             }
@@ -625,7 +625,7 @@ async fn test_user_invalidation_message_delivery() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::User { user_id: u } => {
-                    assert_eq!(u, user_id.as_str(), "User ID should match");
+                    assert_eq!(u, user_id.to_string(), "User ID should match");
                 }
                 _ => panic!("Expected User message, got: {msg:?}"),
             }
@@ -665,7 +665,7 @@ async fn test_room_permission_invalidation_message_delivery() {
             let msg = msg.expect("Failed to receive message");
             match msg {
                 InvalidationMessage::RoomPermission { room_id: r } => {
-                    assert_eq!(r, room_id.as_str(), "Room ID should match");
+                    assert_eq!(r, room_id.to_string(), "Room ID should match");
                 }
                 _ => panic!("Expected RoomPermission message, got: {msg:?}"),
             }
@@ -698,7 +698,7 @@ async fn test_concurrent_invalidation_messages_ordered() {
     let user1 = UserId::new();
 
     let sa = service_a.clone();
-    let r1 = room1.clone();
+    let r1 = room1;
     let h1 = tokio::spawn(async move {
         sa.invalidate_room(&r1)
             .await
@@ -706,7 +706,7 @@ async fn test_concurrent_invalidation_messages_ordered() {
     });
 
     let sa = service_a.clone();
-    let r2 = room2.clone();
+    let r2 = room2;
     let h2 = tokio::spawn(async move {
         sa.invalidate_room(&r2)
             .await
@@ -714,7 +714,7 @@ async fn test_concurrent_invalidation_messages_ordered() {
     });
 
     let sa = service_a.clone();
-    let u1 = user1.clone();
+    let u1 = user1;
     let h3 = tokio::spawn(async move {
         sa.invalidate_user(&u1)
             .await
@@ -771,7 +771,7 @@ async fn test_member_count_synchronized_across_replicas() {
             .create(&make_user(&format!("count_member_{i}")))
             .await
             .expect("Failed to create member");
-        let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
+        let member = RoomMember::new(room.id, user.id, RoomRole::Member);
         member_repo
             .add(&member)
             .await
@@ -782,7 +782,7 @@ async fn test_member_count_synchronized_across_replicas() {
     let count_a: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members on Node A");
@@ -791,7 +791,7 @@ async fn test_member_count_synchronized_across_replicas() {
     let count_b: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
-    .bind(room.id.as_str())
+    .bind(room.id)
     .fetch_one(pool)
     .await
     .expect("Failed to count members on Node B");
@@ -819,7 +819,7 @@ async fn test_ban_visible_across_replicas() {
         .create(&make_user("banned_sync_member"))
         .await
         .expect("Failed to create member");
-    let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room.id, member_user.id, RoomRole::Member);
     member_repo
         .add(&member)
         .await
@@ -845,9 +845,9 @@ async fn test_ban_visible_across_replicas() {
     // "Node A" bans member
     member_service
         .ban_member(
-            room.id.clone(),
-            owner.id.clone(),
-            member_user.id.clone(),
+            room.id,
+            owner.id,
+            member_user.id,
             Some("Test ban".to_string()),
         )
         .await

@@ -172,6 +172,7 @@ lru = "0.17.0"
 # IDs & Crypto
 nanoid = "0.5.0"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
+sqids = "0.4.2"
 rand = "0.10.1"
 base64 = "0.22.1"
 humantime = "2.3.0"

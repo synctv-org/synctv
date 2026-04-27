@@ -271,8 +271,12 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             stream_name
         };
 
-        let expected_room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-        let expected_media_id = synctv_core::models::MediaId::from_string(stream_name.to_string());
+        let expected_room_id = app_name
+            .parse::<synctv_core::models::RoomId>()
+            .map_err(|error| format!("Invalid RTMP app room id: {error}"))?;
+        let expected_media_id = stream_name
+            .parse::<synctv_core::models::MediaId>()
+            .map_err(|error| format!("Invalid RTMP stream media id: {error}"))?;
         let claims = self
             .publish_key_service
             .validate_publish_key_for_stream_claims(token, &expected_room_id, &expected_media_id)
@@ -628,10 +632,13 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from_string("room-rollback".to_string());
-        let media_id = MediaId::from_string("media-rollback".to_string());
-        let old_user_id = UserId::from_string("user-old".to_string());
-        let new_user_id = UserId::from_string("user-new".to_string());
+        let room_id = RoomId::from(3001);
+        let media_id = MediaId::from(4001);
+        let old_user_id = UserId::from(5001);
+        let new_user_id = UserId::from(5002);
+        let room_id_str = room_id.to_string();
+        let media_id_str = media_id.to_string();
+        let new_user_id_str = new_user_id.to_string();
 
         let old_publish = publish_key_service
             .generate_publish_key(&room_id, &media_id, &old_user_id)
@@ -639,8 +646,8 @@ mod tests {
 
         let result = auth
             .on_publish(
-                room_id.as_str(),
-                media_id.as_str(),
+                &room_id_str,
+                &media_id_str,
                 Some(&format!("token={}", old_publish.token)),
             )
             .await
@@ -651,19 +658,19 @@ mod tests {
         );
 
         let original = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("registry lookup should succeed")
             .expect("publisher should be registered after auth success");
 
         registry
-            .unregister_publisher(room_id.as_str(), media_id.as_str())
+            .unregister_publisher(&room_id_str, &media_id_str)
             .await
             .expect("test setup should remove the original publisher");
 
         assert!(
             !registry
-                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .is_stream_active(&room_id_str, &media_id_str)
                 .await
                 .expect("stream activity lookup should succeed"),
             "stream should be inactive after removing the old registration"
@@ -672,10 +679,10 @@ mod tests {
         assert!(
             registry
                 .try_register_publisher(
-                    room_id.as_str(),
-                    media_id.as_str(),
+                    &room_id_str,
+                    &media_id_str,
                     "node-b",
-                    new_user_id.as_str(),
+                    &new_user_id_str,
                     "127.0.0.1:50052",
                 )
                 .await
@@ -684,7 +691,7 @@ mod tests {
         );
 
         let replacement = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("replacement lookup should succeed")
             .expect("replacement publisher should exist");
@@ -693,11 +700,11 @@ mod tests {
             "replacement publisher must have a newer epoch"
         );
 
-        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+        auth.on_publish_rollback(&room_id_str, &media_id_str, None)
             .await;
 
         let current = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("post-rollback lookup should succeed");
         assert!(
@@ -720,17 +727,20 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from_string("room-reconnect".to_string());
-        let media_id = MediaId::from_string("media-reconnect".to_string());
-        let old_user_id = UserId::from_string("user-old".to_string());
-        let new_user_id = UserId::from_string("user-new".to_string());
+        let room_id = RoomId::from(3002);
+        let media_id = MediaId::from(4002);
+        let old_user_id = UserId::from(5003);
+        let new_user_id = UserId::from(5004);
+        let room_id_str = room_id.to_string();
+        let media_id_str = media_id.to_string();
+        let new_user_id_str = new_user_id.to_string();
 
         let old_publish = publish_key_service
             .generate_publish_key(&room_id, &media_id, &old_user_id)
             .expect("old publish key");
         auth.on_publish(
-            room_id.as_str(),
-            media_id.as_str(),
+            &room_id_str,
+            &media_id_str,
             Some(&format!("token={}", old_publish.token)),
         )
         .await
@@ -738,14 +748,14 @@ mod tests {
         .expect("auth should rewrite stream ids");
 
         let first_epoch = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("first publisher lookup should succeed")
             .expect("first publisher should exist")
             .epoch;
 
         registry
-            .unregister_publisher_if_epoch_matches(room_id.as_str(), media_id.as_str(), first_epoch)
+            .unregister_publisher_if_epoch_matches(&room_id_str, &media_id_str, first_epoch)
             .await
             .expect("test setup should remove first publisher");
 
@@ -753,8 +763,8 @@ mod tests {
             .generate_publish_key(&room_id, &media_id, &new_user_id)
             .expect("new publish key");
         auth.on_publish(
-            room_id.as_str(),
-            media_id.as_str(),
+            &room_id_str,
+            &media_id_str,
             Some(&format!("token={}", new_publish.token)),
         )
         .await
@@ -762,7 +772,7 @@ mod tests {
         .expect("auth should rewrite stream ids");
 
         let replacement = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("replacement lookup should succeed")
             .expect("replacement publisher should exist");
@@ -771,22 +781,20 @@ mod tests {
             "second publish attempt must have a newer epoch"
         );
         assert_eq!(
-            replacement.user_id,
-            new_user_id.as_str(),
+            replacement.user_id, new_user_id_str,
             "replacement publisher should belong to the newer publish attempt"
         );
 
-        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+        auth.on_publish_rollback(&room_id_str, &media_id_str, None)
             .await;
 
         let current = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("post-rollback lookup should succeed")
             .expect("delayed rollback of the older attempt must not remove the newer publisher");
         assert_eq!(
-            current.user_id,
-            new_user_id.as_str(),
+            current.user_id, new_user_id_str,
             "rollback for an older publish attempt must not fence off the newer publisher"
         );
     }
@@ -805,17 +813,19 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from_string("room-delayed-unpublish".to_string());
-        let media_id = MediaId::from_string("media-delayed-unpublish".to_string());
-        let old_user_id = UserId::from_string("user-old".to_string());
-        let new_user_id = UserId::from_string("user-new".to_string());
+        let room_id = RoomId::from(3003);
+        let media_id = MediaId::from(4003);
+        let old_user_id = UserId::from(5005);
+        let new_user_id = UserId::from(5006);
+        let room_id_str = room_id.to_string();
+        let media_id_str = media_id.to_string();
 
         let old_publish = publish_key_service
             .generate_publish_key(&room_id, &media_id, &old_user_id)
             .expect("old publish key");
         auth.on_publish(
-            room_id.as_str(),
-            media_id.as_str(),
+            &room_id_str,
+            &media_id_str,
             Some(&format!("token={}", old_publish.token)),
         )
         .await
@@ -823,14 +833,14 @@ mod tests {
         .expect("auth should rewrite stream ids");
 
         let first_epoch = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("first publisher lookup should succeed")
             .expect("first publisher should exist")
             .epoch;
 
         registry
-            .unregister_publisher_if_epoch_matches(room_id.as_str(), media_id.as_str(), first_epoch)
+            .unregister_publisher_if_epoch_matches(&room_id_str, &media_id_str, first_epoch)
             .await
             .expect("test setup should remove first publisher");
 
@@ -838,8 +848,8 @@ mod tests {
             .generate_publish_key(&room_id, &media_id, &new_user_id)
             .expect("new publish key");
         auth.on_publish(
-            room_id.as_str(),
-            media_id.as_str(),
+            &room_id_str,
+            &media_id_str,
             Some(&format!("token={}", new_publish.token)),
         )
         .await
@@ -847,7 +857,7 @@ mod tests {
         .expect("auth should rewrite stream ids");
 
         let replacement = registry
-            .get_publisher(room_id.as_str(), media_id.as_str())
+            .get_publisher(&room_id_str, &media_id_str)
             .await
             .expect("replacement lookup should succeed")
             .expect("replacement publisher should exist");
@@ -856,14 +866,13 @@ mod tests {
             "second publish attempt must have a newer epoch"
         );
 
-        auth.on_unpublish(room_id.as_str(), media_id.as_str(), None)
-            .await;
-        auth.on_publish_rollback(room_id.as_str(), media_id.as_str(), None)
+        auth.on_unpublish(&room_id_str, &media_id_str, None).await;
+        auth.on_publish_rollback(&room_id_str, &media_id_str, None)
             .await;
 
         assert!(
             !registry
-                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .is_stream_active(&room_id_str, &media_id_str)
                 .await
                 .expect("post-rollback activity lookup should succeed"),
             "delayed unpublish must not discard the newer publish epoch needed for rollback fencing"
@@ -884,9 +893,11 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from_string("room-cleanup".to_string());
-        let media_id = MediaId::from_string("media-cleanup".to_string());
-        let user_id = UserId::from_string("user-cleanup".to_string());
+        let room_id = RoomId::from(3004);
+        let media_id = MediaId::from(4004);
+        let user_id = UserId::from(5007);
+        let room_id_str = room_id.to_string();
+        let media_id_str = media_id.to_string();
 
         let publish = publish_key_service
             .generate_publish_key(&room_id, &media_id, &user_id)
@@ -896,8 +907,8 @@ mod tests {
 
         let error = auth
             .on_publish(
-                room_id.as_str(),
-                media_id.as_str(),
+                &room_id_str,
+                &media_id_str,
                 Some(&format!("token={}", publish.token)),
             )
             .await
@@ -911,7 +922,7 @@ mod tests {
 
         for _ in 0..10 {
             if !registry
-                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .is_stream_active(&room_id_str, &media_id_str)
                 .await
                 .expect("registry lookup should succeed after cleanup")
             {
@@ -922,7 +933,7 @@ mod tests {
 
         assert!(
             !registry
-                .is_stream_active(room_id.as_str(), media_id.as_str())
+                .is_stream_active(&room_id_str, &media_id_str)
                 .await
                 .expect("failed auth must not leave publisher registered"),
             "failed auth must rollback the provisional publisher registration"

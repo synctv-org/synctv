@@ -414,8 +414,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         config.jwt_service.clone(),
     )));
     let public_id_codec = Arc::new(
-        crate::PublicIdCodec::from_config(&config.config.external_ids)
-            .expect("external_ids config must be validated before building API runtime"),
+        crate::PublicIdCodec::from_config(&config.config.public_ids)
+            .expect("public_ids config must be validated before building API runtime"),
     );
     let request_executor = Arc::new(crate::impls::RequestExecutor::new(
         config.config.clone(),
@@ -1551,7 +1551,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/rooms/AbC123xYz890/playback")
+                    .uri("/api/rooms/room_123/playback")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"state":1}"#))
                     .expect("request"),
@@ -1913,7 +1913,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"123"}"#))
+                    .body(Body::from(r#"{"room_id":"room_123"}"#))
                     .expect("request"),
             )
             .await
@@ -1930,7 +1930,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"123"}"#))
+                    .body(Body::from(r#"{"room_id":"room_123"}"#))
                     .expect("request"),
             )
             .await
@@ -2420,7 +2420,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"123"}"#))
+                    .body(Body::from(r#"{"room_id":"room_123"}"#))
                     .expect("request"),
             )
             .await
@@ -2433,7 +2433,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/tickets")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"room_id":"123"}"#))
+                    .body(Body::from(r#"{"room_id":"room_123"}"#))
                     .expect("request"),
             )
             .await
@@ -2676,7 +2676,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/rooms/AbC123xYz890/streams")
+                    .uri("/api/rooms/room_123/streams")
                     .body(Body::empty())
                     .expect("request"),
             )

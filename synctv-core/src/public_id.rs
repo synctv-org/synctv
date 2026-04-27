@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::config::ExternalIdsConfig;
+use crate::config::PublicIdsConfig;
 use crate::models::{BanRecordId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId};
 
 const USER_ID_TAG: u64 = 1;
@@ -43,6 +43,18 @@ impl PublicIdKind {
             Self::Playlist => PLAYLIST_ID_TAG,
             Self::ReviewRequest => REVIEW_REQUEST_ID_TAG,
             Self::BanRecord => BAN_RECORD_ID_TAG,
+        }
+    }
+
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::User => "usr_",
+            Self::Room => "room_",
+            Self::Media => "med_",
+            Self::Playlist => "pl_",
+            Self::ReviewRequest => "rev_",
+            Self::BanRecord => "ban_",
         }
     }
 }
@@ -87,7 +99,13 @@ impl PublicIdType for BanRecordId {
 /// services and repositories continue to use numeric typed IDs.
 #[derive(Clone)]
 pub struct PublicIdCodec {
-    sqids: Arc<sqids::Sqids>,
+    encoding: PublicIdEncoding,
+}
+
+#[derive(Clone)]
+enum PublicIdEncoding {
+    Plain,
+    Sqids(Arc<sqids::Sqids>),
 }
 
 impl std::fmt::Debug for PublicIdCodec {
@@ -97,26 +115,32 @@ impl std::fmt::Debug for PublicIdCodec {
 }
 
 impl PublicIdCodec {
-    pub fn from_config(config: &ExternalIdsConfig) -> Result<Self, String> {
+    pub fn from_config(config: &PublicIdsConfig) -> Result<Self, String> {
+        let Some(sqids_config) = config.sqids.as_ref() else {
+            return Ok(Self {
+                encoding: PublicIdEncoding::Plain,
+            });
+        };
+
         let options = sqids::Options::new(
-            config
+            sqids_config
                 .alphabet
                 .clone()
                 .filter(|alphabet| !alphabet.is_empty()),
-            Some(config.min_length),
+            Some(sqids_config.min_length),
             None,
         );
         let sqids = sqids::Sqids::new(Some(options))
-            .map_err(|error| format!("invalid external_ids sqids configuration: {error}"))?;
+            .map_err(|error| format!("invalid public_ids.sqids configuration: {error}"))?;
         Ok(Self {
-            sqids: Arc::new(sqids),
+            encoding: PublicIdEncoding::Sqids(Arc::new(sqids)),
         })
     }
 
     #[must_use]
     pub fn default_for_tests() -> Self {
-        Self::from_config(&ExternalIdsConfig::default())
-            .expect("default external ID config must be valid")
+        Self::from_config(&PublicIdsConfig::default())
+            .expect("default public ID config must be valid")
     }
 
     pub fn encode<T>(&self, id: T) -> Result<String, String>
@@ -181,25 +205,48 @@ impl PublicIdCodec {
         validate_positive_id(id, kind)?;
         let id = u64::try_from(id)
             .map_err(|_| format!("invalid {kind}: expected a positive integer"))?;
-        self.sqids
-            .encode(&[kind.tag(), id])
-            .map_err(|error| format!("failed to encode {kind}: {error}"))
+        let payload = match &self.encoding {
+            PublicIdEncoding::Plain => id.to_string(),
+            PublicIdEncoding::Sqids(sqids) => sqids
+                .encode(&[kind.tag(), id])
+                .map_err(|error| format!("failed to encode {kind}: {error}"))?,
+        };
+        Ok(format!("{}{payload}", kind.prefix()))
     }
 
     fn decode_i64(&self, value: &str, kind: PublicIdKind) -> Result<i64, String> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(format!("invalid {kind}: expected a non-empty sqid"));
+            return Err(format!("invalid {kind}: expected a non-empty public ID"));
         }
 
-        let decoded = self.sqids.decode(trimmed);
-        let [decoded_type_tag, id] = decoded.as_slice() else {
-            return Err(format!("invalid {kind}: expected a typed sqid"));
+        let Some(payload) = trimmed.strip_prefix(kind.prefix()) else {
+            return Err(format!(
+                "invalid {kind}: expected public ID prefix `{}`",
+                kind.prefix()
+            ));
         };
-        if *decoded_type_tag != kind.tag() {
-            return Err(format!("invalid {kind}: sqid type mismatch"));
+        if payload.is_empty() {
+            return Err(format!(
+                "invalid {kind}: expected a non-empty public ID body"
+            ));
         }
-        let id = i64::try_from(*id).map_err(|_| format!("invalid {kind}: sqid exceeds i64"))?;
+
+        let id = match &self.encoding {
+            PublicIdEncoding::Plain => payload
+                .parse::<i64>()
+                .map_err(|_| format!("invalid {kind}: expected a decimal public ID body"))?,
+            PublicIdEncoding::Sqids(sqids) => {
+                let decoded = sqids.decode(payload);
+                let [decoded_type_tag, id] = decoded.as_slice() else {
+                    return Err(format!("invalid {kind}: expected a typed sqid body"));
+                };
+                if *decoded_type_tag != kind.tag() {
+                    return Err(format!("invalid {kind}: sqid type mismatch"));
+                }
+                i64::try_from(*id).map_err(|_| format!("invalid {kind}: sqid exceeds i64"))?
+            }
+        };
         validate_positive_id(id, kind)?;
         Ok(id)
     }
@@ -216,42 +263,76 @@ fn validate_positive_id(id: i64, kind: PublicIdKind) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PublicIdsSqidsConfig;
 
     #[test]
-    fn typed_ids_use_distinct_public_domains() {
+    fn default_codec_uses_prefixed_decimal_ids() {
         let codec = PublicIdCodec::default_for_tests();
 
-        let user = codec.encode_user_id(UserId::from(1)).unwrap();
-        let room = codec.encode_room_id(RoomId::from(1)).unwrap();
-        let media = codec.encode_media_id(MediaId::from(1)).unwrap();
-        let playlist = codec.encode_playlist_id(PlaylistId::from(1)).unwrap();
-
-        assert_ne!(user, room);
-        assert_ne!(user, media);
-        assert_ne!(user, playlist);
-        assert_ne!(room, media);
-        assert_ne!(room, playlist);
-        assert_ne!(media, playlist);
+        assert_eq!(codec.encode_user_id(UserId::from(1)).unwrap(), "usr_1");
+        assert_eq!(codec.encode_room_id(RoomId::from(1)).unwrap(), "room_1");
+        assert_eq!(codec.encode_media_id(MediaId::from(1)).unwrap(), "med_1");
+        assert_eq!(
+            codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+            "pl_1"
+        );
+        assert_eq!(
+            codec
+                .encode_review_request_id(ReviewRequestId::from(1))
+                .unwrap(),
+            "rev_1"
+        );
+        assert_eq!(
+            codec.encode_ban_record_id(BanRecordId::from(1)).unwrap(),
+            "ban_1"
+        );
     }
 
     #[test]
-    fn typed_decode_rejects_wrong_domain() {
+    fn default_decode_requires_correct_prefix() {
         let codec = PublicIdCodec::default_for_tests();
+
+        assert_eq!(codec.decode_user_id("usr_1").unwrap(), UserId::from(1));
+        assert!(codec.decode_room_id("usr_1").is_err());
+        assert!(codec.decode_user_id("room_1").is_err());
+        assert!(codec.decode_user_id("1").is_err());
+    }
+
+    #[test]
+    fn default_decode_rejects_invalid_payload() {
+        let codec = PublicIdCodec::default_for_tests();
+
+        assert!(codec.decode_user_id("usr_").is_err());
+        assert!(codec.decode_user_id("usr_0").is_err());
+        assert!(codec.decode_user_id("usr_-1").is_err());
+        assert!(codec.decode_user_id("usr_abc").is_err());
+    }
+
+    #[test]
+    fn sqids_mode_keeps_prefix_and_type_domain() {
+        let codec = PublicIdCodec::from_config(&PublicIdsConfig {
+            sqids: Some(PublicIdsSqidsConfig::default()),
+        })
+        .unwrap();
+
         let user = codec.encode_user_id(UserId::from(1)).unwrap();
 
+        assert!(user.starts_with("usr_"));
+        assert_ne!(user, "usr_1");
+        assert_eq!(codec.decode_user_id(&user).unwrap(), UserId::from(1));
         assert!(codec.decode_room_id(&user).is_err());
-        assert!(codec.decode_media_id(&user).is_err());
-        assert!(codec.decode_playlist_id(&user).is_err());
     }
 
     #[test]
-    fn generic_public_ids_are_domain_separated() {
+    fn generic_public_ids_are_domain_separated_by_prefix() {
         let codec = PublicIdCodec::default_for_tests();
         let review = codec
             .encode_review_request_id(ReviewRequestId::from(1))
             .unwrap();
         let ban = codec.encode_ban_record_id(BanRecordId::from(1)).unwrap();
 
+        assert_eq!(review, "rev_1");
+        assert_eq!(ban, "ban_1");
         assert_ne!(review, ban);
         assert_eq!(
             codec.decode_review_request_id(&review).unwrap(),

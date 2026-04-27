@@ -705,10 +705,10 @@ pub(crate) fn bilibili_live_danmaku_for_static_media(
     });
     let room_id = public_id_codec
         .encode_room_id(media.room_id)
-        .expect("positive room id must encode as public sqid");
+        .expect("positive room id must encode as public ID");
     let media_id = public_id_codec
         .encode_media_id(media.id)
-        .expect("positive media id must encode as public sqid");
+        .expect("positive media id must encode as public ID");
     let url = synctv_core::service::proxy_signature::build_signed_proxy_url(
         synctv_core::provider::BilibiliProvider::NAME,
         &room_id,

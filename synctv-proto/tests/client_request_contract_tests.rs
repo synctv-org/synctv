@@ -9,8 +9,8 @@ use synctv_proto::client::{
     OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest, RejectRoomJoinReviewRequest,
     RoomJoinReviewPathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
     RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
-    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, WebSocketConnectRequest,
+    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest, UpdatePlayback,
+    UpdatePlaylistRequest, WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{
     ListProviderBackendsRequest, ProviderInstanceQuery, ProviderProxyPathRequest,
@@ -185,7 +185,7 @@ fn test_approve_room_join_review_request_requires_valid_request_id() {
 #[test]
 fn test_reject_room_join_review_request_allows_reason_without_target_user_id() {
     let request = RejectRoomJoinReviewRequest {
-        request_id: "AbC123xYz890".to_string(),
+        request_id: "rev_AbC123xYz890".to_string(),
         reason: "not eligible".to_string(),
     };
 
@@ -842,77 +842,34 @@ fn test_move_media_request_rejects_invalid_anchor_media_id() {
 }
 
 #[test]
-fn test_update_playback_request_rejects_invalid_media_id() {
-    let request = UpdatePlaybackRequest {
-        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
-        position: None,
+fn test_update_playback_rejects_missing_type() {
+    let request = UpdatePlayback {
+        r#type: synctv_proto::client::PlaybackUpdateType::Unspecified as i32,
+        playing: None,
+        position: Some(1.0),
         speed: None,
-        media_id: "bad-media".to_string(),
-        playlist_id: String::new(),
-        target: Vec::new(),
-        version: None,
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("media_id"), "{message}");
-}
-
-#[test]
-fn test_update_playback_request_rejects_invalid_playlist_id() {
-    let request = UpdatePlaybackRequest {
-        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
-        position: None,
-        speed: None,
-        media_id: String::new(),
-        playlist_id: "bad-playlist".to_string(),
-        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
-        version: None,
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("playlist_id"), "{message}");
-}
-
-#[test]
-fn test_update_playback_request_rejects_mixed_switch_and_patch_fields() {
-    let request = UpdatePlaybackRequest {
-        state: synctv_proto::client::PlaybackPatchState::Playing as i32,
-        position: None,
-        speed: None,
-        media_id: String::new(),
-        playlist_id: "AbC123xYz890".to_string(),
-        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
         version: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(
-        message.contains("update_playback.switch_patch_exclusive"),
+        message.contains("update_playback.type_required"),
         "{message}"
     );
 }
 
 #[test]
-fn test_update_playback_request_rejects_target_without_switch_id() {
-    let request = UpdatePlaybackRequest {
-        state: synctv_proto::client::PlaybackPatchState::Unspecified as i32,
-        position: None,
-        speed: None,
-        media_id: String::new(),
-        playlist_id: String::new(),
-        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
-        version: None,
+fn test_update_playback_allows_full_seek_state() {
+    let request = UpdatePlayback {
+        r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
+        playing: Some(false),
+        position: Some(42.5),
+        speed: Some(1.25),
+        version: Some(7),
     };
 
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(
-        message.contains("update_playback.switch_requires_target_id"),
-        "{message}"
-    );
+    synctv_proto::validate(&request).expect("request should be valid");
 }
 
 #[test]

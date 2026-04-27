@@ -291,10 +291,18 @@ pub enum DbSubcommand {
 }
 
 #[derive(Debug, Args)]
-pub struct DbMigrateArgs {}
+pub struct DbMigrateArgs {
+    /// Output format for migration result
+    #[arg(long, short = 'o', value_enum, default_value_t = RemoteOutputFormat::Human)]
+    pub output: RemoteOutputFormat,
+}
 
 #[derive(Debug, Args)]
-pub struct DbStatusArgs {}
+pub struct DbStatusArgs {
+    /// Output format for database status
+    #[arg(long, short = 'o', value_enum, default_value_t = RemoteOutputFormat::Human)]
+    pub output: RemoteOutputFormat,
+}
 
 #[derive(Debug, Args)]
 pub struct ReviewCommand {
@@ -701,13 +709,13 @@ pub enum RoomPlaybackSubcommand {
     Get(RoomPlaybackGetArgs),
     /// Start playback for a static media item or dynamic playlist target
     Start(RoomPlaybackStartArgs),
-    /// Resume the room's current playback item
-    Resume(RoomPlaybackPatchArgs),
-    /// Pause the room's current playback item
-    Pause(RoomPlaybackPatchArgs),
-    /// Seek the room's current playback item to a position in seconds
+    /// Resume playback for the room's current playback item
+    Play(RoomPlaybackUpdateArgs),
+    /// Pause playback for the room's current playback item
+    Pause(RoomPlaybackUpdateArgs),
+    /// Seek the room's current playback item to a position
     Seek(RoomPlaybackSeekArgs),
-    /// Set the room's playback speed
+    /// Change playback speed for the room's current playback item
     Speed(RoomPlaybackSpeedArgs),
     /// Stop the room's current playback item
     Stop(RoomPlaybackStopArgs),
@@ -826,6 +834,23 @@ pub struct RemoteAccessArgs {
     #[command(flatten)]
     pub global: GlobalConfigArgs,
 
+    /// Management bearer token for this command
+    #[arg(
+        long = "auth-token",
+        alias = "management-auth-token",
+        conflicts_with = "auth_token_file"
+    )]
+    pub auth_token: Option<String>,
+
+    /// Read the management bearer token from a file
+    #[arg(
+        long = "auth-token-file",
+        alias = "management-auth-token-file",
+        value_name = "PATH",
+        conflicts_with = "auth_token"
+    )]
+    pub auth_token_file: Option<PathBuf>,
+
     /// Output format for management command results
     #[arg(long, short = 'o', value_enum, default_value_t = RemoteOutputFormat::Human)]
     pub output: RemoteOutputFormat,
@@ -835,6 +860,11 @@ impl RemoteAccessArgs {
     fn connection_options(&self, endpoint: Option<String>) -> AdminConnectionOptions {
         AdminConnectionOptions {
             endpoint,
+            auth_token: self.auth_token.clone(),
+            auth_token_file: self
+                .auth_token_file
+                .as_ref()
+                .map(|path| path.display().to_string()),
             config_path: self
                 .global
                 .config
@@ -2040,10 +2070,41 @@ pub struct RoomPlaybackStopArgs {
     pub room: RoomScopedRemoteArgs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliPlaybackUpdateType {
+    Play,
+    Pause,
+    Seek,
+    Speed,
+}
+
+impl CliPlaybackUpdateType {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::Play => synctv_proto::client::PlaybackUpdateType::Play as i32,
+            Self::Pause => synctv_proto::client::PlaybackUpdateType::Pause as i32,
+            Self::Seek => synctv_proto::client::PlaybackUpdateType::Seek as i32,
+            Self::Speed => synctv_proto::client::PlaybackUpdateType::Speed as i32,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
-pub struct RoomPlaybackPatchArgs {
+pub struct RoomPlaybackUpdateArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
+
+    /// Final playing state to apply together with this update.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub playing: Option<bool>,
+
+    /// Playback position in seconds. Required for `seek`.
+    #[arg(long, value_name = "SECONDS")]
+    pub position: Option<f64>,
+
+    /// Playback speed multiplier, usually between 0.25 and 4.0
+    #[arg(long)]
+    pub speed: Option<f64>,
 
     /// Optional optimistic-lock playback state version
     #[arg(long)]
@@ -2055,9 +2116,17 @@ pub struct RoomPlaybackSeekArgs {
     #[command(flatten)]
     pub room: RoomScopedRemoteArgs,
 
-    /// Playback position in seconds
+    /// Playback position in seconds.
     #[arg(long, value_name = "SECONDS")]
     pub position: f64,
+
+    /// Final playing state to apply together with this update.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub playing: Option<bool>,
+
+    /// Playback speed multiplier, usually between 0.25 and 4.0
+    #[arg(long)]
+    pub speed: Option<f64>,
 
     /// Optional optimistic-lock playback state version
     #[arg(long)]
@@ -2072,6 +2141,14 @@ pub struct RoomPlaybackSpeedArgs {
     /// Playback speed multiplier, usually between 0.25 and 4.0
     #[arg(long)]
     pub speed: f64,
+
+    /// Final playing state to apply together with this update.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub playing: Option<bool>,
+
+    /// Playback position in seconds.
+    #[arg(long, value_name = "SECONDS")]
+    pub position: Option<f64>,
 
     /// Optional optimistic-lock playback state version
     #[arg(long)]
@@ -3577,11 +3654,11 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
             RoomPlaybackSubcommand::Start(args) => {
                 merge_room_scoped_remote_args(&mut args.room, root);
             }
-            RoomPlaybackSubcommand::Resume(args) | RoomPlaybackSubcommand::Pause(args) => {
+            RoomPlaybackSubcommand::Play(args) | RoomPlaybackSubcommand::Pause(args) => {
                 merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomPlaybackSubcommand::Seek(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root);
+                merge_room_scoped_remote_args(&mut args.room, root)
             }
             RoomPlaybackSubcommand::Speed(args) => {
                 merge_room_scoped_remote_args(&mut args.room, root);
@@ -4030,7 +4107,7 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
     let _log_guard = synctv_core::logging::init_logging(&config.logging)?;
 
     match db_command.command {
-        DbSubcommand::Migrate(_) => {
+        DbSubcommand::Migrate(args) => {
             let redis_init = synctv_core::bootstrap::init_redis(&config, None).await?;
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
 
@@ -4048,14 +4125,18 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
             )
             .await?;
 
+            let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
+            let output = DatabaseMigrateCliOutput::new(&config, &migrations_status);
+            print_database_migrate_output(args.output, &output)?;
             pool.close().await;
             Ok(())
         }
-        DbSubcommand::Status(_) => {
+        DbSubcommand::Status(args) => {
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
             sqlx::query("SELECT 1").execute(&pool).await?;
             let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
-            println!("{}", database_status_summary(&config, &migrations_status));
+            let output = DatabaseStatusCliOutput::new(&config, &migrations_status);
+            print_database_status_output(args.output, &output)?;
             pool.close().await;
             Ok(())
         }
@@ -4723,22 +4804,26 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     playlist_id,
                 })
             }
-            RoomPlaybackSubcommand::Resume(args) => {
+            RoomPlaybackSubcommand::Play(args) => {
+                let playing = Some(args.playing.unwrap_or(true));
                 execute_room_playback_update(
                     args.room,
-                    synctv_proto::client::PlaybackPatchState::Playing,
-                    None,
-                    None,
+                    CliPlaybackUpdateType::Play,
+                    playing,
+                    args.position,
+                    args.speed,
                     args.version,
                 )
                 .await
             }
             RoomPlaybackSubcommand::Pause(args) => {
+                let playing = Some(args.playing.unwrap_or(false));
                 execute_room_playback_update(
                     args.room,
-                    synctv_proto::client::PlaybackPatchState::Paused,
-                    None,
-                    None,
+                    CliPlaybackUpdateType::Pause,
+                    playing,
+                    args.position,
+                    args.speed,
                     args.version,
                 )
                 .await
@@ -4746,9 +4831,10 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             RoomPlaybackSubcommand::Seek(args) => {
                 execute_room_playback_update(
                     args.room,
-                    synctv_proto::client::PlaybackPatchState::Unspecified,
+                    CliPlaybackUpdateType::Seek,
+                    args.playing,
                     Some(args.position),
-                    None,
+                    args.speed,
                     args.version,
                 )
                 .await
@@ -4756,8 +4842,9 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
             RoomPlaybackSubcommand::Speed(args) => {
                 execute_room_playback_update(
                     args.room,
-                    synctv_proto::client::PlaybackPatchState::Unspecified,
-                    None,
+                    CliPlaybackUpdateType::Speed,
+                    args.playing,
+                    args.position,
                     Some(args.speed),
                     args.version,
                 )
@@ -5141,7 +5228,8 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
 
 async fn execute_room_playback_update(
     room: RoomScopedRemoteArgs,
-    state: synctv_proto::client::PlaybackPatchState,
+    update_type: CliPlaybackUpdateType,
+    playing: Option<bool>,
     position: Option<f64>,
     speed: Option<f64>,
     version: Option<i64>,
@@ -5153,10 +5241,13 @@ async fn execute_room_playback_update(
         update_playback,
         management_proto::UpdatePlaybackRequest {
             room_id: room.room_id,
-            state: state as i32,
-            position,
-            speed,
-            version,
+            update: Some(synctv_proto::client::UpdatePlayback {
+                r#type: update_type.to_proto(),
+                playing,
+                position,
+                speed,
+                version,
+            }),
         }
     )?;
     let output = build_get_playback_cli_output(response, &room.remote.global);
@@ -6358,19 +6449,103 @@ pub fn version_string() -> String {
     format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
 }
 
-fn database_status_summary(
-    config: &synctv_core::Config,
-    migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
-) -> String {
-    let masked_url = mask_connection_url(&config.database.url);
+#[derive(Debug, Clone, Serialize)]
+struct DatabaseStatusCliOutput {
+    database_connection: &'static str,
+    migration_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration_detail: Option<String>,
+    database_url: String,
+}
+
+impl DatabaseStatusCliOutput {
+    fn new(
+        config: &synctv_core::Config,
+        migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
+    ) -> Self {
+        Self {
+            database_connection: "ok",
+            migration_status: migrations_status.label(),
+            migration_detail: migrations_status.detail(),
+            database_url: mask_connection_url(&config.database.url),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DatabaseMigrateCliOutput {
+    migration: &'static str,
+    migration_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration_detail: Option<String>,
+    database_url: String,
+}
+
+impl DatabaseMigrateCliOutput {
+    fn new(
+        config: &synctv_core::Config,
+        migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
+    ) -> Self {
+        Self {
+            migration: "completed",
+            migration_status: migrations_status.label(),
+            migration_detail: migrations_status.detail(),
+            database_url: mask_connection_url(&config.database.url),
+        }
+    }
+}
+
+fn print_database_status_output(
+    format: RemoteOutputFormat,
+    output: &DatabaseStatusCliOutput,
+) -> Result<()> {
+    match format {
+        RemoteOutputFormat::Human => {
+            print!("{}", database_status_summary(output));
+            Ok(())
+        }
+        RemoteOutputFormat::Json => print_json(output),
+        RemoteOutputFormat::Yaml => print_yaml(output),
+    }
+}
+
+fn print_database_migrate_output(
+    format: RemoteOutputFormat,
+    output: &DatabaseMigrateCliOutput,
+) -> Result<()> {
+    match format {
+        RemoteOutputFormat::Human => {
+            print!("{}", database_migrate_summary(output));
+            Ok(())
+        }
+        RemoteOutputFormat::Json => print_json(output),
+        RemoteOutputFormat::Yaml => print_yaml(output),
+    }
+}
+
+fn database_status_summary(output: &DatabaseStatusCliOutput) -> String {
     let mut lines = vec![
         "Database connection: OK".to_string(),
-        format!("Migration status: {}", migrations_status.label()),
+        format!("Migration status: {}", output.migration_status),
     ];
-    if let Some(detail) = migrations_status.detail() {
+    if let Some(detail) = &output.migration_detail {
         lines.push(format!("Migration detail: {detail}"));
     }
-    lines.push(format!("Database URL: {masked_url}"));
+    lines.push(format!("Database URL: {}", output.database_url));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn database_migrate_summary(output: &DatabaseMigrateCliOutput) -> String {
+    let mut lines = vec![
+        "Database migration: completed".to_string(),
+        format!("Migration status: {}", output.migration_status),
+    ];
+    if let Some(detail) = &output.migration_detail {
+        lines.push(format!("Migration detail: {detail}"));
+    }
+    lines.push(format!("Database URL: {}", output.database_url));
+    lines.push(String::new());
     lines.join("\n")
 }
 
@@ -8461,13 +8636,56 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_remote_management_auth_token() {
+        let cli = Cli::parse_from(["synctv", "user", "list", "--auth-token", "token-123"]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::List(args),
+            }) => assert_eq!(args.remote.auth_token.as_deref(), Some("token-123")),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_remote_management_auth_token_file() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "user",
+            "list",
+            "--auth-token-file",
+            "/run/secrets/management_auth_token",
+        ]);
+        match cli.command {
+            Commands::User(UserCommand {
+                command: UserSubcommand::List(args),
+            }) => assert_eq!(
+                args.remote.auth_token_file.as_deref(),
+                Some(std::path::Path::new("/run/secrets/management_auth_token"))
+            ),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cli_parses_db_status() {
-        let cli = Cli::parse_from(["synctv", "db", "status"]);
+        let cli = Cli::parse_from(["synctv", "db", "status", "--output", "json"]);
         match cli.command {
             Commands::Db(DbCommand {
-                command: DbSubcommand::Status(_),
+                command: DbSubcommand::Status(args),
                 ..
-            }) => {}
+            }) => assert_eq!(args.output, RemoteOutputFormat::Json),
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_db_migrate_yaml_output_short_flag() {
+        let cli = Cli::parse_from(["synctv", "db", "migrate", "-o", "yaml"]);
+        match cli.command {
+            Commands::Db(DbCommand {
+                command: DbSubcommand::Migrate(args),
+                ..
+            }) => assert_eq!(args.output, RemoteOutputFormat::Yaml),
             other => panic!("unexpected command parsed: {other:?}"),
         }
     }
@@ -12248,10 +12466,11 @@ mod tests {
 
     #[test]
     fn database_status_summary_masks_credentials() {
-        let summary = database_status_summary(
+        let output = DatabaseStatusCliOutput::new(
             &sample_config(),
             &crate::migrations::EmbeddedMigrationsStatus::Ready,
         );
+        let summary = database_status_summary(&output);
 
         assert!(
             !summary.contains("super-secret-db"),
@@ -12269,12 +12488,13 @@ mod tests {
 
     #[test]
     fn database_status_summary_reports_broken_migration_history() {
-        let summary = database_status_summary(
+        let output = DatabaseStatusCliOutput::new(
             &sample_config(),
             &crate::migrations::EmbeddedMigrationsStatus::Broken(
                 crate::migrations::MigrationHistoryIssue::Dirty(20_260_426_004),
             ),
         );
+        let summary = database_status_summary(&output);
 
         assert!(
             summary.contains("Migration status: broken"),
@@ -12664,6 +12884,8 @@ management:
                 verbose: 0,
                 endpoint: None,
             },
+            auth_token: None,
+            auth_token_file: None,
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);
@@ -12701,6 +12923,8 @@ management:
                 verbose: 0,
                 endpoint: Some("http://127.0.0.1:50052".to_string()),
             },
+            auth_token: None,
+            auth_token_file: None,
             output: RemoteOutputFormat::Human,
         };
         let context = RemoteCliContext::new(&args);

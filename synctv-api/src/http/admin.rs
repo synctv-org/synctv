@@ -4,7 +4,7 @@
 //! Thin handlers that delegate to `AdminApiImpl`.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -903,7 +903,7 @@ pub(crate) async fn get_user_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<admin::GetUserRoomsRequest>,
+    Query(req): Query<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
     let resp = execute_admin_endpoint(
@@ -1150,7 +1150,7 @@ pub(crate) async fn get_room_members(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<admin::GetRoomMembersRequest>,
+    Query(req): Query<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
     let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
     let resp = execute_admin_endpoint(
@@ -1682,6 +1682,29 @@ mod tests {
         );
         assert_eq!(query.sort_by, admin::RoomMemberListSortBy::Username as i32);
         assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
+    }
+
+    #[test]
+    fn test_admin_path_scoped_queries_validate_after_path_id_injection() {
+        let members_query: admin::GetRoomMembersRequest =
+            serde_urlencoded::from_str("page_size=0").expect("query should deserialize");
+        assert!(
+            crate::impls::validate_proto_request(&members_query).is_err(),
+            "path-scoped request is invalid until the path room_id is injected"
+        );
+        let members_query = members_query.with_room_id("room_1".to_string());
+        crate::impls::validate_proto_request(&members_query)
+            .expect("path-injected room members query should validate");
+
+        let rooms_query: admin::GetUserRoomsRequest =
+            serde_urlencoded::from_str("page_size=0").expect("query should deserialize");
+        assert!(
+            crate::impls::validate_proto_request(&rooms_query).is_err(),
+            "path-scoped request is invalid until the path user_id is injected"
+        );
+        let rooms_query = rooms_query.with_user_id("usr_1".to_string());
+        crate::impls::validate_proto_request(&rooms_query)
+            .expect("path-injected user rooms query should validate");
     }
 
     #[tokio::test]

@@ -5113,7 +5113,7 @@ async fn test_list_accessible_rooms_excludes_rooms_with_inactive_creator() {
 
     room_service
         .user_service()
-        .ban_user_and_cleanup_memberships(&inactive_owner.id)
+        .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
         .await
         .unwrap();
 
@@ -5188,7 +5188,7 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 
     room_service
         .user_service()
-        .ban_user_and_cleanup_memberships(&inactive_owner.id)
+        .ban_user_and_cleanup_memberships(&inactive_owner.id, None, None)
         .await
         .unwrap();
 

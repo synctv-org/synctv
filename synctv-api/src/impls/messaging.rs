@@ -3378,17 +3378,8 @@ impl StreamMessageHandler {
             Some(Message::PlaybackProgress(report)) => {
                 self.handle_playback_progress(report).await?;
             }
-            Some(Message::PlayCommand(_)) => {
-                self.handle_play_command().await?;
-            }
-            Some(Message::PauseCommand(_)) => {
-                self.handle_pause_command().await?;
-            }
-            Some(Message::SeekCommand(seek)) => {
-                self.handle_seek_command(seek.current_time).await?;
-            }
-            Some(Message::SetSpeedCommand(speed_cmd)) => {
-                self.handle_set_speed_command(speed_cmd.speed).await?;
+            Some(Message::PlaybackUpdate(update)) => {
+                self.handle_playback_update(update).await?;
             }
             Some(Message::WatchPlaybackState(watch)) => {
                 self.handle_watch_playback_state(watch.version).await?;
@@ -3926,100 +3917,13 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    /// Handle Play command from WebSocket
-    async fn handle_play_command(&self) -> Result<(), String> {
-        let previous_state = self
-            .room_service
-            .playback_service()
-            .get_state(&self.room_id)
-            .await
-            .ok();
-        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        let state = self
-            .room_service
-            .playback_service()
-            .set_playing(self.room_id, self.user_id, true)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(service) = &self.playback_snapshot_service {
-            service
-                .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
-                .await;
-        }
-
-        // PlaybackStateChanged broadcast is handled by room_service
-        Ok(())
-    }
-
-    /// Handle Pause command from WebSocket
-    async fn handle_pause_command(&self) -> Result<(), String> {
-        let previous_state = self
-            .room_service
-            .playback_service()
-            .get_state(&self.room_id)
-            .await
-            .ok();
-        // Permission check (PLAY_PAUSE) is handled by PlaybackService::set_playing()
-        let state = self
-            .room_service
-            .playback_service()
-            .set_playing(self.room_id, self.user_id, false)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(service) = &self.playback_snapshot_service {
-            service
-                .handle_provider_lifecycle_transition(previous_state.as_ref(), &state)
-                .await;
-        }
-
-        // PlaybackStateChanged broadcast is handled by room_service
-        Ok(())
-    }
-
-    /// Handle Seek command from WebSocket
-    async fn handle_seek_command(&self, current_time: f64) -> Result<(), String> {
-        if current_time < 0.0 {
-            return Err("Seek position must be non-negative".to_string());
-        }
-
-        // Permission check (SEEK) is handled by PlaybackService::seek()
-        let response = self
-            .room_service
-            .playback_service()
-            .seek(self.room_id, self.user_id, current_time)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Log warning if seek was not applied due to contention
-        if !response.seek_applied {
-            tracing::warn!(
-                room_id = %self.room_id,
-                user_id = %self.user_id,
-                requested_time = current_time,
-                actual_time = response.state.current_time,
-                message = ?response.message,
-                "Seek command returned degraded response"
-            );
-        }
-        if let Some(service) = &self.playback_snapshot_service {
-            service
-                .report_provider_playback_progress(
-                    &response.state,
-                    response.state.current_time,
-                    !response.state.is_playing,
-                    true,
-                )
-                .await;
-        }
-
-        // PlaybackStateChanged broadcast is handled by room_service
-        Ok(())
-    }
-
-    /// Handle `SetPlaybackSpeed` command from WebSocket
-    async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
-        // R-1: No WS-layer speed validation; PlaybackService::change_speed() is
-        // the single authority for speed range enforcement.
+    /// Handle playback state update command from WebSocket.
+    async fn handle_playback_update(
+        &self,
+        update: &crate::proto::client::UpdatePlayback,
+    ) -> Result<(), String> {
+        let command = crate::impls::client::build_update_playback(update.clone())
+            .map_err(|error| error.to_string())?;
         let previous_state = self
             .room_service
             .playback_service()
@@ -4027,11 +3931,23 @@ impl StreamMessageHandler {
             .await
             .ok();
 
-        // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
+        let crate::impls::client::PlaybackUpdateCommand::Patch {
+            playing,
+            position,
+            speed,
+            version,
+        } = command;
         let state = self
             .room_service
             .playback_service()
-            .change_speed(self.room_id, self.user_id, speed)
+            .update_multiple_with_version(
+                self.room_id,
+                self.user_id,
+                playing,
+                position,
+                speed,
+                version,
+            )
             .await
             .map_err(|e| e.to_string())?;
         if let Some(service) = &self.playback_snapshot_service {
@@ -9888,7 +9804,7 @@ mod tests {
             .expect("register should succeed before final admission");
 
         user_service
-            .ban_user_and_cleanup_memberships(&member.id)
+            .ban_user_and_cleanup_memberships(&member.id, None, None)
             .await
             .expect("banning user should succeed");
 

@@ -30,7 +30,7 @@ pub mod limits {
     pub const URL_MAX: usize = 2048;
     /// Maximum email length
     pub const EMAIL_MAX: usize = 254;
-    /// Maximum generic external ID length (`user_id`, `media_id`, playlist refs, etc.)
+    /// Maximum generic public ID length (`user_id`, `media_id`, playlist refs, etc.)
     pub const ID_MAX: usize = 64;
     /// Maximum `OAuth2` redirect URL length
     pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;

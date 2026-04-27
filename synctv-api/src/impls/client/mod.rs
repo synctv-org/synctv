@@ -25,7 +25,7 @@ pub(crate) mod stream;
 mod user;
 mod webrtc;
 pub(crate) use playback::{
-    build_start_playback_request, build_update_playback_request, PlaybackUpdateCommand,
+    build_start_playback_request, build_update_playback, PlaybackUpdateCommand,
 };
 pub(crate) use room::build_create_websocket_ticket_request;
 

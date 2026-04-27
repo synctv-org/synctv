@@ -131,7 +131,7 @@ async fn test_banned_user_returns_unified_error_message() {
         .expect("Failed to create user");
 
     user_service
-        .ban_user_and_cleanup_memberships(&user.id)
+        .ban_user_and_cleanup_memberships(&user.id, None, None)
         .await
         .expect("Failed to ban user");
 
@@ -245,7 +245,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .await
         .unwrap();
     user_service
-        .ban_user_and_cleanup_memberships(&banned_user.id)
+        .ban_user_and_cleanup_memberships(&banned_user.id, None, None)
         .await
         .unwrap();
     let result = validate_admin_auth(&user_service, banned_user.id, 0, token_iat).await;

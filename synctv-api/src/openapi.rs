@@ -229,7 +229,7 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             client::StartPlaybackResponse,
             client::StopPlaybackRequest,
             client::StopPlaybackResponse,
-            client::UpdatePlaybackRequest,
+            client::UpdatePlayback,
             client::SetRoomPasswordRequest,
             client::SetRoomPasswordResponse,
             client::GetChatHistoryResponse,

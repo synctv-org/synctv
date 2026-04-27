@@ -966,14 +966,14 @@ mod tests {
 
         let raw_query = build_proxy_query(
             state.proxy_signing_key.as_ref(),
-            &room.id.to_string(),
-            &member.id.to_string(),
+            &state.public_id_codec.encode_room_id(room.id).unwrap(),
+            &state.public_id_codec.encode_user_id(member.id).unwrap(),
             "v1",
         );
 
         state
             .user_service
-            .ban_user_and_cleanup_memberships(&member.id)
+            .ban_user_and_cleanup_memberships(&member.id, None, None)
             .await
             .expect("ban user");
 
@@ -1030,8 +1030,8 @@ mod tests {
 
         let raw_query = build_proxy_query(
             state.proxy_signing_key.as_ref(),
-            &room.id.to_string(),
-            &member.id.to_string(),
+            &state.public_id_codec.encode_room_id(room.id).unwrap(),
+            &state.public_id_codec.encode_user_id(member.id).unwrap(),
             "v1",
         );
 

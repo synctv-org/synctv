@@ -304,10 +304,7 @@ impl ClientApiImpl {
             }
         };
         let query = synctv_core::models::RoomMemberListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(u32::try_from(req.page).unwrap_or(1)),
-                Some(u32::try_from(req.page_size).unwrap_or(50)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             status,

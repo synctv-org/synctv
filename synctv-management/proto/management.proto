@@ -530,10 +530,7 @@ message GetPlaybackRequest {
 
 message UpdatePlaybackRequest {
     string room_id = 1;
-    synctv.client.PlaybackPatchState state = 2;
-    optional double position = 3;
-    optional double speed = 4;
-    optional int64 version = 5;
+    synctv.client.UpdatePlayback update = 2;
 }
 
 message CreatePublishKeyRequest {

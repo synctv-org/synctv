@@ -11,6 +11,8 @@ const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AdminConnectionOptions {
     pub endpoint: Option<String>,
+    pub auth_token: Option<String>,
+    pub auth_token_file: Option<String>,
     pub config_path: Option<String>,
     pub data_dir: Option<String>,
     pub load_dotenv: bool,
@@ -146,6 +148,24 @@ fn resolve_management_endpoint_from_config(
 }
 
 fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Option<String>> {
+    if let Some(token) = options.auth_token.as_deref() {
+        let token = token.trim();
+        if token.is_empty() {
+            bail!("management auth token passed via --auth-token must not be empty");
+        }
+        return Ok(Some(token.to_string()));
+    }
+
+    if let Some(path) = options.auth_token_file.as_deref() {
+        let token = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read management auth token file {path}"))?;
+        let token = token.trim();
+        if token.is_empty() {
+            bail!("management auth token file {path} is empty");
+        }
+        return Ok(Some(token.to_string()));
+    }
+
     let explicit_endpoint = options
         .endpoint
         .as_deref()
@@ -280,7 +300,10 @@ fn connect_unix_channel(_path: &str) -> std::future::Ready<Result<Channel>> {
 mod tests {
     #[cfg(unix)]
     use super::RemoteAdminSession;
-    use super::{normalize_endpoint, resolve_candidate_endpoints, AdminConnectionOptions};
+    use super::{
+        normalize_endpoint, resolve_candidate_endpoints, resolve_management_auth_token,
+        AdminConnectionOptions,
+    };
     #[cfg(unix)]
     use std::pin::Pin;
 
@@ -1120,6 +1143,51 @@ mod tests {
         assert_eq!(normalized, "https://example.com/api");
     }
 
+    #[test]
+    fn resolve_management_auth_token_prefers_explicit_cli_token() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let _env_guard = EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN", "env-token");
+
+        let token = resolve_management_auth_token(&AdminConnectionOptions {
+            endpoint: Some("http://127.0.0.1:50052".to_string()),
+            auth_token: Some("cli-token".to_string()),
+            auth_token_file: None,
+            config_path: None,
+            data_dir: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .expect("explicit CLI token should resolve");
+
+        assert_eq!(token.as_deref(), Some("cli-token"));
+    }
+
+    #[test]
+    fn resolve_management_auth_token_reads_explicit_cli_token_file() {
+        let _env_lock = process_env_test_lock().blocking_lock();
+        let _env_guard = EnvVarGuard::remove("SYNCTV_MANAGEMENT_AUTH_TOKEN");
+        let dir = tempdir().expect("temp dir should be created");
+        let token_path = dir.path().join("management.token");
+        std::fs::write(&token_path, "file-token\n").expect("token file should be written");
+
+        let token = resolve_management_auth_token(&AdminConnectionOptions {
+            endpoint: Some("http://127.0.0.1:50052".to_string()),
+            auth_token: None,
+            auth_token_file: Some(token_path.to_string_lossy().to_string()),
+            config_path: None,
+            data_dir: None,
+            load_dotenv: false,
+            verbose: false,
+            resolved_config_endpoint: None,
+            allow_config_auth_for_explicit_endpoint: false,
+        })
+        .expect("explicit CLI token file should resolve");
+
+        assert_eq!(token.as_deref(), Some("file-token"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn normalize_endpoint_preserves_unix_socket_scheme() {
@@ -1137,6 +1205,8 @@ mod tests {
 
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: None,
             load_dotenv: false,
@@ -1166,6 +1236,8 @@ mod tests {
 
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: Some(data_dir.to_string_lossy().to_string()),
             load_dotenv: false,
@@ -1200,6 +1272,8 @@ management:
 
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1220,6 +1294,8 @@ management:
 
         let error = resolve_candidate_endpoints(&AdminConnectionOptions {
             endpoint: None,
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(missing_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1257,6 +1333,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint.clone()),
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: None,
             load_dotenv: false,
@@ -1317,6 +1395,8 @@ management:
 
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: None,
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1386,6 +1466,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1455,6 +1537,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1510,6 +1594,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: None,
             load_dotenv: false,
@@ -1560,6 +1646,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint.clone()),
+            auth_token: None,
+            auth_token_file: None,
             config_path: Some(missing_config_path.to_string_lossy().to_string()),
             data_dir: None,
             load_dotenv: false,
@@ -1607,6 +1695,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: None,
             load_dotenv: false,
@@ -1662,6 +1752,8 @@ management:
         let endpoint = format!("unix://{}", socket_path.display());
         let session = RemoteAdminSession::connect(AdminConnectionOptions {
             endpoint: Some(endpoint),
+            auth_token: None,
+            auth_token_file: None,
             config_path: None,
             data_dir: None,
             load_dotenv: false,

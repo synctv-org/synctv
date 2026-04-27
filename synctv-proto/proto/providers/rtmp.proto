@@ -8,12 +8,12 @@ message CreatePublishKeyRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1,
     max_len: 64,
-    pattern: "^[A-Za-z0-9]+$"
+    pattern: "^room_[A-Za-z0-9]+$"
   }];
   string media_id = 2 [(buf.validate.field).string = {
     min_len: 1,
     max_len: 64,
-    pattern: "^[A-Za-z0-9]+$"
+    pattern: "^med_[A-Za-z0-9]+$"
   }];
 }
 
@@ -28,12 +28,12 @@ message GetStreamInfoRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1,
     max_len: 64,
-    pattern: "^[A-Za-z0-9]+$"
+    pattern: "^room_[A-Za-z0-9]+$"
   }];
   string media_id = 2 [(buf.validate.field).string = {
     min_len: 1,
     max_len: 64,
-    pattern: "^[A-Za-z0-9]+$"
+    pattern: "^med_[A-Za-z0-9]+$"
   }];
 }
 

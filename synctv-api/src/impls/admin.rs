@@ -80,14 +80,6 @@ fn page_size_i32_to_usize(value: i32, max: i32) -> usize {
     usize::try_from(value.clamp(1, max)).unwrap_or(usize::MAX)
 }
 
-fn page_i32_to_u32(value: i32) -> u32 {
-    value.max(1).cast_unsigned()
-}
-
-fn page_size_i32_to_u32(value: i32, max: i32) -> u32 {
-    value.clamp(1, max).cast_unsigned()
-}
-
 fn usize_to_i32_saturating(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
@@ -701,6 +693,7 @@ impl AdminApiImpl {
         target_user_id: &UserId,
         admin_user_id: &UserId,
         caller_role: UserRole,
+        reason: Option<String>,
     ) -> Result<synctv_core::models::User, ApiError> {
         let affected_room_ids = list_active_user_room_ids(&self.room_service, target_user_id)
             .await
@@ -742,7 +735,11 @@ impl AdminApiImpl {
 
         let updated = self
             .user_service
-            .ban_user_and_cleanup_memberships(target_user_id)
+            .ban_user_and_cleanup_memberships(
+                target_user_id,
+                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
+                reason,
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -866,11 +863,11 @@ impl AdminApiImpl {
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id)
-            .expect("positive user id must encode as public sqid");
+            .expect("positive user id must encode as public ID");
         let public_room_id = self
             .public_id_codec
             .encode_room_id(*room_id)
-            .expect("positive room id must encode as public sqid");
+            .expect("positive room id must encode as public ID");
         if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
             sign_local_bilibili_danmaku_urls(
                 &mut embedded_result,
@@ -1036,11 +1033,11 @@ impl AdminApiImpl {
         let public_user_id = self
             .public_id_codec
             .encode_user_id(*user_id_model)
-            .expect("positive user id must encode as public sqid");
+            .expect("positive user id must encode as public ID");
         let public_room_id = self
             .public_id_codec
             .encode_room_id(*room_id_model)
-            .expect("positive room id must encode as public sqid");
+            .expect("positive room id must encode as public ID");
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(*user_id_model)
             .with_public_user_id(public_user_id)
@@ -1157,7 +1154,7 @@ impl AdminApiImpl {
             room_id: self
                 .public_id_codec
                 .encode_room_id(*room_id)
-                .expect("positive room id must encode as public sqid"),
+                .expect("positive room id must encode as public ID"),
             name: String::new(),
             position: 0.0,
             playback_infos: std::collections::HashMap::new(),
@@ -1510,9 +1507,6 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let page = if req.page > 0 { req.page } else { 1 };
-        let page_size = if req.page_size > 0 { req.page_size } else { 50 };
-
         // Parse status filter (0/Unspecified = show all statuses for admin)
         let status = if req.status == 0 {
             None
@@ -1531,10 +1525,7 @@ impl AdminApiImpl {
         };
 
         let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(page)),
-                Some(page_size_i32_to_u32(page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             status,
             search: if req.search.is_empty() {
                 None
@@ -1831,10 +1822,7 @@ impl AdminApiImpl {
             _ => None,
         };
         let query = synctv_core::models::RoomMemberListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(u32::try_from(req.page).unwrap_or(1)),
-                Some(u32::try_from(req.page_size).unwrap_or(50)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             role,
             status,
@@ -2408,9 +2396,6 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let page = if req.page > 0 { req.page } else { 1 };
-        let page_size = if req.page_size > 0 { req.page_size } else { 50 };
-
         // Convert proto enum i32 values to typed enums for UserListQuery
         let status = match synctv_proto::common::UserStatus::try_from(req.status) {
             Ok(synctv_proto::common::UserStatus::Active) => {
@@ -2457,10 +2442,7 @@ impl AdminApiImpl {
         };
 
         let query = synctv_core::models::UserListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(page)),
-                Some(page_size_i32_to_u32(page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search,
             status,
             role,
@@ -3007,8 +2989,10 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let reason = req.reason.trim();
+        let reason = (!reason.is_empty()).then(|| reason.to_string());
         let updated = self
-            .ban_user_with_cleanup(&uid, admin_user_id, caller_role)
+            .ban_user_with_cleanup(&uid, admin_user_id, caller_role, reason.clone())
             .await?;
 
         // Audit log: ban_user is a critical operation (best-effort)
@@ -3020,7 +3004,7 @@ impl AdminApiImpl {
             serde_json::json!({
                 "target_user_id": uid.to_string(),
                 "target_username": updated.username,
-                "reason": req.reason,
+                "reason": reason,
                 "caller_role": format!("{caller_role:?}"),
             }),
             ctx,
@@ -3158,7 +3142,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let page = page_i32_to_usize(req.page);
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
         let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
             synctv_proto::common::ReviewStatus::Pending as i32
@@ -3267,7 +3251,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let page = page_i32_to_usize(req.page);
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
         let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
             synctv_proto::common::ReviewStatus::Pending as i32
@@ -3381,7 +3365,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let page = page_i32_to_usize(req.page);
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
         let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
             synctv_proto::common::ReviewStatus::Pending as i32
@@ -3519,7 +3503,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let page = page_i32_to_usize(req.page);
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
 
         let pool = self.user_service.pool();
@@ -3669,8 +3653,6 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
-        let page = u32::try_from(req.page).unwrap_or(1);
-        let page_size = u32::try_from(req.page_size).unwrap_or(50).min(100);
         let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
             Ok(synctv_proto::common::RoomStatus::Active) => {
                 Some(synctv_core::models::RoomStatus::Active)
@@ -3681,7 +3663,7 @@ impl AdminApiImpl {
             _ => None,
         };
         let query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             status,
             search: normalize_non_empty_filter(&req.search),
             is_banned: req.is_banned,
@@ -4109,13 +4091,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListAdminsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let page = if req.page > 0 { req.page } else { 1 };
-        let page_size = req.page_size.clamp(1, 100);
         let query = synctv_core::models::UserListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(page)),
-                Some(page_size_i32_to_u32(page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
             sort_by: match crate::proto::admin::UserListSortBy::try_from(req.sort_by) {
                 Ok(crate::proto::admin::UserListSortBy::Username) => {
@@ -4630,25 +4607,15 @@ impl AdminApiImpl {
     pub async fn update_playback(
         &self,
         room_id: &str,
-        req: crate::proto::client::UpdatePlaybackRequest,
+        req: crate::proto::client::UpdatePlayback,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        let command =
-            crate::impls::client::build_update_playback_request(req, &self.public_id_codec)?;
+        let command = crate::impls::client::build_update_playback(req)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
 
         match command {
-            crate::impls::client::PlaybackUpdateCommand::Switch {
-                media_id,
-                playlist_id,
-                target,
-            } => {
-                self.room_service
-                    .admin_start_playback_as(rid, &actor, media_id, playlist_id, target)
-                    .await
-            }
             crate::impls::client::PlaybackUpdateCommand::Patch {
                 playing,
                 position,
@@ -5096,10 +5063,7 @@ impl AdminApiImpl {
                 ));
             }
             let playlist_query = CorePlaylistListQuery {
-                pagination: synctv_core::models::PageParams::new(
-                    Some(page_i32_to_u32(req.page)),
-                    Some(page_size_i32_to_u32(req.page_size, 100)),
-                ),
+                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -5109,10 +5073,7 @@ impl AdminApiImpl {
                 sort_direction: map_client_sort_direction(req.sort_direction),
             };
             let media_query = CoreMediaListQuery {
-                pagination: synctv_core::models::PageParams::new(
-                    Some(page_i32_to_u32(req.page)),
-                    Some(page_size_i32_to_u32(req.page_size, 100)),
-                ),
+                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -5133,7 +5094,7 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)
                 .map(i64_to_usize_saturating)?;
             let total = folder_count + file_count;
-            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
             let skip = (page_i32_to_usize(req.page) - 1) * page_size;
             let (playlists, media) = if skip < folder_count {
                 let playlists = self
@@ -5262,7 +5223,7 @@ impl AdminApiImpl {
             }
 
             let page = page_i32_to_usize(req.page);
-            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
             let items = self
                 .room_service
                 .media_service()
@@ -5344,10 +5305,7 @@ impl AdminApiImpl {
         }
 
         let playlist_query = CorePlaylistListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(req.page)),
-                Some(page_size_i32_to_u32(req.page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -5357,10 +5315,7 @@ impl AdminApiImpl {
             sort_direction: map_client_sort_direction(req.sort_direction),
         };
         let media_query = CoreMediaListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(req.page)),
-                Some(page_size_i32_to_u32(req.page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -5381,7 +5336,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
             .map(i64_to_usize_saturating)?;
         let total = folder_count + file_count;
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let skip = (page_i32_to_usize(req.page) - 1) * page_size;
         let (playlists, media) = if skip < folder_count {
             let playlists = self
@@ -5698,6 +5653,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::BatchBanUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let parsed_user_ids = parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
+        let reason = req.reason.trim();
+        let reason = (!reason.is_empty()).then(|| reason.to_string());
 
         // Pre-filter: check role hierarchy for each target user before delegating
         // to the service layer. Users that violate hierarchy are skipped with an error.
@@ -5718,7 +5675,7 @@ impl AdminApiImpl {
                         continue;
                     }
                     match self
-                        .ban_user_with_cleanup(uid, admin_user_id, caller_role)
+                        .ban_user_with_cleanup(uid, admin_user_id, caller_role, reason.clone())
                         .await
                     {
                         Ok(_) => {
@@ -6873,8 +6830,8 @@ mod tests {
         let response = admin_api
             .add_member(
                 crate::proto::admin::AddMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     role: synctv_proto::common::RoomMemberRole::Member as i32,
                     notify: false,
                 },
@@ -6981,8 +6938,8 @@ mod tests {
         let response = admin_api
             .update_member_permissions(
                 crate::proto::admin::UpdateMemberPermissionsRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     role: synctv_proto::common::RoomMemberRole::Member as i32,
                     added_permissions: 0b100,
                     removed_permissions: 0b010,
@@ -7095,8 +7052,8 @@ mod tests {
         let response = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -7723,7 +7680,7 @@ mod tests {
 
         let get_room_members_error = admin_api
             .get_room_members(crate::proto::admin::GetRoomMembersRequest {
-                room_id: "abc123def456".to_string(),
+                room_id: "room_abc123def456".to_string(),
                 page: -1,
                 page_size: 101,
                 search: "a".repeat(101),
@@ -7754,7 +7711,7 @@ mod tests {
 
         let get_user_rooms_error = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
-                user_id: "abc123def456".to_string(),
+                user_id: "usr_abc123def456".to_string(),
                 page: -1,
                 page_size: 101,
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -8019,7 +7976,7 @@ mod tests {
 
         let response = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
-                user_id: target_user.id.to_string(),
+                user_id: public_user_id(&admin_api, target_user.id),
                 page: 1,
                 page_size: 1,
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -8041,7 +7998,7 @@ mod tests {
 
         let page2 = admin_api
             .get_user_rooms(crate::proto::admin::GetUserRoomsRequest {
-                user_id: target_user.id.to_string(),
+                user_id: public_user_id(&admin_api, target_user.id),
                 page: 2,
                 page_size: 1,
                 status: synctv_proto::common::RoomStatus::Unspecified as i32,
@@ -8289,11 +8246,11 @@ mod tests {
         let admin_user = user_repo.create(&admin_user).await.expect("create admin");
         let target_user = user_repo.create(&target_user).await.expect("create user");
 
+        let (admin_api, mut redis_publish_rx) = admin_api;
         let request = crate::proto::admin::DeleteUserRequest {
-            user_id: target_user.id.to_string(),
+            user_id: public_user_id(&admin_api, target_user.id),
         };
         let ctx = RequestContext::default();
-        let (admin_api, mut redis_publish_rx) = admin_api;
 
         admin_api
             .delete_user(request, &admin_user.id, &ctx)
@@ -8481,7 +8438,7 @@ mod tests {
         admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -8600,7 +8557,7 @@ mod tests {
         admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -8736,7 +8693,7 @@ mod tests {
         let response = admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -8753,6 +8710,11 @@ mod tests {
             banned_user.status,
             synctv_proto::common::UserStatus::Banned as i32
         );
+        assert_eq!(
+            banned_user.banned_by,
+            public_user_id(&admin_api, admin_user.id)
+        );
+        assert_eq!(banned_user.banned_reason, "policy");
 
         let room_member = admin_api
             .room_service
@@ -8888,7 +8850,7 @@ mod tests {
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9015,7 +8977,7 @@ mod tests {
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9118,7 +9080,7 @@ mod tests {
         admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9259,7 +9221,7 @@ mod tests {
         let response = admin_api
             .batch_ban_users(
                 crate::proto::admin::BatchBanUsersRequest {
-                    user_ids: vec![target_user.id.to_string()],
+                    user_ids: vec![public_user_id(&admin_api, target_user.id)],
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9364,7 +9326,7 @@ mod tests {
         let response = admin_api
             .batch_ban_users(
                 crate::proto::admin::BatchBanUsersRequest {
-                    user_ids: vec![target_user.id.to_string()],
+                    user_ids: vec![public_user_id(&admin_api, target_user.id)],
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -9501,8 +9463,8 @@ mod tests {
         let response = admin_api
             .update_member_permissions(
                 crate::proto::admin::UpdateMemberPermissionsRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     role: synctv_proto::common::RoomMemberRole::Admin as i32,
                     added_permissions: 0,
                     removed_permissions: 0,
@@ -9603,7 +9565,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -9615,8 +9577,8 @@ mod tests {
         let response = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9705,7 +9667,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -9717,8 +9679,8 @@ mod tests {
         let response = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     reason: "policy".to_string(),
                 },
                 &global_admin.id,
@@ -9815,7 +9777,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -9827,8 +9789,8 @@ mod tests {
         let err = admin_api
             .kick_member(
                 crate::proto::admin::KickMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -9928,7 +9890,7 @@ mod tests {
             password_version: 0,
             version: 0,
         };
-        user_repo
+        let global_admin = user_repo
             .create(&global_admin)
             .await
             .expect("create global admin");
@@ -9940,8 +9902,8 @@ mod tests {
         let err = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     reason: "policy".to_string(),
                 },
                 &global_admin.id,
@@ -10052,8 +10014,8 @@ mod tests {
         let response = admin_api
             .unban_member(
                 crate::proto::admin::UnbanMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -10131,8 +10093,8 @@ mod tests {
         let response = admin_api
             .ban_member(
                 crate::proto::admin::BanMemberRequest {
-                    room_id: room.id.to_string(),
-                    user_id: target.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
                     reason: "local-management-ban".to_string(),
                 },
                 &management_actor,
@@ -10243,7 +10205,10 @@ mod tests {
             .expect("publisher should register");
 
         let response = admin_api
-            .get_stream_info(&registry_room_id, &registry_media_id)
+            .get_stream_info(
+                &public_room_id(&admin_api, room.id),
+                &public_media_id(&admin_api, media.id),
+            )
             .await
             .expect("global admin should inspect stream info without room membership");
         assert!(response.active);
@@ -12029,7 +11994,7 @@ mod tests {
         let response = admin_api
             .delete_room(
                 crate::proto::admin::DeleteRoomRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                 },
                 &management_actor,
                 &RequestContext::default(),
@@ -12124,7 +12089,7 @@ mod tests {
         let err = admin_api
             .update_room_settings(
                 crate::proto::admin::UpdateRoomSettingsRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     settings: serde_json::to_vec(&updated).expect("serialize settings"),
                 },
                 &management_actor,
@@ -12218,7 +12183,7 @@ mod tests {
         let err = admin_api
             .update_room_settings(
                 crate::proto::admin::UpdateRoomSettingsRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     settings: serde_json::to_vec(&updated).expect("serialize settings"),
                 },
                 &management_actor,
@@ -12303,7 +12268,7 @@ mod tests {
         let err = admin_api
             .update_room_password(
                 crate::proto::admin::UpdateRoomPasswordRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     new_password: "NewPassword123".to_string(),
                 },
                 &management_actor,
@@ -12385,7 +12350,7 @@ mod tests {
         let err = admin_api
             .update_room_password(
                 crate::proto::admin::UpdateRoomPasswordRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     new_password: "NewPassword123".to_string(),
                 },
                 &management_actor,
@@ -12482,7 +12447,7 @@ mod tests {
         let err = admin_api
             .reset_room_settings(
                 crate::proto::admin::ResetRoomSettingsRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                 },
                 &management_actor,
             )
@@ -12577,7 +12542,7 @@ mod tests {
         let err = admin_api
             .reset_room_settings(
                 crate::proto::admin::ResetRoomSettingsRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                 },
                 &management_actor,
             )
@@ -12698,7 +12663,7 @@ mod tests {
         let err = admin_api
             .delete_room(
                 crate::proto::admin::DeleteRoomRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                 },
                 &management_actor,
                 &RequestContext::default(),
@@ -12766,7 +12731,7 @@ mod tests {
         let err = admin_api
             .ban_room(
                 crate::proto::admin::BanRoomRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -12861,7 +12826,7 @@ mod tests {
         let err = admin_api
             .delete_user(
                 crate::proto::admin::DeleteUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                 },
                 &admin_user.id,
                 &RequestContext::default(),
@@ -12961,7 +12926,7 @@ mod tests {
         let err = admin_api
             .ban_user(
                 crate::proto::admin::BanUserRequest {
-                    user_id: target_user.id.to_string(),
+                    user_id: public_user_id(&admin_api, target_user.id),
                     reason: "policy".to_string(),
                 },
                 &admin_user.id,
@@ -13736,7 +13701,7 @@ mod tests {
         admin_api
             .ban_room(
                 crate::proto::admin::BanRoomRequest {
-                    room_id: room.id.to_string(),
+                    room_id: public_room_id(&admin_api, room.id),
                     reason: "moderation".to_string(),
                 },
                 &admin_user.id,

@@ -485,14 +485,8 @@ pub struct GetPlaybackRequest {
 pub struct UpdatePlaybackRequest {
     #[prost(string, tag = "1")]
     pub room_id: ::prost::alloc::string::String,
-    #[prost(enumeration = "::synctv_proto::client::PlaybackPatchState", tag = "2")]
-    pub state: i32,
-    #[prost(double, optional, tag = "3")]
-    pub position: ::core::option::Option<f64>,
-    #[prost(double, optional, tag = "4")]
-    pub speed: ::core::option::Option<f64>,
-    #[prost(int64, optional, tag = "5")]
-    pub version: ::core::option::Option<i64>,
+    #[prost(message, optional, tag = "2")]
+    pub update: ::core::option::Option<::synctv_proto::client::UpdatePlayback>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

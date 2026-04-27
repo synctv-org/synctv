@@ -40,12 +40,12 @@ fn build_provider_context<'a>(
             .with_public_user_id(
                 public_id_codec
                     .encode_user_id(*user_id)
-                    .expect("positive user id must encode as public sqid"),
+                    .expect("positive user id must encode as public ID"),
             )
             .with_public_room_id(
                 public_id_codec
                     .encode_room_id(*room_id)
-                    .expect("positive room id must encode as public sqid"),
+                    .expect("positive room id must encode as public ID"),
             );
     }
     if let Some(credential_owner_id) = credential_owner_id {

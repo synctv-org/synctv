@@ -7426,8 +7426,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     use synctv_proto::client::client_message;
     use synctv_proto::client::server_message;
     use synctv_proto::client::{
-        ChatMessageSend, ClientMessage, PauseCommand, PlayCommand, SeekCommand,
-        SetPlaybackSpeedCommand,
+        ChatMessageSend, ClientMessage, PlaybackUpdateType, UpdatePlayback,
     };
 
     let fixture = start_room_realtime_fixture("ws-room-events").await;
@@ -7842,7 +7841,13 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PauseCommand(PauseCommand {})),
+            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
+                r#type: PlaybackUpdateType::Pause as i32,
+                playing: None,
+                position: None,
+                speed: None,
+                version: None,
+            })),
         },
     )
     .await;
@@ -7866,8 +7871,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::SeekCommand(SeekCommand {
-                current_time: 17.5,
+            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
+                r#type: PlaybackUpdateType::Seek as i32,
+                playing: Some(false),
+                position: Some(17.5),
+                speed: None,
+                version: None,
             })),
         },
     )
@@ -7893,9 +7902,13 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::SetSpeedCommand(
-                SetPlaybackSpeedCommand { speed: 1.5 },
-            )),
+            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
+                r#type: PlaybackUpdateType::Speed as i32,
+                playing: Some(false),
+                position: None,
+                speed: Some(1.5),
+                version: None,
+            })),
         },
     )
     .await;
@@ -7920,7 +7933,13 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     send_client_message(
         &mut owner_ws,
         ClientMessage {
-            message: Some(client_message::Message::PlayCommand(PlayCommand {})),
+            message: Some(client_message::Message::PlaybackUpdate(UpdatePlayback {
+                r#type: PlaybackUpdateType::Play as i32,
+                playing: None,
+                position: None,
+                speed: None,
+                version: None,
+            })),
         },
     )
     .await;

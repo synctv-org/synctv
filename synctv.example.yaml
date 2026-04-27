@@ -68,6 +68,24 @@ time:
   # Leave empty to use env/system detection.
   timezone: ""
 
+# Public IDs are prefixed decimal IDs by default, for example usr_1 and room_1.
+# Set sqids to enable prefixed sqids instead, for example usr_<sqid>.
+# Environment variables:
+#   SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET
+#   SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH
+public_ids: {}
+# public_ids:
+#   sqids:
+#     alphabet: null
+#     min_length: 12
+
+security:
+  # AES-256-GCM key used to encrypt sensitive provider credentials.
+  # Prefer file-based secrets so keys are not stored inline in config files.
+  # Generate with: openssl rand -hex 32
+  # credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  credential_encryption_key: ""
+
 metrics:
   # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
   enabled: false
@@ -104,6 +122,7 @@ management:
   #   SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH=/path/to/synctv.sock
   #   SYNCTV_MANAGEMENT_PORT=50052
   #   SYNCTV_MANAGEMENT_AUTH_TOKEN=replace-with-a-random-secret
+  #   SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE=/run/secrets/management_auth_token
   enabled: true
   transport: "unix"
   port: 50052

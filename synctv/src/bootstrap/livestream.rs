@@ -196,8 +196,8 @@ pub async fn init_livestream(
         node_id.to_string(),
         config.advertise_api_address(),
         Arc::new(
-            synctv_core::PublicIdCodec::from_config(&config.external_ids)
-                .expect("external_ids config must be validated before building RTMP auth"),
+            synctv_core::PublicIdCodec::from_config(&config.public_ids)
+                .expect("public_ids config must be validated before building RTMP auth"),
         ),
         Some(stream_lifecycle_tx),
     )

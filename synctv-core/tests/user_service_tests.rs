@@ -734,7 +734,7 @@ async fn test_ban_user_cleans_up_owned_room_memberships() {
         .unwrap();
 
     user_service
-        .ban_user_and_cleanup_memberships(&owner.id)
+        .ban_user_and_cleanup_memberships(&owner.id, None, None)
         .await
         .expect("banning owner should succeed");
 

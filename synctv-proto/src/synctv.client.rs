@@ -1815,81 +1815,28 @@ pub struct AddMediaBatchResponse {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<AddMediaResponse>,
 }
-/// Empty: just resume playback
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.PlayCommand")]
+#[prost_reflect(message_name = "synctv.client.UpdatePlayback")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlayCommand))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PlayCommand {}
-/// Empty: just pause playback
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.PauseCommand")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_PauseCommand))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PauseCommand {}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SeekCommand")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SeekCommand))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlayback))]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct SeekCommand {
-    /// Playback position in seconds. Validation: >= 0, max 86400, must be finite
-    #[prost(double, tag = "1")]
-    pub current_time: f64,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SetPlaybackSpeedCommand")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SetPlaybackSpeedCommand))]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct SetPlaybackSpeedCommand {
-    /// Validation: 0.25 to 4.0, must be finite
-    #[prost(double, tag = "1")]
-    pub speed: f64,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.UpdatePlaybackRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdatePlaybackRequest))]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct UpdatePlaybackRequest {
-    #[prost(enumeration = "PlaybackPatchState", tag = "1")]
+pub struct UpdatePlayback {
+    #[prost(enumeration = "PlaybackUpdateType", tag = "1")]
     #[serde(default)]
-    pub state: i32,
-    #[prost(double, optional, tag = "2")]
+    pub r#type: i32,
+    #[prost(bool, optional, tag = "2")]
     #[serde(default)]
-    pub position: ::core::option::Option<f64>,
+    pub playing: ::core::option::Option<bool>,
     #[prost(double, optional, tag = "3")]
     #[serde(default)]
+    pub position: ::core::option::Option<f64>,
+    #[prost(double, optional, tag = "4")]
+    #[serde(default)]
     pub speed: ::core::option::Option<f64>,
-    #[prost(string, tag = "4")]
-    #[serde(default)]
-    pub media_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    #[serde(default)]
-    pub playlist_id: ::prost::alloc::string::String,
-    #[prost(bytes = "vec", tag = "6")]
-    #[serde(with = "crate::http_serde::json_bytes")]
-    #[serde(default)]
-    pub target: ::prost::alloc::vec::Vec<u8>,
-    #[prost(int64, optional, tag = "7")]
+    #[prost(int64, optional, tag = "5")]
     #[serde(default)]
     pub version: ::core::option::Option<i64>,
 }
@@ -2167,7 +2114,7 @@ pub struct Danmaku {
 pub struct ClientMessage {
     #[prost(
         oneof = "client_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18"
     )]
     pub message: ::core::option::Option<client_message::Message>,
 }
@@ -2200,15 +2147,9 @@ pub mod client_message {
         /// Playback progress heartbeat: client periodically reports current position
         #[prost(message, tag = "9")]
         PlaybackProgress(super::PlaybackProgressReport),
-        /// Playback control commands (real-time)
+        /// Playback state update command (real-time)
         #[prost(message, tag = "10")]
-        PlayCommand(super::PlayCommand),
-        #[prost(message, tag = "11")]
-        PauseCommand(super::PauseCommand),
-        #[prost(message, tag = "12")]
-        SeekCommand(super::SeekCommand),
-        #[prost(message, tag = "13")]
-        SetSpeedCommand(super::SetPlaybackSpeedCommand),
+        PlaybackUpdate(super::UpdatePlayback),
         #[prost(message, tag = "14")]
         WatchPlaybackState(super::WatchPlaybackState),
         #[prost(message, tag = "15")]
@@ -4352,32 +4293,38 @@ impl ItemType {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackPatchState))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PlaybackUpdateType))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum PlaybackPatchState {
+pub enum PlaybackUpdateType {
     Unspecified = 0,
-    Playing = 1,
-    Paused = 2,
+    Play = 1,
+    Pause = 2,
+    Seek = 3,
+    Speed = 4,
 }
-impl PlaybackPatchState {
+impl PlaybackUpdateType {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Unspecified => "PLAYBACK_PATCH_STATE_UNSPECIFIED",
-            Self::Playing => "PLAYBACK_PATCH_STATE_PLAYING",
-            Self::Paused => "PLAYBACK_PATCH_STATE_PAUSED",
+            Self::Unspecified => "PLAYBACK_UPDATE_TYPE_UNSPECIFIED",
+            Self::Play => "PLAYBACK_UPDATE_TYPE_PLAY",
+            Self::Pause => "PLAYBACK_UPDATE_TYPE_PAUSE",
+            Self::Seek => "PLAYBACK_UPDATE_TYPE_SEEK",
+            Self::Speed => "PLAYBACK_UPDATE_TYPE_SPEED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "PLAYBACK_PATCH_STATE_UNSPECIFIED" => Some(Self::Unspecified),
-            "PLAYBACK_PATCH_STATE_PLAYING" => Some(Self::Playing),
-            "PLAYBACK_PATCH_STATE_PAUSED" => Some(Self::Paused),
+            "PLAYBACK_UPDATE_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PLAYBACK_UPDATE_TYPE_PLAY" => Some(Self::Play),
+            "PLAYBACK_UPDATE_TYPE_PAUSE" => Some(Self::Pause),
+            "PLAYBACK_UPDATE_TYPE_SEEK" => Some(Self::Seek),
+            "PLAYBACK_UPDATE_TYPE_SPEED" => Some(Self::Speed),
             _ => None,
         }
     }

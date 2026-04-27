@@ -705,6 +705,14 @@ impl Application {
         }
 
         // Initialize core services
+        let credential_encryption_hex_key_override = options
+            .credential_encryption_hex_key_override
+            .clone()
+            .or_else(|| {
+                (!infra.config.security.credential_encryption_key.is_empty())
+                    .then(|| infra.config.security.credential_encryption_key.clone())
+            });
+
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
             &infra.config,
@@ -713,9 +721,7 @@ impl Application {
             cache_invalidation_listener_task,
             InitServicesOptions {
                 provider_test_address_overrides: options.provider_test_address_overrides.clone(),
-                credential_encryption_hex_key_override: options
-                    .credential_encryption_hex_key_override
-                    .clone(),
+                credential_encryption_hex_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
             },
         )
@@ -1321,9 +1327,9 @@ mod tests {
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, ExternalIdsConfig,
-        GrpcRateLimitConfig, HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-        MediaProvidersConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig,
+        ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
+        HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
+        OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig,
         WebRTCConfig,
     };
     use synctv_core::{
@@ -1478,7 +1484,8 @@ mod tests {
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
+            public_ids: PublicIdsConfig::default(),
+            security: synctv_core::config::SecurityConfig::default(),
         }
     }
 

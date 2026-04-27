@@ -111,6 +111,32 @@ where
     synctv_proto::validate(message).map_err(|error| ApiError::InvalidInput(error.to_string()))
 }
 
+pub(crate) fn proto_page_params(
+    page: i32,
+    page_size: i32,
+    default_page_size: u32,
+    max_page_size: u32,
+) -> synctv_core::models::PageParams {
+    let page = if page > 0 { page.cast_unsigned() } else { 1 };
+    let default_page_size = default_page_size.clamp(1, max_page_size);
+    let page_size = if page_size > 0 {
+        page_size.cast_unsigned().clamp(1, max_page_size)
+    } else {
+        default_page_size
+    };
+
+    synctv_core::models::PageParams::new(Some(page), Some(page_size))
+}
+
+pub(crate) fn proto_page_size_usize(
+    page_size: i32,
+    default_page_size: u32,
+    max_page_size: u32,
+) -> usize {
+    usize::try_from(proto_page_params(1, page_size, default_page_size, max_page_size).page_size)
+        .unwrap_or(usize::MAX)
+}
+
 #[derive(Debug)]
 pub struct ClusterEventPublishReservation {
     permit: tokio::sync::mpsc::OwnedPermit<synctv_cluster::sync::PublishRequest>,
@@ -184,22 +210,6 @@ fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiErro
     ApiError::InvalidInput(format!("Invalid {field}: {err}"))
 }
 
-fn parse_numeric_id<T>(value: &str, field: &'static str) -> Option<Result<T, ApiError>>
-where
-    T: synctv_core::models::TypedId,
-{
-    let value = value.trim();
-    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-
-    Some(
-        value
-            .parse::<T>()
-            .map_err(|err| invalid_id_input(field, err)),
-    )
-}
-
 pub fn parse_id_param<T>(
     value: &str,
     field: &'static str,
@@ -208,9 +218,6 @@ pub fn parse_id_param<T>(
 where
     T: synctv_core::PublicIdType,
 {
-    if let Some(parsed) = parse_numeric_id(value, field) {
-        return parsed;
-    }
     public_id_codec
         .decode::<T>(value.trim())
         .map_err(|err| invalid_id_input(field, err))
@@ -253,12 +260,9 @@ where
     T: synctv_core::PublicIdType,
 {
     let value = value.as_ref();
-    if let Some(Ok(parsed)) = parse_numeric_id(value, T::TYPE_NAME) {
-        return parsed;
-    }
     public_id_codec
         .decode::<T>(value)
-        .unwrap_or_else(|_| panic!("validated {} must be a valid sqid", T::TYPE_NAME))
+        .unwrap_or_else(|_| panic!("validated {} must be a valid public ID", T::TYPE_NAME))
 }
 
 pub fn proto_validated_user_id(
@@ -1541,5 +1545,26 @@ mod tests {
         let err = ApiError::ServiceUnavailable("redis unavailable".to_string());
         let display = err.to_string();
         assert_eq!(display, "redis unavailable");
+    }
+
+    #[test]
+    fn test_proto_page_params_uses_endpoint_default_for_zero_page_size() {
+        let params = proto_page_params(0, 0, 50, 100);
+
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 50);
+    }
+
+    #[test]
+    fn test_proto_page_params_clamps_explicit_page_size() {
+        let params = proto_page_params(2, 500, 50, 100);
+
+        assert_eq!(params.page, 2);
+        assert_eq!(params.page_size, 100);
+    }
+
+    #[test]
+    fn test_proto_page_size_usize_uses_endpoint_default() {
+        assert_eq!(proto_page_size_usize(0, 50, 100), 50);
     }
 }

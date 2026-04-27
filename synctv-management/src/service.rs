@@ -1800,15 +1800,9 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .update_playback(
                 &req.room_id,
-                client_proto::UpdatePlaybackRequest {
-                    state: req.state,
-                    position: req.position,
-                    speed: req.speed,
-                    media_id: String::new(),
-                    playlist_id: String::new(),
-                    target: Vec::new(),
-                    version: req.version,
-                },
+                req.update.ok_or_else(|| {
+                    Status::invalid_argument("playback update payload is required")
+                })?,
                 &validated.user_id,
                 &ctx,
             )

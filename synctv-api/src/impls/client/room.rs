@@ -329,7 +329,7 @@ impl ClientApiImpl {
             room_list.push(crate::proto::client::MyRoom {
                 room: Some(room_to_proto_basic(
                     room,
-                    None,
+                    Some(&settings),
                     Some(*member_count),
                     &self.public_id_codec,
                 )),
@@ -427,11 +427,16 @@ impl ClientApiImpl {
             .await
             .ok()
             .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
-                None,
+                Some(&settings),
                 self.load_room_member_count(&rid).await?,
                 &self.public_id_codec,
             )),
@@ -551,7 +556,7 @@ impl ClientApiImpl {
         Ok(crate::proto::client::JoinRoomResponse {
             room: Some(room_to_proto_basic(
                 &room,
-                None,
+                Some(&room_settings),
                 self.load_room_member_count(&rid).await?,
                 &self.public_id_codec,
             )),
@@ -672,7 +677,7 @@ impl ClientApiImpl {
         Ok(crate::proto::client::UpdateRoomSettingsResponse {
             room: Some(room_to_proto_basic(
                 &room,
-                None,
+                Some(&snapshot.settings),
                 self.load_room_member_count(&rid).await?,
                 &self.public_id_codec,
             )),
@@ -860,11 +865,16 @@ impl ClientApiImpl {
             .await?;
         self.room_cache_fanout
             .publish_invalidation(room_cache_invalidation, &rid);
+        let settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::TransferRoomOwnershipResponse {
             room: Some(room_to_proto_basic(
                 &room,
-                None,
+                Some(&settings),
                 self.load_room_member_count(&rid).await?,
                 &self.public_id_codec,
             )),

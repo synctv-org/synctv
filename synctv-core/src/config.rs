@@ -240,6 +240,7 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
     matches!(
         key_path.as_str(),
         "server.cluster_secret"
+            | "security.credential_encryption_key"
             | "management.auth_token"
             | "metrics.auth.basic_password"
             | "metrics.auth.bearer_token"
@@ -359,7 +360,8 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
 pub struct Config {
     pub server: ServerConfig,
     pub time: TimeConfig,
-    pub external_ids: ExternalIdsConfig,
+    pub public_ids: PublicIdsConfig,
+    pub security: SecurityConfig,
     /// Shared root directory for runtime-owned local files.
     ///
     /// This affects default runtime paths and relative overrides for
@@ -397,7 +399,8 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("server", &self.server)
             .field("time", &self.time)
-            .field("external_ids", &self.external_ids)
+            .field("public_ids", &self.public_ids)
+            .field("security", &"<redacted>")
             .field("data_dir", &self.data_dir)
             .field("metrics", &self.metrics)
             .field("management", &self.management)
@@ -428,7 +431,8 @@ impl Default for Config {
         Self {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
+            public_ids: PublicIdsConfig::default(),
+            security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
@@ -454,22 +458,42 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PublicIdsConfig {
+    /// Optional sqids configuration for API-facing public IDs.
+    ///
+    /// Leave unset to use the default prefixed decimal format.
+    pub sqids: Option<PublicIdsSqidsConfig>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ExternalIdsConfig {
+pub struct PublicIdsSqidsConfig {
     /// Optional sqids alphabet. Leave empty/None to use the crate default.
     pub alphabet: Option<String>,
     /// Minimum public ID length for API-facing sqids.
     pub min_length: u8,
 }
 
-impl Default for ExternalIdsConfig {
+impl Default for PublicIdsSqidsConfig {
     fn default() -> Self {
         Self {
             alphabet: None,
             min_length: 12,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecurityConfig {
+    /// AES-256-GCM key used to encrypt sensitive provider credentials.
+    ///
+    /// This must be a 64-character hex string when set. Prefer
+    /// `credential_encryption_key_file` in config files so the key is loaded
+    /// from a secret mount instead of being stored inline.
+    pub credential_encryption_key: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1766,14 +1790,18 @@ impl Config {
 
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
 
-        env_override_opt_str(
-            "SYNCTV_EXTERNAL_IDS_ALPHABET",
-            &mut self.external_ids.alphabet,
+        if get_env("SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET").is_some()
+            || get_env("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH").is_some()
+        {
+            let sqids = self.public_ids.sqids.get_or_insert_with(Default::default);
+            env_override_opt_str("SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET", &mut sqids.alphabet);
+            env_override_parse("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH", &mut sqids.min_length)?;
+        }
+
+        env_override_str(
+            "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY",
+            &mut self.security.credential_encryption_key,
         );
-        env_override_parse(
-            "SYNCTV_EXTERNAL_IDS_MIN_LENGTH",
-            &mut self.external_ids.min_length,
-        )?;
 
         env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
@@ -1867,6 +1895,14 @@ impl Config {
             "SYNCTV_MANAGEMENT_AUTH_TOKEN",
             &mut self.management.auth_token,
         );
+        if let Some(path) = get_env("SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE") {
+            self.management.auth_token = load_config_string_from_file(
+                Path::new("<environment>"),
+                &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                "management.auth_token",
+                &path,
+            )?;
+        }
         env_override_bool(
             "SYNCTV_MANAGEMENT_ENABLE_REFLECTION",
             &mut self.management.enable_reflection,
@@ -2528,33 +2564,54 @@ impl Config {
             }
         }
 
-        if let Some(alphabet) = self.external_ids.alphabet.as_ref() {
-            if alphabet.is_empty() {
-                errors.push("external_ids.alphabet must not be empty when set".to_string());
-            } else if alphabet.chars().any(|ch| ch.len_utf8() > 1) {
-                errors.push(
-                    "external_ids.alphabet must contain only single-byte characters".to_string(),
-                );
-            } else if alphabet.chars().any(|ch| !ch.is_ascii_alphanumeric()) {
-                errors.push(
-                    "external_ids.alphabet must contain only ASCII alphanumeric characters"
-                        .to_string(),
-                );
-            } else if alphabet
-                .chars()
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                != alphabet.chars().count()
-            {
-                errors.push(
-                    "external_ids.alphabet must not contain duplicate characters".to_string(),
-                );
-            } else if alphabet.chars().count() < 3 {
-                errors.push("external_ids.alphabet must contain at least 3 characters".to_string());
+        if let Some(sqids) = self.public_ids.sqids.as_ref() {
+            if let Some(alphabet) = sqids.alphabet.as_ref() {
+                if alphabet.is_empty() {
+                    errors.push("public_ids.sqids.alphabet must not be empty when set".to_string());
+                } else if alphabet.chars().any(|ch| ch.len_utf8() > 1) {
+                    errors.push(
+                        "public_ids.sqids.alphabet must contain only single-byte characters"
+                            .to_string(),
+                    );
+                } else if alphabet.chars().any(|ch| !ch.is_ascii_alphanumeric()) {
+                    errors.push(
+                        "public_ids.sqids.alphabet must contain only ASCII alphanumeric characters"
+                            .to_string(),
+                    );
+                } else if alphabet
+                    .chars()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != alphabet.chars().count()
+                {
+                    errors.push(
+                        "public_ids.sqids.alphabet must not contain duplicate characters"
+                            .to_string(),
+                    );
+                } else if alphabet.chars().count() < 3 {
+                    errors.push(
+                        "public_ids.sqids.alphabet must contain at least 3 characters".to_string(),
+                    );
+                }
             }
         }
-        if let Err(error) = crate::PublicIdCodec::from_config(&self.external_ids) {
+        if let Err(error) = crate::PublicIdCodec::from_config(&self.public_ids) {
             errors.push(error);
+        }
+
+        if !self.security.credential_encryption_key.is_empty() {
+            let key = self.security.credential_encryption_key.trim();
+            if key.len() != 64 {
+                errors.push(
+                    "security.credential_encryption_key must be a 64-character hex string (32 bytes for AES-256-GCM)"
+                        .to_string(),
+                );
+            } else if !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                errors.push(
+                    "security.credential_encryption_key must contain only hexadecimal characters"
+                        .to_string(),
+                );
+            }
         }
 
         // Validate database pool settings
@@ -3197,8 +3254,9 @@ impl Config {
                         .to_string(),
                 );
             }
-        } else {
-            // Single-node: warn about MemoryStorage for observability
+        } else if self.livestream.hls_storage_path.trim().is_empty() {
+            // Single-node: warn about MemoryStorage only when the effective
+            // storage backend is actually the in-memory default.
             tracing::warn!(
                 "The default HLS storage backend is MemoryStorage, which is node-local. \
                  HLS segments will NOT be shared across replicas if cluster mode is later enabled. \
@@ -3842,7 +3900,8 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
+            public_ids: PublicIdsConfig::default(),
+            security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
@@ -3874,7 +3933,8 @@ mod tests {
         let config = Config {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
+            public_ids: PublicIdsConfig::default(),
+            security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig {
                 enabled: true,
@@ -4076,6 +4136,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_public_ids_default_to_prefixed_decimal_ids() {
+        let config = Config::from_env_map(&HashMap::new()).expect("default config should load");
+        let codec = crate::PublicIdCodec::from_config(&config.public_ids)
+            .expect("default public IDs config should be valid");
+
+        assert!(config.public_ids.sqids.is_none());
+        assert_eq!(
+            codec
+                .encode_user_id(crate::models::UserId::from(1))
+                .expect("user ID should encode"),
+            "usr_1"
+        );
+    }
+
+    #[test]
+    fn test_public_ids_sqids_env_enables_prefixed_sqids() {
+        let config = Config::from_env_map(&env_map(&[("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH", "8")]))
+            .expect("sqids env config should load");
+        let codec = crate::PublicIdCodec::from_config(&config.public_ids)
+            .expect("sqids public IDs config should be valid");
+        let encoded = codec
+            .encode_user_id(crate::models::UserId::from(1))
+            .expect("user ID should encode");
+
+        assert_eq!(
+            config
+                .public_ids
+                .sqids
+                .as_ref()
+                .expect("sqids should be enabled")
+                .min_length,
+            8
+        );
+        assert!(encoded.starts_with("usr_"));
+        assert_ne!(encoded, "usr_1");
+        assert_eq!(
+            codec
+                .decode_user_id(&encoded)
+                .expect("user ID should decode"),
+            crate::models::UserId::from(1)
+        );
+    }
+
+    #[test]
+    fn test_checked_in_yaml_configs_deserialize() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("synctv-core should be inside the workspace root");
+
+        for config_file in ["synctv.yaml", "synctv.example.yaml"] {
+            let path = workspace_root.join(config_file);
+            Config::load_config_file(
+                path.to_str()
+                    .expect("checked-in config path should be valid UTF-8"),
+            )
+            .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
+        }
+    }
+
     /// Helper to create a valid production config for validation tests
     fn valid_prod_config() -> Config {
         Config {
@@ -4091,7 +4211,8 @@ mod tests {
                 shutdown_drain_timeout_seconds: 30,
             },
             time: TimeConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
+            public_ids: PublicIdsConfig::default(),
+            security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig {
@@ -4366,6 +4487,11 @@ jwt:
         .expect("smtp password file should be written");
         std::fs::write(config_dir.join("root.password"), "StrongPwd12345!\n")
             .expect("root password file should be written");
+        std::fs::write(
+            config_dir.join("credential.key"),
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+        )
+        .expect("credential encryption key file should be written");
 
         let config_path = config_dir.join("synctv.yaml");
         std::fs::write(
@@ -4384,6 +4510,8 @@ metrics:
     basic_password_file: "./metrics.password"
 jwt:
   secret_file: "./jwt.secret"
+security:
+  credential_encryption_key_file: "./credential.key"
 email:
   smtp_host: "smtp.example.com"
   smtp_password_file: "./smtp.password"
@@ -4410,6 +4538,10 @@ bootstrap:
         assert_eq!(config.server.cluster_secret, "cluster-secret-from-file");
         assert_eq!(config.management.auth_token, "management-token-from-file");
         assert_eq!(config.metrics.auth.basic_password, "metrics-basic-password");
+        assert_eq!(
+            config.security.credential_encryption_key,
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        );
         assert_eq!(config.email.smtp_password, "smtp-password-from-file");
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
     }
@@ -5188,6 +5320,21 @@ jwt:
                 .expect("management auth token env override should parse");
 
         assert_eq!(config.management.auth_token, "mgmt-secret");
+    }
+
+    #[test]
+    fn test_from_env_loads_management_auth_token_file() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let token_path = temp_dir.path().join("management.token");
+        std::fs::write(&token_path, "mgmt-file-secret\n")
+            .expect("management token file should be written");
+        let config = Config::from_env_map(&env_map(&[(
+            "SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE",
+            token_path.to_str().expect("token path should be utf-8"),
+        )]))
+        .expect("management auth token file env override should parse");
+
+        assert_eq!(config.management.auth_token, "mgmt-file-secret");
     }
 
     #[cfg(not(unix))]

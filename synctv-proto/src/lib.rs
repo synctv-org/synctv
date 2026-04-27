@@ -1482,7 +1482,7 @@ mod tests {
         .unwrap();
 
         crate::validate(&crate::admin::GetUserRoomsRequest {
-            user_id: "abc123def456".into(),
+            user_id: "usr_abc123def456".into(),
             page: 0,
             page_size: 0,
             status: crate::common::RoomStatus::Unspecified as i32,
@@ -1506,7 +1506,7 @@ mod tests {
         .unwrap();
 
         crate::validate(&crate::admin::GetRoomMembersRequest {
-            room_id: "abc123def456".into(),
+            room_id: "room_abc123def456".into(),
             page: 0,
             page_size: 0,
             search: String::new(),

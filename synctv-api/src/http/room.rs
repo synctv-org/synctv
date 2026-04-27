@@ -28,8 +28,8 @@ use crate::proto::client::{
     MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, ResetRoomSettingsResponse,
     SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
     StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
-    TransferRoomOwnershipResponse, UpdatePlaybackRequest, UpdatePlaylistRequest,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    TransferRoomOwnershipResponse, UpdatePlayback, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 pub type JoinRoomBody = JoinRoomRequest;
@@ -1413,12 +1413,8 @@ pub async fn transfer_room_ownership(
 
 /// Unified handler for updating playback state via PATCH
 /// PATCH /`api/rooms/:room_id/playback`
-/// Supports either:
-/// - play/pause/seek/speed updates
-/// - playback target switch (`media_id` or `playlist_id` + `target`)
-///
-/// Target switches intentionally use `PlaybackService::switch()` and cannot be
-/// mixed with other playback state updates.
+/// Supports play/pause/seek/speed state updates. Playback target changes are
+/// handled by start/stop endpoints.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -1428,7 +1424,7 @@ pub async fn transfer_room_ownership(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = UpdatePlaybackRequest,
+        request_body = UpdatePlayback,
         responses(
             (status = 200, description = "Playback updated", body = GetPlaybackResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1443,7 +1439,7 @@ pub async fn update_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(req): Json<UpdatePlaybackRequest>,
+    Json(req): Json<UpdatePlayback>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
     let response = execute_user_endpoint(
@@ -1846,7 +1842,7 @@ mod tests {
     use super::{
         build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
         validate_chat_history_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
-        GetPlaybackQuery, UpdatePlaybackRequest,
+        GetPlaybackQuery, UpdatePlayback,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetRoomMembersRequest,
@@ -1854,57 +1850,54 @@ mod tests {
     };
 
     #[test]
-    fn test_update_playback_request_deserialize_state_only() {
-        let json = r#"{"state":1}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    fn test_update_playback_deserialize_playing_update() {
+        let json = r#"{"type":1,"playing":true}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
         assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Playing as i32
+            req.r#type,
+            crate::proto::client::PlaybackUpdateType::Play as i32
         );
+        assert_eq!(req.playing, Some(true));
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_empty());
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_position_only() {
-        let json = r#"{"position": 42.5}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    fn test_update_playback_deserialize_seek_update() {
+        let json = r#"{"type":3,"position": 42.5}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
         assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Unspecified as i32
+            req.r#type,
+            crate::proto::client::PlaybackUpdateType::Seek as i32
         );
         assert!((req.position.unwrap() - 42.5).abs() < f64::EPSILON);
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_empty());
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_speed_only() {
-        let json = r#"{"speed": 2.0}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    fn test_update_playback_deserialize_speed_update() {
+        let json = r#"{"type":4,"speed": 2.0}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
         assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Unspecified as i32
+            req.r#type,
+            crate::proto::client::PlaybackUpdateType::Speed as i32
         );
         assert!(req.position.is_none());
         assert!((req.speed.unwrap() - 2.0).abs() < f64::EPSILON);
-        assert!(req.media_id.is_empty());
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_media_id_only() {
-        let json = r#"{"media_id": "media_abc123"}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+    fn test_update_playback_deserialize_full_state() {
+        let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
         assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Unspecified as i32
+            req.r#type,
+            crate::proto::client::PlaybackUpdateType::Seek as i32
         );
-        assert!(req.position.is_none());
-        assert!(req.speed.is_none());
-        assert_eq!(req.media_id, "media_abc123");
-        assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_empty());
+        assert_eq!(req.playing, Some(false));
+        assert_eq!(req.position, Some(42.5));
+        assert_eq!(req.speed, Some(1.25));
+        assert_eq!(req.version, Some(9));
     }
 
     #[test]
@@ -2186,40 +2179,6 @@ mod tests {
     }
 
     #[test]
-    fn test_update_playback_request_deserialize_dynamic_target() {
-        let json = r#"{"playlist_id": "pl1", "target": {"item_id": "provider-item-123"}}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.playlist_id, "pl1");
-        let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
-        assert_eq!(target, serde_json::json!({"item_id": "provider-item-123"}));
-        assert!(req.media_id.is_empty());
-        assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Unspecified as i32
-        );
-        assert!(req.position.is_none());
-        assert!(req.speed.is_none());
-    }
-
-    #[test]
-    fn test_update_playback_empty_switch_ids_are_treated_as_clear_request() {
-        let json = r#"{"media_id":"","playlist_id":""}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.media_id.is_empty());
-        assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_empty());
-    }
-
-    #[test]
-    fn test_update_playback_omitted_switch_fields_are_not_switch_request() {
-        let json = r#"{"state":2}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert!(req.media_id.is_empty());
-        assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_empty());
-    }
-
-    #[test]
     fn test_list_playlist_items_body_deserialize_room_root() {
         let json = r"{}";
         let req: ListPlaylistItemsRequest = serde_json::from_str(json).unwrap();
@@ -2245,11 +2204,11 @@ mod tests {
 
     #[test]
     fn test_update_playback_request_deserialize_with_version() {
-        let json = r#"{"state": 1, "version": 42}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+        let json = r#"{"type": 1, "version": 42}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
         assert_eq!(
-            req.state,
-            crate::proto::client::PlaybackPatchState::Playing as i32
+            req.r#type,
+            crate::proto::client::PlaybackUpdateType::Play as i32
         );
         assert_eq!(req.version, Some(42));
     }

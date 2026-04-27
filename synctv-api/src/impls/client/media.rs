@@ -129,18 +129,6 @@ fn page_i32_to_usize(value: i32) -> usize {
     usize::try_from(value.max(1)).unwrap_or(usize::MAX)
 }
 
-fn page_size_i32_to_usize(value: i32, max: i32) -> usize {
-    usize::try_from(value.clamp(1, max)).unwrap_or(usize::MAX)
-}
-
-fn page_i32_to_u32(value: i32) -> u32 {
-    value.max(1).cast_unsigned()
-}
-
-fn page_size_i32_to_u32(value: i32, max: i32) -> u32 {
-    value.clamp(1, max).cast_unsigned()
-}
-
 fn i64_to_usize_saturating(value: i64) -> usize {
     if value.is_negative() {
         0
@@ -1004,10 +992,7 @@ impl ClientApiImpl {
                 ));
             }
             let playlist_query = CorePlaylistListQuery {
-                pagination: synctv_core::models::PageParams::new(
-                    Some(page_i32_to_u32(req.page)),
-                    Some(page_size_i32_to_u32(req.page_size, 100)),
-                ),
+                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -1017,10 +1002,7 @@ impl ClientApiImpl {
                 sort_direction: map_sort_direction(req.sort_direction),
             };
             let media_query = CoreMediaListQuery {
-                pagination: synctv_core::models::PageParams::new(
-                    Some(page_i32_to_u32(req.page)),
-                    Some(page_size_i32_to_u32(req.page_size, 100)),
-                ),
+                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: normalize_non_empty_filter(&req.source_provider),
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -1041,7 +1023,7 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)
                 .map(i64_to_usize_saturating)?;
             let total = folder_count + file_count;
-            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
             let skip = (page_i32_to_usize(req.page) - 1) * page_size;
             let (playlists, media) = if skip < folder_count {
                 let playlists = self
@@ -1166,7 +1148,7 @@ impl ClientApiImpl {
             }
 
             let page = page_i32_to_usize(req.page);
-            let page_size = page_size_i32_to_usize(req.page_size, 100);
+            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
             let items = self
                 .room_service
                 .media_service()
@@ -1201,11 +1183,11 @@ impl ClientApiImpl {
                                 &self
                                     .public_id_codec
                                     .encode_room_id(rid)
-                                    .expect("positive room id must encode as public sqid"),
+                                    .expect("positive room id must encode as public ID"),
                                 &self
                                     .public_id_codec
                                     .encode_user_id(uid)
-                                    .expect("positive user id must encode as public sqid"),
+                                    .expect("positive user id must encode as public ID"),
                                 self.signing_key.as_deref(),
                             )
                             .map_err(ApiError::Internal)?,
@@ -1269,10 +1251,7 @@ impl ClientApiImpl {
         }
 
         let playlist_query = CorePlaylistListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(req.page)),
-                Some(page_size_i32_to_u32(req.page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -1282,10 +1261,7 @@ impl ClientApiImpl {
             sort_direction: map_sort_direction(req.sort_direction),
         };
         let media_query = CoreMediaListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(page_i32_to_u32(req.page)),
-                Some(page_size_i32_to_u32(req.page_size, 100)),
-            ),
+            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
             source_provider: normalize_non_empty_filter(&req.source_provider),
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -1306,7 +1282,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)
             .map(i64_to_usize_saturating)?;
         let total = folder_count + file_count;
-        let page_size = page_size_i32_to_usize(req.page_size, 100);
+        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let skip = (page_i32_to_usize(req.page) - 1) * page_size;
         let (playlists, media) = if skip < folder_count {
             let playlists = self
@@ -1701,7 +1677,9 @@ mod tests {
 
     #[test]
     fn test_build_delete_media_request_maps_to_delete_entries_request() {
-        let media_id = synctv_common::snanoid!(12);
+        let media_id = crate::PublicIdCodec::default_for_tests()
+            .encode_media_id(MediaId::from(123))
+            .unwrap();
         let request = build_delete_media_request(crate::proto::client::DeleteMediaRequest {
             media_id: media_id.clone(),
             force: true,

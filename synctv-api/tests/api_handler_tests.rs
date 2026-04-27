@@ -89,25 +89,17 @@ mod validated_query_extractor {
 mod update_playback_validation {
     use super::*;
     use synctv_api::http::error::AppError;
-    use synctv_proto::client::{PlaybackPatchState, UpdatePlaybackRequest};
+    use synctv_proto::client::{PlaybackUpdateType, UpdatePlayback};
 
-    /// Simulate the `update_playback` handler validation logic:
-    /// Empty body (all None) should produce 400
+    /// Simulate the `update_playback` handler validation logic.
     #[tokio::test]
     async fn test_empty_body_returns_400() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                // Reproduce the validation from room.rs:573-577
-                if req.state == PlaybackPatchState::Unspecified as i32
-                    && req.position.is_none()
-                    && req.speed.is_none()
-                    && req.media_id.is_empty()
-                    && req.playlist_id.is_empty()
-                    && req.target.is_empty()
-                {
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if req.r#type == PlaybackUpdateType::Unspecified as i32 {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
-                        "No valid playback update field provided (state, position, speed, media_id, or playlist_id)",
+                        "Playback update type is required",
                     ));
                 }
                 Ok(Json(serde_json::json!({"status": "ok"})))
@@ -124,39 +116,16 @@ mod update_playback_validation {
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains("No valid playback update field"));
+        assert!(json["error"].as_str().unwrap().contains("type is required"));
     }
 
-    /// Invalid numeric enum value should produce 400
     #[tokio::test]
-    async fn test_invalid_state_value_returns_400() {
+    async fn test_invalid_type_value_returns_400() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                // Reproduce the validation from room.rs:580-584
-                if req.state == PlaybackPatchState::Unspecified as i32
-                    && req.position.is_none()
-                    && req.speed.is_none()
-                    && req.media_id.is_empty()
-                    && req.playlist_id.is_empty()
-                    && req.target.is_empty()
-                {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request(
-                        "No valid playback update field provided",
-                    ));
-                }
-                match req.state {
-                    x if x == PlaybackPatchState::Unspecified as i32 => {}
-                    x if x == PlaybackPatchState::Playing as i32 => {}
-                    x if x == PlaybackPatchState::Paused as i32 => {}
-                    _ => {
-                        return Err(AppError::bad_request(
-                            "Invalid state value, use 0 (unspecified), 1 (playing), or 2 (paused)",
-                        ));
-                    }
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if PlaybackUpdateType::try_from(req.r#type).is_err() {
+                    return Err(AppError::bad_request("Invalid playback update type"));
                 }
                 Ok(Json(serde_json::json!({"status": "ok"})))
             }),
@@ -166,7 +135,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": 99}"#))
+            .body(Body::from(r#"{"type": 99}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -175,33 +144,18 @@ mod update_playback_validation {
         assert!(json["error"]
             .as_str()
             .unwrap()
-            .contains("Invalid state value"));
+            .contains("Invalid playback update type"));
     }
 
-    /// Valid state `PLAYING` should pass validation
     #[tokio::test]
-    async fn test_valid_state_playing_passes_validation() {
+    async fn test_valid_play_update_passes_validation() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state == PlaybackPatchState::Unspecified as i32
-                    && req.position.is_none()
-                    && req.speed.is_none()
-                    && req.media_id.is_empty()
-                    && req.playlist_id.is_empty()
-                    && req.target.is_empty()
-                {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if req.r#type != PlaybackUpdateType::Play as i32 {
+                    return Err::<Json<Value>, AppError>(AppError::bad_request("invalid type"));
                 }
-                match req.state {
-                    x if x == PlaybackPatchState::Unspecified as i32 => {}
-                    x if x == PlaybackPatchState::Playing as i32 => {}
-                    x if x == PlaybackPatchState::Paused as i32 => {}
-                    _ => {
-                        return Err(AppError::bad_request("Invalid state value"));
-                    }
-                }
-                Ok(Json(serde_json::json!({"state": "playing"})))
+                Ok(Json(serde_json::json!({"type": "play"})))
             }),
         );
 
@@ -209,37 +163,22 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": 1}"#))
+            .body(Body::from(r#"{"type": 1}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Valid state `PAUSED` should pass validation
     #[tokio::test]
-    async fn test_valid_state_paused_passes_validation() {
+    async fn test_valid_pause_update_passes_validation() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state == PlaybackPatchState::Unspecified as i32
-                    && req.position.is_none()
-                    && req.speed.is_none()
-                    && req.media_id.is_empty()
-                    && req.playlist_id.is_empty()
-                    && req.target.is_empty()
-                {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if req.r#type != PlaybackUpdateType::Pause as i32 {
+                    return Err::<Json<Value>, AppError>(AppError::bad_request("invalid type"));
                 }
-                match req.state {
-                    x if x == PlaybackPatchState::Unspecified as i32 => {}
-                    x if x == PlaybackPatchState::Playing as i32 => {}
-                    x if x == PlaybackPatchState::Paused as i32 => {}
-                    _ => {
-                        return Err(AppError::bad_request("Invalid state value"));
-                    }
-                }
-                Ok(Json(serde_json::json!({"state": "paused"})))
+                Ok(Json(serde_json::json!({"type": "pause"})))
             }),
         );
 
@@ -247,27 +186,22 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"state": 2}"#))
+            .body(Body::from(r#"{"type": 2}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Position-only update should pass the "at least one field" check
     #[tokio::test]
-    async fn test_position_only_passes_validation() {
+    async fn test_seek_update_with_position_passes_validation() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                if req.state == PlaybackPatchState::Unspecified as i32
-                    && req.position.is_none()
-                    && req.speed.is_none()
-                    && req.media_id.is_empty()
-                    && req.playlist_id.is_empty()
-                    && req.target.is_empty()
-                {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if req.r#type == PlaybackUpdateType::Seek as i32 && req.position.is_none() {
+                    return Err::<Json<Value>, AppError>(AppError::bad_request(
+                        "seek requires position",
+                    ));
                 }
                 Ok(Json(serde_json::json!({"position": req.position})))
             }),
@@ -277,7 +211,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"position": 42.5}"#))
+            .body(Body::from(r#"{"type":3,"position":42.5}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -288,7 +222,7 @@ mod update_playback_validation {
     async fn test_invalid_speed_above_ui_max_returns_400() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
+            patch(|Json(req): Json<UpdatePlayback>| async move {
                 if let Some(speed) = req.speed {
                     synctv_api::http::validation::validate_playback_speed(speed)
                         .map_err(|e| AppError::bad_request(e.to_string()))?;
@@ -301,7 +235,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"speed": 5.0}"#))
+            .body(Body::from(r#"{"type":4,"speed":5.0}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -317,7 +251,7 @@ mod update_playback_validation {
     async fn test_invalid_negative_position_returns_400() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
+            patch(|Json(req): Json<UpdatePlayback>| async move {
                 if let Some(position) = req.position {
                     synctv_api::http::validation::validate_playback_position(position)
                         .map_err(|e| AppError::bad_request(e.to_string()))?;
@@ -330,7 +264,7 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"position": -1.0}"#))
+            .body(Body::from(r#"{"type":3,"position":-1.0}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -340,24 +274,15 @@ mod update_playback_validation {
     }
 
     #[tokio::test]
-    async fn test_target_switch_fields_cannot_mix_with_state_updates() {
+    async fn test_speed_update_requires_speed() {
         let app = Router::new().route(
             "/api/rooms/{room_id}/playback",
-            patch(|Json(req): Json<UpdatePlaybackRequest>| async move {
-                let target_requested =
-                    !req.media_id.is_empty() || !req.playlist_id.is_empty() || !req.target.is_empty();
-
-                if target_requested
-                    && (req.state != PlaybackPatchState::Unspecified as i32
-                        || req.position.is_some()
-                        || req.speed.is_some()
-                        || req.version.is_some())
-                {
+            patch(|Json(req): Json<UpdatePlayback>| async move {
+                if req.r#type == PlaybackUpdateType::Speed as i32 && req.speed.is_none() {
                     return Err::<Json<Value>, AppError>(AppError::bad_request(
-                        "Target switch requests cannot be combined with play/pause/seek/speed/version updates",
+                        "speed requires speed",
                     ));
                 }
-
                 Ok(Json(serde_json::json!({"status": "ok"})))
             }),
         );
@@ -366,18 +291,13 @@ mod update_playback_validation {
             .method("PATCH")
             .uri("/api/rooms/room123/playback")
             .header("Content-Type", "application/json")
-            .body(Body::from(
-                r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"},"state":1}"#,
-            ))
+            .body(Body::from(r#"{"type":4}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains("cannot be combined"));
+        assert!(json["error"].as_str().unwrap().contains("requires speed"));
     }
 }
 

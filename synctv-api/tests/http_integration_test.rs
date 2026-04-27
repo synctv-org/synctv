@@ -1362,64 +1362,52 @@ mod body_edge_cases {
 }
 
 mod playback_request {
-    use synctv_proto::client::{PlaybackPatchState, UpdatePlaybackRequest};
+    use synctv_proto::client::{PlaybackUpdateType, UpdatePlayback};
 
     #[test]
-    fn test_state_only() {
-        let json = r#"{"state": 1}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state, PlaybackPatchState::Playing as i32);
+    fn test_play_update() {
+        let json = r#"{"type": 1, "playing": true}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        assert_eq!(req.r#type, PlaybackUpdateType::Play as i32);
+        assert_eq!(req.playing, Some(true));
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_empty());
     }
 
     #[test]
-    fn test_position_only() {
-        let json = r#"{"position": 42.5}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state, PlaybackPatchState::Unspecified as i32);
+    fn test_seek_update() {
+        let json = r#"{"type":3,"position":42.5}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        assert_eq!(req.r#type, PlaybackUpdateType::Seek as i32);
         assert!((req.position.unwrap() - 42.5).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_speed_only() {
-        let json = r#"{"speed": 2.0}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state, PlaybackPatchState::Unspecified as i32);
+    fn test_speed_update() {
+        let json = r#"{"type":4,"speed":2.0}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        assert_eq!(req.r#type, PlaybackUpdateType::Speed as i32);
         assert!((req.speed.unwrap() - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_media_id_only() {
-        let json = r#"{"media_id": "media_abc"}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.media_id, "media_abc");
-        assert!(req.playlist_id.is_empty());
-        assert!(req.target.is_empty());
-    }
-
-    #[test]
-    fn test_dynamic_target_fields() {
-        let json = r#"{"playlist_id":"pl1","target":{"item_id":"provider-item-1"}}"#;
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.playlist_id, "pl1");
-        let target: serde_json::Value = serde_json::from_slice(&req.target).unwrap();
-        assert_eq!(target, serde_json::json!({"item_id":"provider-item-1"}));
-        assert_eq!(req.state, PlaybackPatchState::Unspecified as i32);
-        assert!(req.position.is_none());
-        assert!(req.speed.is_none());
-        assert!(req.media_id.is_empty());
+    fn test_full_seek_update() {
+        let json = r#"{"type":3,"playing":false,"position":42.5,"speed":1.25,"version":9}"#;
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        assert_eq!(req.r#type, PlaybackUpdateType::Seek as i32);
+        assert_eq!(req.playing, Some(false));
+        assert_eq!(req.position, Some(42.5));
+        assert_eq!(req.speed, Some(1.25));
+        assert_eq!(req.version, Some(9));
     }
 
     #[test]
     fn test_empty_object() {
         let json = r"{}";
-        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.state, PlaybackPatchState::Unspecified as i32);
+        let req: UpdatePlayback = serde_json::from_str(json).unwrap();
+        assert_eq!(req.r#type, PlaybackUpdateType::Unspecified as i32);
         assert!(req.position.is_none());
         assert!(req.speed.is_none());
-        assert!(req.media_id.is_empty());
     }
 }
 

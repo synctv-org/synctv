@@ -2013,7 +2013,12 @@ impl UserService {
     ///
     /// Ban is independent moderation state. The user's lifecycle status is
     /// preserved so unban does not implicitly approve or reactivate accounts.
-    pub async fn ban_user_and_cleanup_memberships(&self, user_id: &UserId) -> Result<User> {
+    pub async fn ban_user_and_cleanup_memberships(
+        &self,
+        user_id: &UserId,
+        banned_by: Option<&UserId>,
+        reason: Option<String>,
+    ) -> Result<User> {
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
@@ -2027,7 +2032,7 @@ impl UserService {
         }
 
         self.repository
-            .insert_ban_with_executor(user_id, None, None, &mut *tx)
+            .insert_ban_with_executor(user_id, banned_by, reason, &mut *tx)
             .await?;
 
         let room_member_repo = RoomMemberRepository::new(pool.clone());

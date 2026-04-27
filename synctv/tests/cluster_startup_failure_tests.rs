@@ -9,10 +9,10 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, ExternalIdsConfig, GrpcRateLimitConfig,
-    HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-    MessagingRateLimitConfig, OAuth2Config, PasswordComplexityConfig, RedisConfig, ServerConfig,
-    TimeConfig, WebRTCConfig,
+    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
+    JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
+    OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig, TimeConfig,
+    WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -93,7 +93,8 @@ fn standalone_test_config() -> Config {
             read_max_requests: 5000,
             read_window_seconds: 1,
         },
-        external_ids: ExternalIdsConfig::default(),
+        public_ids: PublicIdsConfig::default(),
+        security: synctv_core::config::SecurityConfig::default(),
     }
 }
 
@@ -188,7 +189,8 @@ fn cluster_test_config() -> Config {
             read_max_requests: 5000,
             read_window_seconds: 1,
         },
-        external_ids: ExternalIdsConfig::default(),
+        public_ids: PublicIdsConfig::default(),
+        security: synctv_core::config::SecurityConfig::default(),
     }
 }
 

@@ -93,7 +93,9 @@ pub mod validation;
 pub mod test_helpers;
 
 pub use cache::KeyBuilder;
-pub use config::{Config, ExternalIdsConfig, GrpcRateLimitConfig, HttpRateLimitConfig};
+pub use config::{
+    Config, GrpcRateLimitConfig, HttpRateLimitConfig, PublicIdsConfig, PublicIdsSqidsConfig,
+};
 pub use error::{Error, InternalExt, Result};
 pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};
 pub use redis_runtime::{

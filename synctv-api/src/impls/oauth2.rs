@@ -36,6 +36,32 @@ pub struct OAuth2ApiImpl {
 }
 
 impl OAuth2ApiImpl {
+    fn oauth2_identity_unlink_counts(
+        linked_mappings: &[synctv_core::models::oauth2_client::UserOAuthProviderMapping],
+        provider_type: &synctv_core::models::OAuth2Provider,
+        provider_user_id: Option<&str>,
+    ) -> (usize, usize) {
+        linked_mappings
+            .iter()
+            .fold((0_usize, 0_usize), |counts, mapping| {
+                let (mut target, mut remaining) = counts;
+                let same_provider = mapping.provider == provider_type.as_str();
+                let will_unlink = same_provider
+                    && match provider_user_id {
+                        Some(target_provider_user_id) => {
+                            mapping.provider_user_id == target_provider_user_id
+                        }
+                        None => true,
+                    };
+                if will_unlink {
+                    target += 1;
+                } else {
+                    remaining += 1;
+                }
+                (target, remaining)
+            })
+    }
+
     fn map_bind_user_lookup_error(err: synctv_core::Error) -> ApiError {
         match err {
             synctv_core::Error::NotFound(_) => {
@@ -326,8 +352,9 @@ impl OAuth2ApiImpl {
     /// If `provider_user_id` is provided, only unlinks that specific binding.
     /// If `provider_user_id` is None, unlinks all bindings for the provider type.
     ///
-    /// Safety: refuses to unlink if this is the user's last authentication method
-    /// (no password set and no other OAuth providers linked).
+    /// Safety: users registered through `OAuth2` must keep at least one
+    /// `OAuth2` identity linked. Other signup methods may unlink `OAuth2`
+    /// identities freely because `OAuth2` is not their registration resource.
     pub async fn unlink_provider(
         &self,
         user_id: &UserId,
@@ -338,36 +365,31 @@ impl OAuth2ApiImpl {
         let provider_type = OAuth2Provider::from_str_name(provider)
             .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
 
-        // Check if user has other auth methods before unlinking
         let user = self
             .user_service
             .get_user(user_id)
             .await
             .map_err(ApiError::from)?;
-        let linked_providers = self
+        let linked_mappings = self
             .oauth2_service
-            .get_user_providers(user_id)
+            .get_user_provider_mappings(user_id)
             .await
             .map_err(ApiError::from)?;
 
-        // Count how many providers would remain after unlinking
-        let remaining_providers = linked_providers
-            .iter()
-            .filter(|p| **p != provider_type)
-            .count();
+        let (target_oauth2_identities, remaining_oauth2_identities) =
+            Self::oauth2_identity_unlink_counts(&linked_mappings, &provider_type, provider_user_id);
 
-        // Check if user has usable password authentication without any OAuth2 provider.
-        // This includes legacy password hashes and OPAQUE-only credentials.
-        let has_password_auth = self
-            .user_service
-            .has_usable_password_authentication(&user)
-            .await
-            .map_err(ApiError::from)?;
+        if target_oauth2_identities == 0 {
+            return Err(ApiError::NotFound(
+                "No binding found for this provider".to_string(),
+            ));
+        }
 
-        if remaining_providers == 0 && !has_password_auth {
+        if user.signup_method == synctv_core::models::SignupMethod::OAuth2
+            && remaining_oauth2_identities == 0
+        {
             return Err(ApiError::InvalidInput(
-                "Cannot unlink last authentication method. Please set a password first."
-                    .to_string(),
+                "OAuth2 signup users cannot unlink their last OAuth2 identity".to_string(),
             ));
         }
 
@@ -528,16 +550,14 @@ mod tests {
         );
     }
 
-    /// Test that the unlink provider safety check uses `has_usable_password()`
-    /// instead of just checking `signup_method`.
+    /// Test the model-level legacy password capability semantics.
     ///
-    /// Security: An OAuth2-only user with no other providers and no usable
-    /// password must NOT be allowed to unlink their last `OAuth2` provider,
-    /// as they would be locked out of their account.
-    ///
-    /// This test verifies the model-level behavior used by `unlink_provider`.
+    /// OAuth2 unlink no longer uses this as its safety check; it protects the
+    /// OAuth2 registration resource directly. This test remains here because
+    /// OAuth2 account binding still depends on correct password capability
+    /// reporting in adjacent auth-method checks.
     #[test]
-    fn test_oauth2_unlink_checks_actual_password_capability() {
+    fn test_oauth2_user_password_capability_tracks_explicit_password_setup() {
         use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
 
         let now = chrono::Utc::now();
@@ -595,5 +615,98 @@ mod tests {
 
         assert!(matches!(err.classify(), crate::impls::ErrorKind::NotFound));
         assert_eq!(err.code(), crate::impls::error_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_oauth2_unlink_counts_specific_identity_without_removing_same_provider_siblings() {
+        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
+        use synctv_core::models::UserId;
+
+        let now = chrono::Utc::now();
+        let mappings = vec![
+            UserOAuthProviderMapping {
+                id: 1,
+                provider: "github".to_string(),
+                provider_user_id: "github-a".to_string(),
+                user_id: UserId::from(42),
+                username: "github-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+            UserOAuthProviderMapping {
+                id: 2,
+                provider: "github".to_string(),
+                provider_user_id: "github-b".to_string(),
+                user_id: UserId::from(42),
+                username: "github-b".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+        ];
+
+        let (target, remaining) = super::OAuth2ApiImpl::oauth2_identity_unlink_counts(
+            &mappings,
+            &OAuth2Provider::GitHub,
+            Some("github-a"),
+        );
+
+        assert_eq!(target, 1);
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn test_oauth2_unlink_counts_provider_wide_unlink_removes_all_provider_identities() {
+        use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
+        use synctv_core::models::UserId;
+
+        let now = chrono::Utc::now();
+        let mappings = vec![
+            UserOAuthProviderMapping {
+                id: 1,
+                provider: "github".to_string(),
+                provider_user_id: "github-a".to_string(),
+                user_id: UserId::from(42),
+                username: "github-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+            UserOAuthProviderMapping {
+                id: 2,
+                provider: "github".to_string(),
+                provider_user_id: "github-b".to_string(),
+                user_id: UserId::from(42),
+                username: "github-b".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+            UserOAuthProviderMapping {
+                id: 3,
+                provider: "google".to_string(),
+                provider_user_id: "google-a".to_string(),
+                user_id: UserId::from(42),
+                username: "google-a".to_string(),
+                email: None,
+                avatar_url: None,
+                created_at: now,
+                updated_at: now,
+            },
+        ];
+
+        let (target, remaining) = super::OAuth2ApiImpl::oauth2_identity_unlink_counts(
+            &mappings,
+            &OAuth2Provider::GitHub,
+            None,
+        );
+
+        assert_eq!(target, 2);
+        assert_eq!(remaining, 1);
     }
 }

@@ -358,9 +358,157 @@ pub struct StartPasskeyLoginHttpResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartPasskeyRegistrationHttpRequest {
+    username: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartPasskeyRegistrationHttpResponse {
+    session_id: String,
+    options: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FinishPasskeyLoginHttpRequest {
     session_id: String,
     credential: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FinishPasskeyRegistrationHttpRequest {
+    session_id: String,
+    credential: Value,
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/passkeys/registration/start",
+        tag = "Auth",
+        request_body = StartPasskeyRegistrationHttpRequest,
+        responses(
+            (status = 200, description = "Passkey registration challenge created", body = StartPasskeyRegistrationHttpResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn start_passkey_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartPasskeyRegistrationHttpResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartPasskeyRegistrationHttpRequest>(request).await?;
+                let username = crate::http::validation::validate_username(&req.username)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let email = if req.email.trim().is_empty() {
+                    None
+                } else {
+                    Some(
+                        crate::http::validation::validate_email(&req.email)
+                            .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
+                    )
+                };
+                let credential_name = if req.name.trim().is_empty() {
+                    None
+                } else {
+                    Some(req.name.trim().to_string())
+                };
+                let passkey_service = require_passkey_service(&state_for_request)?;
+                let challenge = passkey_service
+                    .start_account_registration(
+                        username,
+                        email,
+                        credential_name,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                let options = passkey_options_to_value(&challenge.options_json)?;
+                Ok::<_, ApiError>(StartPasskeyRegistrationHttpResponse {
+                    session_id: challenge.session_id,
+                    options,
+                })
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/passkeys/registration/finish",
+        tag = "Auth",
+        request_body = FinishPasskeyRegistrationHttpRequest,
+        responses(
+            (status = 200, description = "Passkey registration succeeded", body = RegisterResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn finish_passkey_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RegisterResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<FinishPasskeyRegistrationHttpRequest>(request).await?;
+                validate_passkey_session_id(&req.session_id)?;
+                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                let passkey_service = require_passkey_service(&state_for_request)?;
+                let (user, access_token, refresh_token) = passkey_service
+                    .finish_account_registration(
+                        &req.session_id,
+                        &credential_json,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                Ok::<_, ApiError>(RegisterResponse {
+                    user: Some(crate::impls::client::user_to_proto(
+                        &user,
+                        &state_for_request.public_id_codec,
+                    )),
+                    access_token,
+                    refresh_token,
+                })
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
 }
 
 #[cfg_attr(

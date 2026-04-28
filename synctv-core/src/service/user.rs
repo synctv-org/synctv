@@ -556,6 +556,7 @@ pub struct UserDeletionSummary {
 #[derive(Debug, Clone, Default)]
 struct UserDeletionCleanupStats {
     oauth_mappings_deleted: u64,
+    email_identities_deleted: u64,
     email_tokens_deleted: u64,
     provider_credentials_deleted: u64,
     notifications_deleted: u64,
@@ -1085,6 +1086,13 @@ impl UserService {
             .await?
             .rows_affected();
 
+        let email_identities_deleted =
+            sqlx::query("DELETE FROM auth_email_identities WHERE user_id = $1")
+                .bind(user_id)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+
         sqlx::query("DELETE FROM auth_password_credentials WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut **tx)
@@ -1160,6 +1168,7 @@ impl UserService {
         Ok((
             UserDeletionCleanupStats {
                 oauth_mappings_deleted,
+                email_identities_deleted,
                 email_tokens_deleted,
                 provider_credentials_deleted,
                 notifications_deleted,
@@ -1186,7 +1195,7 @@ impl UserService {
         );
     }
 
-    async fn cache_username_best_effort(
+    pub(crate) async fn cache_username_best_effort(
         &self,
         user_id: &UserId,
         username: &str,
@@ -1588,8 +1597,12 @@ impl UserService {
         // so the client can prompt the user to verify their email. This is safe because
         // the user has already authenticated successfully (correct credentials), so
         // revealing that their email is unverified does not leak information.
-        let is_oauth2_user = user.signup_method == crate::models::SignupMethod::OAuth2;
-        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
+        let is_external_credential_user = matches!(
+            user.signup_method,
+            crate::models::SignupMethod::OAuth2 | crate::models::SignupMethod::WebAuthn
+        );
+        if self.email_verification_required && !user.email_verified && !is_external_credential_user
+        {
             return Err(Error::EmailNotVerified);
         }
 
@@ -1614,7 +1627,7 @@ impl UserService {
         }
     }
 
-    async fn validate_registration_identity_with_control(
+    pub(crate) async fn validate_registration_identity_with_control(
         &self,
         username: &str,
         email: Option<&str>,
@@ -1691,6 +1704,13 @@ impl UserService {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn signup_review_enabled(&self) -> bool {
+        self.settings_registry
+            .as_ref()
+            .and_then(|registry| registry.signup_need_review.get().ok())
+            .unwrap_or(false)
     }
 
     /// Register a new user
@@ -3284,6 +3304,7 @@ impl UserService {
             user_id = %user_id,
             username = %user.username,
             oauth_mappings_deleted = cleanup.oauth_mappings_deleted,
+            email_identities_deleted = cleanup.email_identities_deleted,
             email_tokens_deleted = cleanup.email_tokens_deleted,
             provider_credentials_deleted = cleanup.provider_credentials_deleted,
             notifications_deleted = cleanup.notifications_deleted,
@@ -3681,7 +3702,7 @@ impl UserService {
     /// Uses `invalidate_and_broadcast_user` to ensure the originating node also
     /// clears its own local cache (the Redis subscriber skips self-originated
     /// messages, so `broadcast_remote` alone would leave local caches stale).
-    async fn notify_user_invalidation(&self, user_id: &UserId) {
+    pub(crate) async fn notify_user_invalidation(&self, user_id: &UserId) {
         if let Some(ref service) = self.cache_invalidation {
             if let Err(e) = service.invalidate_and_broadcast_user(user_id).await {
                 tracing::warn!(

@@ -83,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.StartOpaqueRegistrationRequest.email",
         ".synctv.client.StartOpaqueLoginRequest.username",
         ".synctv.client.StartOpaqueLoginRequest.email",
+        ".synctv.client.StartPasskeyRegistrationRequest.email",
         ".synctv.client.GetRoomRequest.room_id",
         ".synctv.client.JoinRoomRequest.room_id",
         ".synctv.admin.GetUserRoomsRequest.user_id",

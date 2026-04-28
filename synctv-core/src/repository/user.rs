@@ -9,13 +9,13 @@ use crate::{
 };
 
 const USER_SELECT_COLUMNS: &str = "
-    u.id, u.username, u.email,
+    u.id, u.username, aei.email,
     COALESCE(apc.legacy_password_hash, '') AS password_hash,
     u.signup_method, u.role,
     u.created_at, u.updated_at,
     COALESCE(apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(apc.password_version, 0) AS password_version,
-    u.version, u.deleted_at, u.email_verified,
+    u.version, u.deleted_at, COALESCE(aei.email_verified, false) AS email_verified,
     EXISTS (
         SELECT 1 FROM user_bans ub
         WHERE ub.user_id = u.id
@@ -48,13 +48,13 @@ const USER_SELECT_COLUMNS: &str = "
     ) AS banned_reason";
 
 const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
-    u.id, u.username, u.email,
+    u.id, u.username, aei.email,
     COALESCE(updated_apc.legacy_password_hash, existing_apc.legacy_password_hash, '') AS password_hash,
     u.signup_method, u.role,
     u.created_at, u.updated_at,
     COALESCE(updated_apc.password_changed_at, existing_apc.password_changed_at, u.created_at) AS password_changed_at,
     COALESCE(updated_apc.password_version, existing_apc.password_version, 0) AS password_version,
-    u.version, u.deleted_at, u.email_verified,
+    u.version, u.deleted_at, COALESCE(aei.email_verified, false) AS email_verified,
     EXISTS (
         SELECT 1 FROM user_bans ub
         WHERE ub.user_id = u.id
@@ -87,11 +87,12 @@ const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
     ) AS banned_reason";
 
 const AUTH_PASSWORD_CREDENTIAL_JOIN: &str =
-    "LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id";
+    "LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
+     LEFT JOIN auth_email_identities aei ON aei.user_id = u.id";
 
 const USER_ROW_RETURNING_COLUMNS: &str = "
-    id, username, email, signup_method, role, created_at, updated_at,
-    version, deleted_at, email_verified";
+    id, username, signup_method, role, created_at, updated_at,
+    version, deleted_at";
 
 #[derive(Clone, Copy)]
 pub enum PasswordCredentialMaterial<'a> {
@@ -256,9 +257,18 @@ impl UserRepository {
         let sql = format!(
             r"
             WITH inserted_user AS (
-                INSERT INTO users (username, email, signup_method, role, email_verified, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO users (username, signup_method, role, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING {USER_ROW_RETURNING_COLUMNS}
+            ),
+            inserted_email_identity AS (
+                INSERT INTO auth_email_identities (
+                    user_id, email, email_verified, created_at, updated_at
+                )
+                SELECT id, $6, $7, $4, $5
+                FROM inserted_user
+                WHERE NULLIF($6::TEXT, '') IS NOT NULL
+                RETURNING *
             ),
             inserted_password_credential AS (
                 INSERT INTO auth_password_credentials (
@@ -268,7 +278,7 @@ impl UserRepository {
                     created_at, updated_at
                 )
                 SELECT id, $8, CASE WHEN $8::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
-                       $9, $10, $11, $12, $7, 0, $7, $7
+                       $9, $10, $11, $12, $5, 0, $4, $5
                 FROM inserted_user
                 WHERE NULLIF($8::TEXT, '') IS NOT NULL OR $9::BYTEA IS NOT NULL
                 RETURNING *
@@ -276,16 +286,17 @@ impl UserRepository {
             SELECT {USER_SELECT_COLUMNS}
             FROM inserted_user u
             LEFT JOIN inserted_password_credential apc ON apc.user_id = u.id
+            LEFT JOIN inserted_email_identity aei ON aei.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(&user.username)
-            .bind(user.email.as_ref())
             .bind(user.signup_method)
             .bind(user.role)
-            .bind(user.email_verified)
             .bind(user.created_at)
             .bind(user.updated_at)
+            .bind(user.email.as_ref())
+            .bind(user.email_verified)
             .bind(credentials.legacy_password_hash)
             .bind(opaque_record_bytes)
             .bind(opaque_identifier)
@@ -407,7 +418,7 @@ impl UserRepository {
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
             {AUTH_PASSWORD_CREDENTIAL_JOIN}
-            WHERE LOWER(u.email) = LOWER($1) AND u.deleted_at IS NULL
+            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -504,14 +515,35 @@ impl UserRepository {
             r"
             WITH updated_user AS (
                 UPDATE users
-                SET username = $2, email = $3, role = $4,
-                    email_verified = $5, updated_at = $6, version = version + 1
+                SET username = $2, role = $4,
+                    updated_at = $6, version = version + 1
                 WHERE id = $1 AND deleted_at IS NULL AND version = $7
                 RETURNING {USER_ROW_RETURNING_COLUMNS}
+            ),
+            deleted_email_identity AS (
+                DELETE FROM auth_email_identities
+                USING updated_user
+                WHERE auth_email_identities.user_id = updated_user.id
+                  AND $3::TEXT IS NULL
+            ),
+            aei AS (
+                INSERT INTO auth_email_identities (
+                    user_id, email, email_verified, created_at, updated_at
+                )
+                SELECT id, $3, $5, $6, $6
+                FROM updated_user
+                WHERE $3::TEXT IS NOT NULL
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    email = EXCLUDED.email,
+                    email_verified = EXCLUDED.email_verified,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING user_id, email, email_verified
             )
             SELECT {USER_SELECT_COLUMNS}
             FROM updated_user u
-            {AUTH_PASSWORD_CREDENTIAL_JOIN}
+            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
+            LEFT JOIN aei ON aei.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -602,6 +634,7 @@ impl UserRepository {
             FROM updated_user u
             LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
             LEFT JOIN updated_password_credential updated_apc ON updated_apc.user_id = u.id
+            LEFT JOIN auth_email_identities aei ON aei.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -737,6 +770,7 @@ impl UserRepository {
             FROM updated_user u
             LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
             LEFT JOIN updated_password_credential updated_apc ON updated_apc.user_id = u.id
+            LEFT JOIN auth_email_identities aei ON aei.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -762,15 +796,23 @@ impl UserRepository {
     ) -> Result<User> {
         let sql = format!(
             r"
-            WITH updated_user AS (
-                UPDATE users
-                SET email_verified = $2, updated_at = $3, version = version + 1
-                WHERE id = $1 AND deleted_at IS NULL
-                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            WITH aei AS (
+                UPDATE auth_email_identities
+                SET email_verified = $2, updated_at = $3
+                WHERE user_id = $1
+                RETURNING user_id, email, email_verified
+            ),
+            updated_user AS (
+                UPDATE users u
+                SET updated_at = $3, version = version + 1
+                FROM aei
+                WHERE u.id = aei.user_id AND u.deleted_at IS NULL
+                RETURNING u.{USER_ROW_RETURNING_COLUMNS}
             )
             SELECT {USER_SELECT_COLUMNS}
             FROM updated_user u
-            {AUTH_PASSWORD_CREDENTIAL_JOIN}
+            LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id
+            LEFT JOIN aei ON aei.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -900,7 +942,7 @@ impl UserRepository {
         wb.push_literal("u.deleted_at IS NULL");
 
         if query.search.is_some() {
-            wb.push_param("(u.username ILIKE ${idx} OR u.email ILIKE ${idx})");
+            wb.push_param("(u.username ILIKE ${idx} OR aei.email ILIKE ${idx})");
         }
         if query.role.is_some() {
             wb.push_param("u.role = ${idx}");
@@ -966,7 +1008,9 @@ impl UserRepository {
 
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
-        let count_sql = format!("SELECT COUNT(*) as count FROM users u WHERE {count_where}");
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM users u LEFT JOIN auth_email_identities aei ON aei.user_id = u.id WHERE {count_where}"
+        );
 
         // We need to use query_scalar which returns a different type, so bind manually
         let mut count_qb = sqlx::query_scalar::<_, i64>(&count_sql);
@@ -1011,16 +1055,16 @@ impl UserRepository {
         let order_by = Self::build_order_by(query);
 
         let mut count_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND role IN (",
+            "SELECT COUNT(*) FROM users u LEFT JOIN auth_email_identities aei ON aei.user_id = u.id WHERE u.deleted_at IS NULL AND u.role IN (",
         );
         count_qb.push_bind(crate::models::UserRole::Root);
         count_qb.push(", ");
         count_qb.push_bind(crate::models::UserRole::Admin);
         count_qb.push(")");
         if let Some(pattern) = &search_pattern {
-            count_qb.push(" AND (username ILIKE ");
+            count_qb.push(" AND (u.username ILIKE ");
             count_qb.push_bind(pattern.clone());
-            count_qb.push(" OR email ILIKE ");
+            count_qb.push(" OR aei.email ILIKE ");
             count_qb.push_bind(pattern.clone());
             count_qb.push(")");
         }
@@ -1039,7 +1083,7 @@ impl UserRepository {
         if let Some(pattern) = &search_pattern {
             list_qb.push(" AND (u.username ILIKE ");
             list_qb.push_bind(pattern.clone());
-            list_qb.push(" OR u.email ILIKE ");
+            list_qb.push(" OR aei.email ILIKE ");
             list_qb.push_bind(pattern.clone());
             list_qb.push(")");
         }
@@ -1077,8 +1121,9 @@ impl UserRepository {
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*) as count
-            FROM users
-            WHERE email = $1 AND deleted_at IS NULL
+            FROM auth_email_identities aei
+            JOIN users u ON u.id = aei.user_id
+            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
             ",
         )
         .bind(email)

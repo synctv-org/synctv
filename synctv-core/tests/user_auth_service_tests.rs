@@ -997,7 +997,7 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
         .expect("Registration should succeed");
 
     // Set email_verified = false
-    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
         .bind(user.id)
         .execute(&pool)
         .await
@@ -1035,7 +1035,7 @@ async fn test_login_unverified_email_allowed_when_not_required() {
         .expect("Registration should succeed");
 
     // Set email_verified = false
-    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
         .bind(user.id)
         .execute(&pool)
         .await
@@ -1162,7 +1162,7 @@ async fn test_login_email_verification_no_account_enumeration() {
         .expect("Registration should succeed");
 
     // Mark email as unverified (but user is Active because verification was not required during registration)
-    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
         .bind(user_with_email.id)
         .execute(&pool)
         .await
@@ -2418,7 +2418,7 @@ async fn test_refresh_token_email_verification_recheck() {
     };
 
     // Un-verify the email
-    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+    sqlx::query("UPDATE auth_email_identities SET email_verified = false WHERE user_id = $1")
         .bind(user.id)
         .execute(&pool)
         .await

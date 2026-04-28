@@ -48,23 +48,38 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     sqlx::query(
         r"
         INSERT INTO users (
-            id, username, email, signup_method, role, email_verified,
+            id, username, signup_method, role,
             created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
     .bind(user.id)
     .bind(&user.username)
-    .bind(user.email.as_ref())
     .bind(user.signup_method)
     .bind(user.role)
-    .bind(user.email_verified)
     .bind(user.created_at)
     .bind(user.updated_at)
     .execute(pool)
     .await
     .expect("Failed to create test user");
+
+    sqlx::query(
+        r"
+        INSERT INTO auth_email_identities (
+            user_id, email, email_verified, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ",
+    )
+    .bind(user.id)
+    .bind(user.email.as_ref())
+    .bind(user.email_verified)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .execute(pool)
+    .await
+    .expect("Failed to create test user email identity");
 
     sqlx::query(
         r"

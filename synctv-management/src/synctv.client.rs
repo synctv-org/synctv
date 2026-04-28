@@ -263,6 +263,68 @@ pub mod auth_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn start_passkey_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::StartPasskeyRegistrationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::StartPasskeyRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartPasskeyRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.AuthService",
+                        "StartPasskeyRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_passkey_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RegisterResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishPasskeyRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.AuthService",
+                        "FinishPasskeyRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn start_passkey_login(
             &mut self,
             request: impl tonic::IntoRequest<
@@ -430,6 +492,24 @@ pub mod auth_service_server {
             request: tonic::Request<::synctv_proto::client::FinishOpaqueLoginRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        >;
+        async fn start_passkey_registration(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::client::StartPasskeyRegistrationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::StartPasskeyRegistrationResponse>,
+            tonic::Status,
+        >;
+        async fn finish_passkey_registration(
+            &self,
+            request: tonic::Request<
+                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RegisterResponse>,
             tonic::Status,
         >;
         async fn start_passkey_login(
@@ -824,6 +904,110 @@ pub mod auth_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = FinishOpaqueLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartPasskeyRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartPasskeyRegistrationSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::StartPasskeyRegistrationRequest,
+                    > for StartPasskeyRegistrationSvc<T> {
+                        type Response = ::synctv_proto::client::StartPasskeyRegistrationResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::StartPasskeyRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_passkey_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartPasskeyRegistrationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishPasskeyRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishPasskeyRegistrationSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+                    > for FinishPasskeyRegistrationSvc<T> {
+                        type Response = ::synctv_proto::client::RegisterResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_passkey_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishPasskeyRegistrationSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -1327,13 +1511,13 @@ pub mod user_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn start_passkey_registration(
+        pub async fn start_passkey_bind(
             &mut self,
             request: impl tonic::IntoRequest<
-                ::synctv_proto::client::StartPasskeyRegistrationRequest,
+                ::synctv_proto::client::StartPasskeyBindRequest,
             >,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::StartPasskeyRegistrationResponse>,
+            tonic::Response<::synctv_proto::client::StartPasskeyBindResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1346,22 +1530,19 @@ pub mod user_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.UserService/StartPasskeyRegistration",
+                "/synctv.client.UserService/StartPasskeyBind",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new(
-                        "synctv.client.UserService",
-                        "StartPasskeyRegistration",
-                    ),
+                    GrpcMethod::new("synctv.client.UserService", "StartPasskeyBind"),
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn finish_passkey_registration(
+        pub async fn finish_passkey_bind(
             &mut self,
             request: impl tonic::IntoRequest<
-                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+                ::synctv_proto::client::FinishPasskeyBindRequest,
             >,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::PasskeyCredentialResponse>,
@@ -1377,15 +1558,12 @@ pub mod user_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.UserService/FinishPasskeyRegistration",
+                "/synctv.client.UserService/FinishPasskeyBind",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new(
-                        "synctv.client.UserService",
-                        "FinishPasskeyRegistration",
-                    ),
+                    GrpcMethod::new("synctv.client.UserService", "FinishPasskeyBind"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1598,20 +1776,16 @@ pub mod user_service_server {
             tonic::Response<::synctv_proto::client::FinishOpaquePasswordUpdateResponse>,
             tonic::Status,
         >;
-        async fn start_passkey_registration(
+        async fn start_passkey_bind(
             &self,
-            request: tonic::Request<
-                ::synctv_proto::client::StartPasskeyRegistrationRequest,
-            >,
+            request: tonic::Request<::synctv_proto::client::StartPasskeyBindRequest>,
         ) -> std::result::Result<
-            tonic::Response<::synctv_proto::client::StartPasskeyRegistrationResponse>,
+            tonic::Response<::synctv_proto::client::StartPasskeyBindResponse>,
             tonic::Status,
         >;
-        async fn finish_passkey_registration(
+        async fn finish_passkey_bind(
             &self,
-            request: tonic::Request<
-                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
-            >,
+            request: tonic::Request<::synctv_proto::client::FinishPasskeyBindRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::PasskeyCredentialResponse>,
             tonic::Status,
@@ -2034,15 +2208,15 @@ pub mod user_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.UserService/StartPasskeyRegistration" => {
+                "/synctv.client.UserService/StartPasskeyBind" => {
                     #[allow(non_camel_case_types)]
-                    struct StartPasskeyRegistrationSvc<T: UserService>(pub Arc<T>);
+                    struct StartPasskeyBindSvc<T: UserService>(pub Arc<T>);
                     impl<
                         T: UserService,
                     > tonic::server::UnaryService<
-                        ::synctv_proto::client::StartPasskeyRegistrationRequest,
-                    > for StartPasskeyRegistrationSvc<T> {
-                        type Response = ::synctv_proto::client::StartPasskeyRegistrationResponse;
+                        ::synctv_proto::client::StartPasskeyBindRequest,
+                    > for StartPasskeyBindSvc<T> {
+                        type Response = ::synctv_proto::client::StartPasskeyBindResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -2050,15 +2224,12 @@ pub mod user_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                ::synctv_proto::client::StartPasskeyRegistrationRequest,
+                                ::synctv_proto::client::StartPasskeyBindRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as UserService>::start_passkey_registration(
-                                        &inner,
-                                        request,
-                                    )
+                                <T as UserService>::start_passkey_bind(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -2070,7 +2241,7 @@ pub mod user_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = StartPasskeyRegistrationSvc(inner);
+                        let method = StartPasskeyBindSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -2086,14 +2257,14 @@ pub mod user_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/synctv.client.UserService/FinishPasskeyRegistration" => {
+                "/synctv.client.UserService/FinishPasskeyBind" => {
                     #[allow(non_camel_case_types)]
-                    struct FinishPasskeyRegistrationSvc<T: UserService>(pub Arc<T>);
+                    struct FinishPasskeyBindSvc<T: UserService>(pub Arc<T>);
                     impl<
                         T: UserService,
                     > tonic::server::UnaryService<
-                        ::synctv_proto::client::FinishPasskeyRegistrationRequest,
-                    > for FinishPasskeyRegistrationSvc<T> {
+                        ::synctv_proto::client::FinishPasskeyBindRequest,
+                    > for FinishPasskeyBindSvc<T> {
                         type Response = ::synctv_proto::client::PasskeyCredentialResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
@@ -2102,15 +2273,12 @@ pub mod user_service_server {
                         fn call(
                             &mut self,
                             request: tonic::Request<
-                                ::synctv_proto::client::FinishPasskeyRegistrationRequest,
+                                ::synctv_proto::client::FinishPasskeyBindRequest,
                             >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as UserService>::finish_passkey_registration(
-                                        &inner,
-                                        request,
-                                    )
+                                <T as UserService>::finish_passkey_bind(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -2122,7 +2290,7 @@ pub mod user_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = FinishPasskeyRegistrationSvc(inner);
+                        let method = FinishPasskeyBindSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

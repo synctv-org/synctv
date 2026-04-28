@@ -52,6 +52,20 @@ impl WebAuthnCredentialRepository {
         passkey: &Passkey,
         name: Option<&str>,
     ) -> Result<WebAuthnCredential> {
+        self.create_with_executor(user_id, passkey, name, &self.pool)
+            .await
+    }
+
+    pub async fn create_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        passkey: &Passkey,
+        name: Option<&str>,
+        executor: E,
+    ) -> Result<WebAuthnCredential>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let credential_id = passkey.cred_id().as_ref().to_vec();
         let passkey_json = serde_json::to_value(passkey)
             .internal_with_err("Failed to serialize WebAuthn passkey")?;
@@ -72,8 +86,14 @@ impl WebAuthnCredentialRepository {
         .bind(sqlx::types::Json(passkey_json))
         .bind(sqlx::types::Json(public_key_json))
         .bind(name)
-        .fetch_one(&self.pool)
-        .await?;
+        .fetch_one(executor)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::Database(ref database_error) if database_error.constraint().is_some() => {
+                Error::AlreadyExists("Passkey credential is already registered".to_string())
+            }
+            other => Error::Database(other),
+        })?;
 
         Self::row_to_credential(&row)
     }
@@ -148,13 +168,67 @@ impl WebAuthnCredentialRepository {
     }
 
     pub async fn delete_for_user(&self, user_id: &UserId, credential_id: &[u8]) -> Result<bool> {
+        self.delete_for_user_with_executor(user_id, credential_id, &self.pool)
+            .await
+    }
+
+    pub async fn delete_for_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        credential_id: &[u8],
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query(
             "DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
         )
         .bind(user_id)
         .bind(credential_id)
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn count_by_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<i64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM auth_webauthn_credentials WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(executor)
+                .await?;
+        Ok(count)
+    }
+
+    pub async fn exists_for_user_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        credential_id: &[u8],
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let exists: bool = sqlx::query_scalar(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM auth_webauthn_credentials
+                WHERE user_id = $1 AND credential_id = $2
+            )
+            ",
+        )
+        .bind(user_id)
+        .bind(credential_id)
+        .fetch_one(executor)
+        .await?;
+        Ok(exists)
     }
 }

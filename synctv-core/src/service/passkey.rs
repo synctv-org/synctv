@@ -3,6 +3,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::{
     CredentialID, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential, Url, Webauthn, WebauthnBuilder,
@@ -10,8 +11,8 @@ use webauthn_rs::prelude::{
 
 use crate::{
     config::WebAuthnConfig,
-    models::{User, UserId},
-    repository::{WebAuthnCredential, WebAuthnCredentialRepository},
+    models::{SignupMethod, User, UserId},
+    repository::{PasswordCredentialMaterial, WebAuthnCredential, WebAuthnCredentialRepository},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -22,6 +23,12 @@ const PASSKEY_USER_HANDLE_NAMESPACE: uuid::Uuid =
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PasskeySession {
+    AccountRegistration {
+        username: String,
+        email: Option<String>,
+        credential_name: Option<String>,
+        state: PasskeyRegistration,
+    },
     Registration {
         user_id: UserId,
         credential_name: Option<String>,
@@ -330,6 +337,19 @@ impl PasskeyService {
             .collect()
     }
 
+    fn validate_credential_delete_policy(
+        signup_method: SignupMethod,
+        credential_exists: bool,
+        credential_count: i64,
+    ) -> Result<()> {
+        if credential_exists && signup_method == SignupMethod::WebAuthn && credential_count <= 1 {
+            return Err(Error::InvalidInput(
+                "WebAuthn signup users cannot delete their last passkey".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn start_registration(
         &self,
         user: &User,
@@ -354,6 +374,62 @@ impl PasskeyService {
                 &session_id,
                 &PasskeySession::Registration {
                     user_id: user.id,
+                    credential_name,
+                    state,
+                },
+                Duration::from_secs(PASSKEY_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(StartPasskeyRegistration {
+            session_id,
+            options_json: serde_json::to_vec(&challenge)
+                .internal_with_err("Failed to serialize passkey registration challenge")?,
+        })
+    }
+
+    pub async fn start_account_registration(
+        &self,
+        username: String,
+        email: Option<String>,
+        credential_name: Option<String>,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) -> Result<StartPasskeyRegistration> {
+        let username = username.trim().to_string();
+        let email = email
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if self.user_service.signup_review_enabled() {
+            return Err(Error::InvalidInput(
+                "WebAuthn registration is not available while signup review is enabled".to_string(),
+            ));
+        }
+
+        self.user_service
+            .validate_registration_identity_with_control(
+                &username,
+                email.as_deref(),
+                client_ip,
+                control,
+            )
+            .await?;
+
+        let user_handle = uuid::Uuid::new_v4();
+        let (challenge, state) = self
+            .webauthn
+            .start_passkey_registration(user_handle, &username, &username, Some(Vec::new()))
+            .map_err(|error| {
+                Error::InvalidInput(format!("Failed to start passkey registration: {error}"))
+            })?;
+        let session_id = synctv_common::snanoid!(48);
+        self.session_store
+            .store(
+                &session_id,
+                &PasskeySession::AccountRegistration {
+                    username,
+                    email,
                     credential_name,
                     state,
                 },
@@ -408,6 +484,99 @@ impl PasskeyService {
 
         self.repository
             .create(&user_id, &passkey, credential_name.as_deref())
+            .await
+    }
+
+    pub async fn finish_account_registration(
+        &self,
+        session_id: &str,
+        credential_json: &[u8],
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) -> Result<(User, String, String)> {
+        let Some(PasskeySession::AccountRegistration {
+            username,
+            email,
+            credential_name,
+            state,
+        }) = self.session_store.consume(session_id).await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        if self.user_service.signup_review_enabled() {
+            return Err(Error::InvalidInput(
+                "WebAuthn registration is not available while signup review is enabled".to_string(),
+            ));
+        }
+        self.user_service
+            .validate_registration_identity_with_control(
+                &username,
+                email.as_deref(),
+                client_ip,
+                control,
+            )
+            .await?;
+
+        let credential: RegisterPublicKeyCredential = serde_json::from_slice(credential_json)
+            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+        let passkey = self
+            .webauthn
+            .finish_passkey_registration(&credential, &state)
+            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+
+        if self
+            .repository
+            .get_by_credential_id(passkey.cred_id().as_ref())
+            .await?
+            .is_some()
+        {
+            return Err(Error::AlreadyExists(
+                "Passkey credential is already registered".to_string(),
+            ));
+        }
+
+        let user = User::new(
+            username.clone(),
+            email.clone(),
+            String::new(),
+            SignupMethod::WebAuthn,
+        );
+
+        let mut tx: Transaction<'_, Postgres> = self.user_service.pool().begin().await?;
+        let created_user = self
+            .user_service
+            .repository
+            .create_with_password_credentials(&user, PasswordCredentialMaterial::none(), &mut *tx)
+            .await?;
+        self.repository
+            .create_with_executor(
+                &created_user.id,
+                &passkey,
+                credential_name.as_deref(),
+                &mut *tx,
+            )
+            .await?;
+        tx.commit().await?;
+
+        self.user_service
+            .cache_username_best_effort(
+                &created_user.id,
+                &created_user.username,
+                "passkey_register",
+            )
+            .await;
+        self.user_service
+            .notify_user_invalidation(&created_user.id)
+            .await;
+
+        self.user_service
+            .login_with_verified_external_credential_with_control(
+                &created_user.id,
+                &format!("passkey:{}", created_user.username),
+                client_ip,
+                control,
+            )
             .await
     }
 
@@ -636,9 +805,34 @@ impl PasskeyService {
     }
 
     pub async fn delete_credential(&self, user_id: &UserId, credential_id: &[u8]) -> Result<bool> {
-        self.repository
-            .delete_for_user(user_id, credential_id)
-            .await
+        let mut tx: Transaction<'_, Postgres> = self.user_service.pool().begin().await?;
+        let user = self
+            .user_service
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+        let exists = self
+            .repository
+            .exists_for_user_with_executor(user_id, credential_id, &mut *tx)
+            .await?;
+        if !exists {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        let count = self
+            .repository
+            .count_by_user_with_executor(user_id, &mut *tx)
+            .await?;
+        Self::validate_credential_delete_policy(user.signup_method, exists, count)?;
+
+        let deleted = self
+            .repository
+            .delete_for_user_with_executor(user_id, credential_id, &mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(deleted)
     }
 }
 
@@ -742,5 +936,26 @@ mod tests {
         assert_ne!(user_uuid, PasskeyService::user_uuid(UserId::from(43_i64)));
         assert_eq!(user_uuid.get_version_num(), 5);
         assert_ne!(&user_uuid.as_bytes()[8..16], &42_i64.to_be_bytes());
+    }
+
+    #[test]
+    fn webauthn_signup_users_must_keep_their_last_passkey() {
+        assert!(matches!(
+            PasskeyService::validate_credential_delete_policy(SignupMethod::WebAuthn, true, 1),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(
+            PasskeyService::validate_credential_delete_policy(SignupMethod::WebAuthn, true, 2)
+                .is_ok()
+        );
+        assert!(PasskeyService::validate_credential_delete_policy(
+            SignupMethod::WebAuthn,
+            false,
+            1
+        )
+        .is_ok());
+        assert!(
+            PasskeyService::validate_credential_delete_policy(SignupMethod::Email, true, 1).is_ok()
+        );
     }
 }

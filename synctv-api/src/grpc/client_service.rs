@@ -30,12 +30,12 @@ use crate::proto::client::{
     DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
     DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
     EditMediaResponse, FinishOpaqueLoginRequest, FinishOpaquePasswordUpdateRequest,
-    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
-    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
+    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
@@ -52,13 +52,13 @@ use crate::proto::client::{
     ServerMessage, SetPasswordRequest, SetPasswordResponse, SetRoomPasswordRequest,
     SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartOpaqueLoginRequest,
     StartOpaqueLoginResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
-    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyLoginRequest,
-    StartPasskeyLoginResponse, StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse,
-    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
-    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UnbanMemberRequest,
-    UnbanMemberResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
+    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
+    TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
+    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -542,6 +542,101 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn start_passkey_registration(
+        &self,
+        request: Request<StartPasskeyRegistrationRequest>,
+    ) -> Result<Response<StartPasskeyRegistrationResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let username = crate::http::validation::validate_username(&req.username)
+                        .map_err(|e| crate::impls::ApiError::InvalidInput(e.to_string()))?;
+                    let email = if req.email.trim().is_empty() {
+                        None
+                    } else {
+                        Some(
+                            crate::http::validation::validate_email(&req.email)
+                                .map_err(|e| crate::impls::ApiError::InvalidInput(e.to_string()))?,
+                        )
+                    };
+                    let credential_name = if req.name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(req.name.trim().to_string())
+                    };
+                    let challenge = passkey_service
+                        .start_account_registration(
+                            username,
+                            email,
+                            credential_name,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    let options = passkey_options_to_string(challenge.options_json)?;
+                    Ok::<_, crate::impls::ApiError>(StartPasskeyRegistrationResponse {
+                        session_id: challenge.session_id,
+                        options,
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_passkey_registration(
+        &self,
+        request: Request<FinishPasskeyRegistrationRequest>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let public_id_codec = self.client_api.public_id_codec.clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let (user, access_token, refresh_token) = passkey_service
+                        .finish_account_registration(
+                            &req.session_id,
+                            req.credential.as_bytes(),
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    Ok::<_, crate::impls::ApiError>(RegisterResponse {
+                        user: Some(crate::impls::client::user_to_proto(&user, &public_id_codec)),
+                        access_token,
+                        refresh_token,
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn start_passkey_login(
         &self,
         request: Request<StartPasskeyLoginRequest>,
@@ -936,10 +1031,10 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn start_passkey_registration(
+    async fn start_passkey_bind(
         &self,
-        request: Request<StartPasskeyRegistrationRequest>,
-    ) -> Result<Response<StartPasskeyRegistrationResponse>, Status> {
+        request: Request<StartPasskeyBindRequest>,
+    ) -> Result<Response<StartPasskeyBindResponse>, Status> {
         let metadata = self.request_metadata(&request);
         let req = request.into_inner();
         let passkey_service = self
@@ -968,7 +1063,7 @@ impl UserService for ClientServiceImpl {
                         .await
                         .map_err(crate::impls::ApiError::from)?;
                     let options = passkey_options_to_string(challenge.options_json)?;
-                    Ok::<_, crate::impls::ApiError>(StartPasskeyRegistrationResponse {
+                    Ok::<_, crate::impls::ApiError>(StartPasskeyBindResponse {
                         session_id: challenge.session_id,
                         options,
                     })
@@ -979,9 +1074,9 @@ impl UserService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn finish_passkey_registration(
+    async fn finish_passkey_bind(
         &self,
-        request: Request<FinishPasskeyRegistrationRequest>,
+        request: Request<FinishPasskeyBindRequest>,
     ) -> Result<Response<PasskeyCredentialResponse>, Status> {
         let metadata = self.request_metadata(&request);
         let req = request.into_inner();

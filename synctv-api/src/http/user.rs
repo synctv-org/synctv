@@ -317,30 +317,30 @@ fn passkey_credential_to_proto(
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyRegistrationHttpRequest {
+pub struct StartPasskeyBindHttpRequest {
     #[serde(default)]
     name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyRegistrationHttpResponse {
+pub struct StartPasskeyBindHttpResponse {
     session_id: String,
     options: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FinishPasskeyRegistrationHttpRequest {
+pub struct FinishPasskeyBindHttpRequest {
     session_id: String,
     credential: Value,
 }
 
-pub async fn start_passkey_registration(
+pub async fn start_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<StartPasskeyRegistrationHttpRequest>,
-) -> AppResult<Json<StartPasskeyRegistrationHttpResponse>> {
+    Json(req): Json<StartPasskeyBindHttpRequest>,
+) -> AppResult<Json<StartPasskeyBindHttpResponse>> {
     if req.name.len() > 100 {
         return Err(super::error::map_api_error(
             crate::impls::ApiError::InvalidInput("name must be at most 100 characters".to_string()),
@@ -372,7 +372,7 @@ pub async fn start_passkey_registration(
                     .await
                     .map_err(crate::impls::ApiError::from)?;
                 let options = passkey_options_to_value(&challenge.options_json)?;
-                Ok::<_, crate::impls::ApiError>(StartPasskeyRegistrationHttpResponse {
+                Ok::<_, crate::impls::ApiError>(StartPasskeyBindHttpResponse {
                     session_id: challenge.session_id,
                     options,
                 })
@@ -384,10 +384,10 @@ pub async fn start_passkey_registration(
     Ok(Json(response))
 }
 
-pub async fn finish_passkey_registration(
+pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<FinishPasskeyRegistrationHttpRequest>,
+    Json(req): Json<FinishPasskeyBindHttpRequest>,
 ) -> AppResult<Json<PasskeyCredentialResponse>> {
     validate_passkey_session_id(&req.session_id).map_err(super::error::map_api_error)?;
     let credential_json =

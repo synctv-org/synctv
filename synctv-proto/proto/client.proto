@@ -19,6 +19,8 @@ service AuthService {
     rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
     rpc StartOpaqueLogin(StartOpaqueLoginRequest) returns (StartOpaqueLoginResponse);
     rpc FinishOpaqueLogin(FinishOpaqueLoginRequest) returns (LoginResponse);
+    rpc StartPasskeyRegistration(StartPasskeyRegistrationRequest) returns (StartPasskeyRegistrationResponse);
+    rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (RegisterResponse);
     rpc StartPasskeyLogin(StartPasskeyLoginRequest) returns (StartPasskeyLoginResponse);
     rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (LoginResponse);
     rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
@@ -36,8 +38,8 @@ service UserService {
     rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse);
     rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
     rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
-    rpc StartPasskeyRegistration(StartPasskeyRegistrationRequest) returns (StartPasskeyRegistrationResponse);
-    rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (PasskeyCredentialResponse);
+    rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
+    rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredentialResponse);
     rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
     rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
 
@@ -401,7 +403,38 @@ message FinishPasskeyLoginRequest {
     }];
 }
 
+// Start a WebAuthn/passkey account registration. The response `options` is the
+// PublicKeyCredentialCreationOptions JSON that must be passed to the browser's
+// navigator.credentials.create().
 message StartPasskeyRegistrationRequest {
+    string username = 1 [(buf.validate.field).string = {
+        min_len: 3,
+        max_len: 50,
+        pattern: "^[\\p{L}\\p{N}_-]+$"
+    }];
+    string email = 2 [(buf.validate.field).string = {
+        max_len: 254,
+        email: true
+    }];
+    string name = 3 [(buf.validate.field).string = {
+        max_len: 100
+    }];
+}
+
+// Finish a WebAuthn/passkey account registration. `credential` is the browser
+// PublicKeyCredential JSON returned by navigator.credentials.create().
+message FinishPasskeyRegistrationRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string credential = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+message StartPasskeyBindRequest {
     string name = 1 [(buf.validate.field).string = {
         max_len: 100
     }];
@@ -419,9 +452,21 @@ message StartPasskeyRegistrationResponse {
     }];
 }
 
-// Finish a passkey registration. `credential` is the browser WebAuthn
+message StartPasskeyBindResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    // WebAuthn PublicKeyCredentialCreationOptions JSON.
+    string options = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+// Finish a passkey bind. `credential` is the browser WebAuthn
 // PublicKeyCredential JSON returned by navigator.credentials.create().
-message FinishPasskeyRegistrationRequest {
+message FinishPasskeyBindRequest {
     string session_id = 1 [(buf.validate.field).string = {
         min_len: 1,
         max_len: 128

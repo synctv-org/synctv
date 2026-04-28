@@ -639,6 +639,14 @@ fn register_extracted_auth_routes() -> Router<AppState> {
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route(
+            "/api/auth/passkeys/registration/start",
+            post(auth::start_passkey_registration),
+        )
+        .route(
+            "/api/auth/passkeys/registration/finish",
+            post(auth::finish_passkey_registration),
+        )
+        .route(
             "/api/auth/passkeys/login/start",
             post(auth::start_passkey_login),
         )
@@ -807,12 +815,12 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/passkeys", get(user::list_passkeys))
         .route(
-            "/api/user/passkeys/registration/start",
-            post(user::start_passkey_registration),
+            "/api/user/passkeys/bind/start",
+            post(user::start_passkey_bind),
         )
         .route(
-            "/api/user/passkeys/registration/finish",
-            post(user::finish_passkey_registration),
+            "/api/user/passkeys/bind/finish",
+            post(user::finish_passkey_bind),
         )
         .route(
             "/api/user/opaque-password/update/start",
@@ -1726,12 +1734,12 @@ mod tests {
             ("GET", "/api/user/passkeys", None),
             (
                 "POST",
-                "/api/user/passkeys/registration/start",
+                "/api/user/passkeys/bind/start",
                 Some(r#"{"name":"Laptop"}"#),
             ),
             (
                 "POST",
-                "/api/user/passkeys/registration/finish",
+                "/api/user/passkeys/bind/finish",
                 Some(r#"{"session_id":"session","credential":{}}"#),
             ),
             ("DELETE", "/api/user/passkeys/Y3JlZGVudGlhbA", None),

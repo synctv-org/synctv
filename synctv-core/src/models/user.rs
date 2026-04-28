@@ -161,6 +161,8 @@ pub enum SignupMethod {
     OAuth2 = 3,
     /// Created by an administrator
     AdminCreated = 4,
+    /// Registered directly with a WebAuthn/passkey credential
+    WebAuthn = 5,
 }
 
 impl SignupMethod {
@@ -173,6 +175,7 @@ impl SignupMethod {
             Self::Password => "password",
             Self::OAuth2 => "oauth2",
             Self::AdminCreated => "admin_created",
+            Self::WebAuthn => "webauthn",
         }
     }
 
@@ -193,6 +196,7 @@ impl FromStr for SignupMethod {
             "password" => Ok(Self::Password),
             "oauth2" => Ok(Self::OAuth2),
             "admin_created" | "admincreated" => Ok(Self::AdminCreated),
+            "webauthn" | "passkey" => Ok(Self::WebAuthn),
             other => Err(format!("Unknown signup method: {other}")),
         }
     }
@@ -210,6 +214,7 @@ sqlx_i16_enum!(SignupMethod, "Unknown SignupMethod value", {
     Password = 2,
     OAuth2 = 3,
     AdminCreated = 4,
+    WebAuthn = 5,
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,6 +412,7 @@ impl User {
             | SignupMethod::Password
             | SignupMethod::AdminCreated
             | SignupMethod::Unknown => true,
+            SignupMethod::WebAuthn => false,
             SignupMethod::OAuth2 => {
                 // OAuth2 users start without password credentials.
                 // If pv > 0, the user explicitly changed/set their password.
@@ -415,20 +421,18 @@ impl User {
         }
     }
 
-    /// Check if user can unbind a provider
-    /// `OAuth2` users cannot remove all `OAuth2` providers unless they have email
+    /// Check if user can unbind an OAuth2 provider.
+    /// OAuth2 signup users must keep at least one OAuth2 identity.
     /// Other users can unbind freely
     #[must_use]
-    pub const fn can_unbind_provider(&self, has_oauth2_count: usize, has_email: bool) -> bool {
+    pub const fn can_unbind_provider(&self, has_oauth2_count: usize, _has_email: bool) -> bool {
         match self.signup_method {
             SignupMethod::Email
             | SignupMethod::Password
             | SignupMethod::AdminCreated
-            | SignupMethod::Unknown => true,
-            SignupMethod::OAuth2 => {
-                // OAuth2 users must keep at least one OAuth2 or add email
-                has_oauth2_count > 1 || has_email
-            }
+            | SignupMethod::Unknown
+            | SignupMethod::WebAuthn => true,
+            SignupMethod::OAuth2 => has_oauth2_count > 1,
         }
     }
 }
@@ -568,6 +572,11 @@ mod tests {
             SignupMethod::from_str_name("admincreated"),
             Some(SignupMethod::AdminCreated)
         );
+        assert_eq!(
+            "passkey".parse::<SignupMethod>().unwrap(),
+            SignupMethod::WebAuthn
+        );
+        assert_eq!(SignupMethod::WebAuthn.to_string(), "webauthn");
         assert!("ldap".parse::<SignupMethod>().is_err());
     }
 }

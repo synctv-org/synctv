@@ -152,10 +152,10 @@ fn test_user_can_unbind_provider_email_signup() {
 #[test]
 fn test_user_can_unbind_provider_oauth2_signup() {
     let user = make_user(UserRole::User, UserStatus::Active, SignupMethod::OAuth2);
-    // OAuth2 user needs at least one OAuth2 or has email
-    assert!(!user.can_unbind_provider(1, false)); // Only 1 OAuth2, no email -> cannot unbind
+    // OAuth2 signup users must keep at least one OAuth2 identity.
+    assert!(!user.can_unbind_provider(1, false)); // Only 1 OAuth2 -> cannot unbind
     assert!(user.can_unbind_provider(2, false)); // 2 OAuth2 -> can unbind one
-    assert!(user.can_unbind_provider(1, true)); // 1 OAuth2 + email -> can unbind
+    assert!(!user.can_unbind_provider(1, true)); // Email does not replace signup OAuth2
 }
 
 #[test]

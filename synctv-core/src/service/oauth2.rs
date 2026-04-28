@@ -1154,7 +1154,9 @@ impl OAuth2Service {
 
         // Set email_verified if the provider confirmed the email.
         if user_info.email_verified && user_info.email.is_some() {
-            sqlx::query("UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1")
+            sqlx::query(
+                "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
+            )
                 .bind(new_user.id)
                 .execute(&mut *tx)
                 .await

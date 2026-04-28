@@ -86,37 +86,10 @@ where
         .map_err(|_| Error::Timeout(format!("Lock operation timed out for key: {key}")))?
 }
 
-/// Abstraction over a distributed migration lock.
-///
-/// Consumers that only need acquire/release semantics (e.g. `run_migrations`)
-/// program against this trait instead of depending on Redis directly.
-#[async_trait::async_trait]
-pub trait MigrationLock: Send + Sync {
-    /// Try to acquire the lock.
-    ///
-    /// Returns `Ok(Some(lock_value))` if acquired, `Ok(None)` if already held,
-    /// or `Err` on infrastructure failure.
-    async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>>;
-
-    /// Extend a previously acquired lock.
-    ///
-    /// Implementations without TTL semantics may treat this as a successful no-op
-    /// while ownership is still held.
-    async fn extend(&self, _key: &str, _lock_value: &str, _ttl_secs: u64) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    /// Release a previously acquired lock.
-    ///
-    /// Returns `true` if the lock was released, `false` if not held or expired.
-    async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool>;
-}
-
 /// Object-safe coordination lock for application-layer critical sections.
 ///
-/// Unlike [`MigrationLock`], this trait uses the crate's native [`Result`]
-/// type so business services can depend on it directly without knowing the
-/// concrete coordination backend.
+/// This trait uses the crate's native [`Result`] type so business services can
+/// depend on it directly without knowing the concrete coordination backend.
 #[async_trait::async_trait]
 pub trait CoordinationLock: Send + Sync {
     /// Try to acquire the lock.
@@ -168,28 +141,6 @@ where
     .await
 }
 
-/// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
-#[async_trait::async_trait]
-impl MigrationLock for DistributedLock {
-    async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
-        Self::acquire(self, key, ttl_secs)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool> {
-        Self::release(self, key, lock_value)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    async fn extend(&self, key: &str, lock_value: &str, ttl_secs: u64) -> anyhow::Result<bool> {
-        Self::extend(self, key, lock_value, ttl_secs)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-}
-
 #[async_trait::async_trait]
 impl CoordinationLock for DistributedLock {
     async fn acquire(&self, key: &str, ttl_secs: u64) -> Result<Option<String>> {
@@ -198,76 +149,6 @@ impl CoordinationLock for DistributedLock {
 
     async fn release(&self, key: &str, lock_value: &str) -> Result<bool> {
         Self::release(self, key, lock_value).await
-    }
-}
-
-/// `PostgreSQL` advisory lock-based `MigrationLock`.
-///
-/// Used as a fallback when the Redis lock fails. This implementation performs
-/// a single non-blocking `pg_try_advisory_lock` attempt and reports
-/// contention via `Ok(None)`, matching the `MigrationLock` contract. Waiting
-/// and retry orchestration stays in the migration runner so all lock
-/// implementations share the same state machine.
-///
-/// The advisory lock is session-scoped, so we must release it on the same
-/// connection that acquired it. The `lock_conn` field holds that connection.
-pub struct PgAdvisoryMigrationLock {
-    pool: sqlx::PgPool,
-    lock_conn: tokio::sync::Mutex<Option<sqlx::pool::PoolConnection<sqlx::Postgres>>>,
-}
-
-/// Stable advisory lock key for migration coordination (hash of "`synctv_migration`").
-const PG_ADVISORY_LOCK_KEY: i64 = 0x7379_6E63_7476_6D69_i64;
-
-impl PgAdvisoryMigrationLock {
-    #[must_use]
-    pub fn new(pool: sqlx::PgPool) -> Self {
-        Self {
-            pool,
-            lock_conn: tokio::sync::Mutex::new(None),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl MigrationLock for PgAdvisoryMigrationLock {
-    async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
-        let mut conn = self.pool.acquire().await.map_err(|e| {
-            anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")
-        })?;
-
-        let acquired: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
-            .bind(PG_ADVISORY_LOCK_KEY)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
-
-        if acquired.0 {
-            // Store the connection so release() can use the same session.
-            *self.lock_conn.lock().await = Some(conn);
-            Ok(Some("pg_advisory".to_string()))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
-        // Release the advisory lock on the same connection that acquired it.
-        // Session-scoped advisory locks cannot be released from a different connection.
-        let mut guard = self.lock_conn.lock().await;
-        if let Some(ref mut conn) = *guard {
-            let result: (bool,) = sqlx::query_as("SELECT pg_advisory_unlock($1)")
-                .bind(PG_ADVISORY_LOCK_KEY)
-                .fetch_one(&mut **conn)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
-            // Return the connection to the pool
-            *guard = None;
-            Ok(result.0)
-        } else {
-            // No connection held — lock was never acquired or already released
-            Ok(false)
-        }
     }
 }
 
@@ -1598,39 +1479,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "RedlockGuard::drop must not panic without a Tokio runtime"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn pg_advisory_migration_lock_acquire_returns_none_when_lock_is_held() {
-        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-        let lock1 = PgAdvisoryMigrationLock::new(pool.clone());
-        let lock2 = PgAdvisoryMigrationLock::new(pool);
-
-        let first = MigrationLock::acquire(&lock1, "migration", 30)
-            .await
-            .expect("first advisory lock acquisition should succeed")
-            .expect("first advisory lock acquisition should own the lock");
-
-        let second = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            MigrationLock::acquire(&lock2, "migration", 30),
-        )
-        .await
-        .expect("second acquire should not block waiting for the advisory lock")
-        .expect("second acquire should not error while the advisory lock is held");
-
-        assert!(
-            second.is_none(),
-            "held advisory lock must report contention via Ok(None), not wait or error"
-        );
-
-        assert!(
-            MigrationLock::release(&lock1, "migration", &first)
-                .await
-                .expect("first advisory lock should release cleanly"),
-            "first advisory lock release should report success"
         );
     }
 }

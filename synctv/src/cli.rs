@@ -4119,22 +4119,9 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
 
     match db_command.command {
         DbSubcommand::Migrate(args) => {
-            let redis_init = synctv_core::bootstrap::init_redis(&config, None).await?;
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
 
-            let lock = synctv_core::bootstrap::build_migration_lock(
-                pool.clone(),
-                &config,
-                redis_init.connection_runtime(),
-            );
-
-            crate::migrations::run_migrations(
-                &pool,
-                lock,
-                &config.redis.key_prefix,
-                config.cluster_runtime_enabled(),
-            )
-            .await?;
+            crate::migrations::run_migrations(&pool).await?;
 
             let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
             let output = DatabaseMigrateCliOutput::new(&config, &migrations_status);

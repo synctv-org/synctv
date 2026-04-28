@@ -152,29 +152,6 @@ const fn should_continue_startup_after_root_bootstrap_failure(has_admin_user: bo
     has_admin_user
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MigrationLockStartupStrategy {
-    Distributed,
-    PgAdvisory,
-    PgAdvisorySentinel,
-}
-
-const fn migration_lock_startup_strategy(
-    deployment_mode: &synctv_core::config::RedisDeploymentMode,
-    has_shared_runtime: bool,
-) -> MigrationLockStartupStrategy {
-    if matches!(
-        deployment_mode,
-        synctv_core::config::RedisDeploymentMode::Sentinel
-    ) {
-        MigrationLockStartupStrategy::PgAdvisorySentinel
-    } else if has_shared_runtime {
-        MigrationLockStartupStrategy::Distributed
-    } else {
-        MigrationLockStartupStrategy::PgAdvisory
-    }
-}
-
 fn partition_startup_error(kind: &str, error: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!(
         "Failed to initialize {kind} during startup: {error}. \
@@ -598,40 +575,7 @@ impl Application {
     }
 
     async fn init_schema(infra: &Infrastructure) -> Result<()> {
-        // Run migrations with appropriate lock strategy:
-        // - Standalone Redis: Redis distributed lock
-        // - Sentinel / no Redis: PostgreSQL advisory lock
-        // Sentinel failover can drop single-instance Redis locks, so correctness-
-        // critical startup migrations must not rely on that path.
-        let migration_lock = synctv_core::bootstrap::build_migration_lock(
-            infra.pool.clone(),
-            &infra.config,
-            infra.shared_runtime.clone(),
-        );
-        match migration_lock_startup_strategy(
-            &infra.config.redis.deployment_mode,
-            infra.shared_runtime.is_some(),
-        ) {
-            MigrationLockStartupStrategy::PgAdvisorySentinel => {
-                warn!(
-                    "Redis Sentinel deployment detected; using PostgreSQL advisory lock for \
-                     migrations because single-instance Redis locks are unsafe during failover"
-                );
-            }
-            MigrationLockStartupStrategy::Distributed => {
-                info!("Using distributed migration coordination lock");
-            }
-            MigrationLockStartupStrategy::PgAdvisory => {
-                info!("Using PostgreSQL advisory lock for migrations");
-            }
-        }
-        crate::migrations::run_migrations(
-            &infra.pool,
-            migration_lock,
-            &infra.config.redis.key_prefix,
-            infra.config.cluster_runtime_enabled(),
-        )
-        .await?;
+        crate::migrations::run_migrations(&infra.pool).await?;
 
         ensure_administrator_bootstrap_precondition(&infra.pool, &infra.config.bootstrap).await?;
 
@@ -1716,20 +1660,6 @@ mod tests {
                 .to_string()
                 .contains("cluster mode requires Redis to be configured"),
             "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn test_sentinel_mode_uses_pg_advisory_migration_lock_strategy() {
-        assert!(
-            matches!(
-                migration_lock_startup_strategy(
-                    &synctv_core::config::RedisDeploymentMode::Sentinel,
-                    true,
-                ),
-                MigrationLockStartupStrategy::PgAdvisorySentinel
-            ),
-            "Sentinel deployments must avoid single-instance Redis migration locks"
         );
     }
 

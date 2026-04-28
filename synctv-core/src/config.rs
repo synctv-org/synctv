@@ -3413,8 +3413,8 @@ impl Config {
         if cluster_mode_active && self.redis.deployment_mode == RedisDeploymentMode::Sentinel {
             errors.push(
                 "cluster.enabled=true is not supported with Redis Sentinel. \
-                 Startup still relies on Redis distributed locks for migrations and room coordination, \
-                 and Sentinel failover can create split-brain lock windows. \
+                 Startup still relies on Redis distributed locks for room coordination, \
+                 and Sentinel failover can create split-brain coordination windows. \
                  Switch Redis to a non-Sentinel deployment before enabling cluster mode."
                     .to_string(),
             );

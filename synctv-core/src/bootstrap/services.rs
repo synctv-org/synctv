@@ -227,43 +227,6 @@ fn build_ws_ticket_service(
         .map_err(anyhow::Error::from)
 }
 
-fn build_migration_lock_from_runtime(
-    pool: PgPool,
-    deployment_mode: &crate::config::RedisDeploymentMode,
-    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
-) -> Arc<dyn crate::service::MigrationLock> {
-    if should_use_pg_advisory_migration_lock(deployment_mode, shared_runtime.is_some()) {
-        return Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool));
-    }
-
-    match shared_runtime {
-        Some(shared_runtime) => Arc::new(crate::service::DistributedLock::from_runtime_with_mode(
-            shared_runtime,
-            false,
-        )),
-        None => Arc::new(crate::service::PgAdvisoryMigrationLock::new(pool)),
-    }
-}
-
-#[must_use]
-pub fn build_migration_lock(
-    pool: PgPool,
-    config: &Config,
-    shared_runtime: Option<Arc<dyn crate::RedisConnectionRuntime>>,
-) -> Arc<dyn crate::service::MigrationLock> {
-    build_migration_lock_from_runtime(pool, &config.redis.deployment_mode, shared_runtime)
-}
-
-const fn should_use_pg_advisory_migration_lock(
-    deployment_mode: &crate::config::RedisDeploymentMode,
-    has_shared_runtime: bool,
-) -> bool {
-    matches!(
-        deployment_mode,
-        crate::config::RedisDeploymentMode::Sentinel
-    ) || !has_shared_runtime
-}
-
 fn handle_provider_invalidation_listener_result(
     start_result: crate::Result<()>,
     cluster_mode: bool,
@@ -1295,30 +1258,6 @@ mod tests {
         assert!(!service.supports_cluster_runtime());
     }
 
-    #[test]
-    fn test_build_migration_lock_uses_pg_advisory_without_shared_runtime() {
-        assert!(should_use_pg_advisory_migration_lock(
-            &crate::config::RedisDeploymentMode::Standalone,
-            false,
-        ));
-    }
-
-    #[test]
-    fn test_build_migration_lock_uses_pg_advisory_in_sentinel_mode() {
-        assert!(should_use_pg_advisory_migration_lock(
-            &crate::config::RedisDeploymentMode::Sentinel,
-            true,
-        ));
-    }
-
-    #[test]
-    fn test_build_migration_lock_uses_redis_backend_in_standalone_redis_mode() {
-        assert!(!should_use_pg_advisory_migration_lock(
-            &crate::config::RedisDeploymentMode::Standalone,
-            true,
-        ));
-    }
-
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_build_ws_ticket_service_uses_distributed_backend_when_runtime_available() {
@@ -1454,21 +1393,6 @@ mod tests {
     #[test]
     fn test_build_room_service_signature_supports_redis_lock_wiring() {
         let _: fn(RoomServiceBuildArgs) -> RoomService = build_room_service;
-    }
-
-    #[test]
-    fn test_build_migration_lock_signature_uses_runtime_abstraction() {
-        fn assert_signature<F>(_f: F)
-        where
-            F: Fn(
-                PgPool,
-                &Config,
-                Option<Arc<dyn crate::RedisConnectionRuntime>>,
-            ) -> Arc<dyn crate::service::MigrationLock>,
-        {
-        }
-
-        assert_signature(build_migration_lock);
     }
 
     #[tokio::test]

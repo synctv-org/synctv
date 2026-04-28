@@ -16,7 +16,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
-use synctv_core::service::distributed_lock::{DistributedLock, MigrationLock};
+use synctv_core::service::distributed_lock::DistributedLock;
 use synctv_core::Error;
 use synctv_core_testing::start_redis as start_test_redis;
 
@@ -422,27 +422,6 @@ async fn test_with_lock_token_passes_fencing_token() {
     assert!(result > 0, "Result should be based on fencing token");
 }
 
-// MigrationLock trait tests
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_migration_lock_acquire_release() {
-    let (_container, conn) = start_redis().await;
-    let lock: Box<dyn MigrationLock> = Box::new(DistributedLock::new(conn));
-
-    let key = "test_migration_lock";
-    let ttl = 10;
-
-    // Acquire via trait
-    let lock_value = lock.acquire(key, ttl).await.unwrap();
-    assert!(lock_value.is_some(), "Trait acquire should work");
-    let lock_value = lock_value.unwrap();
-
-    // Release via trait
-    let released = lock.release(key, &lock_value).await.unwrap();
-    assert!(released, "Trait release should work");
-}
-
 // Sentinel failover simulation (documents vulnerability)
 
 #[tokio::test]
@@ -680,9 +659,3 @@ async fn test_many_concurrent_clients() {
         "Only 1 of 100 clients should acquire lock"
     );
 }
-
-// PostgreSQL advisory lock tests (MigrationLock alternative)
-
-// Note: These would require a PostgreSQL testcontainer, which we're not setting
-// up here since the task focuses on the distributed lock (Redis-based) tests.
-// The PgAdvisoryMigrationLock is tested implicitly through the migration system.

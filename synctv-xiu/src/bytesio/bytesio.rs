@@ -84,7 +84,8 @@ pub async fn new_udpio_pair() -> Option<(UdpIO, UdpIO)> {
     let first_local_port;
 
     // get the first available port
-    if let Some(udpio_0) = UdpIO::new_with_local_port(next_local_port).await {
+    {
+        let udpio_0 = UdpIO::new_with_local_port(next_local_port).await?;
         if let Some(local_port_0) = udpio_0.get_local_port() {
             first_local_port = local_port_0;
         } else {
@@ -101,8 +102,6 @@ pub async fn new_udpio_pair() -> Option<(UdpIO, UdpIO)> {
         } else {
             next_local_port = first_local_port + 2;
         }
-    } else {
-        return None;
     }
 
     loop {

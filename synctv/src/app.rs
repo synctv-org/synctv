@@ -637,7 +637,13 @@ impl Application {
 
         // Bootstrap root user
         info!("Checking root user bootstrap...");
-        if let Err(e) = bootstrap_root_user(&infra.pool, &infra.config.bootstrap).await {
+        if let Err(e) = bootstrap_root_user(
+            &infra.pool,
+            &infra.config.bootstrap,
+            &infra.config.security.opaque_server_setup_secret,
+        )
+        .await
+        {
             // Startup can continue only if the system already has an active
             // administrator account that can manage it.
             if should_continue_startup_after_root_bootstrap_failure(
@@ -1292,6 +1298,7 @@ impl Application {
                 .clone(),
             providers: servers.providers,
             oauth2_service: core.services.oauth2_service.clone(),
+            passkey_service: core.services.passkey_service.clone(),
             settings_service: core.services.settings_service.clone(),
             settings_registry: core.services.settings_registry.clone(),
             email_service: core.services.email_service.clone(),
@@ -1330,7 +1337,7 @@ mod tests {
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
         HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
         OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig,
-        WebRTCConfig,
+        WebAuthnConfig, WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1464,6 +1471,7 @@ mod tests {
                 ..LivestreamConfig::default()
             },
             oauth2: OAuth2Config::default(),
+            webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
@@ -1485,7 +1493,11 @@ mod tests {
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
             public_ids: PublicIdsConfig::default(),
-            security: synctv_core::config::SecurityConfig::default(),
+            security: synctv_core::config::SecurityConfig {
+                opaque_server_setup_secret: "test-opaque-server-setup-secret-for-app-startup-tests"
+                    .to_string(),
+                ..synctv_core::config::SecurityConfig::default()
+            },
         }
     }
 

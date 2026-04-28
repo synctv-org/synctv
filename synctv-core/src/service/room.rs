@@ -115,6 +115,33 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn merge_json_object_patch(target: &mut serde_json::Value, patch: serde_json::Value) -> Result<()> {
+    let serde_json::Value::Object(patch_object) = patch else {
+        return Err(Error::InvalidInput(
+            "Room settings patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let Some(target_object) = target.as_object_mut() else {
+        return Err(Error::Internal(
+            "Serialized room settings must be a JSON object".to_string(),
+        ));
+    };
+
+    for (key, value) in patch_object {
+        match (target_object.get_mut(&key), value) {
+            (Some(existing @ serde_json::Value::Object(_)), serde_json::Value::Object(value)) => {
+                merge_json_object_patch(existing, serde_json::Value::Object(value))?;
+            }
+            (_, value) => {
+                target_object.insert(key, value);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 const MAX_DELETE_TARGETS: usize = 100;
 const ROOM_JOIN_REQUEST_PENDING: ReviewStatus = ReviewStatus::Pending;
 const ROOM_JOIN_REQUEST_APPROVED: ReviewStatus = ReviewStatus::Approved;
@@ -2952,6 +2979,89 @@ impl RoomService {
             "",
         )
         .await
+    }
+
+    /// Patch room settings with optimistic locking.
+    ///
+    /// The patch is merged into the current stored settings inside each CAS retry,
+    /// so concurrent updates to different fields are preserved instead of being
+    /// overwritten by a stale pre-merge snapshot.
+    pub async fn patch_settings(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        patch: serde_json::Value,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.permission_service
+            .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
+            .await?;
+
+        self.room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let room_settings_repo = self.room_settings_repo.clone();
+        let patch = std::sync::Arc::new(patch);
+
+        let (previous_settings, updated_settings, updated_version) =
+            super::optimistic_retry::retry_with_optimistic_lock_timeout(
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
+                "Settings patch failed after maximum retry attempts",
+                || {
+                    let room_settings_repo = room_settings_repo.clone();
+                    let patch = patch.clone();
+                    async move {
+                        let (current, version) =
+                            room_settings_repo.get_with_version(&room_id).await?;
+                        let mut merged_json = serde_json::to_value(&current)
+                            .internal_with_err("Failed to serialize current room settings")?;
+                        merge_json_object_patch(&mut merged_json, (*patch).clone())?;
+                        let merged_settings: RoomSettings = serde_json::from_value(merged_json)
+                            .map_err(|e| {
+                                Error::InvalidInput(format!("Invalid settings JSON: {e}"))
+                            })?;
+                        merged_settings.validate_permissions()?;
+                        let new_version = room_settings_repo
+                            .set_settings_with_version(&room_id, &merged_settings, version)
+                            .await?;
+                        Ok((current, merged_settings, new_version))
+                    }
+                },
+            )
+            .await?;
+
+        let snapshot = self
+            .finalize_room_settings_update(
+                &room_id,
+                &previous_settings,
+                &updated_settings,
+                updated_version,
+                Some(&user_id),
+                "",
+            )
+            .await?;
+
+        if let Some(ref audit) = self.audit_service {
+            let settings_json = serde_json::to_value(&snapshot.settings)
+                .internal_with_err("Failed to serialize settings")?;
+            let _ = audit
+                .log(
+                    user_id.to_string(),
+                    user_id.to_string(),
+                    AuditAction::RoomSettingsUpdated,
+                    AuditTargetType::Room,
+                    Some(room_id.to_string()),
+                    settings_json,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        Ok(snapshot)
     }
 
     /// Update single room setting by key (requires `SET_ROOM_SETTINGS` permission)

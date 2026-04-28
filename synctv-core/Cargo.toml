@@ -30,8 +30,10 @@ redis.workspace = true
 
 # Security
 argon2.workspace = true
+opaque-ke.workspace = true
 jsonwebtoken.workspace = true
 oauth2.workspace = true
+webauthn-rs.workspace = true
 aes-gcm.workspace = true
 ammonia.workspace = true
 
@@ -52,8 +54,11 @@ async_singleflight.workspace = true
 uuid.workspace = true
 sqids.workspace = true
 rand.workspace = true
+rand_08.workspace = true
+rand_chacha_08.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+sha2_010.workspace = true
 hmac.workspace = true
 humantime.workspace = true
 hex.workspace = true

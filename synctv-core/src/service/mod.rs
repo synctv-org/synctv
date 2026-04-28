@@ -18,6 +18,7 @@ pub mod notification;
 pub mod notification_partition_manager;
 pub mod oauth2;
 pub mod optimistic_retry;
+pub mod passkey;
 pub mod permission;
 pub mod playback;
 pub mod playlist;
@@ -81,6 +82,10 @@ pub use oauth2::{
     OAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
+pub use passkey::{
+    local_passkey_session_store, passkey_session_store_from_shared_state_profile,
+    shared_passkey_session_store, PasskeyService, PasskeySessionStore,
+};
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
 pub use playlist::{PlaylistBroadcaster, PlaylistService};
@@ -103,6 +108,12 @@ pub use settings::{SettingsChangeListener, SettingsService};
 pub use settings_vars::{Setting, SettingsStorage};
 pub use stun_server::{resolve_external_ip, validate_external_addr, StunServer, StunServerConfig};
 pub use user::UserService;
+pub use user::{
+    local_opaque_login_session_store, opaque_login_session_store_from_shared_state_profile,
+    opaque_registration_session_store_from_shared_state_profile, shared_opaque_login_session_store,
+    shared_opaque_registration_session_store, OpaqueLoginSessionStore,
+    OpaqueRegistrationSessionStore,
+};
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{
     web_socket_ticket_service_from_shared_state_profile, PendingValidatedTicket, TicketStore,

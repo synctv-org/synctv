@@ -5,13 +5,19 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Request, State},
     Json,
 };
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 
 use super::{AppError, AppResult, AppState};
+use crate::http::passkey_json::{
+    passkey_credential_to_json_bytes, passkey_options_to_value, validate_passkey_session_id,
+};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
-    LoginRequest, LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterRequest, RegisterResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
+    FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, LoginRequest, LoginResponse,
+    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
 };
 
 /// Extract the real client IP from a request.
@@ -95,6 +101,84 @@ pub async fn register(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/opaque/registration/start",
+        tag = "Auth",
+        request_body = StartOpaqueRegistrationRequest,
+        responses(
+            (status = 200, description = "OPAQUE registration challenge created", body = StartOpaqueRegistrationResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn start_opaque_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartOpaqueRegistrationResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartOpaqueRegistrationRequest>(request).await?;
+                client_api
+                    .start_opaque_registration_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/opaque/registration/finish",
+        tag = "Auth",
+        request_body = FinishOpaqueRegistrationRequest,
+        responses(
+            (status = 200, description = "OPAQUE registration succeeded", body = RegisterResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn finish_opaque_registration(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RegisterResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<FinishOpaqueRegistrationRequest>(request).await?;
+                client_api
+                    .finish_opaque_registration_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
 /// Login with username+password, email+password, or email+login-token.
 #[cfg_attr(
     feature = "openapi",
@@ -157,6 +241,237 @@ pub async fn login(
                 Err(ApiError::InvalidInput(
                     "Email login token requires email only and cannot be combined with username or password.".to_string(),
                 ))
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Start a two-step OPAQUE login. The request carries the client's OPAQUE
+/// credential request, not a plaintext password.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/opaque/login/start",
+        tag = "Auth",
+        request_body = StartOpaqueLoginRequest,
+        responses(
+            (status = 200, description = "OPAQUE login challenge created", body = StartOpaqueLoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn start_opaque_login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartOpaqueLoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartOpaqueLoginRequest>(request).await?;
+                client_api
+                    .start_opaque_login_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+/// Finish a two-step OPAQUE login and issue tokens when the OPAQUE proof
+/// verifies.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/opaque/login/finish",
+        tag = "Auth",
+        request_body = FinishOpaqueLoginRequest,
+        responses(
+            (status = 200, description = "OPAQUE login succeeded", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn finish_opaque_login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<FinishOpaqueLoginRequest>(request).await?;
+                client_api
+                    .finish_opaque_login_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+fn require_passkey_service(
+    state: &AppState,
+) -> Result<std::sync::Arc<synctv_core::service::PasskeyService>, ApiError> {
+    state.passkey_service.clone().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Passkey/WebAuthn service is not configured".to_string())
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartPasskeyLoginHttpRequest {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    email: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartPasskeyLoginHttpResponse {
+    session_id: String,
+    options: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FinishPasskeyLoginHttpRequest {
+    session_id: String,
+    credential: Value,
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/passkeys/login/start",
+        tag = "Auth",
+        request_body = StartPasskeyLoginHttpRequest,
+        responses(
+            (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginHttpResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn start_passkey_login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartPasskeyLoginHttpResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartPasskeyLoginHttpRequest>(request).await?;
+                let has_username = !req.username.trim().is_empty();
+                let has_email = !req.email.trim().is_empty();
+                if has_username == has_email {
+                    return Err(ApiError::InvalidInput(
+                        "Provide exactly one of username or email".to_string(),
+                    ));
+                }
+                let identifier = if has_email {
+                    crate::http::validation::validate_email(&req.email)
+                        .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+                } else {
+                    crate::http::validation::validate_username(&req.username)
+                        .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+                };
+                let passkey_service = require_passkey_service(&state_for_request)?;
+                let challenge = passkey_service
+                    .start_login(&identifier, client_ip, Some(&request_control))
+                    .await
+                    .map_err(ApiError::from)?;
+                let options = passkey_options_to_value(&challenge.options_json)?;
+                Ok::<_, ApiError>(StartPasskeyLoginHttpResponse {
+                    session_id: challenge.session_id,
+                    options,
+                })
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/passkeys/login/finish",
+        tag = "Auth",
+        request_body = FinishPasskeyLoginHttpRequest,
+        responses(
+            (status = 200, description = "Passkey login succeeded", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn finish_passkey_login(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<FinishPasskeyLoginHttpRequest>(request).await?;
+                validate_passkey_session_id(&req.session_id)?;
+                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                let passkey_service = require_passkey_service(&state_for_request)?;
+                let (user, access_token, refresh_token) = passkey_service
+                    .finish_login(
+                        &req.session_id,
+                        &credential_json,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                Ok::<_, ApiError>(LoginResponse {
+                    user: Some(crate::impls::client::user_to_proto(
+                        &user,
+                        &state_for_request.public_id_codec,
+                    )),
+                    access_token,
+                    refresh_token,
+                })
             },
         )
         .await
@@ -386,6 +701,34 @@ mod tests {
         let deserialized: RequestEmailLoginRequest =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.email, req.email);
+    }
+
+    #[test]
+    fn test_passkey_http_response_serializes_options_as_json_object() {
+        let response = StartPasskeyLoginHttpResponse {
+            session_id: "session".to_string(),
+            options: serde_json::json!({
+                "challenge": "abc",
+                "rpId": "app.example.com",
+                "allowCredentials": []
+            }),
+        };
+
+        let value = serde_json::to_value(response).expect("serialize passkey response");
+        assert_eq!(value["session_id"], "session");
+        assert!(value["options"].is_object());
+        assert_eq!(value["options"]["challenge"], "abc");
+    }
+
+    #[test]
+    fn test_passkey_http_finish_request_accepts_credential_json_object() {
+        let request: FinishPasskeyLoginHttpRequest = serde_json::from_str(
+            r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
+        )
+        .expect("deserialize passkey credential object");
+
+        assert_eq!(request.session_id, "session");
+        assert_eq!(request.credential["type"], "public-key");
     }
 
     // All three auth handlers (register, login, refresh_token) now use

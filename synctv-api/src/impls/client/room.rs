@@ -639,12 +639,13 @@ impl ClientApiImpl {
             return Ok(crate::proto::client::UpdateRoomSettingsResponse { room: None });
         }
 
-        let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;
+        let settings_patch: serde_json::Value = serde_json::from_slice(&req.settings)
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
         let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
         let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let snapshot = self
             .room_service
-            .set_settings(rid, uid, settings)
+            .patch_settings(rid, uid, settings_patch)
             .await
             .map_err(ApiError::from)?;
         let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;

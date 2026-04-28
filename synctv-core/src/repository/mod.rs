@@ -13,6 +13,7 @@ pub mod room_settings;
 pub mod settings;
 pub mod user;
 pub mod user_oauth_provider;
+pub mod webauthn_credential;
 
 use sha2::{Digest, Sha256};
 
@@ -29,8 +30,9 @@ pub use room::{JoinRoomContext, RoomRepository};
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;
-pub use user::UserRepository;
+pub use user::{PasswordCredentialMaterial, UserRepository};
 pub use user_oauth_provider::UserOAuthProviderRepository;
+pub use webauthn_credential::{WebAuthnCredential, WebAuthnCredentialRepository};
 
 #[must_use]
 pub(crate) fn stable_scope_lock_key(primary_scope: i64, secondary_scope: Option<i64>) -> i64 {

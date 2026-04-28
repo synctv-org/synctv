@@ -1,6 +1,7 @@
 pub mod brute_force;
 pub mod guest_validator;
 pub mod jwt;
+pub mod opaque_password;
 pub mod password;
 pub mod security_pipeline;
 pub mod token_blacklist;
@@ -12,6 +13,10 @@ pub use brute_force::{
 };
 pub use guest_validator::GuestTokenValidator;
 pub use jwt::{Claims, GuestClaims, JwtService, TokenType};
+pub use opaque_password::{
+    OpaquePasswordRecord, OpaquePasswordService, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
+    OPAQUE_SERVER_SETUP_VERSION,
+};
 pub use password::{
     dummy_password_hash, hash_password, verify_password, PasswordHasherService, ProdPasswordHasher,
     TestPasswordHasher,

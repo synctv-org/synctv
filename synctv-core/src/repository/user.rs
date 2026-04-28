@@ -1,15 +1,20 @@
 use chrono::Utc;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
     models::{User, UserId, UserListQuery, UserListSortBy},
+    service::auth::OpaquePasswordRecord,
     Error, Result,
 };
 
 const USER_SELECT_COLUMNS: &str = "
-    u.id, u.username, u.email, u.password_hash, u.signup_method, u.role,
-    u.created_at, u.updated_at, u.password_changed_at, u.password_version,
+    u.id, u.username, u.email,
+    COALESCE(apc.legacy_password_hash, '') AS password_hash,
+    u.signup_method, u.role,
+    u.created_at, u.updated_at,
+    COALESCE(apc.password_changed_at, u.created_at) AS password_changed_at,
+    COALESCE(apc.password_version, 0) AS password_version,
     u.version, u.deleted_at, u.email_verified,
     EXISTS (
         SELECT 1 FROM user_bans ub
@@ -42,9 +47,133 @@ const USER_SELECT_COLUMNS: &str = "
         LIMIT 1
     ) AS banned_reason";
 
-const USER_RETURNING_COLUMNS: &str = "
-    id, username, email, password_hash, signup_method, role, created_at, updated_at,
-    password_changed_at, password_version, version, deleted_at, email_verified";
+const USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL: &str = "
+    u.id, u.username, u.email,
+    COALESCE(updated_apc.legacy_password_hash, existing_apc.legacy_password_hash, '') AS password_hash,
+    u.signup_method, u.role,
+    u.created_at, u.updated_at,
+    COALESCE(updated_apc.password_changed_at, existing_apc.password_changed_at, u.created_at) AS password_changed_at,
+    COALESCE(updated_apc.password_version, existing_apc.password_version, 0) AS password_version,
+    u.version, u.deleted_at, u.email_verified,
+    EXISTS (
+        SELECT 1 FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+    ) AS is_banned,
+    (
+        SELECT ub.starts_at FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_at,
+    (
+        SELECT ub.banned_by FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_by,
+    (
+        SELECT ub.reason FROM user_bans ub
+        WHERE ub.user_id = u.id
+          AND ub.revoked_at IS NULL
+          AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
+        ORDER BY ub.starts_at DESC
+        LIMIT 1
+    ) AS banned_reason";
+
+const AUTH_PASSWORD_CREDENTIAL_JOIN: &str =
+    "LEFT JOIN auth_password_credentials apc ON apc.user_id = u.id";
+
+const USER_ROW_RETURNING_COLUMNS: &str = "
+    id, username, email, signup_method, role, created_at, updated_at,
+    version, deleted_at, email_verified";
+
+#[derive(Clone, Copy)]
+pub enum PasswordCredentialMaterial<'a> {
+    None,
+    LegacyOnly {
+        legacy_password_hash: &'a str,
+    },
+    OpaqueOnly {
+        opaque_record: &'a OpaquePasswordRecord,
+    },
+    LegacyAndOpaque {
+        legacy_password_hash: &'a str,
+        opaque_record: &'a OpaquePasswordRecord,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct PasswordCredentialParts<'a> {
+    legacy_password_hash: Option<&'a str>,
+    opaque_record: Option<&'a OpaquePasswordRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredOpaquePasswordCredential {
+    pub record: OpaquePasswordRecord,
+}
+
+impl<'a> PasswordCredentialMaterial<'a> {
+    #[must_use]
+    pub const fn legacy_only(legacy_password_hash: &'a str) -> Self {
+        Self::LegacyOnly {
+            legacy_password_hash,
+        }
+    }
+
+    #[must_use]
+    pub const fn opaque_only(opaque_record: &'a OpaquePasswordRecord) -> Self {
+        Self::OpaqueOnly { opaque_record }
+    }
+
+    #[must_use]
+    pub const fn legacy_and_opaque(
+        legacy_password_hash: &'a str,
+        opaque_record: &'a OpaquePasswordRecord,
+    ) -> Self {
+        Self::LegacyAndOpaque {
+            legacy_password_hash,
+            opaque_record,
+        }
+    }
+
+    #[must_use]
+    pub const fn none() -> Self {
+        Self::None
+    }
+
+    fn parts(self) -> PasswordCredentialParts<'a> {
+        match self {
+            Self::None => PasswordCredentialParts {
+                legacy_password_hash: None,
+                opaque_record: None,
+            },
+            Self::LegacyOnly {
+                legacy_password_hash,
+            } => PasswordCredentialParts {
+                legacy_password_hash: Some(legacy_password_hash),
+                opaque_record: None,
+            },
+            Self::OpaqueOnly { opaque_record } => PasswordCredentialParts {
+                legacy_password_hash: None,
+                opaque_record: Some(opaque_record),
+            },
+            Self::LegacyAndOpaque {
+                legacy_password_hash,
+                opaque_record,
+            } => PasswordCredentialParts {
+                legacy_password_hash: Some(legacy_password_hash),
+                opaque_record: Some(opaque_record),
+            },
+        }
+    }
+}
 
 const ACTIVE_USER_BAN_EXISTS_SQL: &str = "EXISTS (
     SELECT 1 FROM user_bans ub
@@ -93,22 +222,75 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
+        let credentials = if user.password_hash.trim().is_empty() {
+            PasswordCredentialMaterial::none()
+        } else {
+            PasswordCredentialMaterial::legacy_only(&user.password_hash)
+        };
+        self.create_with_password_credentials(user, credentials, executor)
+            .await
+    }
+
+    pub async fn create_with_password_credentials<'e, E>(
+        &self,
+        user: &User,
+        credentials: PasswordCredentialMaterial<'_>,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let credentials = credentials.parts();
+        let opaque_record_bytes = credentials
+            .opaque_record
+            .map(|record| record.record.as_slice());
+        let opaque_identifier = credentials
+            .opaque_record
+            .map(|record| record.credential_identifier.as_slice());
+        let opaque_ciphersuite = credentials
+            .opaque_record
+            .map(|record| record.ciphersuite.as_str());
+        let opaque_server_setup_version = credentials
+            .opaque_record
+            .map(|record| record.server_setup_version);
         let sql = format!(
             r"
-            INSERT INTO users (username, email, password_hash, signup_method, role, email_verified, created_at, updated_at, password_changed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
-            RETURNING {USER_RETURNING_COLUMNS}
+            WITH inserted_user AS (
+                INSERT INTO users (username, email, signup_method, role, email_verified, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            ),
+            inserted_password_credential AS (
+                INSERT INTO auth_password_credentials (
+                    user_id, legacy_password_hash, legacy_password_algorithm,
+                    opaque_record, opaque_credential_identifier, opaque_ciphersuite,
+                    opaque_server_setup_version, password_changed_at, password_version,
+                    created_at, updated_at
+                )
+                SELECT id, $8, CASE WHEN $8::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
+                       $9, $10, $11, $12, $7, 0, $7, $7
+                FROM inserted_user
+                WHERE NULLIF($8::TEXT, '') IS NOT NULL OR $9::BYTEA IS NOT NULL
+                RETURNING *
+            )
+            SELECT {USER_SELECT_COLUMNS}
+            FROM inserted_user u
+            LEFT JOIN inserted_password_credential apc ON apc.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(&user.username)
             .bind(user.email.as_ref())
-            .bind(&user.password_hash)
             .bind(user.signup_method)
             .bind(user.role)
             .bind(user.email_verified)
             .bind(user.created_at)
             .bind(user.updated_at)
+            .bind(credentials.legacy_password_hash)
+            .bind(opaque_record_bytes)
+            .bind(opaque_identifier)
+            .bind(opaque_ciphersuite)
+            .bind(opaque_server_setup_version)
             .fetch_one(executor)
             .await
             .map_err(|e| match e {
@@ -136,6 +318,7 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE u.id = $1 AND u.deleted_at IS NULL
             "
         );
@@ -160,8 +343,9 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE u.id = $1 AND u.deleted_at IS NULL
-            FOR UPDATE
+            FOR UPDATE OF u
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -186,6 +370,7 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE u.id = ANY($1) AND u.deleted_at IS NULL
             "
         );
@@ -203,6 +388,7 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE u.username = $1 AND u.deleted_at IS NULL
             "
         );
@@ -220,6 +406,7 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE LOWER(u.email) = LOWER($1) AND u.deleted_at IS NULL
             "
         );
@@ -229,6 +416,60 @@ impl UserRepository {
             .await?;
 
         Ok(u)
+    }
+
+    pub async fn get_opaque_password_credential(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Option<StoredOpaquePasswordCredential>> {
+        let row = sqlx::query(
+            r"
+            SELECT opaque_record, opaque_credential_identifier,
+                   opaque_ciphersuite, opaque_server_setup_version
+            FROM auth_password_credentials
+            WHERE user_id = $1
+              AND opaque_record IS NOT NULL
+              AND opaque_credential_identifier IS NOT NULL
+              AND opaque_ciphersuite IS NOT NULL
+              AND opaque_server_setup_version IS NOT NULL
+            ",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| {
+            Ok(StoredOpaquePasswordCredential {
+                record: OpaquePasswordRecord {
+                    record: row.try_get("opaque_record")?,
+                    credential_identifier: row.try_get("opaque_credential_identifier")?,
+                    ciphersuite: row.try_get("opaque_ciphersuite")?,
+                    server_setup_version: row.try_get("opaque_server_setup_version")?,
+                },
+            })
+        })
+        .transpose()
+        .map_err(Error::Database)
+    }
+
+    pub async fn has_opaque_password_credential(&self, user_id: &UserId) -> Result<bool> {
+        sqlx::query_scalar(
+            r"
+            SELECT EXISTS(
+                SELECT 1
+                FROM auth_password_credentials
+                WHERE user_id = $1
+                  AND opaque_record IS NOT NULL
+                  AND opaque_credential_identifier IS NOT NULL
+                  AND opaque_ciphersuite IS NOT NULL
+                  AND opaque_server_setup_version IS NOT NULL
+            )
+            ",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::Database)
     }
 
     /// Update user with optimistic locking.
@@ -261,18 +502,22 @@ impl UserRepository {
     {
         let sql = format!(
             r"
-            UPDATE users
-            SET username = $2, email = $3, password_hash = $4, role = $5,
-                email_verified = $6, updated_at = $7, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL AND version = $8
-            RETURNING {USER_RETURNING_COLUMNS}
+            WITH updated_user AS (
+                UPDATE users
+                SET username = $2, email = $3, role = $4,
+                    email_verified = $5, updated_at = $6, version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL AND version = $7
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            )
+            SELECT {USER_SELECT_COLUMNS}
+            FROM updated_user u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(user.id)
             .bind(&user.username)
             .bind(user.email.as_ref())
-            .bind(&user.password_hash)
             .bind(user.role)
             .bind(user.email_verified)
             .bind(Utc::now())
@@ -303,7 +548,7 @@ impl UserRepository {
         &self,
         user_id: &UserId,
         username: &str,
-        password_hash: Option<&str>,
+        password_credentials: Option<PasswordCredentialMaterial<'_>>,
         old_version: i32,
         executor: E,
     ) -> Result<User>
@@ -311,29 +556,62 @@ impl UserRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
+        let password_credentials = password_credentials.map(PasswordCredentialMaterial::parts);
+        let legacy_password_hash =
+            password_credentials.and_then(|credentials| credentials.legacy_password_hash);
+        let opaque_record = password_credentials.and_then(|credentials| credentials.opaque_record);
+        let opaque_record_bytes = opaque_record.map(|record| record.record.as_slice());
+        let opaque_identifier = opaque_record.map(|record| record.credential_identifier.as_slice());
+        let opaque_ciphersuite = opaque_record.map(|record| record.ciphersuite.as_str());
+        let opaque_server_setup_version = opaque_record.map(|record| record.server_setup_version);
         let sql = format!(
             r"
-            UPDATE users
-            SET username = $2,
-                password_hash = COALESCE($3, password_hash),
-                updated_at = $4,
-                password_changed_at = CASE
-                    WHEN $3 IS NULL THEN password_changed_at
-                    ELSE $4
-                END,
-                password_version = CASE
-                    WHEN $3 IS NULL THEN password_version
-                    ELSE password_version + 1
-                END,
-                version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL AND version = $5
-            RETURNING {USER_RETURNING_COLUMNS}
+            WITH updated_user AS (
+                UPDATE users
+                SET username = $2,
+                    updated_at = $8,
+                    version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL AND version = $9
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            ),
+            updated_password_credential AS (
+                INSERT INTO auth_password_credentials (
+                    user_id, legacy_password_hash, legacy_password_algorithm,
+                    opaque_record, opaque_credential_identifier, opaque_ciphersuite,
+                    opaque_server_setup_version, password_changed_at, password_version,
+                    created_at, updated_at
+                )
+                SELECT u.id, $3, CASE WHEN $3::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
+                       $4, $5, $6, $7, $8, COALESCE(existing_apc.password_version, 0) + 1, $8, $8
+                FROM updated_user u
+                LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
+                WHERE $3::TEXT IS NOT NULL OR $4::BYTEA IS NOT NULL
+                ON CONFLICT (user_id) DO UPDATE
+                SET legacy_password_hash = EXCLUDED.legacy_password_hash,
+                    legacy_password_algorithm = EXCLUDED.legacy_password_algorithm,
+                    opaque_record = EXCLUDED.opaque_record,
+                    opaque_credential_identifier = EXCLUDED.opaque_credential_identifier,
+                    opaque_ciphersuite = EXCLUDED.opaque_ciphersuite,
+                    opaque_server_setup_version = EXCLUDED.opaque_server_setup_version,
+                    password_changed_at = EXCLUDED.password_changed_at,
+                    password_version = auth_password_credentials.password_version + 1,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING *
+            )
+            SELECT {USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL}
+            FROM updated_user u
+            LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
+            LEFT JOIN updated_password_credential updated_apc ON updated_apc.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(user_id)
             .bind(username)
-            .bind(password_hash)
+            .bind(legacy_password_hash)
+            .bind(opaque_record_bytes)
+            .bind(opaque_identifier)
+            .bind(opaque_ciphersuite)
+            .bind(opaque_server_setup_version)
             .bind(now)
             .bind(old_version)
             .fetch_optional(executor)
@@ -378,8 +656,12 @@ impl UserRepository {
 
     /// Update user password
     pub async fn update_password(&self, user_id: &UserId, password_hash: &str) -> Result<User> {
-        self.update_password_with_executor(user_id, password_hash, &self.pool)
-            .await
+        self.update_password_credentials_with_executor(
+            user_id,
+            PasswordCredentialMaterial::legacy_only(password_hash),
+            &self.pool,
+        )
+        .await
     }
 
     /// Update user password using a provided executor (pool or transaction)
@@ -387,23 +669,83 @@ impl UserRepository {
         &self,
         user_id: &UserId,
         password_hash: &str,
+        opaque_record: Option<&OpaquePasswordRecord>,
+        executor: E,
+    ) -> Result<User>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let credentials = match opaque_record {
+            Some(opaque_record) => {
+                PasswordCredentialMaterial::legacy_and_opaque(password_hash, opaque_record)
+            }
+            None => PasswordCredentialMaterial::legacy_only(password_hash),
+        };
+        self.update_password_credentials_with_executor(user_id, credentials, executor)
+            .await
+    }
+
+    pub async fn update_password_credentials_with_executor<'e, E>(
+        &self,
+        user_id: &UserId,
+        credentials: PasswordCredentialMaterial<'_>,
         executor: E,
     ) -> Result<User>
     where
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
+        let credentials = credentials.parts();
+        let legacy_password_hash = credentials.legacy_password_hash;
+        let opaque_record = credentials.opaque_record;
+        let opaque_record_bytes = opaque_record.map(|record| record.record.as_slice());
+        let opaque_identifier = opaque_record.map(|record| record.credential_identifier.as_slice());
+        let opaque_ciphersuite = opaque_record.map(|record| record.ciphersuite.as_str());
+        let opaque_server_setup_version = opaque_record.map(|record| record.server_setup_version);
         let sql = format!(
             r"
-            UPDATE users
-            SET password_hash = $2, updated_at = $3, password_changed_at = $3, password_version = password_version + 1, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING {USER_RETURNING_COLUMNS}
+            WITH updated_user AS (
+                UPDATE users
+                SET updated_at = $7, version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            ),
+            updated_password_credential AS (
+                INSERT INTO auth_password_credentials (
+                    user_id, legacy_password_hash, legacy_password_algorithm,
+                    opaque_record, opaque_credential_identifier, opaque_ciphersuite,
+                    opaque_server_setup_version, password_changed_at, password_version,
+                    created_at, updated_at
+                )
+                SELECT u.id, $2, CASE WHEN $2::TEXT IS NULL THEN NULL ELSE 'argon2id' END,
+                       $3, $4, $5, $6, $7, COALESCE(existing_apc.password_version, 0) + 1, $7, $7
+                FROM updated_user u
+                LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
+                ON CONFLICT (user_id) DO UPDATE
+                SET legacy_password_hash = EXCLUDED.legacy_password_hash,
+                    legacy_password_algorithm = EXCLUDED.legacy_password_algorithm,
+                    opaque_record = EXCLUDED.opaque_record,
+                    opaque_credential_identifier = EXCLUDED.opaque_credential_identifier,
+                    opaque_ciphersuite = EXCLUDED.opaque_ciphersuite,
+                    opaque_server_setup_version = EXCLUDED.opaque_server_setup_version,
+                    password_changed_at = EXCLUDED.password_changed_at,
+                    password_version = auth_password_credentials.password_version + 1,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING *
+            )
+            SELECT {USER_SELECT_COLUMNS_WITH_UPDATED_PASSWORD_CREDENTIAL}
+            FROM updated_user u
+            LEFT JOIN auth_password_credentials existing_apc ON existing_apc.user_id = u.id
+            LEFT JOIN updated_password_credential updated_apc ON updated_apc.user_id = u.id
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
             .bind(user_id)
-            .bind(password_hash)
+            .bind(legacy_password_hash)
+            .bind(opaque_record_bytes)
+            .bind(opaque_identifier)
+            .bind(opaque_ciphersuite)
+            .bind(opaque_server_setup_version)
             .bind(now)
             .fetch_optional(executor)
             .await?
@@ -420,10 +762,15 @@ impl UserRepository {
     ) -> Result<User> {
         let sql = format!(
             r"
-            UPDATE users
-            SET email_verified = $2, updated_at = $3, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
-            RETURNING {USER_RETURNING_COLUMNS}
+            WITH updated_user AS (
+                UPDATE users
+                SET email_verified = $2, updated_at = $3, version = version + 1
+                WHERE id = $1 AND deleted_at IS NULL
+                RETURNING {USER_ROW_RETURNING_COLUMNS}
+            )
+            SELECT {USER_SELECT_COLUMNS}
+            FROM updated_user u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -638,6 +985,7 @@ impl UserRepository {
             r"
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
+            {AUTH_PASSWORD_CREDENTIAL_JOIN}
             WHERE {list_where}
             ORDER BY {order_by}
             LIMIT $1 OFFSET $2
@@ -682,7 +1030,7 @@ impl UserRepository {
             .await?;
 
         let mut list_qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
-            "SELECT {USER_SELECT_COLUMNS} FROM users u WHERE u.deleted_at IS NULL AND u.role IN ("
+            "SELECT {USER_SELECT_COLUMNS} FROM users u {AUTH_PASSWORD_CREDENTIAL_JOIN} WHERE u.deleted_at IS NULL AND u.role IN ("
         ));
         list_qb.push_bind(crate::models::UserRole::Root);
         list_qb.push(", ");
@@ -745,6 +1093,7 @@ impl UserRepository {
 mod tests {
     use super::*;
     use crate::models::SignupMethod;
+    use sqlx::Row;
     use synctv_core_testing::create_test_pool;
 
     #[test]
@@ -920,6 +1269,107 @@ mod tests {
         let created = repo.create(&user).await.unwrap();
         assert_eq!(created.username, "testuser");
         assert_eq!(created.email, Some("test@example.com".into()));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_user_with_password_credentials_persists_legacy_and_opaque() {
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let user = User::new(
+            "credential_user".into(),
+            Some("credential@example.com".into()),
+            "legacy-hash".into(),
+            SignupMethod::Email,
+        );
+        let opaque_record = OpaquePasswordRecord {
+            record: b"opaque-record".to_vec(),
+            credential_identifier: b"synctv:user:credential_user".to_vec(),
+            ciphersuite: "opaque-ristretto255-sha512-argon2id".to_string(),
+            server_setup_version: 1,
+        };
+
+        let created = repo
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::legacy_and_opaque(&user.password_hash, &opaque_record),
+                &pool,
+            )
+            .await
+            .expect("user should be created with password credentials");
+
+        let row = sqlx::query(
+            r"
+            SELECT legacy_password_hash, legacy_password_algorithm, opaque_record,
+                   opaque_credential_identifier, opaque_ciphersuite,
+                   opaque_server_setup_version, password_version
+            FROM auth_password_credentials
+            WHERE user_id = $1
+            ",
+        )
+        .bind(created.id)
+        .fetch_one(&pool)
+        .await
+        .expect("password credential row should exist");
+
+        assert_eq!(
+            row.try_get::<String, _>("legacy_password_hash").unwrap(),
+            "legacy-hash"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("legacy_password_algorithm")
+                .unwrap(),
+            "argon2id"
+        );
+        assert_eq!(
+            row.try_get::<Vec<u8>, _>("opaque_record").unwrap(),
+            b"opaque-record"
+        );
+        assert_eq!(
+            row.try_get::<Vec<u8>, _>("opaque_credential_identifier")
+                .unwrap(),
+            b"synctv:user:credential_user"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("opaque_ciphersuite").unwrap(),
+            "opaque-ristretto255-sha512-argon2id"
+        );
+        assert_eq!(
+            row.try_get::<i32, _>("opaque_server_setup_version")
+                .unwrap(),
+            1
+        );
+        assert_eq!(row.try_get::<i32, _>("password_version").unwrap(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_oauth2_user_without_password_skips_password_credentials() {
+        let (_postgres, pool) = create_test_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let user = User::new_with_status(
+            "oauth_without_password".into(),
+            Some("oauth@example.com".into()),
+            String::new(),
+            SignupMethod::OAuth2,
+            crate::models::UserStatus::Active,
+        );
+
+        let created = repo
+            .create(&user)
+            .await
+            .expect("OAuth2 user should be created without password credentials");
+        let credential_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM auth_password_credentials WHERE user_id = $1)",
+        )
+        .bind(created.id)
+        .fetch_one(&pool)
+        .await
+        .expect("credential existence query should succeed");
+
+        assert!(!credential_exists);
+        assert_eq!(created.password_hash, "");
+        assert_eq!(created.password_version, 0);
     }
 
     #[tokio::test]

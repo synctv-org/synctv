@@ -211,7 +211,9 @@ pub struct PlaybackState {
     pub target: ::prost::alloc::vec::Vec<u8>,
 }
 /// Authentication Messages
-/// SECURITY: password is transmitted as plaintext. TLS MUST be used.
+/// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
+/// for production deployments; the API does not enforce HTTPS because some
+/// trusted or local deployments intentionally run over HTTP.
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RegisterRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -244,7 +246,66 @@ pub struct RegisterResponse {
     #[prost(string, tag = "3")]
     pub refresh_token: ::prost::alloc::string::String,
 }
-/// SECURITY: password is transmitted as plaintext. TLS MUST be used.
+/// Start a real OPAQUE account registration. The server receives only the
+/// OPAQUE registration request, never the plaintext password.
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaqueRegistrationRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaqueRegistrationRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaqueRegistrationRequest {
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    #[serde(default)]
+    pub email: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registration_request: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaqueRegistrationResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaqueRegistrationResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaqueRegistrationResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub registration_response: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishOpaqueRegistrationRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_FinishOpaqueRegistrationRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishOpaqueRegistrationRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub registration_upload: ::prost::alloc::vec::Vec<u8>,
+}
+/// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
+/// for production deployments; the API does not enforce HTTPS because some
+/// trusted or local deployments intentionally run over HTTP.
 /// Provide exactly one login identifier: `username` or `email`.
 /// Provide exactly one credential: `password` or `email_token`.
 #[derive(::prost_reflect::ReflectMessage)]
@@ -284,6 +345,234 @@ pub struct LoginResponse {
     pub access_token: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub refresh_token: ::prost::alloc::string::String,
+}
+/// Start a real OPAQUE password login. The server receives only the OPAQUE
+/// credential request, never the plaintext password. Provide exactly one login
+/// identifier: `username` or `email`.
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaqueLoginRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartOpaqueLoginRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaqueLoginRequest {
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    #[serde(default)]
+    pub email: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub credential_request: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaqueLoginResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartOpaqueLoginResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaqueLoginResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_response: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishOpaqueLoginRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_FinishOpaqueLoginRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishOpaqueLoginRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_finalization: ::prost::alloc::vec::Vec<u8>,
+}
+/// Start a username/email-bound passkey login. The response `options` is the
+/// WebAuthn PublicKeyCredentialRequestOptions JSON that must be passed to the
+/// browser's navigator.credentials.get().
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartPasskeyLoginRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPasskeyLoginRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartPasskeyLoginRequest {
+    #[prost(string, tag = "1")]
+    pub username: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub email: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartPasskeyLoginResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartPasskeyLoginResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartPasskeyLoginResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    /// WebAuthn PublicKeyCredentialRequestOptions JSON.
+    #[prost(string, tag = "2")]
+    pub options: ::prost::alloc::string::String,
+}
+/// Finish a passkey login. `credential` is the browser WebAuthn
+/// PublicKeyCredential JSON returned by navigator.credentials.get().
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishPasskeyLoginRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_FinishPasskeyLoginRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishPasskeyLoginRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub credential: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartPasskeyRegistrationRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartPasskeyRegistrationRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartPasskeyRegistrationRequest {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartPasskeyRegistrationResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartPasskeyRegistrationResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartPasskeyRegistrationResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    /// WebAuthn PublicKeyCredentialCreationOptions JSON.
+    #[prost(string, tag = "2")]
+    pub options: ::prost::alloc::string::String,
+}
+/// Finish a passkey registration. `credential` is the browser WebAuthn
+/// PublicKeyCredential JSON returned by navigator.credentials.create().
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishPasskeyRegistrationRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_FinishPasskeyRegistrationRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishPasskeyRegistrationRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub credential: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.PasskeyCredential")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PasskeyCredential))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PasskeyCredential {
+    #[prost(string, tag = "1")]
+    pub credential_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub sign_count: i64,
+    #[prost(int64, tag = "4")]
+    pub created_at: i64,
+    #[prost(int64, tag = "5")]
+    pub updated_at: i64,
+    #[prost(int64, tag = "6")]
+    pub last_used_at: i64,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.PasskeyCredentialResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_PasskeyCredentialResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PasskeyCredentialResponse {
+    #[prost(message, optional, tag = "1")]
+    pub credential: ::core::option::Option<PasskeyCredential>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ListPasskeysRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPasskeysRequest))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListPasskeysRequest {}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ListPasskeysResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ListPasskeysResponse))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListPasskeysResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub credentials: ::prost::alloc::vec::Vec<PasskeyCredential>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.DeletePasskeyRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePasskeyRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeletePasskeyRequest {
+    #[prost(string, tag = "1")]
+    pub credential_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.DeletePasskeyResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_DeletePasskeyResponse))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeletePasskeyResponse {
+    #[prost(bool, tag = "1")]
+    pub deleted: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RequestEmailLoginRequest")]
@@ -388,6 +677,92 @@ pub struct UpdateUserResponse {
     pub message: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub username: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaquePasswordUpdateRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaquePasswordUpdateRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaquePasswordUpdateRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub credential_request: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub registration_request: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "OpaquePasswordUpdateVerificationMethod", tag = "4")]
+    pub verification_method: i32,
+    #[prost(string, tag = "5")]
+    pub old_password: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub email_token: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartOpaquePasswordUpdateResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_StartOpaquePasswordUpdateResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOpaquePasswordUpdateResponse {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_response: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registration_response: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub passkey_session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "5")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub passkey_options: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishOpaquePasswordUpdateRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_FinishOpaquePasswordUpdateRequest)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishOpaquePasswordUpdateRequest {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_finalization: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registration_upload: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "5")]
+    pub passkey_session_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "6")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub passkey_credential: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishOpaquePasswordUpdateResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_FinishOpaquePasswordUpdateResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishOpaquePasswordUpdateResponse {
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<User>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.CreateWebSocketTicketRequest")]
@@ -3914,6 +4289,63 @@ impl ResourceAvailabilityFilter {
         }
     }
 }
+/// Start changing the current user's password credential via OPAQUE. This is an
+/// authenticated endpoint; successful finish replaces password credentials with
+/// OPAQUE-only material and clears legacy password login.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_OpaquePasswordUpdateVerificationMethod)
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OpaquePasswordUpdateVerificationMethod {
+    Unspecified = 0,
+    CurrentOpaquePassword = 1,
+    CurrentPlainPassword = 2,
+    EmailToken = 3,
+    Passkey = 4,
+}
+impl OpaquePasswordUpdateVerificationMethod {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED",
+            Self::CurrentOpaquePassword => {
+                "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD"
+            }
+            Self::CurrentPlainPassword => {
+                "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD"
+            }
+            Self::EmailToken => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN",
+            Self::Passkey => "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD" => {
+                Some(Self::CurrentOpaquePassword)
+            }
+            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD" => {
+                Some(Self::CurrentPlainPassword)
+            }
+            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN" => {
+                Some(Self::EmailToken)
+            }
+            "OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY" => Some(Self::Passkey),
+            _ => None,
+        }
+    }
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -4785,6 +5217,162 @@ pub mod auth_service_client {
                 .insert(GrpcMethod::new("synctv.client.AuthService", "Login"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn start_opaque_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartOpaqueRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaqueRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartOpaqueRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.AuthService",
+                        "StartOpaqueRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_opaque_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishOpaqueRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RegisterResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishOpaqueRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.AuthService",
+                        "FinishOpaqueRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn start_opaque_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartOpaqueLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaqueLoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartOpaqueLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "StartOpaqueLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_opaque_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishOpaqueLoginRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishOpaqueLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "FinishOpaqueLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn start_passkey_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartPasskeyLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPasskeyLoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartPasskeyLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "StartPasskeyLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_passkey_login(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishPasskeyLoginRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishPasskeyLogin",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "FinishPasskeyLogin"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn request_email_login(
             &mut self,
             request: impl tonic::IntoRequest<super::RequestEmailLoginRequest>,
@@ -4860,6 +5448,42 @@ pub mod auth_service_server {
         async fn login(
             &self,
             request: tonic::Request<super::LoginRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
+        async fn start_opaque_registration(
+            &self,
+            request: tonic::Request<super::StartOpaqueRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaqueRegistrationResponse>,
+            tonic::Status,
+        >;
+        async fn finish_opaque_registration(
+            &self,
+            request: tonic::Request<super::FinishOpaqueRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RegisterResponse>,
+            tonic::Status,
+        >;
+        async fn start_opaque_login(
+            &self,
+            request: tonic::Request<super::StartOpaqueLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaqueLoginResponse>,
+            tonic::Status,
+        >;
+        async fn finish_opaque_login(
+            &self,
+            request: tonic::Request<super::FinishOpaqueLoginRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
+        async fn start_passkey_login(
+            &self,
+            request: tonic::Request<super::StartPasskeyLoginRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPasskeyLoginResponse>,
+            tonic::Status,
+        >;
+        async fn finish_passkey_login(
+            &self,
+            request: tonic::Request<super::FinishPasskeyLoginRequest>,
         ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
         async fn request_email_login(
             &self,
@@ -5032,6 +5656,292 @@ pub mod auth_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartOpaqueRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartOpaqueRegistrationSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::StartOpaqueRegistrationRequest>
+                    for StartOpaqueRegistrationSvc<T> {
+                        type Response = super::StartOpaqueRegistrationResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::StartOpaqueRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_opaque_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartOpaqueRegistrationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishOpaqueRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishOpaqueRegistrationSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::FinishOpaqueRegistrationRequest>
+                    for FinishOpaqueRegistrationSvc<T> {
+                        type Response = super::RegisterResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::FinishOpaqueRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_opaque_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishOpaqueRegistrationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartOpaqueLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartOpaqueLoginSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::StartOpaqueLoginRequest>
+                    for StartOpaqueLoginSvc<T> {
+                        type Response = super::StartOpaqueLoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StartOpaqueLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_opaque_login(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartOpaqueLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishOpaqueLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishOpaqueLoginSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::FinishOpaqueLoginRequest>
+                    for FinishOpaqueLoginSvc<T> {
+                        type Response = super::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::FinishOpaqueLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_opaque_login(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishOpaqueLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartPasskeyLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartPasskeyLoginSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::StartPasskeyLoginRequest>
+                    for StartPasskeyLoginSvc<T> {
+                        type Response = super::StartPasskeyLoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StartPasskeyLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_passkey_login(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartPasskeyLoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishPasskeyLogin" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishPasskeyLoginSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::FinishPasskeyLoginRequest>
+                    for FinishPasskeyLoginSvc<T> {
+                        type Response = super::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::FinishPasskeyLoginRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_passkey_login(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishPasskeyLoginSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -5366,6 +6276,170 @@ pub mod user_service_client {
                 .insert(GrpcMethod::new("synctv.client.UserService", "SetPassword"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn start_opaque_password_update(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartOpaquePasswordUpdateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaquePasswordUpdateResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/StartOpaquePasswordUpdate",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.UserService",
+                        "StartOpaquePasswordUpdate",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_opaque_password_update(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishOpaquePasswordUpdateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::FinishOpaquePasswordUpdateResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/FinishOpaquePasswordUpdate",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.UserService",
+                        "FinishOpaquePasswordUpdate",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn start_passkey_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartPasskeyRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPasskeyRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/StartPasskeyRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.UserService",
+                        "StartPasskeyRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_passkey_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishPasskeyRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PasskeyCredentialResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/FinishPasskeyRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.client.UserService",
+                        "FinishPasskeyRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_passkeys(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListPasskeysRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPasskeysResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/ListPasskeys",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "ListPasskeys"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn delete_passkey(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeletePasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeletePasskeyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/DeletePasskey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.UserService", "DeletePasskey"));
+            self.inner.unary(req, path, codec).await
+        }
         /// User-initiated room resource operations outside room-scoped context
         pub async fn create_room(
             &mut self,
@@ -5502,6 +6576,48 @@ pub mod user_service_server {
             request: tonic::Request<super::SetPasswordRequest>,
         ) -> std::result::Result<
             tonic::Response<super::SetPasswordResponse>,
+            tonic::Status,
+        >;
+        async fn start_opaque_password_update(
+            &self,
+            request: tonic::Request<super::StartOpaquePasswordUpdateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartOpaquePasswordUpdateResponse>,
+            tonic::Status,
+        >;
+        async fn finish_opaque_password_update(
+            &self,
+            request: tonic::Request<super::FinishOpaquePasswordUpdateRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::FinishOpaquePasswordUpdateResponse>,
+            tonic::Status,
+        >;
+        async fn start_passkey_registration(
+            &self,
+            request: tonic::Request<super::StartPasskeyRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartPasskeyRegistrationResponse>,
+            tonic::Status,
+        >;
+        async fn finish_passkey_registration(
+            &self,
+            request: tonic::Request<super::FinishPasskeyRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PasskeyCredentialResponse>,
+            tonic::Status,
+        >;
+        async fn list_passkeys(
+            &self,
+            request: tonic::Request<super::ListPasskeysRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListPasskeysResponse>,
+            tonic::Status,
+        >;
+        async fn delete_passkey(
+            &self,
+            request: tonic::Request<super::DeletePasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::DeletePasskeyResponse>,
             tonic::Status,
         >;
         /// User-initiated room resource operations outside room-scoped context
@@ -5775,6 +6891,303 @@ pub mod user_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = SetPasswordSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/StartOpaquePasswordUpdate" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartOpaquePasswordUpdateSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<
+                        super::StartOpaquePasswordUpdateRequest,
+                    > for StartOpaquePasswordUpdateSvc<T> {
+                        type Response = super::StartOpaquePasswordUpdateResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::StartOpaquePasswordUpdateRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::start_opaque_password_update(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartOpaquePasswordUpdateSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/FinishOpaquePasswordUpdate" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishOpaquePasswordUpdateSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<
+                        super::FinishOpaquePasswordUpdateRequest,
+                    > for FinishOpaquePasswordUpdateSvc<T> {
+                        type Response = super::FinishOpaquePasswordUpdateResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::FinishOpaquePasswordUpdateRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::finish_opaque_password_update(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishOpaquePasswordUpdateSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/StartPasskeyRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartPasskeyRegistrationSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::StartPasskeyRegistrationRequest>
+                    for StartPasskeyRegistrationSvc<T> {
+                        type Response = super::StartPasskeyRegistrationResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::StartPasskeyRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::start_passkey_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartPasskeyRegistrationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/FinishPasskeyRegistration" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishPasskeyRegistrationSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<
+                        super::FinishPasskeyRegistrationRequest,
+                    > for FinishPasskeyRegistrationSvc<T> {
+                        type Response = super::PasskeyCredentialResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::FinishPasskeyRegistrationRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::finish_passkey_registration(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishPasskeyRegistrationSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/ListPasskeys" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListPasskeysSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::ListPasskeysRequest>
+                    for ListPasskeysSvc<T> {
+                        type Response = super::ListPasskeysResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListPasskeysRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::list_passkeys(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListPasskeysSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/DeletePasskey" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeletePasskeySvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::DeletePasskeyRequest>
+                    for DeletePasskeySvc<T> {
+                        type Response = super::DeletePasskeyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeletePasskeyRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::delete_passkey(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeletePasskeySvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -86,7 +86,7 @@ impl DatabaseMaintenanceService {
 
     /// Delete expired email tokens.
     pub async fn run_cleanup_email_tokens(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("SELECT cleanup_expired_email_tokens()")
+        sqlx::query("SELECT cleanup_expired_auth_email_tokens()")
             .execute(&self.pool)
             .await?;
         info!("Expired email token cleanup completed");

@@ -142,8 +142,10 @@ redis = { version = "1.0", features = [
 
 # Security
 argon2 = "0.5.3"
+opaque-ke = { version = "4.0.1", features = ["argon2"] }
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
+webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
 aes-gcm = "0.10.3"
 ammonia = "4.1.2"
 http-acl = "0.11.0"
@@ -171,13 +173,16 @@ lru = "0.17.0"
 
 # IDs & Crypto
 nanoid = "0.5.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+uuid = { version = "1.23.1", features = ["v4", "v5", "serde"] }
 sqids = "0.4.2"
 rand = "0.10.1"
+rand_08 = { package = "rand", version = "0.8" }
+rand_chacha_08 = { package = "rand_chacha", version = "0.3" }
 base64 = "0.22.1"
 humantime = "2.3.0"
 hex = "0.4.3"
 chrono-tz = "0.10.4"
+sha2_010 = { package = "sha2", version = "0.10" }
 iana-time-zone = "0.1.65"
 
 # WebRTC

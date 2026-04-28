@@ -1818,4 +1818,38 @@ mod tests {
             "{error}"
         );
     }
+
+    #[test]
+    fn opaque_binary_fields_deserialize_http_byte_arrays_without_json_reencoding() {
+        let decoded: crate::client::StartOpaqueLoginRequest =
+            serde_json::from_str(r#"{"username":"alice","credential_request":[1,2,3,255]}"#)
+                .expect("OPAQUE login request should deserialize from byte array");
+        assert_eq!(decoded.credential_request, vec![1, 2, 3, 255]);
+
+        let decoded: crate::client::StartOpaquePasswordUpdateRequest = serde_json::from_str(
+            r#"{
+                "credential_request":[4,5,6],
+                "registration_request":[7,8,9],
+                "verification_method":1,
+                "old_password":"",
+                "email_token":""
+            }"#,
+        )
+        .expect("OPAQUE password update request should deserialize from byte arrays");
+        assert_eq!(decoded.credential_request, vec![4, 5, 6]);
+        assert_eq!(decoded.registration_request, vec![7, 8, 9]);
+
+        let decoded: crate::client::FinishOpaquePasswordUpdateRequest = serde_json::from_str(
+            r#"{
+                "session_id":"opaque-session",
+                "credential_finalization":[10,11],
+                "registration_upload":[12,13],
+                "passkey_session_id":"",
+                "passkey_credential":[]
+            }"#,
+        )
+        .expect("OPAQUE password update finish should deserialize from byte arrays");
+        assert_eq!(decoded.credential_finalization, vec![10, 11]);
+        assert_eq!(decoded.registration_upload, vec![12, 13]);
+    }
 }

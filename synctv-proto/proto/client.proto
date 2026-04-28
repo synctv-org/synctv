@@ -15,6 +15,12 @@ import "proto/common.proto";
 service AuthService {
     rpc Register(RegisterRequest) returns (RegisterResponse);
     rpc Login(LoginRequest) returns (LoginResponse);
+    rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
+    rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
+    rpc StartOpaqueLogin(StartOpaqueLoginRequest) returns (StartOpaqueLoginResponse);
+    rpc FinishOpaqueLogin(FinishOpaqueLoginRequest) returns (LoginResponse);
+    rpc StartPasskeyLogin(StartPasskeyLoginRequest) returns (StartPasskeyLoginResponse);
+    rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (LoginResponse);
     rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
     rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 }
@@ -28,6 +34,12 @@ service UserService {
     rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
     rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
     rpc SetPassword(SetPasswordRequest) returns (SetPasswordResponse);
+    rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
+    rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
+    rpc StartPasskeyRegistration(StartPasskeyRegistrationRequest) returns (StartPasskeyRegistrationResponse);
+    rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (PasskeyCredentialResponse);
+    rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
+    rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
 
     // User-initiated room resource operations outside room-scoped context
     rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
@@ -229,7 +241,9 @@ message PlaybackState {
 }
 
 // Authentication Messages
-// SECURITY: password is transmitted as plaintext. TLS MUST be used.
+// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
+// for production deployments; the API does not enforce HTTPS because some
+// trusted or local deployments intentionally run over HTTP.
 message RegisterRequest {
     string username = 1 [(buf.validate.field).string = {
         min_len: 3,
@@ -252,7 +266,46 @@ message RegisterResponse {
     string refresh_token = 3;
 }
 
-// SECURITY: password is transmitted as plaintext. TLS MUST be used.
+// Start a real OPAQUE account registration. The server receives only the
+// OPAQUE registration request, never the plaintext password.
+message StartOpaqueRegistrationRequest {
+    string username = 1 [(buf.validate.field).string = {
+        min_len: 3,
+        max_len: 50,
+        pattern: "^[\\p{L}\\p{N}_-]+$"
+    }];
+    string email = 2 [(buf.validate.field).string = {
+        max_len: 254,
+        email: true
+    }];
+    bytes registration_request = 3 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+}
+
+message StartOpaqueRegistrationResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes registration_response = 2;
+}
+
+message FinishOpaqueRegistrationRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes registration_upload = 2 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+}
+
+// SECURITY: password is transmitted as plaintext. TLS is strongly recommended
+// for production deployments; the API does not enforce HTTPS because some
+// trusted or local deployments intentionally run over HTTP.
 // Provide exactly one login identifier: `username` or `email`.
 // Provide exactly one credential: `password` or `email_token`.
 message LoginRequest {
@@ -274,6 +327,139 @@ message LoginResponse {
     User user = 1;
     string access_token = 2;
     string refresh_token = 3;
+}
+
+// Start a real OPAQUE password login. The server receives only the OPAQUE
+// credential request, never the plaintext password. Provide exactly one login
+// identifier: `username` or `email`.
+message StartOpaqueLoginRequest {
+    string username = 1 [(buf.validate.field).string = {
+        max_len: 50
+    }];
+    string email = 2 [(buf.validate.field).string = {
+        max_len: 254
+    }];
+    bytes credential_request = 3 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+}
+
+message StartOpaqueLoginResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes credential_response = 2;
+}
+
+message FinishOpaqueLoginRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes credential_finalization = 2 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+}
+
+// Start a username/email-bound passkey login. The response `options` is the
+// WebAuthn PublicKeyCredentialRequestOptions JSON that must be passed to the
+// browser's navigator.credentials.get().
+message StartPasskeyLoginRequest {
+    string username = 1 [(buf.validate.field).string = {
+        max_len: 50
+    }];
+    string email = 2 [(buf.validate.field).string = {
+        max_len: 254
+    }];
+}
+
+message StartPasskeyLoginResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    // WebAuthn PublicKeyCredentialRequestOptions JSON.
+    string options = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+// Finish a passkey login. `credential` is the browser WebAuthn
+// PublicKeyCredential JSON returned by navigator.credentials.get().
+message FinishPasskeyLoginRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string credential = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+message StartPasskeyRegistrationRequest {
+    string name = 1 [(buf.validate.field).string = {
+        max_len: 100
+    }];
+}
+
+message StartPasskeyRegistrationResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    // WebAuthn PublicKeyCredentialCreationOptions JSON.
+    string options = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+// Finish a passkey registration. `credential` is the browser WebAuthn
+// PublicKeyCredential JSON returned by navigator.credentials.create().
+message FinishPasskeyRegistrationRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string credential = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+message PasskeyCredential {
+    string credential_id = 1;
+    string name = 2;
+    int64 sign_count = 3;
+    int64 created_at = 4;
+    int64 updated_at = 5;
+    int64 last_used_at = 6;
+}
+
+message PasskeyCredentialResponse {
+    PasskeyCredential credential = 1;
+}
+
+message ListPasskeysRequest {}
+
+message ListPasskeysResponse {
+    repeated PasskeyCredential credentials = 1;
+}
+
+message DeletePasskeyRequest {
+    string credential_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 2048
+    }];
+}
+
+message DeletePasskeyResponse {
+    bool deleted = 1;
 }
 
 message RequestEmailLoginRequest {
@@ -327,6 +513,69 @@ message UpdateUserRequest {
 message UpdateUserResponse {
     string message = 1;
     optional string username = 2;
+}
+
+// Start changing the current user's password credential via OPAQUE. This is an
+// authenticated endpoint; successful finish replaces password credentials with
+// OPAQUE-only material and clears legacy password login.
+enum OpaquePasswordUpdateVerificationMethod {
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_UNSPECIFIED = 0;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_OPAQUE_PASSWORD = 1;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_CURRENT_PLAIN_PASSWORD = 2;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_EMAIL_TOKEN = 3;
+    OPAQUE_PASSWORD_UPDATE_VERIFICATION_METHOD_PASSKEY = 4;
+}
+
+message StartOpaquePasswordUpdateRequest {
+    bytes credential_request = 1 [(buf.validate.field).bytes = {
+        max_len: 4096
+    }];
+    bytes registration_request = 2 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+    OpaquePasswordUpdateVerificationMethod verification_method = 4;
+    string old_password = 5 [(buf.validate.field).string = {
+        max_len: 128
+    }];
+    string email_token = 6 [(buf.validate.field).string = {
+        max_len: 128
+    }];
+}
+
+message StartOpaquePasswordUpdateResponse {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes credential_response = 2;
+    bytes registration_response = 3;
+    string passkey_session_id = 4;
+    bytes passkey_options = 5;
+}
+
+message FinishOpaquePasswordUpdateRequest {
+    string session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    bytes credential_finalization = 2 [(buf.validate.field).bytes = {
+        max_len: 4096
+    }];
+    bytes registration_upload = 3 [(buf.validate.field).bytes = {
+        min_len: 1,
+        max_len: 4096
+    }];
+    string passkey_session_id = 5 [(buf.validate.field).string = {
+        max_len: 128
+    }];
+    bytes passkey_credential = 6 [(buf.validate.field).bytes = {
+        max_len: 16384
+    }];
+}
+
+message FinishOpaquePasswordUpdateResponse {
+    User user = 1;
 }
 
 message CreateWebSocketTicketRequest {

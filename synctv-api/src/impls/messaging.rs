@@ -3922,7 +3922,7 @@ impl StreamMessageHandler {
         &self,
         update: &crate::proto::client::UpdatePlayback,
     ) -> Result<(), String> {
-        let command = crate::impls::client::build_update_playback(update.clone())
+        let command = crate::impls::client::build_update_playback(*update)
             .map_err(|error| error.to_string())?;
         let previous_state = self
             .room_service

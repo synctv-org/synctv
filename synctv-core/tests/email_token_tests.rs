@@ -410,7 +410,7 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
     );
 
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+        "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
     .bind(user.id)
     .bind(i16::from(EmailTokenType::EmailVerification))
@@ -452,7 +452,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     assert!(result.is_err(), "SMTP failure should surface as an error");
 
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+        "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
     .bind(user.id)
     .bind(i16::from(EmailTokenType::EmailVerification))

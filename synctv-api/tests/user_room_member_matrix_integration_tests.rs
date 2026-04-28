@@ -1034,14 +1034,22 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
     let pending_registration_id = UserId::new();
     sqlx::query(
         r"
-        INSERT INTO user_registration_requests (id, username, email, password_hash, signup_method, status)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO user_registration_requests (
+            id, username, email, legacy_password_hash, opaque_record,
+            opaque_credential_identifier, opaque_ciphersuite,
+            opaque_server_setup_version, signup_method, status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ",
     )
     .bind(pending_registration_id)
     .bind("user_matrix_pending")
     .bind("user_matrix_pending@test.com")
     .bind("hash")
+    .bind(b"opaque-record".as_slice())
+    .bind(b"opaque-id".as_slice())
+    .bind("opaque-ristretto255-sha512-argon2id")
+    .bind(1_i32)
     .bind(SignupMethod::Email)
     .bind(i16::from(ReviewStatus::Pending))
     .execute(&pool)

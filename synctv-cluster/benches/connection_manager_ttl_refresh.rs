@@ -58,8 +58,8 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
                 let user_idx = i % num_users;
                 let room_idx = i % num_rooms;
                 let conn_id = format!("conn_{i}");
-                let user_id = uid(&format!("user_{user_idx}"));
-                let room_id = rid(&format!("room_{room_idx}"));
+                let user_id = uid(&(user_idx + 1).to_string());
+                let room_id = rid(&(room_idx + 1).to_string());
 
                 manager.register(conn_id.clone(), user_id).await.unwrap();
                 manager.join_room(&conn_id, room_id).await.unwrap();
@@ -67,7 +67,7 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
 
             let mut test_conn = conn.clone();
             for i in 0..num_users {
-                let key = format!("ttl_large:connections:user:user_{i}");
+                let key = format!("ttl_large:connections:user:{}", i + 1);
                 let _: () = redis::cmd("EXPIRE")
                     .arg(&key)
                     .arg(10)
@@ -76,7 +76,7 @@ fn bench_ttl_refresh_large_scale(c: &mut Criterion) {
                     .unwrap();
             }
             for i in 0..num_rooms {
-                let key = format!("ttl_large:connections:room:room_{i}");
+                let key = format!("ttl_large:connections:room:{}", i + 1);
                 let _: () = redis::cmd("EXPIRE")
                     .arg(&key)
                     .arg(10)

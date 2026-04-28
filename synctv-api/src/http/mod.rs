@@ -10,6 +10,7 @@ pub mod metrics_auth;
 pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
+pub(crate) mod passkey_json;
 pub mod public;
 pub mod room;
 pub mod room_extra;
@@ -154,6 +155,7 @@ pub struct RouterConfig {
     pub jwt_service: synctv_core::service::JwtService,
     pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
+    pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
@@ -636,6 +638,30 @@ fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
+        .route(
+            "/api/auth/passkeys/login/start",
+            post(auth::start_passkey_login),
+        )
+        .route(
+            "/api/auth/passkeys/login/finish",
+            post(auth::finish_passkey_login),
+        )
+        .route(
+            "/api/auth/opaque/login/start",
+            post(auth::start_opaque_login),
+        )
+        .route(
+            "/api/auth/opaque/login/finish",
+            post(auth::finish_opaque_login),
+        )
+        .route(
+            "/api/auth/opaque/registration/start",
+            post(auth::start_opaque_registration),
+        )
+        .route(
+            "/api/auth/opaque/registration/finish",
+            post(auth::finish_opaque_registration),
+        )
         .route("/api/auth/email/request", post(auth::request_email_login))
         .route("/api/auth/refresh", post(auth::refresh_token))
         // Tighter body limit for authentication endpoints (64 KB)
@@ -779,6 +805,27 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/user", axum::routing::patch(user::update_user))
+        .route("/api/user/passkeys", get(user::list_passkeys))
+        .route(
+            "/api/user/passkeys/registration/start",
+            post(user::start_passkey_registration),
+        )
+        .route(
+            "/api/user/passkeys/registration/finish",
+            post(user::finish_passkey_registration),
+        )
+        .route(
+            "/api/user/opaque-password/update/start",
+            post(user::start_opaque_password_update),
+        )
+        .route(
+            "/api/user/opaque-password/update/finish",
+            post(user::finish_opaque_password_update),
+        )
+        .route(
+            "/api/user/passkeys/{credential_id}",
+            axum::routing::delete(user::delete_passkey),
+        )
         .route("/api/user/me", axum::routing::delete(user::delete_me))
         .route("/api/user/logout", post(auth::logout))
 }
@@ -1250,6 +1297,7 @@ mod tests {
                 None, false,
             ),
             oauth2_service: None,
+            passkey_service: None,
             settings_service: None,
             settings_registry: None,
             email_service: None,
@@ -1471,6 +1519,7 @@ mod tests {
                 None, false,
             ),
             oauth2_service: None,
+            passkey_service: None,
             settings_service: None,
             settings_registry: None,
             email_service: None,
@@ -1602,6 +1651,117 @@ mod tests {
             StatusCode::NOT_FOUND,
             "public room listing route must be registered"
         );
+    }
+
+    #[tokio::test]
+    async fn test_opaque_login_routes_are_registered() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        for uri in [
+            "/api/auth/opaque/login/start",
+            "/api/auth/opaque/login/finish",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{"))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{uri} must accept POST"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_passkey_login_routes_fail_closed_when_service_missing() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        let start_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/passkeys/login/start")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"alice_123","email":""}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(start_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let finish_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/passkeys/login/finish")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"session_id":"session","credential":{}}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(finish_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_passkey_user_routes_are_registered_and_require_authentication() {
+        let state = test_app_state();
+        let app = register_all_routes_for_test(&state).with_state(state);
+
+        for (method, uri, body) in [
+            ("GET", "/api/user/passkeys", None),
+            (
+                "POST",
+                "/api/user/passkeys/registration/start",
+                Some(r#"{"name":"Laptop"}"#),
+            ),
+            (
+                "POST",
+                "/api/user/passkeys/registration/finish",
+                Some(r#"{"session_id":"session","credential":{}}"#),
+            ),
+            ("DELETE", "/api/user/passkeys/Y3JlZGVudGlhbA", None),
+        ] {
+            let mut builder = Request::builder().method(method).uri(uri);
+            if body.is_some() {
+                builder = builder.header(axum::http::header::CONTENT_TYPE, "application/json");
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    builder
+                        .body(body.map_or_else(Body::empty, Body::from))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{uri} is missing");
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{uri} must accept {method}"
+            );
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri} should follow the normal authenticated user route path"
+            );
+        }
     }
 
     #[tokio::test]

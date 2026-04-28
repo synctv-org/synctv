@@ -48,25 +48,42 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     sqlx::query(
         r"
         INSERT INTO users (
-            id, username, email, password_hash, signup_method, role, email_verified,
-            created_at, updated_at, password_changed_at
+            id, username, email, signup_method, role, email_verified,
+            created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ",
     )
     .bind(user.id)
     .bind(&user.username)
     .bind(user.email.as_ref())
-    .bind(&user.password_hash)
     .bind(user.signup_method)
     .bind(user.role)
     .bind(user.email_verified)
     .bind(user.created_at)
     .bind(user.updated_at)
-    .bind(user.password_changed_at)
     .execute(pool)
     .await
     .expect("Failed to create test user");
+
+    sqlx::query(
+        r"
+        INSERT INTO auth_password_credentials (
+            user_id, legacy_password_hash, legacy_password_algorithm,
+            password_changed_at, password_version, created_at, updated_at
+        )
+        VALUES ($1, $2, 'argon2id', $3, $4, $5, $6)
+        ",
+    )
+    .bind(user.id)
+    .bind(&user.password_hash)
+    .bind(user.password_changed_at)
+    .bind(user.password_version)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .execute(pool)
+    .await
+    .expect("Failed to create test user password credential");
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -112,7 +129,7 @@ async fn test_concurrent_member_role_updates_isolated() {
         version: 0,
         last_activity_at: chrono::Utc::now(),
     };
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");
@@ -229,7 +246,7 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         version: 0,
         last_activity_at: chrono::Utc::now(),
     };
-    room_repo
+    let room = room_repo
         .create(&room)
         .await
         .expect("Failed to create room");

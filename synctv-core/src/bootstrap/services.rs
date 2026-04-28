@@ -14,14 +14,15 @@ use crate::{
         ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
         RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
+        WebAuthnCredentialRepository,
     },
     service::{
         notification::NotificationService as RoomNotificationService, AuditFlushHandle,
         AuditService, ChatService, ContentFilter, EmailConfig, EmailService, EmailTokenService,
-        JwtService, OAuth2Service, PermissionService, ProvidersManager, RateLimitConfig,
-        RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
-        SettingsRegistry, SettingsService, StreamingPublishKeyService, UserNotificationService,
-        UserService,
+        JwtService, OAuth2Service, PasskeyService, PermissionService, ProvidersManager,
+        RateLimitConfig, RemoteProviderManager, RequestRateLimiterService, RoomService,
+        RoomSettingsService, SettingsRegistry, SettingsService, StreamingPublishKeyService,
+        UserNotificationService, UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -64,6 +65,8 @@ pub struct Services {
     pub providers_manager: Arc<ProvidersManager>,
     /// `OAuth2` service (optional, requires configuration)
     pub oauth2_service: Option<Arc<OAuth2Service>>,
+    /// Passkey/WebAuthn service (optional, requires configuration)
+    pub passkey_service: Option<Arc<PasskeyService>>,
     /// Settings service
     pub settings_service: Arc<SettingsService>,
     /// Settings registry with type-safe setting variables
@@ -641,7 +644,7 @@ pub async fn init_services_with_options(
 
     let settings_registry = Arc::new(settings_registry);
 
-    let user_service = UserService::new_with_brute_force_service_and_runtime(
+    let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         pool.clone(),
         crate::service::user::UserServiceDependencies {
             jwt_service: jwt_service.clone(),
@@ -657,13 +660,46 @@ pub async fn init_services_with_options(
             email_verification_required,
             settings_registry: Some(Arc::clone(&settings_registry)),
             password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+            opaque_password_service: Some(Arc::new(
+                crate::service::auth::OpaquePasswordService::derive_from_secret(
+                    config.security.opaque_server_setup_secret.as_bytes(),
+                ),
+            )),
+            opaque_login_session_store: Some(
+                crate::service::user::opaque_login_session_store_from_shared_state_profile(
+                    &shared_state_profile,
+                )?,
+            ),
+            opaque_registration_session_store: Some(
+                crate::service::user::opaque_registration_session_store_from_shared_state_profile(
+                    &shared_state_profile,
+                )?,
+            ),
         },
-    );
+    ));
     info!("UserService initialized with construction-time dependencies");
+
+    let passkey_service = if config.webauthn.enabled {
+        let session_store =
+            crate::service::passkey_session_store_from_shared_state_profile(&shared_state_profile)?;
+        Some(Arc::new(PasskeyService::new(
+            &config.webauthn,
+            WebAuthnCredentialRepository::new(pool.clone()),
+            user_service.clone(),
+            session_store,
+        )?))
+    } else {
+        None
+    };
+    if passkey_service.is_some() {
+        info!("Passkey/WebAuthn service initialized");
+    } else {
+        info!("Passkey/WebAuthn service not configured");
+    }
 
     let room_service = build_room_service(RoomServiceBuildArgs {
         pool: pool.clone(),
-        user_service: user_service.clone(),
+        user_service: (*user_service).clone(),
         credential_repo: user_provider_credential_repo.clone(),
         credential_encryption: credential_encryption_for_services.clone(),
         providers_manager: providers_manager.clone(),
@@ -712,7 +748,7 @@ pub async fn init_services_with_options(
     let provider_invalidation_task = provider_instance_manager.invalidation_listener_task();
 
     Ok(Services {
-        user_service: Arc::new(user_service),
+        user_service,
         room_service: Arc::new(room_service),
         jwt_service,
         rate_limiter,
@@ -723,6 +759,7 @@ pub async fn init_services_with_options(
         user_provider_credential_repo,
         providers_manager,
         oauth2_service,
+        passkey_service,
         settings_service,
         settings_registry,
         email_service,

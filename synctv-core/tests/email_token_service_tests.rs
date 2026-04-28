@@ -255,7 +255,7 @@ async fn test_service_concurrent_generation_replaces_unused_token_atomically() {
     );
 
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
+        "SELECT COUNT(*) FROM auth_email_tokens WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL",
     )
     .bind(user.id)
     .bind(i16::from(EmailTokenType::PasswordReset))

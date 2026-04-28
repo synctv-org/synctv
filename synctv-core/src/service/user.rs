@@ -1,7 +1,12 @@
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{HashMap, HashSet};
-
+use std::future::Future;
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
+
+use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
 use synctv_common::ExecutionControl;
 
 use crate::{
@@ -9,15 +14,25 @@ use crate::{
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
     models::{MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserId, UserStatus},
-    repository::{RoomMemberRepository, UserOAuthProviderRepository, UserRepository},
-    service::auth::{BruteForceProtectionService, JwtService, TokenBlacklistStore, TokenType},
+    repository::{
+        PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
+        UserRepository,
+    },
+    service::auth::{
+        BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
+        TokenBlacklistStore, TokenType,
+    },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
-    Error, Result,
+    Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 /// Default refresh token rate limit: 10 requests per minute per user
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
+const OPAQUE_LOGIN_SESSION_TTL_SECS: u64 = 300;
+const OPAQUE_LOGIN_SESSION_CAPACITY: u64 = 10_000;
+const OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
+const OPAQUE_REGISTRATION_SESSION_CAPACITY: u64 = 10_000;
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
@@ -27,8 +42,484 @@ fn nonnegative_i64_to_u64(value: i64) -> u64 {
 struct PendingRegistrationRequest {
     username: String,
     email: Option<String>,
-    password_hash: String,
+    legacy_password_hash: Option<String>,
+    opaque_record: Vec<u8>,
+    opaque_credential_identifier: Vec<u8>,
+    opaque_ciphersuite: String,
+    opaque_server_setup_version: i32,
     signup_method: SignupMethod,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpaqueLoginSession {
+    user_id: Option<UserId>,
+    brute_force_key: String,
+    user_existed: bool,
+    server_login_state: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpaqueLoginStartChallenge {
+    pub session_id: String,
+    pub credential_response: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OpaqueRegistrationPurpose {
+    Account {
+        username: String,
+        email: Option<String>,
+    },
+    PasswordUpdate {
+        user_id: UserId,
+        expected_password_version: i32,
+        verification: OpaquePasswordUpdateVerification,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OpaquePasswordUpdateVerification {
+    CurrentOpaquePassword { server_login_state: Vec<u8> },
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpaqueRegistrationSession {
+    credential_identifier: Vec<u8>,
+    purpose: OpaqueRegistrationPurpose,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpaqueRegistrationStartChallenge {
+    pub session_id: String,
+    pub credential_response: Vec<u8>,
+    pub registration_response: Vec<u8>,
+}
+
+#[async_trait::async_trait]
+pub trait OpaqueLoginSessionStore: Send + Sync {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueLoginSession,
+        ttl: Duration,
+    ) -> Result<()>;
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>>;
+
+    fn supports_cross_node_single_use(&self) -> bool;
+}
+
+#[async_trait::async_trait]
+pub trait OpaqueRegistrationSessionStore: Send + Sync {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueRegistrationSession,
+        ttl: Duration,
+    ) -> Result<()>;
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueRegistrationSession>>;
+
+    fn supports_cross_node_single_use(&self) -> bool;
+}
+
+#[must_use]
+pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
+    Arc::new(InMemoryOpaqueLoginSessionStore::new())
+}
+
+#[must_use]
+pub fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
+    Arc::new(InMemoryOpaqueRegistrationSessionStore::new())
+}
+
+#[must_use]
+pub fn shared_opaque_login_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn OpaqueLoginSessionStore> {
+    Arc::new(RedisOpaqueLoginSessionStore::from_runtime(
+        runtime, key_prefix,
+    ))
+}
+
+#[must_use]
+pub fn shared_opaque_registration_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn OpaqueRegistrationSessionStore> {
+    Arc::new(RedisOpaqueRegistrationSessionStore::from_runtime(
+        runtime, key_prefix,
+    ))
+}
+
+pub fn opaque_login_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn OpaqueLoginSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime =
+                profile.require_shared_runtime("single-use OPAQUE login session storage")?;
+            Ok(shared_opaque_login_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => Ok(shared_opaque_login_session_store(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_opaque_login_session_store()),
+    }
+}
+
+pub fn opaque_registration_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn OpaqueRegistrationSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime =
+                profile.require_shared_runtime("single-use OPAQUE registration session storage")?;
+            Ok(shared_opaque_registration_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => Ok(shared_opaque_registration_session_store(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_opaque_registration_session_store()),
+    }
+}
+
+#[derive(Clone)]
+struct OpaqueLoginSessionEntry {
+    session: OpaqueLoginSession,
+    ttl: Duration,
+}
+
+#[derive(Clone)]
+struct OpaqueRegistrationSessionEntry {
+    session: OpaqueRegistrationSession,
+    ttl: Duration,
+}
+
+struct OpaqueLoginSessionExpiry;
+
+impl moka::Expiry<String, OpaqueLoginSessionEntry> for OpaqueLoginSessionExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &OpaqueLoginSessionEntry,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+}
+
+struct OpaqueRegistrationSessionExpiry;
+
+impl moka::Expiry<String, OpaqueRegistrationSessionEntry> for OpaqueRegistrationSessionExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &OpaqueRegistrationSessionEntry,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+}
+
+pub struct InMemoryOpaqueLoginSessionStore {
+    entries: moka::sync::Cache<String, OpaqueLoginSessionEntry>,
+}
+
+pub struct InMemoryOpaqueRegistrationSessionStore {
+    entries: moka::sync::Cache<String, OpaqueRegistrationSessionEntry>,
+}
+
+impl InMemoryOpaqueLoginSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(OPAQUE_LOGIN_SESSION_CAPACITY)
+                .expire_after(OpaqueLoginSessionExpiry)
+                .build(),
+        }
+    }
+}
+
+impl InMemoryOpaqueRegistrationSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(OPAQUE_REGISTRATION_SESSION_CAPACITY)
+                .expire_after(OpaqueRegistrationSessionExpiry)
+                .build(),
+        }
+    }
+}
+
+impl Default for InMemoryOpaqueLoginSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for InMemoryOpaqueRegistrationSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl OpaqueLoginSessionStore for InMemoryOpaqueLoginSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueLoginSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            OpaqueLoginSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
+}
+
+#[async_trait::async_trait]
+impl OpaqueRegistrationSessionStore for InMemoryOpaqueRegistrationSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueRegistrationSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            OpaqueRegistrationSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueRegistrationSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
+}
+
+pub struct RedisOpaqueLoginSessionStore {
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: String,
+}
+
+pub struct RedisOpaqueRegistrationSessionStore {
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: String,
+}
+
+impl RedisOpaqueLoginSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let key_prefix = key_prefix.into();
+        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
+            key_prefix
+        } else {
+            format!("{key_prefix}:")
+        };
+        Self {
+            runtime,
+            key_prefix,
+        }
+    }
+
+    fn redis_key(&self, session_id: &str) -> String {
+        format!("{}auth:opaque:login:{session_id}", self.key_prefix)
+    }
+
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, redis::RedisError>>,
+    {
+        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+            .await
+            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+            .internal_with_err(&format!("Failed to {operation}"))
+    }
+}
+
+impl RedisOpaqueRegistrationSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let key_prefix = key_prefix.into();
+        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
+            key_prefix
+        } else {
+            format!("{key_prefix}:")
+        };
+        Self {
+            runtime,
+            key_prefix,
+        }
+    }
+
+    fn redis_key(&self, session_id: &str) -> String {
+        format!("{}auth:opaque:registration:{session_id}", self.key_prefix)
+    }
+
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, redis::RedisError>>,
+    {
+        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+            .await
+            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+            .internal_with_err(&format!("Failed to {operation}"))
+    }
+}
+
+#[async_trait::async_trait]
+impl OpaqueLoginSessionStore for RedisOpaqueLoginSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueLoginSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        let key = self.redis_key(session_id);
+        let value = serde_json::to_string(session)
+            .internal_with_err("Failed to serialize OPAQUE login session")?;
+        let mut conn = self.runtime.snapshot().await;
+        let _: () = self
+            .run_redis_op(
+                "store OPAQUE login session in Redis",
+                conn.set_ex(key, value, ttl.as_secs()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
+        let key = self.redis_key(session_id);
+        let mut conn = self.runtime.snapshot().await;
+        let lua_script = redis::Script::new(
+            r#"
+            local value = redis.call("GET", KEYS[1])
+            if value then
+                redis.call("DEL", KEYS[1])
+            end
+            return value
+        "#,
+        );
+        let value: Option<String> = self
+            .run_redis_op(
+                "consume OPAQUE login session from Redis",
+                lua_script.key(key).invoke_async(&mut conn),
+            )
+            .await?;
+
+        value
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .internal_with_err("Failed to deserialize OPAQUE login session")
+            })
+            .transpose()
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
+    }
+}
+
+#[async_trait::async_trait]
+impl OpaqueRegistrationSessionStore for RedisOpaqueRegistrationSessionStore {
+    async fn store(
+        &self,
+        session_id: &str,
+        session: &OpaqueRegistrationSession,
+        ttl: Duration,
+    ) -> Result<()> {
+        let key = self.redis_key(session_id);
+        let value = serde_json::to_string(session)
+            .internal_with_err("Failed to serialize OPAQUE registration session")?;
+        let mut conn = self.runtime.snapshot().await;
+        let _: () = self
+            .run_redis_op(
+                "store OPAQUE registration session in Redis",
+                conn.set_ex(key, value, ttl.as_secs()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<OpaqueRegistrationSession>> {
+        let key = self.redis_key(session_id);
+        let mut conn = self.runtime.snapshot().await;
+        let lua_script = redis::Script::new(
+            r#"
+            local value = redis.call("GET", KEYS[1])
+            if value then
+                redis.call("DEL", KEYS[1])
+            end
+            return value
+        "#,
+        );
+        let value: Option<String> = self
+            .run_redis_op(
+                "consume OPAQUE registration session from Redis",
+                lua_script.key(key).invoke_async(&mut conn),
+            )
+            .await?;
+
+        value
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .internal_with_err("Failed to deserialize OPAQUE registration session")
+            })
+            .transpose()
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +600,9 @@ pub struct UserService {
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+    opaque_password_service: Arc<OpaquePasswordService>,
+    opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
+    opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
 }
 
 #[derive(Default)]
@@ -118,6 +612,9 @@ pub struct UserServiceRuntimeOptions {
     pub email_verification_required: bool,
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
+    pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
+    pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
 }
 
 pub struct UserServiceDependencies {
@@ -138,6 +635,40 @@ impl std::fmt::Debug for UserService {
 }
 
 impl UserService {
+    fn opaque_credential_identifier_for_new_user(username: &str) -> Vec<u8> {
+        format!("synctv:user:{}", username.trim()).into_bytes()
+    }
+
+    fn opaque_credential_identifier_for_user_id(user_id: &UserId) -> Vec<u8> {
+        format!("synctv:user-id:{}", user_id.as_i64()).into_bytes()
+    }
+
+    async fn build_password_credentials_for_new_user(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(String, OpaquePasswordRecord)> {
+        let password_hash = self.password_hasher.hash_password(password).await?;
+        let opaque_record = self.opaque_password_service.register_password(
+            &Self::opaque_credential_identifier_for_new_user(username),
+            password,
+        )?;
+        Ok((password_hash, opaque_record))
+    }
+
+    async fn build_password_credentials_for_existing_user(
+        &self,
+        user_id: &UserId,
+        password: &str,
+    ) -> Result<(String, OpaquePasswordRecord)> {
+        let password_hash = self.password_hasher.hash_password(password).await?;
+        let opaque_record = self.opaque_password_service.register_password(
+            &Self::opaque_credential_identifier_for_user_id(user_id),
+            password,
+        )?;
+        Ok((password_hash, opaque_record))
+    }
+
     fn normalize_login_identifier(identifier: &str) -> String {
         let trimmed = identifier.trim();
         if trimmed.contains('@') {
@@ -541,17 +1072,28 @@ impl UserService {
             }
         }
 
-        let oauth_mappings_deleted = sqlx::query("DELETE FROM oauth2_clients WHERE user_id = $1")
+        let oauth_mappings_deleted =
+            sqlx::query("DELETE FROM auth_oauth2_identities WHERE user_id = $1")
+                .bind(user_id)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+
+        let email_tokens_deleted = sqlx::query("DELETE FROM auth_email_tokens WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut **tx)
             .await?
             .rows_affected();
 
-        let email_tokens_deleted = sqlx::query("DELETE FROM email_tokens WHERE user_id = $1")
+        sqlx::query("DELETE FROM auth_password_credentials WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut **tx)
-            .await?
-            .rows_affected();
+            .await?;
+
+        sqlx::query("DELETE FROM auth_webauthn_credentials WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut **tx)
+            .await?;
 
         let provider_credentials_deleted =
             sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1")
@@ -791,6 +1333,15 @@ impl UserService {
             password_hasher: runtime
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
+            opaque_password_service: runtime
+                .opaque_password_service
+                .unwrap_or_else(|| Arc::new(OpaquePasswordService::new_ephemeral_for_process())),
+            opaque_login_session_store: runtime
+                .opaque_login_session_store
+                .unwrap_or_else(local_opaque_login_session_store),
+            opaque_registration_session_store: runtime
+                .opaque_registration_session_store
+                .unwrap_or_else(local_opaque_registration_session_store),
         }
     }
 
@@ -800,6 +1351,10 @@ impl UserService {
         hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
     ) {
         self.password_hasher = hasher;
+    }
+
+    pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
+        self.opaque_password_service = service;
     }
 
     /// Enable email verification requirement for login (call when email service is configured)
@@ -852,21 +1407,28 @@ impl UserService {
         &self,
         username: &str,
         email: Option<&str>,
-        password_hash: &str,
+        legacy_password_hash: Option<&str>,
+        opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
         let request_id = sqlx::query_scalar::<_, i64>(
             r"
             INSERT INTO user_registration_requests (
-                username, email, password_hash, signup_method, status, requested_at
+                username, email, legacy_password_hash, opaque_record,
+                opaque_credential_identifier, opaque_ciphersuite,
+                opaque_server_setup_version, signup_method, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
             RETURNING id
             ",
         )
         .bind(username)
         .bind(email)
-        .bind(password_hash)
+        .bind(legacy_password_hash)
+        .bind(&opaque_record.record)
+        .bind(&opaque_record.credential_identifier)
+        .bind(opaque_record.ciphersuite.as_str())
+        .bind(opaque_record.server_setup_version)
         .bind(signup_method)
         .bind(ReviewStatus::Pending)
         .fetch_one(self.repository.pool())
@@ -897,7 +1459,9 @@ impl UserService {
     ) -> Result<Option<PendingRegistrationRequest>> {
         let row = sqlx::query(
             r"
-            SELECT username, email, password_hash, signup_method
+            SELECT username, email, legacy_password_hash, opaque_record,
+                   opaque_credential_identifier, opaque_ciphersuite,
+                   opaque_server_setup_version, signup_method
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
@@ -912,7 +1476,11 @@ impl UserService {
             Ok(PendingRegistrationRequest {
                 username: row.try_get("username")?,
                 email: row.try_get("email")?,
-                password_hash: row.try_get("password_hash")?,
+                legacy_password_hash: row.try_get("legacy_password_hash")?,
+                opaque_record: row.try_get("opaque_record")?,
+                opaque_credential_identifier: row.try_get("opaque_credential_identifier")?,
+                opaque_ciphersuite: row.try_get("opaque_ciphersuite")?,
+                opaque_server_setup_version: row.try_get("opaque_server_setup_version")?,
                 signup_method: row.try_get("signup_method")?,
             })
         })
@@ -952,12 +1520,24 @@ impl UserService {
         let user = User::new(
             request.username.clone(),
             request.email.clone(),
-            request.password_hash,
+            request.legacy_password_hash.clone().unwrap_or_default(),
             request.signup_method,
         );
+        let opaque_record = OpaquePasswordRecord {
+            record: request.opaque_record,
+            credential_identifier: request.opaque_credential_identifier,
+            ciphersuite: request.opaque_ciphersuite,
+            server_setup_version: request.opaque_server_setup_version,
+        };
+        let credential_material = match request.legacy_password_hash.as_deref() {
+            Some(password_hash) => {
+                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+            }
+            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+        };
         let created = self
             .repository
-            .create_with_executor(&user, &mut *tx)
+            .create_with_password_credentials(&user, credential_material, &mut *tx)
             .await?;
 
         sqlx::query(
@@ -1011,6 +1591,103 @@ impl UserService {
         let is_oauth2_user = user.signup_method == crate::models::SignupMethod::OAuth2;
         if self.email_verification_required && !user.email_verified && !is_oauth2_user {
             return Err(Error::EmailNotVerified);
+        }
+
+        Ok(())
+    }
+
+    async fn record_registration_bruteforce_failure(
+        &self,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) {
+        if let Err(error) = self
+            .brute_force
+            .record_failure_with_control(
+                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                client_ip,
+                control,
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "Failed to record registration brute-force failure");
+        }
+    }
+
+    async fn validate_registration_identity_with_control(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.brute_force
+            .check_allowed_with_control(
+                synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
+                client_ip,
+                control,
+            )
+            .await?;
+
+        if let Err(error) = Self::validate_username(username) {
+            self.record_registration_bruteforce_failure(client_ip, control)
+                .await;
+            return Err(error);
+        }
+        if let Some(email_addr) = email {
+            if let Err(error) = Self::validate_email(email_addr) {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
+            }
+
+            if let Some(ref registry) = self.settings_registry {
+                let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
+                if whitelist_enabled {
+                    let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
+                    let domain = email_addr
+                        .rsplit_once('@')
+                        .map(|(_, domain)| domain.to_lowercase())
+                        .unwrap_or_default();
+                    let allowed: Vec<&str> = whitelist_str
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .collect();
+                    if !allowed.is_empty()
+                        && !allowed
+                            .iter()
+                            .any(|domain_value| domain_value.eq_ignore_ascii_case(&domain))
+                    {
+                        self.record_registration_bruteforce_failure(client_ip, control)
+                            .await;
+                        return Err(Error::InvalidInput(
+                            "Email domain is not allowed for registration".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if self.repository.get_by_username(username).await?.is_some() {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
+        }
+        if let Some(email_addr) = email {
+            if self.repository.get_by_email(email_addr).await?.is_some() {
+                return Err(Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                ));
+            }
+        }
+        if self
+            .has_pending_registration_request(username, email)
+            .await?
+        {
+            return Err(Error::AlreadyExists(
+                synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+            ));
         }
 
         Ok(())
@@ -1168,8 +1845,9 @@ impl UserService {
             ));
         }
 
-        // Hash password
-        let password_hash = self.password_hasher.hash_password(&password).await?;
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_new_user(&username, &password)
+            .await?;
 
         // Signup review is an approval workflow, not an account lifecycle state.
         // Pending registrations live in `user_registration_requests` and do not
@@ -1187,7 +1865,8 @@ impl UserService {
                 .create_registration_request(
                     &username,
                     email.as_deref(),
-                    &password_hash,
+                    Some(&password_hash),
+                    &opaque_record,
                     SignupMethod::Email,
                 )
                 .await?;
@@ -1203,10 +1882,18 @@ impl UserService {
         let user = User::new(
             username.clone(),
             email.clone(),
-            password_hash,
+            password_hash.clone(),
             SignupMethod::Email,
         );
-        let created_user = match self.repository.create(&user).await {
+        let created_user = match self
+            .repository
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
+                self.repository.pool(),
+            )
+            .await
+        {
             Ok(user) => user,
             Err(Error::AlreadyExists(_)) => {
                 // Don't record failure for AlreadyExists - user just picked a taken username
@@ -1256,6 +1943,144 @@ impl UserService {
         Ok((created_user, Some(access_token), Some(refresh_token)))
     }
 
+    pub async fn start_opaque_registration_with_control(
+        &self,
+        username: String,
+        email: Option<String>,
+        registration_request: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        self.validate_registration_identity_with_control(
+            &username,
+            email.as_deref(),
+            client_ip,
+            control,
+        )
+        .await?;
+
+        let credential_identifier = Self::opaque_credential_identifier_for_new_user(&username);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_registration_session_store
+            .store(
+                &session_id,
+                &OpaqueRegistrationSession {
+                    credential_identifier,
+                    purpose: OpaqueRegistrationPurpose::Account { username, email },
+                },
+                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueRegistrationStartChallenge {
+            session_id,
+            credential_response: Vec::new(),
+            registration_response: registration_start.registration_response,
+        })
+    }
+
+    pub async fn finish_opaque_registration_with_control(
+        &self,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, Option<String>, Option<String>)> {
+        let Some(session) = self
+            .opaque_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let OpaqueRegistrationPurpose::Account { username, email } = session.purpose else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        self.validate_registration_identity_with_control(
+            &username,
+            email.as_deref(),
+            client_ip,
+            control,
+        )
+        .await?;
+
+        let opaque_record = self
+            .opaque_password_service
+            .finish_registration(session.credential_identifier, &registration_upload)?;
+
+        let signup_need_review = self
+            .settings_registry
+            .as_ref()
+            .and_then(|registry| registry.signup_need_review.get().ok())
+            .unwrap_or(false);
+
+        if signup_need_review {
+            let pending_user = self
+                .create_registration_request(
+                    &username,
+                    email.as_deref(),
+                    None,
+                    &opaque_record,
+                    SignupMethod::Email,
+                )
+                .await?;
+            return Ok((pending_user, None, None));
+        }
+
+        let user = User::new(
+            username.clone(),
+            email.clone(),
+            String::new(),
+            SignupMethod::Email,
+        );
+        let created_user = match self
+            .repository
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                self.repository.pool(),
+            )
+            .await
+        {
+            Ok(user) => user,
+            Err(Error::AlreadyExists(_)) => {
+                return Err(Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                ));
+            }
+            Err(error) => {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
+            }
+        };
+
+        self.cache_username_best_effort(&created_user.id, &username, "opaque_register")
+            .await;
+
+        if self.email_verification_required {
+            return Ok((created_user, None, None));
+        }
+
+        let access_token = self.jwt_service.sign_token(
+            &created_user.id,
+            TokenType::Access,
+            created_user.password_version,
+        )?;
+        let refresh_token = self.jwt_service.sign_token(
+            &created_user.id,
+            TokenType::Refresh,
+            created_user.password_version,
+        )?;
+
+        Ok((created_user, Some(access_token), Some(refresh_token)))
+    }
+
     /// Register a new user using a provided executor (pool or transaction)
     pub async fn register_with_executor<'e, E>(
         &self,
@@ -1273,9 +2098,17 @@ impl UserService {
             Self::validate_email(email)?;
         }
         self.validate_password(&password)?;
-        let password_hash = self.password_hasher.hash_password(&password).await?;
-        let user = User::new(username, email, password_hash, signup_method);
-        self.repository.create_with_executor(&user, executor).await
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_new_user(&username, &password)
+            .await?;
+        let user = User::new(username, email, password_hash.clone(), signup_method);
+        self.repository
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
+                executor,
+            )
+            .await
     }
 
     /// Create a user with a specific role (for admin user creation).
@@ -1308,8 +2141,15 @@ impl UserService {
         }
         self.validate_password(&password)?;
 
-        let password_hash = self.password_hasher.hash_password(&password).await?;
-        let mut user = User::new(username.clone(), email, password_hash, SignupMethod::Email);
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_new_user(&username, &password)
+            .await?;
+        let mut user = User::new(
+            username.clone(),
+            email,
+            password_hash.clone(),
+            SignupMethod::Email,
+        );
         if let Some(role) = role {
             user.role = role;
         }
@@ -1319,7 +2159,11 @@ impl UserService {
         let mut tx = self.repository.pool().begin().await?;
         let created_user = self
             .repository
-            .create_with_executor(&user, &mut *tx)
+            .create_with_password_credentials(
+                &user,
+                PasswordCredentialMaterial::legacy_and_opaque(&password_hash, &opaque_record),
+                &mut *tx,
+            )
             .await?;
         if user.status == crate::models::UserStatus::Banned {
             sqlx::query(
@@ -1394,7 +2238,7 @@ impl UserService {
         &self,
         identifier: String,
         password: String,
-        client_ip: Option<std::net::IpAddr>,
+        client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<(User, String, String)> {
         let normalized_identifier = Self::normalize_login_identifier(&identifier);
@@ -1415,10 +2259,16 @@ impl UserService {
         // If the user doesn't exist, verify against a dummy hash so the response
         // time is indistinguishable from a real verification.
         let (is_valid, user) = if let Some(user) = maybe_user {
+            let hash = if user.password_hash.is_empty() {
+                self.password_hasher.dummy_hash()
+            } else {
+                &user.password_hash
+            };
             let valid = self
                 .password_hasher
-                .verify_password(&password, &user.password_hash)
-                .await?;
+                .verify_password(&password, hash)
+                .await?
+                && !user.password_hash.is_empty();
             (valid, Some(user))
         } else {
             // Dummy Argon2 verification to match timing of real verification.
@@ -1459,6 +2309,165 @@ impl UserService {
         self.complete_authenticated_login_with_control(
             user,
             &normalized_identifier,
+            client_ip,
+            control,
+        )
+        .await
+    }
+
+    pub async fn start_opaque_login_with_control(
+        &self,
+        identifier: String,
+        credential_request: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<OpaqueLoginStartChallenge> {
+        let normalized_identifier = Self::normalize_login_identifier(&identifier);
+        self.brute_force
+            .check_allowed_with_control(&normalized_identifier, client_ip, control)
+            .await?;
+
+        let maybe_user = self.get_by_login_identifier(&normalized_identifier).await?;
+        let user_existed = maybe_user.is_some();
+
+        let (user_id, opaque_record) = if let Some(user) = maybe_user {
+            let opaque = self
+                .repository
+                .get_opaque_password_credential(&user.id)
+                .await?
+                .map(|credential| credential.record);
+            (Some(user.id), opaque)
+        } else {
+            (None, None)
+        };
+
+        let fallback_identifier =
+            format!("synctv:opaque-login:{normalized_identifier}").into_bytes();
+        let credential_identifier = opaque_record
+            .as_ref()
+            .map_or(fallback_identifier.as_slice(), |record| {
+                record.credential_identifier.as_slice()
+            });
+        let login_start = self.opaque_password_service.start_login(
+            opaque_record.as_ref(),
+            credential_identifier,
+            &credential_request,
+        )?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_login_session_store
+            .store(
+                &session_id,
+                &OpaqueLoginSession {
+                    user_id,
+                    brute_force_key: normalized_identifier,
+                    user_existed,
+                    server_login_state: login_start.server_login_state,
+                },
+                Duration::from_secs(OPAQUE_LOGIN_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueLoginStartChallenge {
+            session_id,
+            credential_response: login_start.credential_response,
+        })
+    }
+
+    pub async fn start_verified_external_login_with_control(
+        &self,
+        identifier: &str,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<Option<User>> {
+        let normalized_identifier = Self::normalize_login_identifier(identifier);
+        self.brute_force
+            .check_allowed_with_control(&normalized_identifier, client_ip, control)
+            .await?;
+        self.get_by_login_identifier(&normalized_identifier).await
+    }
+
+    pub fn normalize_external_login_identifier(identifier: &str) -> String {
+        Self::normalize_login_identifier(identifier)
+    }
+
+    pub async fn record_external_login_failure_with_control(
+        &self,
+        brute_force_key: &str,
+        user_existed: bool,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) {
+        let record_result = if user_existed {
+            self.brute_force
+                .record_failure_with_control(brute_force_key, client_ip, control)
+                .await
+        } else {
+            self.brute_force
+                .record_ip_failure_with_control(client_ip, control)
+                .await
+        };
+        if let Err(error) = record_result {
+            tracing::warn!(error = %error, "Failed to record external login failure for brute-force tracking");
+        }
+    }
+
+    pub async fn login_with_verified_external_credential_with_control(
+        &self,
+        user_id: &UserId,
+        brute_force_key: &str,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, String, String)> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+
+        self.complete_authenticated_login_with_control(user, brute_force_key, client_ip, control)
+            .await
+    }
+
+    pub async fn finish_opaque_login_with_control(
+        &self,
+        session_id: &str,
+        credential_finalization: Vec<u8>,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(User, String, String)> {
+        let Some(session) = self.opaque_login_session_store.consume(session_id).await? else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let finish_result = self
+            .opaque_password_service
+            .finish_login(&session.server_login_state, &credential_finalization);
+
+        let (Ok(_session_key), Some(user_id)) = (finish_result, session.user_id) else {
+            let record_result = if session.user_existed {
+                self.brute_force
+                    .record_failure_with_control(&session.brute_force_key, client_ip, control)
+                    .await
+            } else {
+                self.brute_force
+                    .record_ip_failure_with_control(client_ip, control)
+                    .await
+            };
+            if let Err(e) = record_result {
+                tracing::warn!(error = %e, "Failed to record OPAQUE login failure for brute-force tracking");
+            }
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let user = self
+            .repository
+            .get_by_id(&user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+
+        self.complete_authenticated_login_with_control(
+            user,
+            &session.brute_force_key,
             client_ip,
             control,
         )
@@ -1653,6 +2662,16 @@ impl UserService {
             .ok_or_else(|| Error::NotFound("User not found".to_string()))
     }
 
+    pub async fn has_usable_password_authentication(&self, user: &User) -> Result<bool> {
+        if user.has_usable_password() {
+            return Ok(true);
+        }
+
+        self.repository
+            .has_opaque_password_credential(&user.id)
+            .await
+    }
+
     /// Get multiple users by IDs.
     pub async fn get_users_by_ids(&self, user_ids: &[UserId]) -> Result<Vec<User>> {
         self.repository.get_by_ids(user_ids).await
@@ -1684,10 +2703,30 @@ impl UserService {
     /// Returns `Error::OptimisticLockConflict` if the user was modified since
     /// it was read.
     pub async fn update_user(&self, user: &User, old_version: i32) -> Result<User> {
-        let updated = self.repository.update(user, old_version).await?;
-        self.invalidate_username_cache_best_effort(&user.id, "update_user")
+        let current = self
+            .repository
+            .get_by_id(&user.id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+        let mut candidate = user.clone();
+
+        if current.signup_method == SignupMethod::Email {
+            if candidate.email.is_none() {
+                return Err(Error::InvalidInput(
+                    "Email signup users cannot unbind email; rebind to another email instead"
+                        .to_string(),
+                ));
+            }
+
+            if current.email != candidate.email {
+                candidate.email_verified = false;
+            }
+        }
+
+        let updated = self.repository.update(&candidate, old_version).await?;
+        self.invalidate_username_cache_best_effort(&candidate.id, "update_user")
             .await;
-        self.notify_user_invalidation(&user.id).await;
+        self.notify_user_invalidation(&candidate.id).await;
         Ok(updated)
     }
 
@@ -1717,8 +2756,9 @@ impl UserService {
         // Validate new password
         self.validate_password(new_password)?;
 
-        // Hash new password
-        let password_hash = self.password_hasher.hash_password(new_password).await?;
+        let (password_hash, opaque_record) = self
+            .build_password_credentials_for_existing_user(user_id, new_password)
+            .await?;
 
         let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
 
@@ -1726,7 +2766,7 @@ impl UserService {
         // which invalidates all tokens issued before this moment)
         let updated_user = self
             .repository
-            .update_password_with_executor(user_id, &password_hash, &mut *tx)
+            .update_password_with_executor(user_id, &password_hash, Some(&opaque_record), &mut *tx)
             .await?;
 
         tx.commit().await?;
@@ -1735,6 +2775,264 @@ impl UserService {
         self.notify_user_invalidation(user_id).await;
 
         tracing::info!("Password updated for user {user_id}");
+
+        Ok(updated_user)
+    }
+
+    pub async fn start_opaque_password_update(
+        &self,
+        user_id: &UserId,
+        credential_request: Vec<u8>,
+        registration_request: Vec<u8>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        let opaque_credential = self
+            .repository
+            .get_opaque_password_credential(user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+
+        let login_start = self.opaque_password_service.start_login(
+            Some(&opaque_credential.record),
+            &opaque_credential.record.credential_identifier,
+            &credential_request,
+        )?;
+
+        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_registration_session_store
+            .store(
+                &session_id,
+                &OpaqueRegistrationSession {
+                    credential_identifier,
+                    purpose: OpaqueRegistrationPurpose::PasswordUpdate {
+                        user_id: *user_id,
+                        expected_password_version: user.password_version,
+                        verification: OpaquePasswordUpdateVerification::CurrentOpaquePassword {
+                            server_login_state: login_start.server_login_state,
+                        },
+                    },
+                },
+                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueRegistrationStartChallenge {
+            session_id,
+            credential_response: login_start.credential_response,
+            registration_response: registration_start.registration_response,
+        })
+    }
+
+    pub async fn start_opaque_password_update_after_external_verification(
+        &self,
+        user_id: &UserId,
+        registration_request: Vec<u8>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_registration_session_store
+            .store(
+                &session_id,
+                &OpaqueRegistrationSession {
+                    credential_identifier,
+                    purpose: OpaqueRegistrationPurpose::PasswordUpdate {
+                        user_id: *user_id,
+                        expected_password_version: user.password_version,
+                        verification: OpaquePasswordUpdateVerification::External,
+                    },
+                },
+                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueRegistrationStartChallenge {
+            session_id,
+            credential_response: Vec::new(),
+            registration_response: registration_start.registration_response,
+        })
+    }
+
+    pub async fn start_opaque_password_update_after_plain_password_verification(
+        &self,
+        user_id: &UserId,
+        old_password: &str,
+        registration_request: Vec<u8>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+
+        let current_hash = if user.password_hash.is_empty() {
+            self.password_hasher.dummy_hash()
+        } else {
+            &user.password_hash
+        };
+        let is_valid = self
+            .password_hasher
+            .verify_password(old_password, current_hash)
+            .await?
+            && !user.password_hash.is_empty();
+        if !is_valid {
+            return Err(Error::Authentication(
+                "Invalid current password".to_string(),
+            ));
+        }
+
+        let credential_identifier = Self::opaque_credential_identifier_for_user_id(user_id);
+        let registration_start = self
+            .opaque_password_service
+            .start_registration(&credential_identifier, &registration_request)?;
+        let session_id = synctv_common::snanoid!(48);
+        self.opaque_registration_session_store
+            .store(
+                &session_id,
+                &OpaqueRegistrationSession {
+                    credential_identifier,
+                    purpose: OpaqueRegistrationPurpose::PasswordUpdate {
+                        user_id: *user_id,
+                        expected_password_version: user.password_version,
+                        verification: OpaquePasswordUpdateVerification::External,
+                    },
+                },
+                Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(OpaqueRegistrationStartChallenge {
+            session_id,
+            credential_response: Vec::new(),
+            registration_response: registration_start.registration_response,
+        })
+    }
+
+    pub async fn finish_opaque_password_update(
+        &self,
+        user_id: &UserId,
+        session_id: &str,
+        credential_finalization: Vec<u8>,
+        registration_upload: Vec<u8>,
+    ) -> Result<User> {
+        let Some(session) = self
+            .opaque_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let OpaqueRegistrationPurpose::PasswordUpdate {
+            user_id: session_user_id,
+            expected_password_version,
+            verification:
+                OpaquePasswordUpdateVerification::CurrentOpaquePassword { server_login_state },
+        } = session.purpose
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if session_user_id != *user_id {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        self.opaque_password_service
+            .finish_login(&server_login_state, &credential_finalization)?;
+
+        self.finish_opaque_password_update_after_verified_session(
+            user_id,
+            session.credential_identifier,
+            expected_password_version,
+            registration_upload,
+        )
+        .await
+    }
+
+    pub async fn finish_opaque_password_update_after_external_verification(
+        &self,
+        user_id: &UserId,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+    ) -> Result<User> {
+        let Some(session) = self
+            .opaque_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let OpaqueRegistrationPurpose::PasswordUpdate {
+            user_id: session_user_id,
+            expected_password_version,
+            verification: OpaquePasswordUpdateVerification::External,
+        } = session.purpose
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if session_user_id != *user_id {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        self.finish_opaque_password_update_after_verified_session(
+            user_id,
+            session.credential_identifier,
+            expected_password_version,
+            registration_upload,
+        )
+        .await
+    }
+
+    async fn finish_opaque_password_update_after_verified_session(
+        &self,
+        user_id: &UserId,
+        credential_identifier: Vec<u8>,
+        expected_password_version: i32,
+        registration_upload: Vec<u8>,
+    ) -> Result<User> {
+        let opaque_record = self
+            .opaque_password_service
+            .finish_registration(credential_identifier, &registration_upload)?;
+
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        let current_user = self
+            .repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("User {user_id} not found")))?;
+        if current_user.password_version != expected_password_version {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        let updated_user = self
+            .repository
+            .update_password_credentials_with_executor(
+                user_id,
+                PasswordCredentialMaterial::opaque_only(&opaque_record),
+                &mut *tx,
+            )
+            .await?;
+        tx.commit().await?;
+
+        self.notify_user_invalidation(user_id).await;
+        tracing::info!("OPAQUE password credential updated for user {user_id}");
 
         Ok(updated_user)
     }
@@ -1785,20 +3083,31 @@ impl UserService {
 
         let target_username = new_username.unwrap_or_else(|| current_user.username.clone());
         let mut new_password_hash: Option<String> = None;
+        let mut new_opaque_record: Option<OpaquePasswordRecord> = None;
 
         if let Some(new_password) = new_password {
             let provided_old_password = old_password.expect("old_password validated above");
+            let current_hash = if current_user.password_hash.is_empty() {
+                self.password_hasher.dummy_hash()
+            } else {
+                &current_user.password_hash
+            };
             let is_valid = self
                 .password_hasher
-                .verify_password(&provided_old_password, &current_user.password_hash)
-                .await?;
+                .verify_password(&provided_old_password, current_hash)
+                .await?
+                && !current_user.password_hash.is_empty();
             if !is_valid {
                 return Err(Error::Authentication(
                     "Invalid current password".to_string(),
                 ));
             }
 
-            new_password_hash = Some(self.password_hasher.hash_password(&new_password).await?);
+            let (password_hash, opaque_record) = self
+                .build_password_credentials_for_existing_user(user_id, &new_password)
+                .await?;
+            new_password_hash = Some(password_hash);
+            new_opaque_record = Some(opaque_record);
         }
 
         let updated_user = self
@@ -1806,7 +3115,12 @@ impl UserService {
             .update_profile_with_executor(
                 user_id,
                 &target_username,
-                new_password_hash.as_deref(),
+                new_password_hash
+                    .as_deref()
+                    .zip(new_opaque_record.as_ref())
+                    .map(|(password_hash, opaque_record)| {
+                        PasswordCredentialMaterial::legacy_and_opaque(password_hash, opaque_record)
+                    }),
                 current_user.version,
                 &mut *tx,
             )
@@ -2163,17 +3477,13 @@ impl UserService {
     ) -> Result<User> {
         let (base_username, candidates) =
             Self::oauth2_username_candidates(provider_user_id, username)?;
-        // Generate a random password (OAuth2 users don't need password login)
-        let random_password = synctv_common::snanoid!(32);
         let user_email = email.map(std::string::ToString::to_string);
-        // Hash password
-        let password_hash = self.password_hasher.hash_password(&random_password).await?;
 
         for candidate in &candidates {
             let user = User::new_with_status(
                 candidate.clone(),
                 user_email.clone(),
-                password_hash.clone(),
+                String::new(),
                 SignupMethod::OAuth2,
                 crate::models::UserStatus::Active,
             );

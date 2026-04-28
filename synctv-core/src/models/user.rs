@@ -390,11 +390,11 @@ impl User {
     /// - They signed up via email or password (explicitly set a password), OR
     /// - They were created by admin and have a password set, OR
     /// - They signed up via `OAuth2` but later set a password (`password_version` > 0 indicates
-    ///   the password was explicitly changed after account creation)
+    ///   password credentials were explicitly added after account creation)
     ///
-    /// `OAuth2` users initially receive a random password they don't know (`password_version=0`).
-    /// If they later use "set password" to establish their own password, `password_version`
-    /// increments, indicating they now have a usable password.
+    /// `OAuth2` users initially have no password credential row. If they later
+    /// use "set password", `password_version` increments and the joined password
+    /// hash becomes non-empty.
     #[must_use]
     pub const fn has_usable_password(&self) -> bool {
         // Non-empty password hash is a baseline requirement
@@ -408,7 +408,7 @@ impl User {
             | SignupMethod::AdminCreated
             | SignupMethod::Unknown => true,
             SignupMethod::OAuth2 => {
-                // OAuth2 users get a random password at signup (pv=0).
+                // OAuth2 users start without password credentials.
                 // If pv > 0, the user explicitly changed/set their password.
                 self.password_version > 0
             }
@@ -530,8 +530,8 @@ mod tests {
 
     #[test]
     fn test_oauth2_user_initial_no_usable_password() {
-        // OAuth2 users start with password_version=0 and a random hash they don't know
-        let user = make_test_user(SignupMethod::OAuth2, "$argon2id$random_hash", 0);
+        // OAuth2 users start with password_version=0 and no password credential.
+        let user = make_test_user(SignupMethod::OAuth2, "", 0);
         assert!(
             !user.has_usable_password(),
             "OAuth2 user with pv=0 should NOT have usable password (random password they don't know)"

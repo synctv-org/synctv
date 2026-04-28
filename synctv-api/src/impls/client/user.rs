@@ -1,6 +1,7 @@
 //! User operations: `get_profile`, `set_username`, `set_password`
 
 use crate::impls::ApiError;
+use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
 use crate::realtime_lifecycle::DeletedRoomFanoutReservation;
 use synctv_core::models::{PageParams, RoomId, UserId};
 use synctv_core::validation::UsernameValidator;
@@ -159,5 +160,88 @@ impl ClientApiImpl {
         .await?;
 
         Ok(crate::proto::client::SetPasswordResponse { success: true })
+    }
+
+    pub async fn start_opaque_password_update(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::StartOpaquePasswordUpdateRequest,
+    ) -> Result<crate::proto::client::StartOpaquePasswordUpdateResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let method = OpaquePasswordUpdateVerificationMethod::try_from(req.verification_method)
+            .map_err(|_| ApiError::InvalidInput("Invalid verification_method".to_string()))?;
+        let challenge = match method {
+            OpaquePasswordUpdateVerificationMethod::CurrentOpaquePassword => self
+                .user_service
+                .start_opaque_password_update(
+                    user_id,
+                    req.credential_request,
+                    req.registration_request,
+                )
+                .await
+                .map_err(ApiError::from)?,
+            OpaquePasswordUpdateVerificationMethod::CurrentPlainPassword => {
+                if req.old_password.is_empty() {
+                    return Err(ApiError::InvalidInput(
+                        "old_password is required for plain password verification".to_string(),
+                    ));
+                }
+                self.user_service
+                    .start_opaque_password_update_after_plain_password_verification(
+                        user_id,
+                        &req.old_password,
+                        req.registration_request,
+                    )
+                    .await
+                    .map_err(ApiError::from)?
+            }
+            OpaquePasswordUpdateVerificationMethod::Unspecified
+            | OpaquePasswordUpdateVerificationMethod::EmailToken
+            | OpaquePasswordUpdateVerificationMethod::Passkey => {
+                return Err(ApiError::InvalidInput(
+                    "Unsupported verification_method for this endpoint".to_string(),
+                ));
+            }
+        };
+
+        Ok(crate::proto::client::StartOpaquePasswordUpdateResponse {
+            session_id: challenge.session_id,
+            credential_response: challenge.credential_response,
+            registration_response: challenge.registration_response,
+            passkey_session_id: String::new(),
+            passkey_options: Vec::new(),
+        })
+    }
+
+    pub async fn finish_opaque_password_update(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::FinishOpaquePasswordUpdateRequest,
+    ) -> Result<crate::proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let user = if req.credential_finalization.is_empty() {
+            self.user_service
+                .finish_opaque_password_update_after_external_verification(
+                    user_id,
+                    &req.session_id,
+                    req.registration_upload,
+                )
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            self.user_service
+                .finish_opaque_password_update(
+                    user_id,
+                    &req.session_id,
+                    req.credential_finalization,
+                    req.registration_upload,
+                )
+                .await
+                .map_err(ApiError::from)?
+        };
+
+        Ok(crate::proto::client::FinishOpaquePasswordUpdateResponse {
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
+        })
     }
 }

@@ -11,8 +11,8 @@ use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
     ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
     JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
-    OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig, TimeConfig,
-    WebRTCConfig,
+    OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, SecurityConfig,
+    ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -47,6 +47,7 @@ fn standalone_test_config() -> Config {
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig::default(),
         oauth2: OAuth2Config::default(),
+        webauthn: WebAuthnConfig::default(),
         email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig::default(),
@@ -94,7 +95,11 @@ fn standalone_test_config() -> Config {
             read_window_seconds: 1,
         },
         public_ids: PublicIdsConfig::default(),
-        security: synctv_core::config::SecurityConfig::default(),
+        security: SecurityConfig {
+            opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
+                .to_string(),
+            ..SecurityConfig::default()
+        },
     }
 }
 
@@ -137,6 +142,7 @@ fn cluster_test_config() -> Config {
             ..LivestreamConfig::default()
         },
         oauth2: OAuth2Config::default(),
+        webauthn: WebAuthnConfig::default(),
         email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
         webrtc: WebRTCConfig {
@@ -190,7 +196,11 @@ fn cluster_test_config() -> Config {
             read_window_seconds: 1,
         },
         public_ids: PublicIdsConfig::default(),
-        security: synctv_core::config::SecurityConfig::default(),
+        security: SecurityConfig {
+            opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
+                .to_string(),
+            ..SecurityConfig::default()
+        },
     }
 }
 

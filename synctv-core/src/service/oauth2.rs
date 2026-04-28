@@ -1035,8 +1035,6 @@ impl OAuth2Service {
             &user_info.provider_user_id,
             &user_info.username,
         )?;
-        let random_password = synctv_common::snanoid!(32);
-        let password_hash = crate::service::auth::hash_password(&random_password).await?;
         let user_email = user_info.email.clone();
 
         let mut new_user = None;
@@ -1050,7 +1048,7 @@ impl OAuth2Service {
             let user = User::new_with_status(
                 candidate.clone(),
                 user_email.clone(),
-                password_hash.clone(),
+                String::new(),
                 SignupMethod::OAuth2,
                 crate::models::UserStatus::Active,
             );

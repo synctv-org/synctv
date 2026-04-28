@@ -6,8 +6,8 @@ use tracing::{info, warn};
 use crate::{
     config::BootstrapConfig,
     models::{SignupMethod, User, UserRole},
-    repository::UserRepository,
-    service::auth::hash_password,
+    repository::{PasswordCredentialMaterial, UserRepository},
+    service::auth::{hash_password, OpaquePasswordService},
     Error, Result,
 };
 
@@ -19,7 +19,11 @@ use crate::{
 /// exist, the failure is logged as a warning and startup continues.
 ///
 /// Should be called after database migrations but before service initialization.
-pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Result<()> {
+pub async fn bootstrap_root_user(
+    pool: &PgPool,
+    config: &BootstrapConfig,
+    opaque_server_setup_secret: &str,
+) -> Result<()> {
     if !config.create_root_user {
         info!("Root user bootstrap disabled in config");
         return Ok(());
@@ -57,6 +61,12 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     info!("Creating root user '{}'...", config.root_username);
 
     let password_hash = hash_password(&config.root_password).await?;
+    let opaque_password_service =
+        OpaquePasswordService::derive_from_secret(opaque_server_setup_secret.as_bytes());
+    let opaque_record = opaque_password_service.register_password(
+        format!("synctv:user:{}", config.root_username.trim()).as_bytes(),
+        &config.root_password,
+    )?;
 
     let mut user = User::new(
         config.root_username.clone(),
@@ -67,7 +77,13 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
 
     user.role = UserRole::Root;
 
-    let created_user = repository.create(&user).await?;
+    let created_user = repository
+        .create_with_password_credentials(
+            &user,
+            PasswordCredentialMaterial::legacy_and_opaque(&user.password_hash, &opaque_record),
+            pool,
+        )
+        .await?;
 
     info!("Root user created successfully:");
     info!("  ID: {}", created_user.id);

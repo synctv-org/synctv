@@ -49,7 +49,35 @@ fn create_user_service(pool: PgPool) -> UserService {
 
 async fn insert_user(pool: &PgPool, user: &User) -> User {
     let repo = UserRepository::new(pool.clone());
-    repo.create(user).await.expect("Failed to create user")
+    let created = repo.create(user).await.expect("Failed to create user");
+    if user.password_version != 0 {
+        set_password_version(pool, &created.id, user.password_version).await;
+    }
+    repo.get_by_id(&created.id)
+        .await
+        .expect("Failed to reload created user")
+        .expect("Created user should exist")
+}
+
+async fn set_password_version(pool: &PgPool, user_id: &UserId, password_version: i32) {
+    sqlx::query(
+        r"
+        INSERT INTO auth_password_credentials (
+            user_id, legacy_password_hash, legacy_password_algorithm,
+            password_changed_at, password_version, created_at, updated_at
+        )
+        VALUES ($1, 'test-hash', 'argon2id', NOW(), $2, NOW(), NOW())
+        ON CONFLICT (user_id) DO UPDATE
+        SET password_changed_at = EXCLUDED.password_changed_at,
+            password_version = EXCLUDED.password_version,
+            updated_at = EXCLUDED.updated_at
+        ",
+    )
+    .bind(user_id)
+    .bind(password_version)
+    .execute(pool)
+    .await
+    .expect("Failed to set password credential version");
 }
 
 async fn insert_banned_user(pool: &PgPool, password_version: i32) -> User {
@@ -433,17 +461,7 @@ async fn test_cache_hit_stale_password_version_does_not_bypass_password_change()
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    sqlx::query(
-        "UPDATE users
-         SET password_version = 3,
-             password_changed_at = NOW(),
-             version = version + 1
-         WHERE id = $1",
-    )
-    .bind(user.id)
-    .execute(&pool)
-    .await
-    .expect("Failed to bump password_version in DB");
+    set_password_version(&pool, &user.id, 3).await;
 
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache)
@@ -472,12 +490,6 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     // UserRepository::create doesn't insert password_version (DB defaults to 0),
     // so we insert the user first and then update password_version via raw SQL.
     let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
-    sqlx::query("UPDATE users SET password_version = $1 WHERE id = $2")
-        .bind(password_version)
-        .bind(user.id)
-        .execute(&pool)
-        .await
-        .expect("Failed to set password_version");
     let user_service = Arc::new(create_user_service(pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());

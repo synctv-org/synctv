@@ -16,6 +16,7 @@ use synctv_core::service::{
 };
 
 // Use synctv_proto for all gRPC traits and types
+use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
 use crate::proto::client::{
     auth_service_server::AuthService, email_service_server::EmailService,
     public_service_server::PublicService, room_service_server::RoomService,
@@ -26,30 +27,38 @@ use crate::proto::client::{
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
     ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
     CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
-    DeleteMediaResponse, DeletePlaylistRequest, DeletePlaylistResponse, DeleteRoomRequest,
-    DeleteRoomResponse, EditMediaRequest, EditMediaResponse, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
-    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
-    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
+    DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
+    EditMediaResponse, FinishOpaqueLoginRequest, FinishOpaquePasswordUpdateRequest,
+    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
+    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
+    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
+    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
+    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
     KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
-    ListMyRoomsResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse, ListPlaylistsRequest,
-    ListPlaylistsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
-    ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse,
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MoveMediaRequest,
-    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, RefreshTokenRequest,
+    ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse, ListPlaylistItemsRequest,
+    ListPlaylistItemsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
+    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomStreamsRequest,
+    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
+    LogoutRequest, LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, PasskeyCredential, PasskeyCredentialResponse, RefreshTokenRequest,
     RefreshTokenResponse, RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest,
     RejectRoomJoinReviewResponse, RequestEmailLoginRequest, RequestEmailLoginResponse,
     RequestPasswordResetRequest, RequestPasswordResetResponse, ResetRoomSettingsRequest,
     ResetRoomSettingsResponse, SendVerificationEmailRequest, SendVerificationEmailResponse,
     ServerMessage, SetPasswordRequest, SetPasswordResponse, SetRoomPasswordRequest,
-    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartPlaybackRequest,
-    StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
-    TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
-    UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
-    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyLoginRequest,
+    StartPasskeyLoginResponse, StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse,
+    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UnbanMemberRequest,
+    UnbanMemberResponse, UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse,
+    UpdatePlaylistRequest, UpdatePlaylistResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -121,6 +130,27 @@ fn map_email_flow_error(err: crate::impls::ApiError) -> Status {
     map_api_error(err)
 }
 
+fn passkey_credential_to_proto(
+    credential: &synctv_core::repository::WebAuthnCredential,
+) -> PasskeyCredential {
+    PasskeyCredential {
+        credential_id: synctv_core::service::PasskeyService::encode_credential_id(
+            &credential.credential_id,
+        ),
+        name: credential.name.clone().unwrap_or_default(),
+        sign_count: credential.sign_count,
+        created_at: credential.created_at.timestamp(),
+        updated_at: credential.updated_at.timestamp(),
+        last_used_at: credential.last_used_at.map_or(0, |value| value.timestamp()),
+    }
+}
+
+fn passkey_options_to_string(options_json: Vec<u8>) -> Result<String, crate::impls::ApiError> {
+    String::from_utf8(options_json).map_err(|error| {
+        crate::impls::ApiError::Internal(format!("Invalid passkey challenge JSON: {error}"))
+    })
+}
+
 #[allow(clippy::result_large_err)]
 fn map_message_stream_user_lookup_error(err: synctv_core::Error) -> Status {
     map_api_error(crate::impls::ApiError::from(err))
@@ -146,6 +176,7 @@ pub struct ClientServiceConfig {
     pub content_filter: ContentFilter,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
@@ -166,6 +197,7 @@ pub struct ClientServiceImpl {
     content_filter: Arc<ContentFilter>,
     connection_service: Arc<dyn RealtimeConnectionService>,
     email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
@@ -206,6 +238,7 @@ impl ClientServiceImpl {
             content_filter: Arc::new(content_filter),
             connection_service,
             email_api,
+            passkey_service: None,
             client_api,
             config,
             notification_service: None,
@@ -226,6 +259,7 @@ impl ClientServiceImpl {
             content_filter: Arc::new(config.content_filter),
             connection_service: config.connection_service,
             email_api: config.email_api,
+            passkey_service: config.passkey_service,
             client_api: config.client_api,
             config: config.config,
             notification_service: config.notification_service,
@@ -238,6 +272,16 @@ impl ClientServiceImpl {
         self.email_api
             .as_ref()
             .ok_or_else(Self::email_api_unavailable_error)
+    }
+
+    fn passkey_service(
+        &self,
+    ) -> Result<&Arc<synctv_core::service::PasskeyService>, crate::impls::ApiError> {
+        self.passkey_service.as_ref().ok_or_else(|| {
+            crate::impls::ApiError::ServiceUnavailable(
+                "Passkey/WebAuthn service is not configured".to_string(),
+            )
+        })
     }
 
     fn request_metadata<T>(&self, request: &Request<T>) -> crate::impls::RequestMetadata {
@@ -330,6 +374,62 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(response))
     }
 
+    async fn start_opaque_registration(
+        &self,
+        request: Request<StartOpaqueRegistrationRequest>,
+    ) -> Result<Response<StartOpaqueRegistrationResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .start_opaque_registration_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_opaque_registration(
+        &self,
+        request: Request<FinishOpaqueRegistrationRequest>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .finish_opaque_registration_with_control(
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
     async fn login(
         &self,
         request: Request<LoginRequest>,
@@ -391,6 +491,142 @@ impl AuthService for ClientServiceImpl {
                 "Email token login requires email only and cannot be combined with username or password.",
             ));
         };
+        Ok(Response::new(response))
+    }
+
+    async fn start_opaque_login(
+        &self,
+        request: Request<StartOpaqueLoginRequest>,
+    ) -> Result<Response<StartOpaqueLoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .start_opaque_login_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_opaque_login(
+        &self,
+        request: Request<FinishOpaqueLoginRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .finish_opaque_login_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_passkey_login(
+        &self,
+        request: Request<StartPasskeyLoginRequest>,
+    ) -> Result<Response<StartPasskeyLoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let has_username = !req.username.trim().is_empty();
+                    let has_email = !req.email.trim().is_empty();
+                    if has_username == has_email {
+                        return Err(crate::impls::ApiError::InvalidInput(
+                            "Provide exactly one of username or email".to_string(),
+                        ));
+                    }
+                    let identifier = if has_email {
+                        crate::http::validation::validate_email(&req.email)
+                            .map_err(|e| crate::impls::ApiError::InvalidInput(e.to_string()))?
+                    } else {
+                        crate::http::validation::validate_username(&req.username)
+                            .map_err(|e| crate::impls::ApiError::InvalidInput(e.to_string()))?
+                    };
+                    let challenge = passkey_service
+                        .start_login(&identifier, client_ip, Some(&request_control))
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    let options = passkey_options_to_string(challenge.options_json)?;
+                    Ok::<_, crate::impls::ApiError>(StartPasskeyLoginResponse {
+                        session_id: challenge.session_id,
+                        options,
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_passkey_login(
+        &self,
+        request: Request<FinishPasskeyLoginRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let public_id_codec = self.client_api.public_id_codec.clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let (user, access_token, refresh_token) = passkey_service
+                        .finish_login(
+                            &req.session_id,
+                            req.credential.as_bytes(),
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    Ok::<_, crate::impls::ApiError>(LoginResponse {
+                        user: Some(crate::impls::client::user_to_proto(&user, &public_id_codec)),
+                        access_token,
+                        refresh_token,
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -542,6 +778,298 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.set_password(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_opaque_password_update(
+        &self,
+        request: Request<StartOpaquePasswordUpdateRequest>,
+    ) -> Result<Response<StartOpaquePasswordUpdateResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let passkey_service = self.passkey_service.clone();
+        let email_api = self.email_api.clone();
+        let user_service = self.user_service.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    let method =
+                        OpaquePasswordUpdateVerificationMethod::try_from(req.verification_method)
+                            .map_err(|_| {
+                            crate::impls::ApiError::InvalidInput(
+                                "Invalid verification_method".to_string(),
+                            )
+                        })?;
+                    match method {
+                        OpaquePasswordUpdateVerificationMethod::EmailToken => {
+                            let email_api = email_api
+                                .as_ref()
+                                .ok_or_else(Self::email_api_unavailable_error)?;
+                            if req.email_token.is_empty() {
+                                return Err(crate::impls::ApiError::InvalidInput(
+                                    "email_token is required for email verification".to_string(),
+                                ));
+                            }
+                            email_api
+                                .email_token_service
+                                .validate_token_for_user(
+                                    &req.email_token,
+                                    synctv_core::service::EmailTokenType::PasswordReset,
+                                    &authenticated.user_id,
+                                )
+                                .await
+                                .map_err(crate::impls::ApiError::from)?;
+                            let challenge = user_service
+                                .start_opaque_password_update_after_external_verification(
+                                    &authenticated.user_id,
+                                    req.registration_request,
+                                )
+                                .await
+                                .map_err(crate::impls::ApiError::from)?;
+                            Ok(StartOpaquePasswordUpdateResponse {
+                                session_id: challenge.session_id,
+                                credential_response: Vec::new(),
+                                registration_response: challenge.registration_response,
+                                passkey_session_id: String::new(),
+                                passkey_options: Vec::new(),
+                            })
+                        }
+                        OpaquePasswordUpdateVerificationMethod::Passkey => {
+                            let passkey_service = passkey_service.as_ref().ok_or_else(|| {
+                                crate::impls::ApiError::ServiceUnavailable(
+                                    "Passkey/WebAuthn service is not configured".to_string(),
+                                )
+                            })?;
+                            let passkey_challenge = passkey_service
+                                .start_user_verification(&authenticated.user_id)
+                                .await
+                                .map_err(crate::impls::ApiError::from)?;
+                            let challenge = user_service
+                                .start_opaque_password_update_after_external_verification(
+                                    &authenticated.user_id,
+                                    req.registration_request,
+                                )
+                                .await
+                                .map_err(crate::impls::ApiError::from)?;
+                            Ok(StartOpaquePasswordUpdateResponse {
+                                session_id: challenge.session_id,
+                                credential_response: Vec::new(),
+                                registration_response: challenge.registration_response,
+                                passkey_session_id: passkey_challenge.session_id,
+                                passkey_options: passkey_challenge.options_json,
+                            })
+                        }
+                        _ => {
+                            client_api
+                                .start_opaque_password_update(&authenticated.user_id, req)
+                                .await
+                        }
+                    }
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_opaque_password_update(
+        &self,
+        request: Request<FinishOpaquePasswordUpdateRequest>,
+    ) -> Result<Response<FinishOpaquePasswordUpdateResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let passkey_service = self.passkey_service.clone();
+        let user_service = self.user_service.clone();
+        let public_id_codec = self.client_api.public_id_codec.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    if !req.passkey_session_id.is_empty() || !req.passkey_credential.is_empty() {
+                        let passkey_service = passkey_service.as_ref().ok_or_else(|| {
+                            crate::impls::ApiError::ServiceUnavailable(
+                                "Passkey/WebAuthn service is not configured".to_string(),
+                            )
+                        })?;
+                        passkey_service
+                            .finish_user_verification(
+                                &req.passkey_session_id,
+                                &req.passkey_credential,
+                                &authenticated.user_id,
+                            )
+                            .await
+                            .map_err(crate::impls::ApiError::from)?;
+                        let user = user_service
+                            .finish_opaque_password_update_after_external_verification(
+                                &authenticated.user_id,
+                                &req.session_id,
+                                req.registration_upload,
+                            )
+                            .await
+                            .map_err(crate::impls::ApiError::from)?;
+                        Ok(FinishOpaquePasswordUpdateResponse {
+                            user: Some(crate::impls::client::user_to_proto(
+                                &user,
+                                &public_id_codec,
+                            )),
+                        })
+                    } else {
+                        client_api
+                            .finish_opaque_password_update(&authenticated.user_id, req)
+                            .await
+                    }
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn start_passkey_registration(
+        &self,
+        request: Request<StartPasskeyRegistrationRequest>,
+    ) -> Result<Response<StartPasskeyRegistrationResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let user_service = self.user_service.clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let profile = user_service
+                        .get_user(&authenticated.user_id)
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    let credential_name = if req.name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(req.name.trim().to_string())
+                    };
+                    let challenge = passkey_service
+                        .start_registration(&profile, credential_name)
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    let options = passkey_options_to_string(challenge.options_json)?;
+                    Ok::<_, crate::impls::ApiError>(StartPasskeyRegistrationResponse {
+                        session_id: challenge.session_id,
+                        options,
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_passkey_registration(
+        &self,
+        request: Request<FinishPasskeyRegistrationRequest>,
+    ) -> Result<Response<PasskeyCredentialResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let credential = passkey_service
+                        .finish_registration(
+                            &req.session_id,
+                            req.credential.as_bytes(),
+                            &authenticated.user_id,
+                        )
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    Ok::<_, crate::impls::ApiError>(PasskeyCredentialResponse {
+                        credential: Some(passkey_credential_to_proto(&credential)),
+                    })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_passkeys(
+        &self,
+        request: Request<ListPasskeysRequest>,
+    ) -> Result<Response<ListPasskeysResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    let credentials = passkey_service
+                        .list_credentials(&authenticated.user_id)
+                        .await
+                        .map_err(crate::impls::ApiError::from)?
+                        .iter()
+                        .map(passkey_credential_to_proto)
+                        .collect();
+                    Ok::<_, crate::impls::ApiError>(ListPasskeysResponse { credentials })
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn delete_passkey(
+        &self,
+        request: Request<DeletePasskeyRequest>,
+    ) -> Result<Response<DeletePasskeyResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let passkey_service = self
+            .passkey_service()
+            .map_err(map_email_flow_error)?
+            .clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let credential_id = synctv_core::service::PasskeyService::decode_credential_id(
+                        &req.credential_id,
+                    )
+                    .map_err(crate::impls::ApiError::from)?;
+                    let deleted = passkey_service
+                        .delete_credential(&authenticated.user_id, &credential_id)
+                        .await
+                        .map_err(crate::impls::ApiError::from)?;
+                    Ok::<_, crate::impls::ApiError>(DeletePasskeyResponse { deleted })
                 },
             )
             .await

@@ -456,7 +456,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .expect("create playback state");
 
     sqlx::query(
-        "INSERT INTO oauth2_clients (provider, provider_user_id, user_id, username, email)
+        "INSERT INTO auth_oauth2_identities (provider, provider_user_id, user_id, username, email)
          VALUES ($1, $2, $3, $4, $5)",
     )
     .bind("github")
@@ -608,7 +608,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     assert!(!playback_row.2, "playback must be stopped");
 
     let oauth2_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM oauth2_clients WHERE user_id = $1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM auth_oauth2_identities WHERE user_id = $1")
             .bind(doomed_user.id)
             .fetch_one(&pool)
             .await
@@ -799,6 +799,54 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
     );
 }
 
+async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPool) {
+    let service = create_user_service(pool.clone());
+    let user_repo = UserRepository::new(pool);
+
+    let created = user_repo
+        .create(&make_user("email_bound_user"))
+        .await
+        .expect("create email signup user");
+
+    let original_email = created.email.clone();
+    let mut unbind_attempt = created.clone();
+    unbind_attempt.email = None;
+    let result = service
+        .update_user(&unbind_attempt, created.version)
+        .await
+        .expect_err("email signup users must not be allowed to unbind email");
+
+    assert!(
+        matches!(&result, Error::InvalidInput(message) if message.contains("cannot unbind email")),
+        "expected InvalidInput for email unbind, got {result:?}"
+    );
+
+    let unchanged = user_repo
+        .get_by_id(&created.id)
+        .await
+        .expect("fetch unchanged user")
+        .expect("user should still exist");
+    assert_eq!(unchanged.email, original_email);
+    assert!(unchanged.email_verified);
+
+    let mut rebind_attempt = unchanged.clone();
+    rebind_attempt.email = Some("email_bound_user_new@example.com".to_string());
+    rebind_attempt.email_verified = true;
+    let updated = service
+        .update_user(&rebind_attempt, unchanged.version)
+        .await
+        .expect("email signup users should be allowed to rebind email");
+
+    assert_eq!(
+        updated.email.as_deref(),
+        Some("email_bound_user_new@example.com")
+    );
+    assert!(
+        !updated.email_verified,
+        "rebinding email must require verifying the new address"
+    );
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_user_service_registration_login_and_delete_flows() {
@@ -817,6 +865,8 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_delete_user_already_deleted_returns_error(&delete_twice_service).await;
 
     assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool.clone()).await;
+
+    assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool.clone()).await;
 
     assert_delete_user_concurrent_deletion_atomicity(pool).await;
 }

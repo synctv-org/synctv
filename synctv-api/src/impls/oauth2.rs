@@ -356,10 +356,13 @@ impl OAuth2ApiImpl {
             .filter(|p| **p != provider_type)
             .count();
 
-        // Check if user has a usable password (can authenticate without any OAuth2 provider).
-        // This checks both signup_method AND whether the user has explicitly set a password,
-        // handling the case where an OAuth2 user later sets their own password.
-        let has_password_auth = user.has_usable_password();
+        // Check if user has usable password authentication without any OAuth2 provider.
+        // This includes legacy password hashes and OPAQUE-only credentials.
+        let has_password_auth = self
+            .user_service
+            .has_usable_password_authentication(&user)
+            .await
+            .map_err(ApiError::from)?;
 
         if remaining_providers == 0 && !has_password_auth {
             return Err(ApiError::InvalidInput(

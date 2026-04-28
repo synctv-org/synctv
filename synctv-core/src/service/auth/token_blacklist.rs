@@ -298,7 +298,7 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
 /// `expires_at` timestamp. Family revocation reuses the same primary key row
 /// and stores the stable revocation timestamp in `family_revoked_at`.
 /// Expired rows are cleaned up lazily (not returned by queries) and can be
-/// purged periodically via `DELETE FROM token_blacklist WHERE expires_at < NOW()`.
+/// purged periodically via `DELETE FROM auth_token_blacklist WHERE expires_at < NOW()`.
 pub struct PgTokenBlacklistStore {
     pool: PgPool,
 }
@@ -326,7 +326,7 @@ impl PgTokenBlacklistStore {
         let deleted_count = sqlx::query_scalar::<_, i64>(
             r"
             WITH deleted AS (
-                DELETE FROM token_blacklist
+                DELETE FROM auth_token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )
@@ -350,7 +350,7 @@ impl PgTokenBlacklistStore {
 impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn is_blacklisted(&self, key: &str) -> bool {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())",
+            "SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1 AND expires_at > NOW())",
         )
         .bind(key)
         .fetch_one(&self.pool)
@@ -360,7 +360,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())",
+            "SELECT EXISTS(SELECT 1 FROM auth_token_blacklist WHERE jti = $1 AND expires_at > NOW())",
         )
         .bind(key)
         .fetch_one(&self.pool)
@@ -378,7 +378,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
         sqlx::query(
-            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+            "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(key)
@@ -410,7 +410,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // xmax != 0 means the row already existed (conflict, nothing inserted)
         // See: https://www.postgresql.org/docs/current/functions-info.html
         let inserted: bool = sqlx::query_scalar(
-            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+            "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO NOTHING \
              RETURNING (xmax = 0)",
         )
@@ -436,7 +436,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
         sqlx::query_scalar::<_, i64>(
             "SELECT family_revoked_at
-             FROM token_blacklist
+             FROM auth_token_blacklist
              WHERE jti = $1
                AND expires_at > NOW()
                AND family_revoked_at IS NOT NULL",
@@ -451,7 +451,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn get_family_revoked_at_checked(&self, key: &str) -> Result<Option<i64>> {
         sqlx::query_scalar::<_, i64>(
             "SELECT family_revoked_at
-             FROM token_blacklist
+             FROM auth_token_blacklist
              WHERE jti = $1
                AND expires_at > NOW()
                AND family_revoked_at IS NOT NULL",
@@ -472,7 +472,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
         let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs);
         sqlx::query(
-            "INSERT INTO token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
+            "INSERT INTO auth_token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
              ON CONFLICT (jti) DO UPDATE
              SET expires_at = EXCLUDED.expires_at,
                  family_revoked_at = EXCLUDED.family_revoked_at",

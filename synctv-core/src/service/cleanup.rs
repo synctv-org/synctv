@@ -411,7 +411,7 @@ impl CleanupService {
         let days = Self::u32_to_i32_saturating(self.config.expired_token_retention_days);
         let result = sqlx::query(
             r"
-            DELETE FROM email_tokens
+            DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
             ",
         )
@@ -490,7 +490,7 @@ impl CleanupService {
         let deleted_count = sqlx::query_scalar::<_, i64>(
             r"
             WITH deleted AS (
-                DELETE FROM token_blacklist
+                DELETE FROM auth_token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )

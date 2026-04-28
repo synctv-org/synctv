@@ -131,6 +131,131 @@ impl ClientApiImpl {
         })
     }
 
+    pub async fn start_opaque_login_with_control(
+        &self,
+        req: crate::proto::client::StartOpaqueLoginRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::StartOpaqueLoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let has_username = !req.username.trim().is_empty();
+        let has_email = !req.email.trim().is_empty();
+        if has_username == has_email {
+            return Err(ApiError::InvalidInput(
+                "Provide exactly one of username or email".to_string(),
+            ));
+        }
+
+        let identifier = if has_email {
+            crate::http::validation::validate_email(&req.email)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+        } else {
+            crate::http::validation::validate_username(&req.username)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?
+        };
+
+        let challenge = self
+            .user_service
+            .start_opaque_login_with_control(identifier, req.credential_request, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::StartOpaqueLoginResponse {
+            session_id: challenge.session_id,
+            credential_response: challenge.credential_response,
+        })
+    }
+
+    pub async fn finish_opaque_login_with_control(
+        &self,
+        req: crate::proto::client::FinishOpaqueLoginRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let (user, access_token, refresh_token) = self
+            .user_service
+            .finish_opaque_login_with_control(
+                &req.session_id,
+                req.credential_finalization,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::LoginResponse {
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            access_token,
+            refresh_token,
+        })
+    }
+
+    pub async fn start_opaque_registration_with_control(
+        &self,
+        mut req: crate::proto::client::StartOpaqueRegistrationRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::StartOpaqueRegistrationResponse, ApiError> {
+        req.username = crate::http::validation::validate_username(&req.username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let email = if req.email.trim().is_empty() {
+            None
+        } else {
+            Some(
+                crate::http::validation::validate_email(&req.email)
+                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
+            )
+        };
+        req.email = email.clone().unwrap_or_default();
+        crate::impls::validate_proto_request(&req)?;
+
+        let challenge = self
+            .user_service
+            .start_opaque_registration_with_control(
+                req.username,
+                email,
+                req.registration_request,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::StartOpaqueRegistrationResponse {
+            session_id: challenge.session_id,
+            registration_response: challenge.registration_response,
+        })
+    }
+
+    pub async fn finish_opaque_registration_with_control(
+        &self,
+        req: crate::proto::client::FinishOpaqueRegistrationRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+
+        let (user, access_token, refresh_token) = self
+            .user_service
+            .finish_opaque_registration_with_control(
+                &req.session_id,
+                req.registration_upload,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::RegisterResponse {
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            access_token: access_token.unwrap_or_default(),
+            refresh_token: refresh_token.unwrap_or_default(),
+        })
+    }
+
     pub async fn refresh_token(
         &self,
         req: crate::proto::client::RefreshTokenRequest,

@@ -291,15 +291,10 @@ async fn test_password_change_invalidates_tokens() {
         .await
         .expect("Failed to hash new password");
 
-    let mut updated_user = created_user.clone();
-    updated_user.password_hash = new_password_hash;
-    updated_user.updated_at = chrono::Utc::now();
-
-    let old_version = updated_user.version;
     user_repo
-        .update(&updated_user, old_version)
+        .update_password(&created_user.id, &new_password_hash)
         .await
-        .expect("Failed to update user");
+        .expect("Failed to update password");
 
     // In a real system, old tokens should be invalidated by checking updated_at
     // against token issued_at (iat) or using a token revocation list

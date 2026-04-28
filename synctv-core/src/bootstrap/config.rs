@@ -268,12 +268,12 @@ mod tests {
 
         std::fs::write(
             dir.path().join("synctv.yml"),
-            "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\n",
+            "server:\n  port: 58082\njwt:\n  secret: \"12345678901234567890123456789012\"\nsecurity:\n  opaque_server_setup_secret: \"opaque-server-setup-secret-123456789012\"\n",
         )
         .expect("yml config should be written");
         std::fs::write(
             dir.path().join("synctv.json"),
-            "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"}}",
+            "{\"server\":{\"port\":58083},\"jwt\":{\"secret\":\"12345678901234567890123456789012\"},\"security\":{\"opaque_server_setup_secret\":\"opaque-server-setup-secret-123456789012\"}}",
         )
         .expect("json config should be written");
 
@@ -317,6 +317,8 @@ mod tests {
             r#"
 jwt:
   secret: "12345678901234567890123456789012"
+security:
+  opaque_server_setup_secret: "opaque-server-setup-secret-123456789012"
 "#,
         )
         .expect("valid config should be written");
@@ -338,10 +340,11 @@ jwt:
         let _config_path = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let _management_auth = management_auth_token_guard();
         let _jwt = EnvVarGuard::remove("SYNCTV_JWT_SECRET");
+        let _opaque_secret = EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET");
         let _port = EnvVarGuard::remove("SYNCTV_SERVER_PORT");
         std::fs::write(
             dir.path().join(".env"),
-            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SERVER_PORT=50061\n",
+            "SYNCTV_JWT_SECRET=12345678901234567890123456789012\nSYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=opaque-server-setup-secret-123456789012\nSYNCTV_SERVER_PORT=50061\n",
         )
         .expect(".env should be written");
 
@@ -362,6 +365,8 @@ jwt:
             r#"
 jwt:
   secret: "12345678901234567890123456789012"
+security:
+  opaque_server_setup_secret: "opaque-server-setup-secret-123456789012"
 server:
   port: 58080
 "#,

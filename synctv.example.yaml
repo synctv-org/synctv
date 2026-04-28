@@ -94,6 +94,14 @@ security:
   #   SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE
   # credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   credential_encryption_key: ""
+  # Stable secret used to derive the OPAQUE server setup for password authentication.
+  # Keep this independent from jwt.secret so JWT rotation does not invalidate OPAQUE password records.
+  # Generate with: openssl rand -base64 48
+  # Environment variables:
+  #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
+  #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE
+  # opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  opaque_server_setup_secret: ""
 
 metrics:
   # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
@@ -582,6 +590,38 @@ oauth2:
 #   Format: SYNCTV_OAUTH2_<FIELD>
 #   Examples:
 #     SYNCTV_OAUTH2_REDIRECT_SCHEME=https
+
+webauthn:
+  # Enables passkey/security-key registration and login endpoints:
+  #   POST /api/user/passkeys/registration/start
+  #   POST /api/user/passkeys/registration/finish
+  #   POST /api/auth/passkeys/login/start
+  #   POST /api/auth/passkeys/login/finish
+  #
+  # Production requirements:
+  #   - Use HTTPS origins except for local development.
+  #   - rp_id must be the registrable domain of rp_origin, for example
+  #     rp_id: "example.com" with rp_origin: "https://app.example.com".
+  #   - In cluster mode, Redis must be configured because challenges are
+  #     single-use and must be shared across replicas.
+  #
+  # Environment variables:
+  #   SYNCTV_WEBAUTHN_ENABLED
+  #   SYNCTV_WEBAUTHN_RP_ID
+  #   SYNCTV_WEBAUTHN_RP_ORIGIN
+  #   SYNCTV_WEBAUTHN_RP_NAME
+  #   SYNCTV_WEBAUTHN_ALLOWED_ORIGINS
+  #   SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS
+  #   SYNCTV_WEBAUTHN_ALLOW_ANY_PORT
+  #   SYNCTV_WEBAUTHN_TIMEOUT_SECONDS
+  enabled: false
+  rp_id: ""
+  rp_origin: ""
+  rp_name: "SyncTV"
+  allowed_origins: []
+  allow_subdomains: false
+  allow_any_port: false
+  timeout_seconds: 300
 
 # ============================================================================
 # WebRTC Configuration

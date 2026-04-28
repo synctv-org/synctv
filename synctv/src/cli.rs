@@ -3669,7 +3669,7 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
                 merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomPlaybackSubcommand::Seek(args) => {
-                merge_room_scoped_remote_args(&mut args.room, root)
+                merge_room_scoped_remote_args(&mut args.room, root);
             }
             RoomPlaybackSubcommand::Speed(args) => {
                 merge_room_scoped_remote_args(&mut args.room, root);
@@ -8422,6 +8422,7 @@ fn redact_known_secret_fields(map: &mut Map<String, Value>) {
         "root_password",
         "client_secret",
         "credential_encryption_key",
+        "opaque_server_setup_secret",
         "api_key",
         "token",
         "access_token",
@@ -8577,6 +8578,8 @@ mod tests {
         config.database.url = "postgresql://synctv:super-secret-db@db.internal:5432/synctv".into();
         config.redis.url = "redis://:redis-secret@redis.internal:6379/0".into();
         config.jwt.secret = "jwt-secret-123456789012345678901234".into();
+        config.security.opaque_server_setup_secret =
+            "opaque-server-setup-secret-123456789012345678901234".into();
         config.server.cluster_secret = "cluster-secret-value".into();
         config.management.auth_token = "management-auth-token".into();
         config.metrics.auth.bearer_token = "metrics-bearer-token".into();
@@ -12524,6 +12527,7 @@ mod tests {
             "super-secret-db",
             "redis-secret",
             "jwt-secret-123456789012345678901234",
+            "opaque-server-setup-secret-123456789012345678901234",
             "cluster-secret-value",
             "management-auth-token",
             "metrics-bearer-token",

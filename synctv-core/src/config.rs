@@ -241,6 +241,7 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
         key_path.as_str(),
         "server.cluster_secret"
             | "security.credential_encryption_key"
+            | "security.opaque_server_setup_secret"
             | "management.auth_token"
             | "metrics.auth.basic_password"
             | "metrics.auth.bearer_token"
@@ -402,6 +403,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub livestream: LivestreamConfig,
     pub oauth2: OAuth2Config,
+    pub webauthn: WebAuthnConfig,
     pub email: EmailConfig,
     pub media_providers: MediaProvidersConfig,
     pub webrtc: WebRTCConfig,
@@ -432,6 +434,7 @@ impl std::fmt::Debug for Config {
             .field("logging", &self.logging)
             .field("livestream", &self.livestream)
             .field("oauth2", &self.oauth2)
+            .field("webauthn", &self.webauthn)
             .field("email", &"<redacted>")
             .field("media_providers", &self.media_providers)
             .field("webrtc", &self.webrtc)
@@ -464,6 +467,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             oauth2: OAuth2Config::default(),
+            webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -516,6 +520,12 @@ pub struct SecurityConfig {
     /// `credential_encryption_key_file` in config files so the key is loaded
     /// from a secret mount instead of being stored inline.
     pub credential_encryption_key: String,
+    /// Stable OPAQUE server setup derivation secret.
+    ///
+    /// This must be kept stable across restarts and JWT secret rotations,
+    /// otherwise existing OPAQUE password records cannot be used. Prefer
+    /// `opaque_server_setup_secret_file` in config files.
+    pub opaque_server_setup_secret: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1192,6 +1202,46 @@ impl Default for OAuth2Config {
     }
 }
 
+/// WebAuthn/passkey configuration.
+///
+/// Public product wording should use "passkey"; configuration keeps the
+/// standards name because these values are WebAuthn relying-party parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebAuthnConfig {
+    /// Enable passkey registration and login endpoints.
+    pub enabled: bool,
+    /// Relying party ID. This must be the effective domain of `rp_origin`.
+    pub rp_id: String,
+    /// Primary origin, for example `https://app.example.com`.
+    pub rp_origin: String,
+    /// Human-readable relying party name shown by authenticators.
+    pub rp_name: String,
+    /// Extra accepted origins for native apps or alternate frontends.
+    pub allowed_origins: Vec<String>,
+    /// Allow subdomains of configured origins. Keep false unless required.
+    pub allow_subdomains: bool,
+    /// Ignore origin port when validating assertions. Useful for local dev only.
+    pub allow_any_port: bool,
+    /// Browser authenticator challenge timeout.
+    pub timeout_seconds: u64,
+}
+
+impl Default for WebAuthnConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rp_id: String::new(),
+            rp_origin: String::new(),
+            rp_name: "SyncTV".to_string(),
+            allowed_origins: Vec::new(),
+            allow_subdomains: false,
+            allow_any_port: false,
+            timeout_seconds: 300,
+        }
+    }
+}
+
 /// Media providers configuration
 ///
 /// Stores media provider configurations (Alist, Emby, Bilibili, etc.)
@@ -1844,6 +1894,15 @@ impl Config {
             "security.credential_encryption_key",
             &mut self.security.credential_encryption_key,
         )?;
+        env_override_str(
+            "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET",
+            &mut self.security.opaque_server_setup_secret,
+        );
+        env_override_str_file(
+            "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE",
+            "security.opaque_server_setup_secret",
+            &mut self.security.opaque_server_setup_secret,
+        )?;
 
         env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
@@ -2073,6 +2132,27 @@ impl Config {
         env_override_parse(
             "SYNCTV_JWT_CLOCK_SKEW_LEEWAY_SECS",
             &mut self.jwt.clock_skew_leeway_secs,
+        )?;
+
+        env_override_bool("SYNCTV_WEBAUTHN_ENABLED", &mut self.webauthn.enabled)?;
+        env_override_str("SYNCTV_WEBAUTHN_RP_ID", &mut self.webauthn.rp_id);
+        env_override_str("SYNCTV_WEBAUTHN_RP_ORIGIN", &mut self.webauthn.rp_origin);
+        env_override_str("SYNCTV_WEBAUTHN_RP_NAME", &mut self.webauthn.rp_name);
+        env_override_json_or_csv(
+            "SYNCTV_WEBAUTHN_ALLOWED_ORIGINS",
+            &mut self.webauthn.allowed_origins,
+        );
+        env_override_bool(
+            "SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS",
+            &mut self.webauthn.allow_subdomains,
+        )?;
+        env_override_bool(
+            "SYNCTV_WEBAUTHN_ALLOW_ANY_PORT",
+            &mut self.webauthn.allow_any_port,
+        )?;
+        env_override_parse(
+            "SYNCTV_WEBAUTHN_TIMEOUT_SECONDS",
+            &mut self.webauthn.timeout_seconds,
         )?;
 
         env_override_str("SYNCTV_LOGGING_LEVEL", &mut self.logging.level);
@@ -2716,6 +2796,20 @@ impl Config {
                         .to_string(),
                 );
             }
+        }
+
+        let opaque_secret = self.security.opaque_server_setup_secret.trim();
+        if opaque_secret.is_empty() {
+            errors.push("security.opaque_server_setup_secret is empty. Set SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET or SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE to a stable random value".to_string());
+        } else if opaque_secret == "change-me-in-production"
+            || opaque_secret.starts_with("CHANGE_ME_")
+        {
+            errors.push("security.opaque_server_setup_secret appears to be a placeholder. Set it to a stable random value (openssl rand -base64 48)".to_string());
+        } else if opaque_secret.len() < 32 {
+            errors.push(format!(
+                "security.opaque_server_setup_secret is too short ({} chars). Minimum 32 characters required for OPAQUE setup stability.",
+                opaque_secret.len()
+            ));
         }
 
         // Validate database pool settings
@@ -3464,6 +3558,59 @@ impl Config {
             );
         }
 
+        if self.webauthn.enabled {
+            if self.webauthn.rp_id.trim().is_empty() {
+                errors.push("webauthn.rp_id must be set when webauthn.enabled=true".to_string());
+            }
+            if self.webauthn.rp_origin.trim().is_empty() {
+                errors
+                    .push("webauthn.rp_origin must be set when webauthn.enabled=true".to_string());
+            } else {
+                match url::Url::parse(&self.webauthn.rp_origin) {
+                    Ok(origin) => {
+                        if !matches!(origin.scheme(), "http" | "https") {
+                            errors.push(
+                                "webauthn.rp_origin must use http:// or https://".to_string(),
+                            );
+                        }
+                        if origin.host_str().is_none() {
+                            errors.push("webauthn.rp_origin must include a host".to_string());
+                        }
+                        if origin.path() != "/"
+                            || origin.query().is_some()
+                            || origin.fragment().is_some()
+                        {
+                            errors.push(
+                                "webauthn.rp_origin must be an origin only, without path, query, or fragment"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(format!("webauthn.rp_origin is not a valid URL: {error}"));
+                    }
+                }
+            }
+            if self.webauthn.rp_name.trim().is_empty() {
+                errors.push("webauthn.rp_name must not be empty".to_string());
+            }
+            if self.webauthn.timeout_seconds == 0 {
+                errors.push("webauthn.timeout_seconds must be greater than 0".to_string());
+            }
+            for (index, origin) in self.webauthn.allowed_origins.iter().enumerate() {
+                if let Err(error) = validate_cors_origin(origin) {
+                    errors.push(format!("webauthn.allowed_origins[{index}]: {error}"));
+                }
+            }
+            if self.cluster.enabled && !redis_backend_configured {
+                errors.push(
+                    "WebAuthn/passkey requires Redis for challenge state in cluster mode. \
+                     Configure a Redis backend or disable WebAuthn."
+                        .to_string(),
+                );
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -4005,7 +4152,11 @@ mod tests {
             },
             time: TimeConfig::default(),
             public_ids: PublicIdsConfig::default(),
-            security: SecurityConfig::default(),
+            security: SecurityConfig {
+                opaque_server_setup_secret: "test-opaque-server-setup-secret-that-is-long-enough"
+                    .to_string(),
+                ..SecurityConfig::default()
+            },
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig::default(),
@@ -4015,6 +4166,7 @@ mod tests {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             oauth2: OAuth2Config::default(),
+            webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -4057,6 +4209,7 @@ mod tests {
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
             oauth2: OAuth2Config::default(),
+            webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig::default(),
@@ -4316,7 +4469,11 @@ mod tests {
             },
             time: TimeConfig::default(),
             public_ids: PublicIdsConfig::default(),
-            security: SecurityConfig::default(),
+            security: SecurityConfig {
+                opaque_server_setup_secret: "test-opaque-server-setup-secret-that-is-long-enough"
+                    .to_string(),
+                ..SecurityConfig::default()
+            },
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
             management: ManagementConfig {
@@ -4341,6 +4498,7 @@ mod tests {
                 ..LivestreamConfig::default()
             },
             oauth2: OAuth2Config::default(),
+            webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
@@ -4612,6 +4770,11 @@ jwt:
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
         )
         .expect("credential encryption key file should be written");
+        std::fs::write(
+            config_dir.join("opaque.secret"),
+            "opaque-server-setup-secret-from-file\n",
+        )
+        .expect("opaque server setup secret file should be written");
 
         let config_path = config_dir.join("synctv.yaml");
         std::fs::write(
@@ -4639,6 +4802,7 @@ jwt:
   secret_file: "./jwt.secret"
 security:
   credential_encryption_key_file: "./credential.key"
+  opaque_server_setup_secret_file: "./opaque.secret"
 email:
   smtp_host: "smtp.example.com"
   smtp_password_file: "./smtp.password"
@@ -4676,6 +4840,10 @@ bootstrap:
         assert_eq!(
             config.security.credential_encryption_key,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        );
+        assert_eq!(
+            config.security.opaque_server_setup_secret,
+            "opaque-server-setup-secret-from-file"
         );
         assert_eq!(config.email.smtp_password, "smtp-password-from-file");
         assert_eq!(config.bootstrap.root_password, "StrongPwd12345!");
@@ -5519,6 +5687,71 @@ jwt:
     }
 
     #[test]
+    fn test_validate_webauthn_requires_rp_id_and_origin_when_enabled() {
+        let mut config = valid_prod_config();
+        config.webauthn.enabled = true;
+        config.webauthn.rp_id.clear();
+        config.webauthn.rp_origin.clear();
+
+        let errors = config
+            .validate()
+            .expect_err("enabled WebAuthn must require relying-party identity");
+
+        assert!(errors.iter().any(|error| error.contains("webauthn.rp_id")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("webauthn.rp_origin")));
+    }
+
+    #[test]
+    fn test_validate_webauthn_rejects_origin_with_path_query_or_fragment() {
+        let mut config = valid_prod_config();
+        config.webauthn.enabled = true;
+        config.webauthn.rp_id = "app.example.com".to_string();
+        config.webauthn.rp_origin = "https://app.example.com/login?next=/#section".to_string();
+
+        let errors = config
+            .validate()
+            .expect_err("WebAuthn origins must be bare origins");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("without path, query, or fragment")));
+    }
+
+    #[test]
+    fn test_validate_webauthn_accepts_minimal_valid_config() {
+        let mut config = valid_prod_config();
+        config.webauthn.enabled = true;
+        config.webauthn.rp_id = "app.example.com".to_string();
+        config.webauthn.rp_origin = "https://app.example.com".to_string();
+        config.webauthn.rp_name = "SyncTV".to_string();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_webauthn_requires_redis_in_cluster_mode() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        config.server.cluster_secret = "cluster-secret-long-enough".to_string();
+        config.server.advertise_host = "10.0.0.12".to_string();
+        config.redis.url.clear();
+        config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+        config.webauthn.enabled = true;
+        config.webauthn.rp_id = "app.example.com".to_string();
+        config.webauthn.rp_origin = "https://app.example.com".to_string();
+
+        let errors = config
+            .validate()
+            .expect_err("clustered WebAuthn must use shared challenge storage");
+
+        assert!(errors.iter().any(|error| {
+            error.contains("WebAuthn/passkey requires Redis for challenge state in cluster mode")
+        }));
+    }
+
+    #[test]
     fn test_from_env_loads_top_level_secret_file_overrides() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let write_secret = |name: &str, value: &str| -> std::path::PathBuf {
@@ -5532,6 +5765,8 @@ jwt:
             "credential.key",
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         );
+        let opaque_secret =
+            write_secret("opaque.secret", "opaque-server-setup-secret-from-env-file");
         let metrics_bearer = write_secret("metrics.bearer", "metrics-bearer-from-env-file");
         let metrics_password = write_secret("metrics.password", "metrics-password-from-env-file");
         let database_url = write_secret(
@@ -5557,6 +5792,10 @@ jwt:
             (
                 "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE",
                 credential_key.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE",
+                opaque_secret.to_str().expect("utf-8 path"),
             ),
             (
                 "SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE",
@@ -5598,6 +5837,10 @@ jwt:
         assert_eq!(
             config.security.credential_encryption_key,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        );
+        assert_eq!(
+            config.security.opaque_server_setup_secret,
+            "opaque-server-setup-secret-from-env-file"
         );
         assert_eq!(
             config.metrics.auth.bearer_token,

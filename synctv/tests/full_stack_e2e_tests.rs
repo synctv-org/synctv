@@ -100,6 +100,8 @@ fn test_config(
     config.redis.url = redis_url;
     config.redis.key_prefix = test_redis_key_prefix("full-stack");
     config.jwt.secret = "test-jwt-secret-key-for-full-stack-e2e-123456".to_string();
+    config.security.opaque_server_setup_secret =
+        "test-opaque-server-setup-secret-for-full-stack-e2e".to_string();
     config.bootstrap.create_root_user = true;
     config.bootstrap.root_username = "admin".to_string();
     config.bootstrap.root_password = "StrongPwd12345!".to_string();

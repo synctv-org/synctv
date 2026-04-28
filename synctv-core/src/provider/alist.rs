@@ -1420,13 +1420,10 @@ impl DynamicFolder for AlistProvider {
             format!("{}{}", base_config.path.trim_end_matches('/'), item_path)
         };
 
-        let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        });
+        let parent_path = relative_path
+            .rsplit_once('/')
+            .map(|x| x.0)
+            .filter(|&s| !s.is_empty());
         let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
         let mut page = 1;
@@ -1513,13 +1510,10 @@ impl DynamicFolder for AlistProvider {
         match play_mode {
             PlayMode::RepeatOne => Ok(None),
             PlayMode::Sequential | PlayMode::RepeatAll => {
-                let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                });
+                let parent_path = relative_path
+                    .rsplit_once('/')
+                    .map(|x| x.0)
+                    .filter(|&s| !s.is_empty());
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 let mut found_current = false;
@@ -1590,13 +1584,10 @@ impl DynamicFolder for AlistProvider {
                 }
 
                 if found_current && play_mode == PlayMode::RepeatAll {
-                    let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
-                        }
-                    });
+                    let parent_path = relative_path
+                        .rsplit_once('/')
+                        .map(|x| x.0)
+                        .filter(|&s| !s.is_empty());
                     let parent_target = parent_path.map(Self::encode_target).transpose()?;
                     let first_page = self
                         .list_playlist(
@@ -1631,13 +1622,10 @@ impl DynamicFolder for AlistProvider {
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                });
+                let parent_path = relative_path
+                    .rsplit_once('/')
+                    .map(|x| x.0)
+                    .filter(|&s| !s.is_empty());
                 let parent_target = parent_path.map(Self::encode_target).transpose()?;
 
                 let mut all_items = Vec::with_capacity(SHUFFLE_MAX_ITEMS);

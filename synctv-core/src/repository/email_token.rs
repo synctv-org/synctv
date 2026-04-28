@@ -44,7 +44,7 @@ impl EmailTokenRepository {
     ) -> Result<EmailToken> {
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            INSERT INTO email_tokens (token, user_id, token_type, expires_at, created_at)
+            INSERT INTO auth_email_tokens (token, user_id, token_type, expires_at, created_at)
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
             RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
@@ -79,7 +79,7 @@ impl EmailTokenRepository {
 
         sqlx::query(
             r"
-            DELETE FROM email_tokens
+            DELETE FROM auth_email_tokens
             WHERE user_id = $1
               AND token_type = $2
               AND used_at IS NULL
@@ -93,7 +93,7 @@ impl EmailTokenRepository {
 
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            INSERT INTO email_tokens (token, user_id, token_type, expires_at, created_at)
+            INSERT INTO auth_email_tokens (token, user_id, token_type, expires_at, created_at)
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
             RETURNING id, token, user_id, token_type, expires_at, used_at, created_at
             ",
@@ -117,7 +117,7 @@ impl EmailTokenRepository {
         let t = sqlx::query_as::<_, EmailToken>(
             r"
             SELECT id, token, user_id, token_type, expires_at, used_at, created_at
-            FROM email_tokens
+            FROM auth_email_tokens
             WHERE token = $1
             ",
         )
@@ -138,7 +138,7 @@ impl EmailTokenRepository {
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            UPDATE email_tokens
+            UPDATE auth_email_tokens
             SET used_at = CURRENT_TIMESTAMP
             WHERE token = $1
               AND used_at IS NULL
@@ -171,7 +171,7 @@ impl EmailTokenRepository {
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            UPDATE email_tokens
+            UPDATE auth_email_tokens
             SET used_at = CURRENT_TIMESTAMP
             WHERE token = $1
               AND token_type = $2
@@ -201,7 +201,7 @@ impl EmailTokenRepository {
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as::<_, EmailToken>(
             r"
-            UPDATE email_tokens
+            UPDATE auth_email_tokens
             SET used_at = CURRENT_TIMESTAMP
             WHERE token = $1
               AND token_type = $2
@@ -228,7 +228,7 @@ impl EmailTokenRepository {
     ) -> Result<u64> {
         let result = sqlx::query(
             r"
-            DELETE FROM email_tokens
+            DELETE FROM auth_email_tokens
             WHERE user_id = $1 AND token_type = $2 AND used_at IS NULL
             ",
         )
@@ -250,7 +250,7 @@ impl EmailTokenRepository {
     ) -> Result<u64> {
         let result = sqlx::query(
             r"
-            DELETE FROM email_tokens
+            DELETE FROM auth_email_tokens
             WHERE token = $1
               AND user_id = $2
               AND token_type = $3
@@ -271,7 +271,7 @@ impl EmailTokenRepository {
     pub async fn cleanup_expired(&self) -> Result<usize> {
         let result = sqlx::query(
             r"
-            DELETE FROM email_tokens
+            DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP
             ",
         )

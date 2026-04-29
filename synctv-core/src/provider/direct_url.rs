@@ -341,6 +341,7 @@ impl ProviderProxy for DirectUrlProvider {
                 return Ok(ProxyAction::FetchAndForward {
                     url: subtitle.url.clone(),
                     headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                    range_header: None,
                 });
             }
 
@@ -376,6 +377,7 @@ impl ProviderProxy for DirectUrlProvider {
                 return Ok(ProxyAction::FetchAndForward {
                     url: url.clone(),
                     headers: playback_info.headers.clone(),
+                    range_header: super::proxy::selected_range_header(ctx),
                 });
             }
 
@@ -391,6 +393,7 @@ impl ProviderProxy for DirectUrlProvider {
                     return Ok(ProxyAction::FetchAndForward {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
+                        range_header: super::proxy::selected_range_header(ctx),
                     });
                 }
                 "m3u8" => {

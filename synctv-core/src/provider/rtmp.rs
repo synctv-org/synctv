@@ -474,6 +474,7 @@ mod tests {
             services: &services,
             verified_claims: Some(&claims),
             request_context: None,
+            request_headers: &http::HeaderMap::new(),
         };
         let action = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap();
         match action {
@@ -516,6 +517,7 @@ mod tests {
             services: &services,
             verified_claims: None,
             request_context: None,
+            request_headers: &http::HeaderMap::new(),
         };
         let err = RtmpProvider::build_proxy_action("stream", &versioned, &ctx).unwrap_err();
         assert!(matches!(err, ProviderError::ApiError(_)));

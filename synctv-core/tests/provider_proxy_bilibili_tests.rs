@@ -142,10 +142,11 @@ async fn test_subtitle_proxy() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://cdn.bilibili.com/subtitle_zh.srt");
             assert!(headers.contains_key("Referer"));
             assert!(headers.contains_key("User-Agent"));
@@ -182,6 +183,7 @@ async fn test_subtitle_english() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -214,6 +216,7 @@ async fn test_subtitle_not_found() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -302,6 +305,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
 
     let action = p
@@ -310,7 +314,7 @@ async fn test_signed_subtitle_url_round_trips_with_generic_index_contract() {
         .expect("signed subtitle path should round-trip through resolve_proxy");
 
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://cdn.bilibili.com/subtitle_zh.json");
             assert!(headers.contains_key("Referer"));
             assert!(headers.contains_key("User-Agent"));
@@ -386,6 +390,7 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
 
     let action = p
@@ -394,7 +399,7 @@ async fn test_signed_mpd_stream_url_round_trips_with_indexed_proxy_contract() {
         .expect("signed DASH stream path should resolve");
 
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://cdn.bilibili.com/video-720.m4s");
             assert_eq!(
                 headers.get("Referer").map(String::as_str),
@@ -430,6 +435,7 @@ async fn test_m3u8_proxy() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -468,6 +474,7 @@ async fn test_unknown_sub_path() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -499,6 +506,7 @@ async fn test_expired_version() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -519,6 +527,7 @@ async fn test_no_store() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -540,6 +549,7 @@ async fn test_no_slash_in_sub_path() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -561,6 +571,7 @@ async fn test_version_not_in_store() {
         proxy_base: "/api/providers/proxy/bilibili",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(

@@ -19,8 +19,12 @@ pub struct CachedResourceMeta {
     pub last_modified: Option<String>,
     /// Total size of the resource as reported by upstream.
     pub total_size: Option<u64>,
+    /// Whether upstream has proven byte-range support for this resource.
+    pub supports_ranges: bool,
     /// Content-Type of the resource.
     pub content_type: Option<String>,
+    /// When this metadata was last validated against upstream.
+    pub validated_at: SystemTime,
     /// When this metadata was last accessed. Used by `cleanup_stale_meta`
     /// to evict least-recently-accessed entries first.
     pub last_accessed: SystemTime,
@@ -97,7 +101,9 @@ mod tests {
             etag: Some("\"abc\"".to_string()),
             last_modified: Some("Tue, 01 Jan 2030 00:00:00 GMT".to_string()),
             total_size: Some(1024),
+            supports_ranges: true,
             content_type: Some("video/mp4".to_string()),
+            validated_at: SystemTime::now(),
             last_accessed: SystemTime::now(),
         };
         assert_eq!(

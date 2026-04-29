@@ -722,6 +722,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     } else {
                         playback_info.headers.clone()
                     },
+                    range_header: super::proxy::selected_range_header(ctx),
                 });
             }
 
@@ -779,6 +780,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     } else {
                         subtitle_headers
                     },
+                    range_header: None,
                 });
             }
 

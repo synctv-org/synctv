@@ -19,7 +19,7 @@ pub mod rtmp;
 
 use axum::{
     extract::{Path, RawQuery, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
 };
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -68,7 +68,7 @@ fn set_default_cache_control(
 pub(crate) async fn execute_proxy_action(
     proxy_http_client: &reqwest::Client,
     action: ProxyAction,
-    client_headers: &axum::http::HeaderMap,
+    _client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
@@ -77,12 +77,16 @@ pub(crate) async fn execute_proxy_action(
         | ProxyAction::LiveHlsSegment { .. } => Err(AppError::internal(
             "live proxy actions must execute with application state".to_string(),
         )),
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
             let cfg = synctv_proxy::ProxyConfig {
                 client: proxy_http_client,
                 url: &url,
                 provider_headers: &headers,
-                client_headers,
+                range_header: range_header.as_deref(),
                 request_control,
                 upstream_header_timeout: None,
             };
@@ -126,24 +130,76 @@ pub(crate) async fn execute_proxy_action_with_state(
     client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
 ) -> crate::http::error::AppResult<axum::response::Response> {
+    execute_proxy_action_with_state_for_method(
+        state,
+        action,
+        client_headers,
+        request_control,
+        Method::GET,
+    )
+    .await
+}
+
+pub(crate) async fn execute_proxy_action_with_state_for_method(
+    state: &AppState,
+    action: ProxyAction,
+    client_headers: &axum::http::HeaderMap,
+    request_control: Option<&ExecutionControl>,
+    method: Method,
+) -> crate::http::error::AppResult<axum::response::Response> {
     match action {
         ProxyAction::LiveFlv { .. }
         | ProxyAction::LiveHlsPlaylist { .. }
         | ProxyAction::LiveHlsSegment { .. } => {
+            if method != Method::GET {
+                return Err(proxy_method_not_allowed());
+            }
             live::execute_live_stream_action(state, action, None).await
         }
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
             let cache_enabled = state.proxy_slice_cache.config().enabled;
-            let range_header = client_headers
-                .get(axum::http::header::RANGE)
-                .and_then(|value| value.to_str().ok());
             let proxy_control = proxy_execution_control(request_control);
 
-            if should_use_proxy_cache(cache_enabled, range_header) {
+            if method == Method::HEAD {
+                if should_use_proxy_cache(cache_enabled) {
+                    return synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+                        &state.proxy_slice_cache,
+                        cache_enabled,
+                        range_header.as_deref(),
+                        &url,
+                        &headers,
+                        proxy_control.as_ref(),
+                    )
+                    .await
+                    .map_err(map_proxy_execution_error);
+                }
+
+                let cfg = synctv_proxy::ProxyConfig {
+                    client: &state.proxy_http_client,
+                    url: &url,
+                    provider_headers: &headers,
+                    range_header: range_header.as_deref(),
+                    request_control: proxy_control.as_ref(),
+                    upstream_header_timeout: None,
+                };
+                return synctv_proxy::proxy_head_and_forward(cfg)
+                    .await
+                    .map_err(map_proxy_execution_error);
+            }
+
+            if method != Method::GET {
+                return Err(proxy_method_not_allowed());
+            }
+
+            if should_use_proxy_cache(cache_enabled) {
                 return synctv_proxy::slice_cache::proxy_with_cache_enabled_with_control(
                     &state.proxy_slice_cache,
                     cache_enabled,
-                    range_header,
+                    range_header.as_deref(),
                     &url,
                     &headers,
                     proxy_control.as_ref(),
@@ -154,13 +210,20 @@ pub(crate) async fn execute_proxy_action_with_state(
 
             execute_proxy_action(
                 &state.proxy_http_client,
-                ProxyAction::FetchAndForward { url, headers },
+                ProxyAction::FetchAndForward {
+                    url,
+                    headers,
+                    range_header,
+                },
                 client_headers,
                 proxy_control.as_ref(),
             )
             .await
         }
         other => {
+            if method != Method::GET {
+                return Err(proxy_method_not_allowed());
+            }
             let proxy_control = proxy_execution_control(request_control);
             execute_proxy_action(
                 &state.proxy_http_client,
@@ -173,8 +236,15 @@ pub(crate) async fn execute_proxy_action_with_state(
     }
 }
 
-const fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bool {
-    cache_enabled && range_header.is_some()
+const fn should_use_proxy_cache(cache_enabled: bool) -> bool {
+    cache_enabled
+}
+
+fn proxy_method_not_allowed() -> AppError {
+    AppError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "Proxy action does not support this HTTP method",
+    )
 }
 
 /// CORS preflight handler for provider proxy routes.
@@ -228,6 +298,24 @@ pub(crate) fn unified_proxy_handler(
         request_meta.0.with_timeout(None),
         headers,
         raw_query,
+        Method::GET,
+    )
+}
+
+pub(crate) fn unified_proxy_head_handler(
+    Path(path): Path<crate::proto::providers::common::ProviderProxyPathRequest>,
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    headers: HeaderMap,
+    raw_query: RawQuery,
+) -> BoxFuture<'static, AppResult<axum::response::Response>> {
+    execute_unified_proxy_handler(
+        path,
+        state,
+        request_meta.0.with_timeout(None),
+        headers,
+        raw_query,
+        Method::HEAD,
     )
 }
 
@@ -247,6 +335,7 @@ fn execute_unified_proxy_handler(
     request_meta: crate::impls::RequestMetadata,
     headers: HeaderMap,
     raw_query: RawQuery,
+    method: Method,
 ) -> BoxFuture<'static, AppResult<axum::response::Response>> {
     async move {
         crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
@@ -262,6 +351,7 @@ fn execute_unified_proxy_handler(
         let provider_name_for_resolution = provider_name.clone();
         let sub_path_for_resolution = sub_path.clone();
         let query_str_for_resolution = query_str.clone();
+        let headers_for_resolution = headers.clone();
 
         let (action, action_cancellation) = request_executor
             .execute_public_with_control(
@@ -318,6 +408,7 @@ fn execute_unified_proxy_handler(
                         services: &state_for_resolution.proxy_services,
                         verified_claims: Some(&claims),
                         request_context: Some(&request_control),
+                        request_headers: &headers_for_resolution,
                     };
 
                     let action = proxy.resolve_proxy(&ctx).await.map_err(ApiError::from)?;
@@ -337,16 +428,40 @@ fn execute_unified_proxy_handler(
             ProxyAction::LiveFlv { .. }
             | ProxyAction::LiveHlsPlaylist { .. }
             | ProxyAction::LiveHlsSegment { .. } => {
+                if method != Method::GET {
+                    return Err(proxy_method_not_allowed());
+                }
                 live::execute_live_stream_action(&state, action, Some(query_str.as_str()))
                     .await
                     .map_err(app_error_to_api_error)
                     .map_err(map_api_error)
             }
+            other @ ProxyAction::FetchAndForward { .. } => {
+                execute_proxy_action_with_state_for_method(
+                    &state,
+                    other,
+                    &headers,
+                    Some(&action_control),
+                    method,
+                )
+                .await
+                .map_err(app_error_to_api_error)
+                .map_err(map_api_error)
+            }
             other => {
-                execute_proxy_action_with_state(&state, other, &headers, Some(&action_control))
-                    .await
-                    .map_err(app_error_to_api_error)
-                    .map_err(map_api_error)
+                if method != Method::GET {
+                    return Err(proxy_method_not_allowed());
+                }
+                execute_proxy_action_with_state_for_method(
+                    &state,
+                    other,
+                    &headers,
+                    Some(&action_control),
+                    method,
+                )
+                .await
+                .map_err(app_error_to_api_error)
+                .map_err(map_api_error)
             }
         }
     }
@@ -465,17 +580,25 @@ mod tests {
         AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
         ProviderProxy, ProviderSet, RtmpProvider,
     };
-    use synctv_core::repository::{SettingsRepository, UserRepository};
+    use synctv_core::repository::UserRepository;
+    use synctv_core::service::SettingsRegistry;
     use synctv_core::service::{
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, RateLimitConfig, RateLimiter,
         RemoteProviderManager, RoomService, UserService,
     };
     use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
-    use synctv_core::service::{SettingsRegistry, SettingsService};
     use synctv_core_testing::postgres::create_test_pool;
     use synctv_proxy::slice_cache::SliceCacheConfig;
     use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    struct HeaderAbsent(&'static str);
+
+    impl Match for HeaderAbsent {
+        fn matches(&self, request: &Request) -> bool {
+            !request.headers.contains_key(self.0)
+        }
+    }
 
     fn test_request_metadata() -> RequestMetadata {
         RequestMetadata(crate::impls::RequestMetadata::new(
@@ -553,15 +676,19 @@ mod tests {
         format!("{}{}", mock_public_origin(mock_server), path)
     }
 
+    fn mock_proxy_client(mock_server: &MockServer) -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *mock_server.address())
+            .build()
+            .expect("client should build")
+    }
+
     fn test_slice_cache_for_mock(
         config: SliceCacheConfig,
         mock_server: &MockServer,
     ) -> synctv_proxy::slice_cache::SliceCache {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve("cdn.example.com", *mock_server.address())
-            .build()
-            .expect("client should build");
+        let client = mock_proxy_client(mock_server);
         synctv_proxy::slice_cache::SliceCache::new_with_client(config, client)
     }
 
@@ -580,7 +707,7 @@ mod tests {
                     .insert_header("Content-Length", total_size.to_string())
                     .insert_header("Accept-Ranges", "bytes"),
             )
-            .expect(1)
+            .expect(0)
             .mount(&mock_server)
             .await;
 
@@ -620,6 +747,110 @@ mod tests {
 
         assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
         assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_head_uses_upstream_head_not_get() {
+        let Some(mock_server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let total_size: u64 = 4096;
+
+        Mock::given(method("HEAD"))
+            .and(path("/video.mp4"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Length", total_size.to_string())
+                    .insert_header("Content-Type", "video/mp4")
+                    .insert_header("Accept-Ranges", "bytes")
+                    .insert_header("ETag", "\"video-v1\""),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(test_slice_cache_for_mock(
+                SliceCacheConfig {
+                    slice_size: 1024,
+                    ..Default::default()
+                },
+                &mock_server,
+            )),
+        );
+        let action = ProxyAction::FetchAndForward {
+            url: mock_public_url(&mock_server, "/video.mp4"),
+            headers: HashMap::new(),
+            range_header: None,
+        };
+
+        let response = execute_proxy_action_with_state_for_method(
+            &state,
+            action,
+            &HeaderMap::new(),
+            None,
+            Method::HEAD,
+        )
+        .await
+        .expect("HEAD proxy action should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("X-Cache-Status").unwrap(), "MISS");
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            total_size.to_string().as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_proxy_action_ignores_raw_client_range_when_provider_does_not_select_it() {
+        let Some(mock_server) = start_mock_server_or_skip().await else {
+            return;
+        };
+        let body = Bytes::from_static(b"full-body");
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .and(HeaderAbsent("range"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body.clone())
+                    .insert_header("Content-Length", body.len().to_string()),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .and(header("Range", "bytes=0-3"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = mock_proxy_client(&mock_server);
+        let action = ProxyAction::FetchAndForward {
+            url: mock_public_url(&mock_server, "/video.mp4"),
+            headers: HashMap::new(),
+            range_header: None,
+        };
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert(header::RANGE, "bytes=0-3".parse().unwrap());
+
+        let response = execute_proxy_action(&client, action, &client_headers, None)
+            .await
+            .expect("raw client Range should be ignored unless provider selects it");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]
@@ -1017,11 +1248,9 @@ mod tests {
     }
 
     #[test]
-    fn test_should_use_proxy_cache_requires_both_setting_and_range() {
-        assert!(should_use_proxy_cache(true, Some("bytes=0-999")));
-        assert!(!should_use_proxy_cache(true, None));
-        assert!(!should_use_proxy_cache(false, Some("bytes=0-999")));
-        assert!(!should_use_proxy_cache(false, None));
+    fn test_should_use_proxy_cache_requires_enabled_cache_only() {
+        assert!(should_use_proxy_cache(true));
+        assert!(!should_use_proxy_cache(false));
     }
 
     #[test]
@@ -1074,6 +1303,13 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .and_then(|value| value.to_str().ok()),
             Some("https://app.example.com")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .and_then(|value| value.to_str().ok()),
+            Some("GET, HEAD, OPTIONS")
         );
     }
 

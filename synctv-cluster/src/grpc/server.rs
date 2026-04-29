@@ -140,8 +140,6 @@ impl ClusterServer {
                 file_cache_dir: stats.file_cache_dir.unwrap_or_default(),
                 slice_size: stats.slice_size,
                 max_cache_size: stats.max_cache_size,
-                max_cacheable_body: stats.max_cacheable_body,
-                manifest_ttl_secs: stats.manifest_ttl_secs,
                 segment_ttl_secs: stats.segment_ttl_secs,
                 stale_max_age_secs: stats.stale_max_age_secs,
                 stale_while_revalidate: stats.stale_while_revalidate,

@@ -1116,7 +1116,11 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 .playback_infos
                 .get(&versioned.result.default_mode)
                 .map_or_else(HashMap::new, |info| info.headers.clone());
-            return Ok(super::proxy::ProxyAction::FetchAndForward { url, headers });
+            return Ok(super::proxy::ProxyAction::FetchAndForward {
+                url,
+                headers,
+                range_header: super::proxy::selected_range_header(ctx),
+            });
         }
 
         if let Some(rest) = rest {
@@ -1134,7 +1138,11 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     .playback_infos
                     .get(&versioned.result.default_mode)
                     .map_or_else(HashMap::new, |info| info.headers.clone());
-                return Ok(super::proxy::ProxyAction::FetchAndForward { url, headers });
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url,
+                    headers,
+                    range_header: None,
+                });
             }
 
             if let Some(subtitle_path) = rest.strip_prefix("subtitle/") {
@@ -1169,6 +1177,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: subtitle.url.clone(),
                     headers: super::subtitle_headers_for_proxy(&playback_info.headers, subtitle),
+                    range_header: None,
                 });
             }
 
@@ -1204,6 +1213,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 return Ok(super::proxy::ProxyAction::FetchAndForward {
                     url: url.clone(),
                     headers: playback_info.headers.clone(),
+                    range_header: super::proxy::selected_range_header(ctx),
                 });
             }
 
@@ -1242,6 +1252,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     return Ok(super::proxy::ProxyAction::FetchAndForward {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
+                        range_header: super::proxy::selected_range_header(ctx),
                     });
                 }
                 "m3u8" => {

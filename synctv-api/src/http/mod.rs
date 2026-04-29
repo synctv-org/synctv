@@ -993,7 +993,9 @@ fn register_provider_proxy_routes(state: &AppState) -> Router<AppState> {
     let _ = state;
     Router::new().route(
         "/api/providers/proxy/{provider_name}/{*sub_path}",
-        get(providers::unified_proxy_handler).options(providers::proxy_options_preflight),
+        get(providers::unified_proxy_handler)
+            .head(providers::unified_proxy_head_handler)
+            .options(providers::proxy_options_preflight),
     )
 }
 

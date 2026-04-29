@@ -83,10 +83,6 @@ pub struct SliceCacheConfigInfo {
     pub slice_size: u64,
     #[prost(uint64, tag = "6")]
     pub max_cache_size: u64,
-    #[prost(uint64, tag = "7")]
-    pub max_cacheable_body: u64,
-    #[prost(uint64, tag = "8")]
-    pub manifest_ttl_secs: u64,
     #[prost(uint64, tag = "9")]
     pub segment_ttl_secs: u64,
     #[prost(uint64, tag = "10")]

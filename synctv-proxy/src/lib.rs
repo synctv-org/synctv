@@ -15,11 +15,7 @@ use std::future::Future;
 use std::hash::BuildHasher;
 use std::time::Duration;
 
-use axum::{
-    body::Body,
-    http::{HeaderMap, StatusCode},
-    response::Response,
-};
+use axum::{body::Body, http::StatusCode, response::Response};
 use futures::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, REFERER, USER_AGENT};
 use synctv_common::ExecutionControl;
@@ -88,8 +84,8 @@ pub struct ProxyConfig<'a> {
     pub url: &'a str,
     /// Extra headers the provider requires (e.g. Referer, cookies).
     pub provider_headers: &'a HashMap<String, String>,
-    /// Original client request headers to forward.
-    pub client_headers: &'a HeaderMap,
+    /// Provider-selected Range header for this fetch.
+    pub range_header: Option<&'a str>,
     /// Cooperative execution control propagated by the caller.
     ///
     /// Proxy flows only consume the cancellation signal from this control.
@@ -335,38 +331,93 @@ pub async fn proxy_fetch_and_forward(
     result
 }
 
-/// Allowlisted client headers forwarded to the upstream origin.
+/// Forward a client HEAD request to the upstream origin as HEAD.
 ///
-/// Only these headers are passed through to avoid leaking auth tokens, cookies,
-/// or other sensitive data from the original client request.
-const CLIENT_HEADER_ALLOWLIST: &[&str] = &[
-    "range",
-    "if-none-match",
-    "if-modified-since",
-    "accept",
-    "accept-language",
-    "user-agent",
-];
+/// This avoids Axum's implicit GET-to-HEAD fallback from triggering an
+/// upstream body fetch or slice-cache fill for metadata-only client requests.
+pub async fn proxy_head_and_forward(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
+    if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
+        return Err(
+            ProxyError::InvalidRequest("only http and https are supported".to_string()).into(),
+        );
+    }
 
-/// Build a proxy request for the given URL, forwarding allowlisted client
-/// headers and applying provider-specific headers.
+    let parsed_url = url::Url::parse(cfg.url)
+        .map_err(|e| ProxyError::InvalidRequest(format!("invalid URL: {e}")))?;
+    validate_target_url_against_ssrf(&parsed_url)?;
+
+    let request = build_proxy_request_with_method(&cfg, reqwest::Method::HEAD)?;
+    let proxy_result =
+        send_head_with_redirect_validation_with_control(cfg.client, request, cfg.request_control)
+            .await?;
+
+    build_head_response(&proxy_result.response)
+}
+
+/// Build a proxy request for the given URL, applying provider-specific headers.
 ///
 /// This is the single point of request construction used by both the initial
 /// fetch and retry attempts.
-fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder, anyhow::Error> {
-    let mut request = cfg.client.get(cfg.url);
+fn build_proxy_request_with_method(
+    cfg: &ProxyConfig<'_>,
+    method: reqwest::Method,
+) -> Result<reqwest::RequestBuilder, anyhow::Error> {
+    let request = cfg.client.request(method, cfg.url);
+    let mut request = apply_provider_headers(request, cfg.url, cfg.provider_headers)?;
+    if let Some(range) = cfg.range_header {
+        request = request.header(reqwest::header::RANGE, range);
+    }
+    Ok(request)
+}
 
-    // Forward only allowlisted client headers to avoid leaking auth tokens / cookies
-    for (name, value) in cfg.client_headers {
-        if !CLIENT_HEADER_ALLOWLIST.contains(&name.as_str()) {
+fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder, anyhow::Error> {
+    build_proxy_request_with_method(cfg, reqwest::Method::GET)
+}
+
+fn build_head_response(proxy_response: &reqwest::Response) -> Result<Response, anyhow::Error> {
+    let status = proxy_response.status();
+    let response_headers = proxy_response.headers().clone();
+
+    let mut builder = Response::builder().status(status);
+    for (name, value) in &response_headers {
+        if matches!(
+            name.as_str(),
+            "connection"
+                | "transfer-encoding"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "te"
+                | "trailer"
+                | "upgrade"
+        ) {
             continue;
         }
         if let Ok(v) = value.to_str() {
-            request = request.header(name.as_str(), v);
+            builder = builder.header(name.as_str(), v);
         }
     }
 
-    apply_provider_headers(request, cfg.url, cfg.provider_headers)
+    let cache_control = match response_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(ct)
+            if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") =>
+        {
+            "public, max-age=86400, immutable"
+        }
+        _ => "no-cache",
+    };
+    builder = builder.header("Cache-Control", cache_control);
+    if cache_control == "no-cache" {
+        builder = builder.header("Pragma", "no-cache");
+    }
+    builder = builder.header("X-Content-Type-Options", "nosniff");
+
+    builder
+        .body(Body::empty())
+        .map_err(|e| anyhow::anyhow!("Failed to build HEAD response: {e}"))
 }
 
 fn validate_target_url_against_ssrf(url: &url::Url) -> Result<(), ProxyError> {
@@ -645,7 +696,7 @@ pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
 // CORS preflight helper functions
 
 /// Standard CORS headers for preflight requests.
-const CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
+const CORS_ALLOW_METHODS: &str = "GET, HEAD, OPTIONS";
 const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, Accept, Range";
 const CORS_MAX_AGE: &str = "86400";
 
@@ -1014,9 +1065,9 @@ pub fn percent_encode(input: &str) -> String {
 
 /// Headers that should be preserved across redirect hops.
 ///
-/// Provider headers (Referer, User-Agent) and client passthrough headers
-/// (Range, Accept) are re-applied on each redirect to avoid breaking
-/// providers that require them on the final CDN request.
+/// Provider-controlled headers and cache-generated headers are re-applied on
+/// each redirect to avoid breaking providers that require them on the final
+/// CDN request.
 const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
     "referer",
     "user-agent",
@@ -1070,8 +1121,8 @@ pub(crate) async fn send_head_with_redirect_validation_with_control(
 /// and async DNS resolution checks to prevent DNS-rebinding SSRF.
 ///
 /// Headers matching [`REDIRECT_PRESERVE_HEADERS`] are captured from the
-/// initial request and re-applied on every redirect hop so that provider
-/// and client headers are not lost.
+/// initial request and re-applied on every redirect hop so that
+/// provider-controlled headers are not lost.
 async fn send_with_redirect_validation(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
@@ -1277,7 +1328,7 @@ mod tests {
                 .headers()
                 .get("Access-Control-Allow-Methods")
                 .map(|v| v.to_str().unwrap()),
-            Some("GET, OPTIONS")
+            Some("GET, HEAD, OPTIONS")
         );
         assert_eq!(
             response
@@ -1316,7 +1367,7 @@ mod tests {
                 .headers()
                 .get("Access-Control-Allow-Methods")
                 .map(|v| v.to_str().unwrap()),
-            Some("GET, OPTIONS")
+            Some("GET, HEAD, OPTIONS")
         );
         assert_eq!(
             response
@@ -1547,13 +1598,12 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_fetch_rejects_file_scheme() {
         let provider_headers = HashMap::new();
-        let client_headers = HeaderMap::new();
         let client = test_proxy_client();
         let cfg = ProxyConfig {
             client: &client,
             url: "file:///etc/passwd",
             provider_headers: &provider_headers,
-            client_headers: &client_headers,
+            range_header: None,
             request_control: None,
             upstream_header_timeout: None,
         };
@@ -1571,13 +1621,12 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_fetch_rejects_ftp_scheme() {
         let provider_headers = HashMap::new();
-        let client_headers = HeaderMap::new();
         let client = test_proxy_client();
         let cfg = ProxyConfig {
             client: &client,
             url: "ftp://example.com/file.txt",
             provider_headers: &provider_headers,
-            client_headers: &client_headers,
+            range_header: None,
             request_control: None,
             upstream_header_timeout: None,
         };
@@ -1595,13 +1644,12 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_fetch_rejects_javascript_scheme() {
         let provider_headers = HashMap::new();
-        let client_headers = HeaderMap::new();
         let client = test_proxy_client();
         let cfg = ProxyConfig {
             client: &client,
             url: "javascript:alert(1)",
             provider_headers: &provider_headers,
-            client_headers: &client_headers,
+            range_header: None,
             request_control: None,
             upstream_header_timeout: None,
         };
@@ -1619,13 +1667,12 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_fetch_rejects_data_scheme() {
         let provider_headers = HashMap::new();
-        let client_headers = HeaderMap::new();
         let client = test_proxy_client();
         let cfg = ProxyConfig {
             client: &client,
             url: "data:text/plain,hello",
             provider_headers: &provider_headers,
-            client_headers: &client_headers,
+            range_header: None,
             request_control: None,
             upstream_header_timeout: None,
         };
@@ -1661,13 +1708,12 @@ mod tests {
             .build()
             .expect("client should build");
         let provider_headers = HashMap::new();
-        let client_headers = HeaderMap::new();
         let request_control = ExecutionControl::from_timeout(Some(Duration::from_millis(50)));
         let cfg = ProxyConfig {
             client: &client,
             url: &format!("{public_origin}/slow.mp4"),
             provider_headers: &provider_headers,
-            client_headers: &client_headers,
+            range_header: None,
             request_control: Some(&request_control),
             upstream_header_timeout: None,
         };

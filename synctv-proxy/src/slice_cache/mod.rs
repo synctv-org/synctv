@@ -1,15 +1,15 @@
 //! Nginx-style range-request slice caching for media proxy.
 //!
 //! Splits large media files into fixed-size slices and caches each slice
-//! independently.  Also supports full-body caching for non-range responses
-//! (including M3U8/MPD manifests) with configurable TTLs.
+//! independently. Non-range client requests are only cached when the origin
+//! supports byte ranges; otherwise they are streamed through without caching.
 //!
 //! # Module structure
 //!
 //! Follows nginx's `ngx_http_slice_filter_module` separation:
 //!
 //! - **[`config`]**: `SliceCacheConfig`, `CacheBackendConfig`, `Default` impl,
-//!   manifest content-type helper.
+//!   and backend selection.
 //! - **[`range`]**: Request Range parsing, response Content-Range parsing
 //!   (modeled after `ngx_http_slice_parse_content_range`), and slice
 //!   alignment helpers.
@@ -23,20 +23,19 @@
 //!   storage, cache key computation, metadata management, and
 //!   stale-while-revalidate support.
 //! - **[`filter`]**: `proxy_with_cache`, `head_content_length`, and the
-//!   full-body / stream-through paths (the "filter" entry points, analogous
+//!   range-probe / stream-through paths (the "filter" entry points, analogous
 //!   to nginx's header and body filters).
 //!
 //! # Key features
 //!
 //! - **Slice caching**: aligned 2 MB slices with per-key locking (thundering
 //!   herd prevention).
-//! - **Full body caching**: responses without Range support are cached as a
-//!   single entry up to `max_cacheable_body`.
+//! - **No full-body caching**: non-range client requests are served from cached
+//!   slices only when the origin supports range requests.
 //! - **ETag consistency**: validates that the ETag is stable across slices
 //!   belonging to the same resource; triggers invalidation on mismatch.
 //! - **Content-Range validation**: upstream 206 responses are validated
 //!   against the requested range, matching nginx's header filter logic.
-//! - **TTL differentiation**: manifests get a shorter TTL than segments.
 //! - **Refined cache status**: `HIT`, `MISS`, `BYPASS`, `EXPIRED`, `STALE`,
 //!   `UPDATING`, `REVALIDATED`.
 
@@ -54,8 +53,8 @@ pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{
-    proxy_with_cache, proxy_with_cache_enabled, proxy_with_cache_enabled_with_control,
-    proxy_with_cache_with_control,
+    proxy_head_with_cache_enabled_with_control, proxy_with_cache, proxy_with_cache_enabled,
+    proxy_with_cache_enabled_with_control, proxy_with_cache_with_control,
 };
 pub use lifecycle::CacheLifecycleManager;
 pub use range::{

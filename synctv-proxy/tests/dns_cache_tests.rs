@@ -19,13 +19,12 @@ fn proxy_client() -> reqwest::Client {
 /// Verify that a loopback target still fails when no local server is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_client_loopback_target_fails_without_listener() {
-    let headers = axum::http::HeaderMap::new();
     let client = proxy_client();
     let cfg = ProxyConfig {
         client: &client,
         url: "http://127.0.0.1/admin",
         provider_headers: &HashMap::new(),
-        client_headers: &headers,
+        range_header: None,
         request_control: None,
         upstream_header_timeout: None,
     };

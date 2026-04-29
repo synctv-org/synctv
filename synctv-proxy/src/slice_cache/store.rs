@@ -22,7 +22,7 @@ use crate::{
 use super::backend::{CacheBackend, SliceCacheBackend};
 use super::config::{CacheBackendConfig, SliceCacheConfig};
 use super::etag::{CachedResourceMeta, StoredEntry};
-use super::range::{aligned_range_for_slice, parse_content_range};
+use super::range::{parse_content_range, parse_range_header};
 use super::status::CacheStatus;
 
 /// Number of lock cleanup cycles before triggering a stale-lock sweep.
@@ -34,16 +34,6 @@ const META_RETENTION_TARGET_DIVISOR: usize = 2;
 
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
-
-pub(super) struct FullBodyWrite<'a> {
-    pub(super) url: &'a str,
-    pub(super) provider_headers: &'a HashMap<String, String>,
-    pub(super) data: Bytes,
-    pub(super) etag: Option<&'a str>,
-    pub(super) last_modified: Option<&'a str>,
-    pub(super) content_type: Option<&'a str>,
-    pub(super) ttl: Duration,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct MetaEvictionCandidate {
@@ -90,8 +80,6 @@ pub struct SliceCacheStats {
     pub file_cache_dir: Option<String>,
     pub slice_size: u64,
     pub max_cache_size: u64,
-    pub max_cacheable_body: u64,
-    pub manifest_ttl_secs: u64,
     pub segment_ttl_secs: u64,
     pub stale_max_age_secs: u64,
     pub stale_while_revalidate: bool,
@@ -103,6 +91,32 @@ pub struct SliceCacheStats {
     pub updating_entries: u64,
     pub lock_count: u64,
     pub usage_ratio: f64,
+}
+
+#[derive(Clone)]
+pub(super) struct CachedSlice {
+    pub total_size: u64,
+    pub content_type: Option<String>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub data: Bytes,
+}
+
+#[derive(Clone)]
+pub(super) struct FetchedSlice {
+    pub slice: CachedSlice,
+    pub status: CacheStatus,
+}
+
+pub(super) enum SliceFetchResult {
+    Slice(FetchedSlice),
+    Bypass(reqwest::Response),
+}
+
+pub(super) struct HeadResourceResult {
+    pub status: reqwest::StatusCode,
+    pub headers: reqwest::header::HeaderMap,
+    pub cache_status: CacheStatus,
 }
 
 /// Result of purging all slice-cache entries.
@@ -154,6 +168,38 @@ fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
 }
 
 impl SliceCache {
+    fn aligned_slice_request_range(
+        slice_index: u64,
+        slice_size: usize,
+    ) -> Result<(u64, u64), anyhow::Error> {
+        let slice_size = slice_size as u64;
+        let range_start = slice_index
+            .checked_mul(slice_size)
+            .ok_or_else(|| anyhow::anyhow!("Slice start overflow for index {slice_index}"))?;
+        let range_end = range_start
+            .checked_add(slice_size.saturating_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("Slice end overflow for index {slice_index}"))?;
+        Ok((range_start, range_end))
+    }
+
+    fn fetched_slice_from_meta(
+        total_size: u64,
+        meta: Option<&CachedResourceMeta>,
+        data: Bytes,
+        status: CacheStatus,
+    ) -> FetchedSlice {
+        FetchedSlice {
+            slice: CachedSlice {
+                total_size,
+                content_type: meta.and_then(|meta| meta.content_type.clone()),
+                etag: meta.and_then(|meta| meta.etag.clone()),
+                last_modified: meta.and_then(|meta| meta.last_modified.clone()),
+                data,
+            },
+            status,
+        }
+    }
+
     fn spawn_slice_revalidation(
         &self,
         url: &str,
@@ -206,12 +252,9 @@ impl SliceCache {
             should_send_conditional = true;
         }
 
-        let (range_start, _range_end) =
-            aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
-        let range_header = format!(
-            "bytes={range_start}-{}",
-            std::cmp::min(range_start + self.config.slice_size as u64, total_size) - 1
-        );
+        let (range_start, range_end) =
+            Self::aligned_slice_request_range(slice_index, self.config.slice_size)?;
+        let range_header = format!("bytes={range_start}-{range_end}");
 
         let mut request = self.client.get(url);
         request = apply_provider_headers(request, url, provider_headers)?;
@@ -257,8 +300,9 @@ impl SliceCache {
                 provider_headers,
                 &key,
                 slice_index,
-                total_size,
+                Some(total_size),
                 range_start,
+                CacheStatus::Miss,
                 None,
             )
             .await
@@ -272,8 +316,9 @@ impl SliceCache {
             provider_headers,
             &key,
             slice_index,
-            total_size,
+            Some(total_size),
             range_start,
+            CacheStatus::Miss,
             None,
         )
         .await
@@ -411,8 +456,6 @@ impl SliceCache {
             file_cache_dir,
             slice_size: u64::try_from(self.config.slice_size).unwrap_or(u64::MAX),
             max_cache_size: self.config.max_cache_size,
-            max_cacheable_body: u64::try_from(self.config.max_cacheable_body).unwrap_or(u64::MAX),
-            manifest_ttl_secs: self.config.manifest_ttl.as_secs(),
             segment_ttl_secs: self.config.segment_ttl.as_secs(),
             stale_max_age_secs: self.config.stale_max_age.as_secs(),
             stale_while_revalidate: self.config.stale_while_revalidate,
@@ -480,25 +523,6 @@ impl SliceCache {
         hex::encode(hasher.finalize())
     }
 
-    /// Compute the cache key used for full-body entries.
-    pub(super) fn full_body_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(url.as_bytes());
-        hasher.update(b"\0");
-
-        let mut sorted: Vec<(&String, &String)> = provider_headers.iter().collect();
-        sorted.sort_by_key(|(k, _)| *k);
-        for (k, v) in sorted {
-            hasher.update(k.as_bytes());
-            hasher.update(b"=");
-            hasher.update(v.as_bytes());
-            hasher.update(b"\n");
-        }
-
-        hasher.update(b"\0full");
-        hex::encode(hasher.finalize())
-    }
-
     /// Compute the key used to store per-resource metadata.
     pub(super) fn meta_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
         let mut hasher = Sha256::new();
@@ -516,6 +540,21 @@ impl SliceCache {
 
         hasher.update(b"\0meta");
         hex::encode(hasher.finalize())
+    }
+
+    fn cached_meta_and_total_size(
+        &self,
+        meta_key: &str,
+        known_total_size: Option<u64>,
+    ) -> (Option<CachedResourceMeta>, Option<u64>) {
+        let cached_meta = self.meta.get(meta_key).map(|m| m.clone());
+        let effective_total_size = known_total_size.or_else(|| {
+            cached_meta
+                .as_ref()
+                .and_then(|meta| meta.total_size)
+                .filter(|total_size| *total_size > 0)
+        });
+        (cached_meta, effective_total_size)
     }
 
     // Metadata access
@@ -536,6 +575,202 @@ impl SliceCache {
         } else {
             None
         }
+    }
+
+    pub(super) fn put_resource_meta(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        meta: CachedResourceMeta,
+    ) {
+        let mk = Self::meta_key(url, provider_headers);
+        self.meta.insert(mk, meta);
+    }
+
+    pub(super) fn resource_meta_lock(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+    ) -> SliceLock {
+        let key = format!("meta:{}", Self::meta_key(url, provider_headers));
+        self.locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn cached_head_headers(
+        meta: &CachedResourceMeta,
+        range_header: Option<&str>,
+        metadata_ttl: Duration,
+    ) -> Option<(reqwest::StatusCode, reqwest::header::HeaderMap)> {
+        if std::time::SystemTime::now()
+            .duration_since(meta.validated_at)
+            .unwrap_or(Duration::ZERO)
+            > metadata_ttl
+        {
+            return None;
+        }
+
+        let total_size = meta.total_size?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        if meta.supports_ranges {
+            headers.insert(
+                reqwest::header::ACCEPT_RANGES,
+                reqwest::header::HeaderValue::from_static("bytes"),
+            );
+        }
+        if let Some(content_type) = meta.content_type.as_ref() {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(content_type) {
+                headers.insert(reqwest::header::CONTENT_TYPE, value);
+            }
+        }
+        if let Some(etag) = meta.etag.as_ref() {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(etag) {
+                headers.insert(reqwest::header::ETAG, value);
+            }
+        }
+        if let Some(last_modified) = meta.last_modified.as_ref() {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(last_modified) {
+                headers.insert(reqwest::header::LAST_MODIFIED, value);
+            }
+        }
+
+        if let Some(range) = range_header {
+            if !meta.supports_ranges {
+                return None;
+            }
+            let Ok((start, end)) = parse_range_header(range, total_size) else {
+                return None;
+            };
+            if let Ok(value) =
+                reqwest::header::HeaderValue::from_str(&format!("bytes {start}-{end}/{total_size}"))
+            {
+                headers.insert(reqwest::header::CONTENT_RANGE, value);
+            }
+            if let Ok(value) =
+                reqwest::header::HeaderValue::from_str(&(end - start + 1).to_string())
+            {
+                headers.insert(reqwest::header::CONTENT_LENGTH, value);
+            }
+            Some((reqwest::StatusCode::PARTIAL_CONTENT, headers))
+        } else {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&total_size.to_string()) {
+                headers.insert(reqwest::header::CONTENT_LENGTH, value);
+            }
+            Some((reqwest::StatusCode::OK, headers))
+        }
+    }
+
+    pub(super) async fn get_or_fetch_head_resource_with_control(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        range_header: Option<&str>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<HeadResourceResult, anyhow::Error> {
+        if let Some(meta) = self.get_resource_meta(url, provider_headers).await {
+            if let Some((status, headers)) =
+                Self::cached_head_headers(&meta, range_header, self.config.segment_ttl)
+            {
+                return Ok(HeadResourceResult {
+                    status,
+                    headers,
+                    cache_status: CacheStatus::Hit,
+                });
+            }
+        }
+
+        let lock = self.resource_meta_lock(url, provider_headers);
+        let _guard = if let Some(control) = request_control {
+            let cancellation = control.cancellation_token();
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    return Err(anyhow::anyhow!(
+                        "Request cancelled while waiting for HEAD metadata cache lock",
+                    ));
+                }
+                guard = lock.lock() => guard,
+            }
+        } else {
+            lock.lock().await
+        };
+
+        if let Some(meta) = self.get_resource_meta(url, provider_headers).await {
+            if let Some((status, headers)) =
+                Self::cached_head_headers(&meta, range_header, self.config.segment_ttl)
+            {
+                return Ok(HeadResourceResult {
+                    status,
+                    headers,
+                    cache_status: CacheStatus::Hit,
+                });
+            }
+        }
+
+        let mut request = self.client.head(url);
+        request = apply_provider_headers(request, url, provider_headers)?;
+        if let Some(range) = range_header {
+            request = request.header(reqwest::header::RANGE, range);
+        }
+
+        let resp = crate::send_head_with_redirect_validation_with_control(
+            &self.client,
+            request,
+            request_control,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("HEAD metadata request failed: {e}"))?
+        .response;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+
+        if status.is_success() {
+            let content_range_total_size = headers
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| parse_content_range(value).ok())
+                .and_then(|parsed| parsed.complete_length);
+            let accepts_ranges = headers
+                .get(reqwest::header::ACCEPT_RANGES)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.eq_ignore_ascii_case("bytes"));
+            let supports_ranges = content_range_total_size.is_some() || accepts_ranges;
+            let total_size = content_range_total_size.or_else(|| {
+                headers
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+            });
+            self.put_resource_meta(
+                url,
+                provider_headers,
+                CachedResourceMeta {
+                    etag: headers
+                        .get(reqwest::header::ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string),
+                    last_modified: headers
+                        .get(reqwest::header::LAST_MODIFIED)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string),
+                    total_size,
+                    supports_ranges,
+                    content_type: headers
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string),
+                    validated_at: std::time::SystemTime::now(),
+                    last_accessed: std::time::SystemTime::now(),
+                },
+            );
+        }
+
+        Ok(HeadResourceResult {
+            status,
+            headers,
+            cache_status: CacheStatus::Miss,
+        })
     }
 
     // Slice fetch
@@ -577,25 +812,99 @@ impl SliceCache {
         total_size: u64,
         request_control: Option<&ExecutionControl>,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
+        match self
+            .get_or_fetch_slice_result_with_control(
+                url,
+                provider_headers,
+                slice_index,
+                Some(total_size),
+                request_control,
+                false,
+            )
+            .await?
+        {
+            SliceFetchResult::Slice(fetched) => Ok((fetched.slice.data, fetched.status)),
+            SliceFetchResult::Bypass(resp) => Err(anyhow::anyhow!(
+                "Upstream returned {} for slice {} (expected 206 Partial Content)",
+                resp.status(),
+                slice_index
+            )),
+        }
+    }
+
+    pub(super) async fn get_or_fetch_slice_or_bypass_with_control(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        slice_index: u64,
+        known_total_size: Option<u64>,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<SliceFetchResult, anyhow::Error> {
+        self.get_or_fetch_slice_result_with_control(
+            url,
+            provider_headers,
+            slice_index,
+            known_total_size,
+            request_control,
+            true,
+        )
+        .await
+    }
+
+    async fn get_or_fetch_slice_result_with_control(
+        &self,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        slice_index: u64,
+        known_total_size: Option<u64>,
+        request_control: Option<&ExecutionControl>,
+        bypass_on_non_partial: bool,
+    ) -> Result<SliceFetchResult, anyhow::Error> {
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
+        let meta_key = Self::meta_key(url, provider_headers);
+        let (mut cached_meta, mut effective_total_size) =
+            self.cached_meta_and_total_size(&meta_key, known_total_size);
 
         // Fast path: check cache without locking.
         if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
-                return Ok((entry.data, CacheStatus::Hit));
+                if let Some(total_size) = effective_total_size {
+                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                        total_size,
+                        cached_meta.as_ref(),
+                        entry.data,
+                        CacheStatus::Hit,
+                    )));
+                }
             }
             // Check stale window for stale-while-revalidate.
-            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
+            if self.config.stale_while_revalidate
+                && entry.is_stale(self.config.stale_max_age)
+                && effective_total_size.is_some()
+            {
+                let Some(total_size) = effective_total_size else {
+                    unreachable!("effective_total_size.is_some() was checked above");
+                };
                 // Mark as updating so subsequent requests know a refresh
                 // is expected.  `DashSet::insert` returns true if the key
                 // was newly inserted (i.e., we are the first stale request).
                 if self.updating_keys.insert(key.clone()) {
                     // Newly inserted -- we are the first stale request.
                     self.spawn_slice_revalidation(url, provider_headers, slice_index, total_size);
-                    return Ok((entry.data, CacheStatus::Stale));
+                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                        total_size,
+                        cached_meta.as_ref(),
+                        entry.data,
+                        CacheStatus::Stale,
+                    )));
                 }
                 // Already present -- another request is updating this key.
-                return Ok((entry.data, CacheStatus::Updating));
+                return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                    total_size,
+                    cached_meta.as_ref(),
+                    entry.data,
+                    CacheStatus::Updating,
+                )));
             }
             // Expired beyond stale window -- fall through to re-fetch
             // under the lock. Do NOT remove the entry here; it may be
@@ -625,16 +934,28 @@ impl SliceCache {
         };
 
         let mut should_send_conditional = false;
+        let mut fetch_status = CacheStatus::Miss;
+
+        (cached_meta, effective_total_size) =
+            self.cached_meta_and_total_size(&meta_key, known_total_size);
 
         // Double-check after acquiring lock.
         if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
                 // Another task may have completed a re-fetch while we were
                 // waiting for the lock.
-                self.updating_keys.remove(&key);
-                return Ok((entry.data, CacheStatus::Hit));
+                if let Some(total_size) = effective_total_size {
+                    self.updating_keys.remove(&key);
+                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                        total_size,
+                        cached_meta.as_ref(),
+                        entry.data,
+                        CacheStatus::Hit,
+                    )));
+                }
             }
             should_send_conditional = true;
+            fetch_status = CacheStatus::Expired;
             // Still expired -- check stale once more for concurrent stale
             // serving case, then proceed with re-fetch. Keep the entry
             // in the backend for now (conditional request may use it).
@@ -650,7 +971,7 @@ impl SliceCache {
 
         // Build the upstream request.
         let (range_start, range_end) =
-            aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
+            Self::aligned_slice_request_range(slice_index, self.config.slice_size)?;
         let range_header = format!("bytes={range_start}-{range_end}");
 
         let mut request = self.client.get(url);
@@ -697,10 +1018,18 @@ impl SliceCache {
 
             // Refresh the entry's TTL by re-inserting it.
             if let Some(existing) = self.backend.get(&key).await {
-                let refreshed = StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
-                let _ = self.backend.put(&key, refreshed).await;
-                self.updating_keys.remove(&key);
-                return Ok((existing.data, CacheStatus::Revalidated));
+                if let Some(total_size) = effective_total_size {
+                    let refreshed =
+                        StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
+                    let _ = self.backend.put(&key, refreshed).await;
+                    self.updating_keys.remove(&key);
+                    return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
+                        total_size,
+                        cached_meta.as_ref(),
+                        existing.data,
+                        CacheStatus::Revalidated,
+                    )));
+                }
             }
             // Entry was evicted between the conditional request and now --
             // fall through to a full re-fetch.  This is an unlikely edge
@@ -721,6 +1050,10 @@ impl SliceCache {
                     return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}"));
                 }
             };
+            if bypass_on_non_partial && resp2.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                self.updating_keys.remove(&key);
+                return Ok(SliceFetchResult::Bypass(resp2));
+            }
             let result = self
                 .process_slice_response(
                     resp2,
@@ -728,14 +1061,20 @@ impl SliceCache {
                     provider_headers,
                     &key,
                     slice_index,
-                    total_size,
+                    effective_total_size,
                     range_start,
+                    fetch_status,
                     request_control,
                 )
                 .await;
             // Always clean up updating_keys (idempotent remove).
             self.updating_keys.remove(&key);
-            return result;
+            return result.map(SliceFetchResult::Slice);
+        }
+
+        if bypass_on_non_partial && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            self.updating_keys.remove(&key);
+            return Ok(SliceFetchResult::Bypass(resp));
         }
 
         let result = self
@@ -745,15 +1084,16 @@ impl SliceCache {
                 provider_headers,
                 &key,
                 slice_index,
-                total_size,
+                effective_total_size,
                 range_start,
+                fetch_status,
                 request_control,
             )
             .await;
         // Always clean up updating_keys (idempotent). Prevents the key from
         // being stuck in "updating" state if process_slice_response errs.
         self.updating_keys.remove(&key);
-        result
+        result.map(SliceFetchResult::Slice)
     }
 
     /// Process a successful (non-304) slice response: validate, store, and
@@ -766,22 +1106,16 @@ impl SliceCache {
         provider_headers: &HashMap<String, String>,
         key: &str,
         slice_index: u64,
-        total_size: u64,
+        known_total_size: Option<u64>,
         range_start: u64,
+        cache_status: CacheStatus,
         request_control: Option<&ExecutionControl>,
-    ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
-        let requested_range_end_exclusive =
-            std::cmp::min(range_start + self.config.slice_size as u64, total_size);
-        let requested_full_resource =
-            range_start == 0 && requested_range_end_exclusive == total_size;
-        let allow_full_resource_200 =
-            requested_full_resource && resp.status() == reqwest::StatusCode::OK;
+    ) -> Result<FetchedSlice, anyhow::Error> {
+        let requested_range_end_exclusive = range_start
+            .checked_add(self.config.slice_size as u64)
+            .ok_or_else(|| anyhow::anyhow!("Slice request end overflow for slice {slice_index}"))?;
 
-        // Slice fetches normally require 206 Partial Content. The one safe
-        // exception is a single-slice resource where the aligned slice spans
-        // the entire object: some origins normalize `Range: bytes=0-(len-1)`
-        // into `200 OK` while still returning the full resource body.
-        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT && !allow_full_resource_200 {
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(anyhow::anyhow!(
                 "Upstream returned {} for slice {} (expected 206 Partial Content)",
                 resp.status(),
@@ -796,7 +1130,10 @@ impl SliceCache {
             .and_then(|v| v.to_str().ok())
         {
             let cr = parse_content_range(cr_value)?;
-            if cr.start != range_start || cr.end != requested_range_end_exclusive {
+            if cr.start != range_start
+                || cr.end > requested_range_end_exclusive
+                || cr.end <= cr.start
+            {
                 return Err(anyhow::anyhow!(
                     "Content-Range mismatch: got {}-{}, expected {}-{} \
                      (nginx slice header filter validation)",
@@ -806,25 +1143,41 @@ impl SliceCache {
                     requested_range_end_exclusive,
                 ));
             }
-            match cr.complete_length {
-                Some(complete_length) if complete_length == total_size => {}
-                Some(complete_length) => {
+            if cr.end < requested_range_end_exclusive {
+                let complete_length = cr.complete_length.or(known_total_size);
+                if complete_length != Some(cr.end) {
                     return Err(anyhow::anyhow!(
-                        "Content-Range total mismatch: got {complete_length}, expected {total_size}"
+                        "Short slice response is only valid at resource end: got {}-{}, requested {}-{}",
+                        cr.start,
+                        cr.end,
+                        range_start,
+                        requested_range_end_exclusive,
                     ));
                 }
-                None => {}
             }
-            Some(cr)
+            match (known_total_size, cr.complete_length) {
+                (Some(expected), Some(complete_length)) if complete_length != expected => {
+                    return Err(anyhow::anyhow!(
+                        "Content-Range total mismatch: got {complete_length}, expected {expected}"
+                    ));
+                }
+                _ => {}
+            }
+            cr
         } else {
-            tracing::warn!(
-                slice_index = slice_index,
-                range_start = range_start,
+            return Err(anyhow::anyhow!(
                 "Upstream returned 206 Partial Content without Content-Range header; \
                  cannot validate slice boundaries"
-            );
-            None
+            ));
         };
+        let total_size = parsed_content_range
+            .complete_length
+            .or(known_total_size)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Slice response did not include a complete resource length and no known total size was available"
+                )
+            })?;
 
         // Extract headers for metadata before consuming body.
         let resp_etag = resp
@@ -884,42 +1237,32 @@ impl SliceCache {
                 .await?
                 .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
 
-        if let Some(cr) = parsed_content_range {
-            let expected_len = usize::try_from(cr.end.saturating_sub(cr.start))
-                .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
-            if data.len() != expected_len {
-                return Err(anyhow::anyhow!(
-                    "Slice body length mismatch: got {}, expected {} from Content-Range",
-                    data.len(),
-                    expected_len
-                ));
-            }
-        } else if allow_full_resource_200 {
-            let expected_len = usize::try_from(total_size).map_err(|_| {
-                anyhow::anyhow!("Full-resource slice length overflow for slice {slice_index}")
-            })?;
-            if data.len() != expected_len {
-                return Err(anyhow::anyhow!(
-                    "Full-resource slice body length mismatch: got {}, expected {}",
-                    data.len(),
-                    expected_len
-                ));
-            }
+        let expected_len = usize::try_from(
+            parsed_content_range
+                .end
+                .saturating_sub(parsed_content_range.start),
+        )
+        .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
+        if data.len() != expected_len {
+            return Err(anyhow::anyhow!(
+                "Slice body length mismatch: got {}, expected {} from Content-Range",
+                data.len(),
+                expected_len
+            ));
         }
 
-        if existing_etag_cloned.is_none() && !self.meta.contains_key(&mk) {
-            // First slice for this resource -- store metadata.
-            self.meta.insert(
-                mk,
-                CachedResourceMeta {
-                    etag: resp_etag,
-                    last_modified: resp_last_modified,
-                    total_size: Some(total_size),
-                    content_type: resp_content_type,
-                    last_accessed: std::time::SystemTime::now(),
-                },
-            );
-        }
+        self.meta.insert(
+            mk,
+            CachedResourceMeta {
+                etag: resp_etag.clone(),
+                last_modified: resp_last_modified.clone(),
+                total_size: Some(total_size),
+                supports_ranges: true,
+                content_type: resp_content_type.clone(),
+                validated_at: std::time::SystemTime::now(),
+                last_accessed: std::time::SystemTime::now(),
+            },
+        );
 
         // Insert into cache with TTL.
         let entry = StoredEntry::new(data.clone(), self.config.segment_ttl);
@@ -935,7 +1278,16 @@ impl SliceCache {
         // Periodically clean up stale per-key locks to prevent unbounded growth.
         self.maybe_cleanup_locks();
 
-        Ok((data, CacheStatus::Miss))
+        Ok(FetchedSlice {
+            slice: CachedSlice {
+                total_size,
+                content_type: resp_content_type,
+                etag: resp_etag,
+                last_modified: resp_last_modified,
+                data,
+            },
+            status: cache_status,
+        })
     }
 
     /// Invalidate all cached slices for a given resource.
@@ -954,199 +1306,6 @@ impl SliceCache {
         // Also remove metadata so next fetch establishes a new ETag.
         let mk = Self::meta_key(url, provider_headers);
         self.meta.remove(&mk);
-    }
-
-    // Cache status helpers
-
-    /// Check whether a key is currently in cache and not expired.
-    pub(super) async fn is_cached_and_valid(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-        slice_index: u64,
-    ) -> bool {
-        let key = Self::compute_cache_key(url, provider_headers, slice_index);
-        self.backend
-            .get(&key)
-            .await
-            .is_some_and(|entry| !entry.is_expired())
-    }
-
-    /// Check whether a key was recently inserted (used to distinguish
-    /// `EXPIRED` from `MISS`). Backed by a bounded moka cache with TTL,
-    /// so very old entries will naturally expire.
-    pub(super) async fn was_ever_seen(&self, key: &str) -> bool {
-        self.seen_keys.get(key).await.is_some()
-    }
-
-    /// Determine the slice-level cache status for a set of needed slices.
-    pub(super) async fn determine_slice_cache_status(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-        needed: &[u64],
-    ) -> CacheStatus {
-        let mut all_valid = true;
-        let mut any_was_seen = false;
-        let mut any_stale = false;
-
-        for &idx in needed {
-            let key = Self::compute_cache_key(url, provider_headers, idx);
-            if self.is_cached_and_valid(url, provider_headers, idx).await {
-                any_was_seen = true;
-            } else {
-                all_valid = false;
-                // Check if the entry is in the stale window.
-                if let Some(entry) = self.backend.get(&key).await {
-                    if self.config.stale_while_revalidate
-                        && entry.is_stale(self.config.stale_max_age)
-                    {
-                        any_stale = true;
-                        any_was_seen = true;
-                    } else if entry.is_expired() {
-                        any_was_seen = true;
-                    }
-                } else if self.was_ever_seen(&key).await {
-                    any_was_seen = true;
-                }
-            }
-        }
-
-        if all_valid {
-            CacheStatus::Hit
-        } else if any_stale {
-            CacheStatus::Stale
-        } else if any_was_seen {
-            CacheStatus::Expired
-        } else {
-            CacheStatus::Miss
-        }
-    }
-
-    // Full-body cache
-
-    /// Try to get a full-body entry from cache.
-    ///
-    /// Returns `Some((data, content_type, status))` where status is
-    /// [`CacheStatus::Hit`], [`CacheStatus::Stale`], or
-    /// [`CacheStatus::Updating`].  Returns `None` if not cached or
-    /// expired beyond the stale window.
-    pub(super) async fn get_full_body(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-    ) -> Option<(Bytes, Option<String>, CacheStatus)> {
-        let key = Self::full_body_key(url, provider_headers);
-        if let Some(entry) = self.backend.get(&key).await {
-            if !entry.is_expired() {
-                let ct = self
-                    .meta
-                    .get(&Self::meta_key(url, provider_headers))
-                    .and_then(|m| m.content_type.clone());
-                return Some((entry.data, ct, CacheStatus::Hit));
-            }
-            // Check stale window.
-            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
-                let ct = self
-                    .meta
-                    .get(&Self::meta_key(url, provider_headers))
-                    .and_then(|m| m.content_type.clone());
-                let status = if self.updating_keys.contains(&key) {
-                    CacheStatus::Updating
-                } else {
-                    let _ = self.updating_keys.insert(key);
-                    CacheStatus::Stale
-                };
-                return Some((entry.data, ct, status));
-            }
-            // Expired beyond stale window -- do NOT remove here. The
-            // re-fetch will overwrite the entry, and removing eagerly can
-            // race with a concurrent re-fetch that expects the entry to
-            // still exist for conditional request (304) support.
-        }
-        None
-    }
-
-    /// Retrieve the cached full-body entry regardless of freshness state.
-    ///
-    /// Used by conditional 304 revalidation paths, which need access to the
-    /// expired bytes in order to refresh TTL without forcing a full re-download.
-    pub(super) async fn get_full_body_cached_entry(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-    ) -> Option<(Bytes, Option<String>)> {
-        let key = Self::full_body_key(url, provider_headers);
-        self.backend.get(&key).await.map(|entry| {
-            let ct = self
-                .meta
-                .get(&Self::meta_key(url, provider_headers))
-                .and_then(|m| m.content_type.clone());
-            (entry.data, ct)
-        })
-    }
-
-    /// Determine the full-body cache status *before* fetching.
-    pub(super) async fn full_body_pre_status(
-        &self,
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-    ) -> CacheStatus {
-        let key = Self::full_body_key(url, provider_headers);
-        if self.was_ever_seen(&key).await {
-            CacheStatus::Expired
-        } else {
-            CacheStatus::Miss
-        }
-    }
-
-    /// Insert a full-body entry into cache.
-    pub(super) async fn put_full_body(&self, write: FullBodyWrite<'_>) {
-        let FullBodyWrite {
-            url,
-            provider_headers,
-            data,
-            etag,
-            last_modified,
-            content_type,
-            ttl,
-        } = write;
-        let key = Self::full_body_key(url, provider_headers);
-        let entry = StoredEntry::new(data, ttl);
-        // Best-effort insert; log the error if it occurs.
-        if let Err(e) = self.backend.put(&key, entry).await {
-            tracing::warn!("Failed to store full-body entry: {e}");
-            return;
-        }
-        self.seen_keys.insert(key.clone(), ()).await;
-
-        // Clear updating flag.
-        self.updating_keys.remove(&key);
-
-        // Store metadata.
-        let mk = Self::meta_key(url, provider_headers);
-        self.meta.insert(
-            mk,
-            CachedResourceMeta {
-                etag: etag.map(std::string::ToString::to_string),
-                last_modified: last_modified.map(std::string::ToString::to_string),
-                total_size: None,
-                content_type: content_type.map(std::string::ToString::to_string),
-                last_accessed: std::time::SystemTime::now(),
-            },
-        );
-
-        // Periodically clean up stale per-key locks.
-        self.maybe_cleanup_locks();
-    }
-
-    /// Clear the stale-while-revalidate marker for a full-body cache key.
-    ///
-    /// Background revalidation uses this on early-return and error paths where
-    /// `put_full_body()` is not reached, preventing the key from being stuck in
-    /// `UPDATING` forever after a failed refresh.
-    pub(super) fn finish_full_body_update(&self, key: &str) {
-        self.updating_keys.remove(key);
     }
 
     // Lock cleanup (L3 fix)
@@ -1264,7 +1423,9 @@ mod tests {
                     etag: None,
                     last_modified: None,
                     total_size: None,
+                    supports_ranges: false,
                     content_type: None,
+                    validated_at: now,
                     last_accessed: now + Duration::from_secs(index),
                 },
             );
@@ -1293,7 +1454,9 @@ mod tests {
                     etag: None,
                     last_modified: None,
                     total_size: None,
+                    supports_ranges: false,
                     content_type: None,
+                    validated_at: now,
                     last_accessed: now,
                 },
             );
@@ -1321,7 +1484,9 @@ mod tests {
                 etag: Some("etag".to_string()),
                 last_modified: None,
                 total_size: Some(6),
+                supports_ranges: true,
                 content_type: Some("video/mp2t".to_string()),
+                validated_at: std::time::SystemTime::now(),
                 last_accessed: std::time::SystemTime::now(),
             },
         );
@@ -1360,7 +1525,9 @@ mod tests {
                 etag: None,
                 last_modified: None,
                 total_size: None,
+                supports_ranges: false,
                 content_type: None,
+                validated_at: std::time::SystemTime::now(),
                 last_accessed: std::time::SystemTime::now(),
             },
         );

@@ -4,6 +4,7 @@
 // The HTTP layer receives a `ProxyAction` and executes it generically.
 
 use async_trait::async_trait;
+use http::HeaderMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -23,6 +24,11 @@ pub enum ProxyAction {
     FetchAndForward {
         url: String,
         headers: HashMap<String, String>,
+        /// Provider-selected Range header for this request.
+        ///
+        /// This is intentionally separate from `headers`: it drives proxy
+        /// range/slice behavior without becoming part of the resource cache key.
+        range_header: Option<String>,
     },
     /// Fetch an M3U8 manifest, rewrite internal URLs for proxying, then forward.
     M3u8Rewrite {
@@ -154,6 +160,24 @@ pub struct ProxyRequestContext<'a> {
     pub verified_claims: Option<&'a ProxyUrlClaims>,
     /// Cooperative execution control propagated from the caller.
     pub request_context: Option<&'a ExecutionControl>,
+    /// Original HTTP request headers exposed to providers.
+    ///
+    /// The proxy executor never forwards these directly. Providers must
+    /// explicitly select request headers they want the proxy layer to honor.
+    pub request_headers: &'a HeaderMap,
+}
+
+/// Return the client Range header selected by a provider for stream proxying.
+///
+/// Providers call this helper at the exact proxy endpoints where Range
+/// semantics are desired. The lower proxy executor does not inspect raw client
+/// headers by itself.
+#[must_use]
+pub fn selected_range_header(ctx: &ProxyRequestContext<'_>) -> Option<String> {
+    ctx.request_headers
+        .get(http::header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string)
 }
 
 /// Optional trait for providers that support HTTP proxy routes.

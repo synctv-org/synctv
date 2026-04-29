@@ -86,8 +86,6 @@ message SliceCacheConfigInfo {
     string file_cache_dir = 4;
     uint64 slice_size = 5;
     uint64 max_cache_size = 6;
-    uint64 max_cacheable_body = 7;
-    uint64 manifest_ttl_secs = 8;
     uint64 segment_ttl_secs = 9;
     uint64 stale_max_age_secs = 10;
     bool stale_while_revalidate = 11;

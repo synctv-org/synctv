@@ -131,10 +131,11 @@ async fn test_stream_proxy() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://emby.example.com/Videos/123/stream.mp4");
             assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
         }
@@ -164,6 +165,7 @@ async fn test_m3u8_proxy() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -217,6 +219,7 @@ async fn test_subtitle_path_without_mode_is_rejected() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(err, ProviderError::NotFound));
@@ -259,6 +262,7 @@ async fn test_subtitle_by_mode_and_index() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -300,10 +304,11 @@ async fn test_subtitle_proxy_prefers_subtitle_headers_when_present() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://emby.example.com/subtitle.srt");
             assert_eq!(
                 headers.get("X-Subtitle-Token").map(String::as_str),
@@ -408,6 +413,7 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
 
     let action = p
@@ -416,7 +422,7 @@ async fn test_signed_subtitle_url_round_trips_to_matching_mode() {
         .expect("signed subtitle path should resolve to the same playback mode");
 
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://emby.example.com/subtitles/b-en.srt");
             assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");
         }
@@ -452,6 +458,7 @@ async fn test_subtitle_index_out_of_range() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -482,6 +489,7 @@ async fn test_subtitle_invalid_index() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -512,6 +520,7 @@ async fn test_unknown_sub_path() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -543,6 +552,7 @@ async fn test_expired_version() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -563,6 +573,7 @@ async fn test_no_store() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -584,6 +595,7 @@ async fn test_no_slash_in_sub_path() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -605,6 +617,7 @@ async fn test_version_not_in_store() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -637,6 +650,7 @@ async fn test_stream_preserves_all_headers() {
         proxy_base: "/api/providers/proxy/emby",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {

@@ -5,14 +5,14 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use sha2::{Digest, Sha256};
 use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 use synctv_proxy::slice_cache::{
     CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend, SliceCacheConfig,
@@ -39,22 +39,12 @@ fn slice_cache_for_mock(config: SliceCacheConfig, mock_server: &MockServer) -> S
     SliceCache::new_with_client(config, client)
 }
 
-fn full_body_cache_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(url.as_bytes());
-    hasher.update(b"\0");
+struct HeaderAbsent(&'static str);
 
-    let mut sorted: Vec<(&String, &String)> = provider_headers.iter().collect();
-    sorted.sort_by_key(|(k, _)| *k);
-    for (k, v) in sorted {
-        hasher.update(k.as_bytes());
-        hasher.update(b"=");
-        hasher.update(v.as_bytes());
-        hasher.update(b"\n");
+impl Match for HeaderAbsent {
+    fn matches(&self, request: &Request) -> bool {
+        !request.headers.contains_key(self.0)
     }
-
-    hasher.update(b"\0full");
-    hex::encode(hasher.finalize())
 }
 
 // SliceCacheConfig tests
@@ -307,14 +297,15 @@ async fn test_get_or_fetch_slice_last_slice_partial() {
 
     // Total size is 3MB, slice_size is 2MB.
     // Slice 0: bytes 0-2097151 (2MB)
-    // Slice 1: bytes 2097152-3145727 (1MB - last slice, partial)
+    // Slice 1 still requests the full aligned range; the upstream 206 tells us
+    // the resource ends before the requested range end.
     let total_size: u64 = 3 * 1024 * 1024;
     let last_slice_size = 1024 * 1024; // 1MB
 
     let body = Bytes::from(vec![0xCDu8; last_slice_size]);
     Mock::given(method("GET"))
         .and(path("/video.mp4"))
-        .and(header("Range", "bytes=2097152-3145727"))
+        .and(header("Range", "bytes=2097152-4194303"))
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(body.clone())
@@ -350,17 +341,6 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
     // Content is 10MB, request Range: bytes=0-999
     let total_size: u64 = 10 * 1024 * 1024;
     let slice_data = Bytes::from(vec![0xAAu8; 2 * 1024 * 1024]);
-
-    // HEAD request to get content length
-    Mock::given(method("HEAD"))
-        .and(path("/video.mp4"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", total_size.to_string())
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .mount(&mock_server)
-        .await;
 
     // GET range request for slice 0
     Mock::given(method("GET"))
@@ -593,6 +573,289 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
             .unwrap();
 
     assert_eq!(total, total_size);
+}
+
+#[tokio::test]
+async fn test_proxy_head_with_cache_uses_head_and_reuses_cached_metadata() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+
+    Mock::given(method("HEAD"))
+        .and(path("/head.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", "\"head-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/head.bin"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/head.bin");
+    let provider_headers = HashMap::new();
+
+    let miss = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(miss.status(), StatusCode::OK);
+    assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
+    assert_eq!(
+        miss.headers().get("Content-Length").unwrap(),
+        total_size.to_string().as_str()
+    );
+    let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
+    assert!(miss_body.is_empty());
+
+    let hit = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(hit.status(), StatusCode::OK);
+    assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
+    assert_eq!(
+        hit.headers().get("Content-Length").unwrap(),
+        total_size.to_string().as_str()
+    );
+    assert_eq!(
+        cache
+            .get_resource_meta(&url, &provider_headers)
+            .await
+            .and_then(|meta| meta.total_size),
+        Some(total_size)
+    );
+}
+
+#[tokio::test]
+async fn test_head_without_accept_ranges_stores_length_without_range_support() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let full_body = Bytes::from(vec![0xE1; 4096]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/head-no-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/head-no-range.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(full_body.clone())
+                .insert_header("Content-Length", total_size.to_string()),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/head-no-range.bin");
+    let provider_headers = HashMap::new();
+
+    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+    let meta = cache
+        .get_resource_meta(&url, &provider_headers)
+        .await
+        .expect("HEAD should store metadata");
+    assert_eq!(meta.total_size, Some(total_size));
+    assert!(
+        !meta.supports_ranges,
+        "Content-Length alone must not prove range support"
+    );
+
+    let range = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-511"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(range.status(), StatusCode::OK);
+    assert_eq!(
+        range.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    assert_eq!(
+        range.into_body().collect().await.unwrap().to_bytes(),
+        full_body
+    );
+}
+
+#[tokio::test]
+async fn test_range_with_head_metadata_bypasses_when_upstream_returns_200() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let full_body = Bytes::from(vec![0xA7; 4096]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/range-200-after-head.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", "\"range-head-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/range-200-after-head.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(full_body.clone())
+                .insert_header("Content-Length", total_size.to_string()),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/range-200-after-head.bin");
+    let provider_headers = HashMap::new();
+
+    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-511"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .expect("non-206 aligned range response should bypass, not fail");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        full_body
+    );
+}
+
+#[tokio::test]
+async fn test_head_metadata_revalidates_after_segment_ttl() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/head-ttl.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", "4096")
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", "\"ttl-v1\""),
+        )
+        .expect(2)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            segment_ttl: Duration::from_millis(20),
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/head-ttl.bin");
+    let provider_headers = HashMap::new();
+
+    let first = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let second = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.headers().get("X-Cache-Status").unwrap(), "MISS");
 }
 
 #[tokio::test]
@@ -884,300 +1147,850 @@ fn test_aligned_range_last_slice_partial() {
     assert_eq!(end, 3 * 1024 * 1024 - 1);
 }
 
-// Enhancement 1: Full body caching (non-range / 200 responses)
+// Enhancement 1: Non-range requests use upstream range support, not full-body cache.
 
-/// Non-range request caches full body; second request is a HIT.
 #[tokio::test]
-async fn test_full_body_cache_no_range_cached_then_hit() {
+async fn test_no_range_request_streams_from_slice_cache_when_origin_supports_range() {
     let mock_server = MockServer::start().await;
-
-    let body = Bytes::from(vec![0xBBu8; 1024]);
+    let total_size: u64 = 2048;
+    let slice0 = Bytes::from(vec![0xAA; 1024]);
+    let slice1 = Bytes::from(vec![0xBB; 1024]);
 
     Mock::given(method("GET"))
         .and(path("/video.mp4"))
+        .and(header("Range", "bytes=0-1023"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(body.clone())
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice0.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024")
-                .insert_header("Content-Type", "video/mp4"),
+                .insert_header("Content-Type", "video/mp4")
+                .insert_header("ETag", "\"video-v1\""),
         )
-        .expect(1) // Only one upstream request expected
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let config = SliceCacheConfig::default();
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .and(header("Range", "bytes=1024-2047"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice1.clone())
+                .insert_header("Content-Range", format!("bytes 1024-2047/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("Content-Type", "video/mp4")
+                .insert_header("ETag", "\"video-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
     let cache = slice_cache_for_mock(config, &mock_server);
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    // First request - MISS, should fetch and cache
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+    let response =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("Content-Length").unwrap(),
+        total_size.to_string().as_str()
+    );
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Miss.as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        body.len(),
+        usize::try_from(total_size).expect("test total_size should fit in usize")
+    );
+    assert_eq!(&body[..1024], &slice0[..]);
+    assert_eq!(&body[1024..], &slice1[..]);
+
+    let cached_slice = cache
+        .get_or_fetch_slice(&url, &provider_headers, 0, total_size)
         .await
         .unwrap();
-
-    assert_eq!(resp1.status(), StatusCode::OK);
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("MISS"),
-    );
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.len(), 1024);
-
-    // Second request - HIT from cache (wiremock expect(1) verifies no second upstream call)
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    assert_eq!(resp2.status(), StatusCode::OK);
-    assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("HIT"),
-    );
-    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body2.len(), 1024);
+    assert_eq!(cached_slice.1, CacheStatus::Hit);
 }
 
-/// Response larger than max_cacheable_body is streamed through, not cached.
 #[tokio::test]
-async fn test_full_body_cache_oversized_not_cached() {
+async fn test_concurrent_no_range_cold_fill_only_fetches_first_slice_once() {
     let mock_server = MockServer::start().await;
-
-    // Configure a very small max_cacheable_body
-    let config = SliceCacheConfig {
-        max_cacheable_body: 512,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    let body = Bytes::from(vec![0xCCu8; 1024]); // Larger than max_cacheable_body (512)
+    let total_size: u64 = 1024;
+    let slice0 = Bytes::from(vec![0xD0; 1024]);
 
     Mock::given(method("GET"))
-        .and(path("/big.mp4"))
+        .and(path("/one-slice.bin"))
+        .and(header("Range", "bytes=0-1023"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(body.clone())
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_millis(50))
+                .set_body_bytes(slice0.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024")
-                .insert_header("Content-Type", "video/mp4"),
-        )
-        .expect(2) // Should be called twice since body is too large to cache
-        .mount(&mock_server)
-        .await;
-
-    let url = mock_public_url(&mock_server, "/big.mp4");
-    let provider_headers = HashMap::new();
-
-    // First request
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    assert_eq!(resp1.status(), StatusCode::OK);
-    // Oversized bodies get BYPASS status
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("BYPASS"),
-    );
-    // Consume the body so the stream completes
-    let _ = resp1.into_body().collect().await.unwrap().to_bytes();
-
-    // Second request - also goes upstream since body was too large to cache
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    assert_eq!(resp2.status(), StatusCode::OK);
-    let _ = resp2.into_body().collect().await.unwrap().to_bytes();
-}
-
-/// M3U8 content type uses manifest_ttl (shorter).
-#[tokio::test]
-async fn test_full_body_cache_m3u8_uses_manifest_ttl() {
-    let mock_server = MockServer::start().await;
-
-    let m3u8_body = "#EXTM3U\n#EXT-X-VERSION:3\nseg0.ts\n";
-
-    Mock::given(method("GET"))
-        .and(path("/live.m3u8"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(m3u8_body)
-                .insert_header("Content-Type", "application/vnd.apple.mpegurl"),
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("ETag", "\"one-slice-v1\""),
         )
         .expect(1)
         .mount(&mock_server)
         .await;
 
-    // Use a very short manifest_ttl to test TTL behaviour.
-    // The content-type check is the key assertion here.
-    let config = SliceCacheConfig {
-        manifest_ttl: Duration::from_millis(100),
-        segment_ttl: Duration::from_mins(5),
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    let url = mock_public_url(&mock_server, "/live.m3u8");
+    let cache = Arc::new(slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    ));
+    let url = mock_public_url(&mock_server, "/one-slice.bin");
     let provider_headers = HashMap::new();
 
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
+    let first = {
+        let cache = Arc::clone(&cache);
+        let url = url.clone();
+        let provider_headers = provider_headers.clone();
+        async move {
+            let response =
+                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+                    .await
+                    .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().collect().await.unwrap().to_bytes()
+        }
+    };
+    let second = {
+        let cache = Arc::clone(&cache);
+        let url = url.clone();
+        let provider_headers = provider_headers.clone();
+        async move {
+            let response =
+                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+                    .await
+                    .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().collect().await.unwrap().to_bytes()
+        }
+    };
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("MISS"),
-    );
-
-    // Immediately after: should be HIT
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("HIT"),
-    );
+    let (first_body, second_body) = tokio::join!(first, second);
+    assert_eq!(first_body, slice0);
+    assert_eq!(second_body, slice0);
+    assert_eq!(cache.backend().entry_count(), 1);
 }
 
-/// Full body cache entry expires after TTL and re-fetch produces EXPIRED status.
 #[tokio::test]
-async fn test_full_body_cache_expiry_returns_expired() {
+async fn test_no_range_request_bypasses_when_origin_does_not_support_range() {
     let mock_server = MockServer::start().await;
-
-    let body = Bytes::from("hello");
+    let body = Bytes::from(vec![0xCC; 1024]);
 
     Mock::given(method("GET"))
-        .and(path("/short.bin"))
+        .and(path("/no-range.bin"))
+        .and(header("Range", "bytes=0-2097151"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(body.clone())
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "5"),
-        )
-        .expect(2) // Will be called once initially, then again after expiry
-        .mount(&mock_server)
-        .await;
-
-    // Very short segment_ttl so we can test expiry.
-    // Disable stale_while_revalidate so expired entries are not served
-    // as stale, allowing us to observe the EXPIRED status.
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_while_revalidate: false,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    let url = mock_public_url(&mock_server, "/short.bin");
-    let provider_headers = HashMap::new();
-
-    // First request - MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("MISS"),
-    );
-    let _ = resp1.into_body().collect().await.unwrap().to_bytes();
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // After expiry - should be EXPIRED
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("EXPIRED"),
-    );
-    let _ = resp2.into_body().collect().await.unwrap().to_bytes();
-}
-
-/// Non-success full-body responses must not be cached, otherwise transient
-/// upstream failures poison subsequent requests.
-#[tokio::test]
-async fn test_full_body_non_success_response_is_not_cached() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/error-then-ok.bin"))
-        .respond_with(
-            ResponseTemplate::new(500)
-                .set_body_string("upstream-error")
-                .insert_header("Content-Type", "text/plain")
-                .insert_header("Content-Length", "14"),
+                .insert_header("Content-Length", "1024"),
         )
         .expect(1)
-        .mount_as_scoped(&mock_server)
+        .mount(&mock_server)
         .await;
 
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
-    let url = mock_public_url(&mock_server, "/error-then-ok.bin");
+    let url = mock_public_url(&mock_server, "/no-range.bin");
     let provider_headers = HashMap::new();
 
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(resp1.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("MISS")
-    );
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"upstream-error");
+    let response =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
 
-    drop(first_guard);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(response_body, body);
+    assert_eq!(cache.backend().entry_count(), 0);
+}
+
+#[tokio::test]
+async fn test_no_range_request_retries_original_get_when_range_probe_is_rejected() {
+    let mock_server = MockServer::start().await;
+    let body = Bytes::from(vec![0xE0; 512]);
 
     Mock::given(method("GET"))
-        .and(path("/error-then-ok.bin"))
+        .and(path("/range-rejected.bin"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(ResponseTemplate::new(416))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/range-rejected.bin"))
+        .and(HeaderAbsent("range"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_string("fresh-ok")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "8"),
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Length", body.len().to_string()),
         )
         .expect(1)
         .mount(&mock_server)
         .await;
 
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(resp2.status(), StatusCode::OK);
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/range-rejected.bin");
+    let provider_headers = HashMap::new();
+
+    let response =
+        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+            .await
+            .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("MISS"),
-        "second request must refetch instead of hitting a cached 500 response"
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
     );
-    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body2.as_ref(), b"fresh-ok");
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(response_body, body);
+    assert_eq!(cache.backend().entry_count(), 0);
+}
+
+#[tokio::test]
+async fn test_open_ended_range_without_metadata_uses_unified_slice_fetch() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let slice2 = Bytes::from(vec![0xA2; 1024]);
+    let slice3 = Bytes::from(vec![0xA3; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/open-ended.bin"))
+        .and(header("Range", "bytes=2048-3071"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice2.clone())
+                .insert_header("Content-Range", format!("bytes 2048-3071/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"open-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/open-ended.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice3.clone())
+                .insert_header("Content-Range", format!("bytes 3072-4095/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"open-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/open-ended.bin");
+    let provider_headers = HashMap::new();
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=2048-"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("Content-Range").unwrap(),
+        format!("bytes 2048-4095/{total_size}").as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..1024], &slice2[..]);
+    assert_eq!(&body[1024..], &slice3[..]);
+}
+
+#[tokio::test]
+async fn test_explicit_range_without_metadata_allows_short_final_aligned_slice() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 3500;
+    let last_slice_len = 428;
+    let last_slice = Bytes::from(vec![0xB4; last_slice_len]);
+
+    Mock::given(method("GET"))
+        .and(path("/short-final.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(last_slice.clone())
+                .insert_header("Content-Range", format!("bytes 3072-3499/{total_size}"))
+                .insert_header("Content-Length", last_slice_len.to_string())
+                .insert_header("ETag", "\"short-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/short-final.bin");
+    let provider_headers = HashMap::new();
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=3300-4095"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("Content-Range").unwrap(),
+        format!("bytes 3300-3499/{total_size}").as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len(), 200);
+    assert_eq!(body, Bytes::from(vec![0xB4; 200]));
+}
+
+#[tokio::test]
+async fn test_huge_explicit_range_without_metadata_does_not_materialize_slice_span() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let slice0 = Bytes::from(vec![0x51; 1024]);
+    let slice1 = Bytes::from(vec![0x52; 1024]);
+    let slice2 = Bytes::from(vec![0x53; 1024]);
+    let slice3 = Bytes::from(vec![0x54; 1024]);
+
+    for (idx, body) in [
+        (0_u64, slice0.clone()),
+        (1, slice1.clone()),
+        (2, slice2.clone()),
+        (3, slice3.clone()),
+    ] {
+        let start = idx * 1024;
+        let end = start + 1023;
+        Mock::given(method("GET"))
+            .and(path("/huge-range.bin"))
+            .and(header("Range", format!("bytes={start}-{end}")))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(body)
+                    .insert_header("Content-Range", format!("bytes {start}-{end}/{total_size}"))
+                    .insert_header("Content-Length", "1024")
+                    .insert_header("ETag", "\"huge-range-v1\""),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+    }
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/huge-range.bin");
+    let provider_headers = HashMap::new();
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-18446744073709551615"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("Content-Range").unwrap(),
+        format!("bytes 0-4095/{total_size}").as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len(), 4096);
+    assert_eq!(&body[..1024], &slice0[..]);
+    assert_eq!(&body[1024..2048], &slice1[..]);
+    assert_eq!(&body[2048..3072], &slice2[..]);
+    assert_eq!(&body[3072..], &slice3[..]);
+}
+
+#[tokio::test]
+async fn test_suffix_range_without_meta_bypasses_once_and_learns_metadata() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let suffix_body = Bytes::from(vec![0xDD; 512]);
+
+    Mock::given(method("GET"))
+        .and(path("/suffix.bin"))
+        .and(header("Range", "bytes=-512"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(suffix_body.clone())
+                .insert_header("Content-Range", format!("bytes 3584-4095/{total_size}"))
+                .insert_header("Content-Length", "512")
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("ETag", "\"suffix-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/suffix.bin");
+    let provider_headers = HashMap::new();
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, suffix_body);
+
+    let meta = cache.get_resource_meta(&url, &provider_headers).await;
+    assert_eq!(meta.as_ref().and_then(|m| m.total_size), Some(total_size));
+    assert_eq!(
+        meta.as_ref().and_then(|m| m.etag.as_deref()),
+        Some("\"suffix-v1\"")
+    );
+    assert_eq!(
+        cache.backend().entry_count(),
+        0,
+        "unaligned suffix response must not be stored as a slice"
+    );
+}
+
+#[tokio::test]
+async fn test_suffix_range_with_learned_meta_uses_slice_cache() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let suffix_body = Bytes::from(vec![0xDD; 512]);
+    let mut last_slice_data = vec![0xAA; 1024];
+    last_slice_data[512..].fill(0xDD);
+    let last_slice = Bytes::from(last_slice_data);
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-cache.bin"))
+        .and(header("Range", "bytes=-512"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(suffix_body.clone())
+                .insert_header("Content-Range", format!("bytes 3584-4095/{total_size}"))
+                .insert_header("Content-Length", "512")
+                .insert_header("ETag", "\"suffix-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-cache.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(last_slice.clone())
+                .insert_header("Content-Range", format!("bytes 3072-4095/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"suffix-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/suffix-cache.bin");
+    let provider_headers = HashMap::new();
+
+    let cold = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cold.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    let _ = cold.into_body().collect().await.unwrap().to_bytes();
+
+    let miss = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(miss.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
+    let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(miss_body, suffix_body);
+
+    let hit = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
+    let hit_body = hit.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(hit_body, suffix_body);
+}
+
+#[tokio::test]
+async fn test_concurrent_suffix_without_meta_does_not_wait_for_metadata() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let suffix_body = Bytes::from(vec![0xDD; 512]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/suffix-lock.bin"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-lock.bin"))
+        .and(header("Range", "bytes=-512"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_millis(100))
+                .set_body_bytes(suffix_body.clone())
+                .insert_header("Content-Range", format!("bytes 3584-4095/{total_size}"))
+                .insert_header("Content-Length", "512")
+                .insert_header("ETag", "\"suffix-lock-v1\""),
+        )
+        .expect(2)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-lock.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/suffix-lock.bin");
+    let provider_headers = HashMap::new();
+
+    let (first, second) = tokio::join!(
+        synctv_proxy::slice_cache::proxy_with_cache(
+            &cache,
+            Some("bytes=-512"),
+            &url,
+            &provider_headers,
+        ),
+        synctv_proxy::slice_cache::proxy_with_cache(
+            &cache,
+            Some("bytes=-512"),
+            &url,
+            &provider_headers,
+        ),
+    );
+
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    assert_eq!(second.headers().get("X-Cache-Status").unwrap(), "BYPASS");
+    assert_eq!(
+        first.into_body().collect().await.unwrap().to_bytes(),
+        suffix_body
+    );
+    assert_eq!(
+        second.into_body().collect().await.unwrap().to_bytes(),
+        suffix_body
+    );
+}
+
+#[tokio::test]
+async fn test_head_metadata_enables_suffix_range_slice_cache() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let suffix_body = Bytes::from(vec![0x7A; 512]);
+    let mut last_slice_data = vec![0x11; 1024];
+    last_slice_data[512..].fill(0x7A);
+    let last_slice = Bytes::from(last_slice_data);
+
+    Mock::given(method("HEAD"))
+        .and(path("/suffix-after-head.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Accept-Ranges", "bytes")
+                .insert_header("ETag", "\"suffix-head-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-after-head.bin"))
+        .and(header("Range", "bytes=-512"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-after-head.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(last_slice.clone())
+                .insert_header("Content-Range", format!("bytes 3072-4095/{total_size}"))
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"suffix-head-v1\""),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/suffix-after-head.bin");
+    let provider_headers = HashMap::new();
+
+    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+    let miss = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(miss.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(miss.headers().get("X-Cache-Status").unwrap(), "MISS");
+    let miss_body = miss.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(miss_body, suffix_body);
+
+    let hit = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(hit.headers().get("X-Cache-Status").unwrap(), "HIT");
+    let hit_body = hit.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(hit_body, suffix_body);
+}
+
+#[tokio::test]
+async fn test_suffix_range_with_head_length_bypasses_when_origin_ignores_aligned_range() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+    let full_body = Bytes::from(vec![0x4C; 4096]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/suffix-no-ranges.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-no-ranges.bin"))
+        .and(header("Range", "bytes=-512"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-no-ranges.bin"))
+        .and(header("Range", "bytes=3072-4095"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(full_body.clone())
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Content-Type", "application/octet-stream"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(
+        SliceCacheConfig {
+            slice_size: 1024,
+            ..Default::default()
+        },
+        &mock_server,
+    );
+    let url = mock_public_url(&mock_server, "/suffix-no-ranges.bin");
+    let provider_headers = HashMap::new();
+
+    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers().get("X-Cache-Status").unwrap(), "MISS");
+
+    let response = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-512"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("X-Cache-Status").unwrap(),
+        CacheStatus::Bypass.as_str()
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, full_body);
+    assert_eq!(cache.backend().entry_count(), 0);
+}
+
+#[tokio::test]
+async fn test_suffix_range_larger_than_known_total_is_rejected_without_upstream_get() {
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 4096;
+
+    Mock::given(method("HEAD"))
+        .and(path("/suffix-too-large.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/suffix-too-large.bin"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
+    let url = mock_public_url(&mock_server, "/suffix-too-large.bin");
+    let provider_headers = HashMap::new();
+
+    let head = synctv_proxy::slice_cache::proxy_head_with_cache_enabled_with_control(
+        &cache,
+        true,
+        None,
+        &url,
+        &provider_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+
+    let error = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=-8192"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .expect_err("suffix range larger than known total must be rejected");
+
+    assert!(
+        error.to_string().contains("Suffix range out of bounds"),
+        "error should explain invalid suffix range, got: {error}"
+    );
 }
 
 // Enhancement 2: ETag consistency validation
@@ -1189,7 +2002,9 @@ fn test_cached_resource_meta_fields() {
         etag: Some("\"abc123\"".to_string()),
         last_modified: None,
         total_size: Some(10_485_760),
+        supports_ranges: true,
         content_type: Some("video/mp4".to_string()),
+        validated_at: std::time::SystemTime::now(),
         last_accessed: std::time::SystemTime::now(),
     };
     assert_eq!(meta.etag.as_deref(), Some("\"abc123\""));
@@ -1366,19 +2181,22 @@ async fn test_cache_status_bypass_when_disabled() {
     );
 }
 
-/// Multi-range returns BYPASS.
+/// Multi-range requests are rejected before any upstream request.
 #[tokio::test]
-async fn test_cache_status_bypass_for_multi_range() {
+async fn test_multi_range_request_is_rejected() {
     let mock_server = MockServer::start().await;
 
-    // HEAD for total size
     Mock::given(method("HEAD"))
         .and(path("/video.mp4"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", "10000")
-                .insert_header("Accept-Ranges", "bytes"),
-        )
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
         .mount(&mock_server)
         .await;
 
@@ -1394,7 +2212,6 @@ async fn test_cache_status_bypass_for_multi_range() {
     )
     .await;
 
-    // Multi-range is an error (rejected)
     assert!(result.is_err(), "Multi-range should be rejected");
 }
 
@@ -1752,8 +2569,6 @@ async fn test_cached_meta_avoids_head_request() {
     let total_size: u64 = 4 * 1024 * 1024; // 4MB
     let slice_data = Bytes::from(vec![0xCCu8; 2 * 1024 * 1024]);
 
-    // HEAD mock - should only be called ONCE (for the first request
-    // before metadata is cached)
     Mock::given(method("HEAD"))
         .and(path("/video.mp4"))
         .respond_with(
@@ -1761,7 +2576,7 @@ async fn test_cached_meta_avoids_head_request() {
                 .insert_header("Content-Length", total_size.to_string())
                 .insert_header("Accept-Ranges", "bytes"),
         )
-        .expect(1) // Key assertion: only 1 HEAD request
+        .expect(0)
         .mount(&mock_server)
         .await;
 
@@ -1784,7 +2599,7 @@ async fn test_cached_meta_avoids_head_request() {
     let url = mock_public_url(&mock_server, "/video.mp4");
     let provider_headers = HashMap::new();
 
-    // First range request: must HEAD to discover total_size
+    // First range request learns total_size from the initial range GET.
     let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
         Some("bytes=0-999"),
@@ -1804,8 +2619,7 @@ async fn test_cached_meta_avoids_head_request() {
     );
     assert_eq!(meta.unwrap().total_size, Some(total_size));
 
-    // Second range request: should reuse cached total_size, NO HEAD request
-    // (wiremock's expect(1) on the HEAD mock will fail if a second HEAD is sent)
+    // Second range request should reuse cached total_size and cached slice data.
     let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
         &cache,
         Some("bytes=0-999"),
@@ -1826,433 +2640,7 @@ async fn test_cached_meta_avoids_head_request() {
 
 // Phase 2: Backend trait integration, STALE/UPDATING, conditional
 
-// STALE behavior: expired entry within stale window is served stale
-
-/// When stale_while_revalidate is enabled (default), an expired entry within
-/// the stale_max_age window is served with STALE status for full-body cache.
-#[tokio::test]
-async fn test_full_body_stale_when_expired_within_window() {
-    let mock_server = MockServer::start().await;
-
-    let body = Bytes::from("stale-body");
-
-    Mock::given(method("GET"))
-        .and(path("/stale.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(body.clone())
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "10"),
-        )
-        // Called once initially; the stale response uses cached data,
-        // but the background re-fetch path may call again if activated.
-        .mount(&mock_server)
-        .await;
-
-    // Short segment TTL, stale_while_revalidate enabled (default).
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_mins(1),
-        stale_while_revalidate: true,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/stale.bin");
-    let provider_headers = HashMap::new();
-
-    // First request - MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("MISS"),
-    );
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"stale-body");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Second request - STALE (expired but within stale window)
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let status_str = resp2
-        .headers()
-        .get("X-Cache-Status")
-        .map(|v| v.to_str().unwrap().to_string());
-    assert_eq!(
-        status_str.as_deref(),
-        Some("STALE"),
-        "Expired entry within stale window should return STALE"
-    );
-    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
-    // Stale response should return the original cached body.
-    assert_eq!(body2.as_ref(), b"stale-body");
-}
-
-#[tokio::test]
-async fn test_full_body_stale_background_revalidation_updates_next_request() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/stale-refresh.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-1")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9"),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(5),
-        stale_while_revalidate: true,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/stale-refresh.bin");
-    let provider_headers = HashMap::new();
-
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(first_guard);
-
-    Mock::given(method("GET"))
-        .and(path("/stale-refresh.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-2")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    let stale_resp =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
-    assert_eq!(
-        stale_resp
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("STALE")
-    );
-    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(stale_body.as_ref(), b"version-1");
-
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let resp =
-                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-                    .await
-                    .unwrap();
-            let status = resp
-                .headers()
-                .get("X-Cache-Status")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-                .unwrap_or_default();
-            let body = resp.into_body().collect().await.unwrap().to_bytes();
-            if status == "HIT" && body.as_ref() == b"version-2" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("background revalidation should refresh the cached body for the next request");
-}
-
-#[tokio::test]
-async fn test_full_body_failed_revalidation_does_not_stick_updating_forever() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/stale-retry.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-1")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9"),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(5),
-        stale_while_revalidate: true,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/stale-retry.bin");
-    let provider_headers = HashMap::new();
-
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(first_guard);
-
-    let failed_refresh_guard = Mock::given(method("GET"))
-        .and(path("/stale-retry.bin"))
-        .respond_with(ResponseTemplate::new(503).set_body_string("temporary failure"))
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let stale_resp =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
-    assert_eq!(
-        stale_resp
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("STALE")
-    );
-    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(stale_body.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(failed_refresh_guard);
-
-    Mock::given(method("GET"))
-        .and(path("/stale-retry.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-2")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let resp =
-                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-                    .await
-                    .unwrap();
-            let status = resp
-                .headers()
-                .get("X-Cache-Status")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-                .unwrap_or_default();
-            let body = resp.into_body().collect().await.unwrap().to_bytes();
-            if status == "HIT" && body.as_ref() == b"version-2" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("failed background revalidation should clear updating marker and allow a retry");
-}
-
-#[tokio::test]
-async fn test_full_body_304_revalidation_with_evicted_entry_does_not_stick_updating_forever() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/stale-304-evicted.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-1")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9")
-                .insert_header("ETag", "\"version-1\""),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(5),
-        stale_while_revalidate: true,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/stale-304-evicted.bin");
-    let provider_headers = HashMap::new();
-
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(first_guard);
-
-    let not_modified_guard = Mock::given(method("GET"))
-        .and(path("/stale-304-evicted.bin"))
-        .and(header("If-None-Match", "\"version-1\""))
-        .respond_with(ResponseTemplate::new(304))
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let stale_resp =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
-    assert_eq!(
-        stale_resp
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("STALE")
-    );
-    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(stale_body.as_ref(), b"version-1");
-
-    let body_key = full_body_cache_key(&url, &provider_headers);
-    cache.backend().remove(&body_key).await;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(not_modified_guard);
-
-    Mock::given(method("GET"))
-        .and(path("/stale-304-evicted.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-2")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9")
-                .insert_header("ETag", "\"version-2\""),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let resp =
-                synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-                    .await
-                    .unwrap();
-            let status = resp
-                .headers()
-                .get("X-Cache-Status")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-                .unwrap_or_default();
-            let body = resp.into_body().collect().await.unwrap().to_bytes();
-            if matches!(status.as_str(), "EXPIRED" | "HIT") && body.as_ref() == b"version-2" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("304 revalidation with an evicted body must clear updating state and allow refetch");
-}
-
-/// Background stale revalidation must ignore non-success responses instead of
-/// overwriting a previously good cached body with an error page.
-#[tokio::test]
-async fn test_full_body_stale_background_revalidation_ignores_non_success_response() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/stale-error-refresh.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("version-1")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "9"),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(5),
-        stale_while_revalidate: true,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/stale-error-refresh.bin");
-    let provider_headers = HashMap::new();
-
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(first_guard);
-
-    let failed_refresh_guard = Mock::given(method("GET"))
-        .and(path("/stale-error-refresh.bin"))
-        .respond_with(
-            ResponseTemplate::new(500)
-                .set_body_string("error-page")
-                .insert_header("Content-Type", "text/plain")
-                .insert_header("Content-Length", "10"),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let stale_resp =
-        synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-            .await
-            .unwrap();
-    assert_eq!(
-        stale_resp
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("STALE")
-    );
-    let stale_body = stale_resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(stale_body.as_ref(), b"version-1");
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    drop(failed_refresh_guard);
-
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let status2 = resp2
-        .headers()
-        .get("X-Cache-Status")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body2.as_ref(), b"version-1");
-    assert!(
-        matches!(status2.as_deref(), Some("STALE" | "HIT" | "UPDATING")),
-        "cache must retain the last successful body instead of storing a 500 response"
-    );
-}
+// STALE behavior: expired slice within stale window is served stale
 
 /// When stale_while_revalidate is enabled, an expired slice within the stale
 /// window returns STALE for the range request.
@@ -2699,21 +3087,9 @@ async fn test_range_miss_does_not_send_conditional_headers_from_head_metadata() 
     let total_size: u64 = 2048;
     let slice_data = Bytes::from(vec![0xABu8; 1024]);
 
-    Mock::given(method("HEAD"))
-        .and(path("/range-miss.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", total_size.to_string())
-                .insert_header("ETag", "\"etag-v1\"")
-                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    // Cold slice-cache misses must not attach validators learned from HEAD.
-    // Some origins respond with a full-body 200 when Range and validators are
-    // combined, which breaks slice caching.
+    // Cold slice-cache misses must not attach validators without an existing
+    // cached slice. Some origins respond with a full-body 200 when Range and
+    // validators are combined, which breaks slice caching.
     let total_size_usize =
         usize::try_from(total_size).expect("test total_size should fit in usize");
     Mock::given(method("GET"))
@@ -2775,73 +3151,6 @@ async fn test_range_miss_does_not_send_conditional_headers_from_head_metadata() 
         .to_bytes();
     assert_eq!(body.len(), 128);
     assert_eq!(&body[..], &slice_data[..128]);
-}
-
-#[tokio::test]
-async fn test_full_body_conditional_request_304_returns_revalidated() {
-    let mock_server = MockServer::start().await;
-
-    let first_guard = Mock::given(method("GET"))
-        .and(path("/full-revalidate.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("full-body-v1")
-                .insert_header("Content-Type", "application/octet-stream")
-                .insert_header("Content-Length", "12")
-                .insert_header("ETag", "\"full-etag-v1\"")
-                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
-        )
-        .expect(1)
-        .mount_as_scoped(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        segment_ttl: Duration::from_millis(50),
-        stale_while_revalidate: false,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/full-revalidate.bin");
-    let provider_headers = HashMap::new();
-
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body1.as_ref(), b"full-body-v1");
-
-    let meta = cache.get_resource_meta(&url, &provider_headers).await;
-    assert!(meta.is_some(), "full-body fetch should store metadata");
-    let meta = meta.unwrap();
-    assert_eq!(meta.etag.as_deref(), Some("\"full-etag-v1\""));
-    assert_eq!(
-        meta.last_modified.as_deref(),
-        Some("Wed, 01 Jan 2025 00:00:00 GMT")
-    );
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(first_guard);
-
-    Mock::given(method("GET"))
-        .and(path("/full-revalidate.bin"))
-        .and(header("if-none-match", "\"full-etag-v1\""))
-        .respond_with(ResponseTemplate::new(304))
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-    assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .and_then(|v| v.to_str().ok()),
-        Some("REVALIDATED")
-    );
-    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body2.as_ref(), b"full-body-v1");
 }
 
 /// Last-Modified is tracked in resource metadata.
@@ -2911,17 +3220,6 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
     let total_size: u64 = 10 * 1024 * 1024;
     let slice_body = Bytes::from(vec![0xCD; 2 * 1024 * 1024]);
 
-    Mock::given(method("HEAD"))
-        .and(path("/runtime-toggle.mp4"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", total_size.to_string())
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
     Mock::given(method("GET"))
         .and(path("/runtime-toggle.mp4"))
         .and(header("Range", "bytes=0-2097151"))
@@ -2973,16 +3271,6 @@ async fn test_proxy_with_cache_redirect_to_loopback_without_listener_fails_on_sl
 ) {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
-
-    Mock::given(method("HEAD"))
-        .and(path("/video.mp4"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", (10 * 1024 * 1024).to_string())
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .mount(&mock_server)
-        .await;
 
     Mock::given(method("GET"))
         .and(path("/video.mp4"))
@@ -3041,46 +3329,6 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_without_listener_fa
     assert!(
         err.to_string().contains("Connection failed"),
         "bypass path should surface the connection failure when default SSRF is disabled: {err}"
-    );
-}
-
-#[tokio::test]
-async fn test_proxy_with_cache_large_range_bypass_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
-) {
-    let mock_server = MockServer::start().await;
-    let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
-
-    Mock::given(method("HEAD"))
-        .and(path("/video.mp4"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", (32 * 1024 * 1024).to_string())
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/video.mp4"))
-        .and(header("Range", "bytes=0-18874367"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:12345/private"),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let err = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        Some("bytes=0-18874367"),
-        &mock_public_url(&mock_server, "/video.mp4"),
-        &HashMap::new(),
-    )
-    .await
-    .expect_err("large-range bypass path redirect to loopback without a listener must fail");
-
-    assert!(
-        err.to_string().contains("Connection failed"),
-        "large-range bypass path should surface the connection failure when default SSRF is disabled: {err}"
     );
 }
 
@@ -3210,7 +3458,7 @@ async fn test_get_or_fetch_slice_returns_cache_status() {
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin() {
+async fn test_proxy_with_cache_bypasses_full_resource_200_without_metadata() {
     let mock_server = MockServer::start().await;
 
     let total_size: u64 = 1024;
@@ -3218,20 +3466,9 @@ async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin
         usize::try_from(total_size).expect("test total_size should fit in usize");
     let full_body = Bytes::from(vec![0x5Au8; total_size_usize]);
 
-    Mock::given(method("HEAD"))
-        .and(path("/single-slice.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", total_size.to_string())
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
     Mock::given(method("GET"))
         .and(path("/single-slice.bin"))
-        .and(header("Range", "bytes=0-1023"))
+        .and(header("Range", "bytes=0-2047"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(full_body.clone())
@@ -3239,7 +3476,7 @@ async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin
                 .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Accept-Ranges", "bytes"),
         )
-        .expect(1)
+        .expect(2)
         .mount(&mock_server)
         .await;
 
@@ -3256,48 +3493,35 @@ async fn test_proxy_with_cache_accepts_full_resource_200_for_single_slice_origin
     let response1 =
         synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
             .await
-            .expect("single-slice full-resource 200 must be accepted");
-    assert_eq!(response1.status(), StatusCode::PARTIAL_CONTENT);
+            .expect("full-resource 200 should be bypassed");
+    assert_eq!(response1.status(), StatusCode::OK);
     assert_eq!(
         response1.headers().get("X-Cache-Status").unwrap(),
-        CacheStatus::Miss.as_str()
+        CacheStatus::Bypass.as_str()
     );
     let body1 = axum::body::to_bytes(response1.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body1.len(), 128);
-    assert_eq!(body1, Bytes::from(vec![0x5Au8; 128]));
+    assert_eq!(body1, full_body);
 
     let response2 =
         synctv_proxy::slice_cache::proxy_with_cache(&cache, Some("bytes=0-127"), &url, &headers)
             .await
-            .expect("cached single-slice response must hit");
-    assert_eq!(response2.status(), StatusCode::PARTIAL_CONTENT);
+            .expect("second full-resource 200 should also be bypassed");
+    assert_eq!(response2.status(), StatusCode::OK);
     assert_eq!(
         response2.headers().get("X-Cache-Status").unwrap(),
-        CacheStatus::Hit.as_str()
+        CacheStatus::Bypass.as_str()
     );
     let body2 = axum::body::to_bytes(response2.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body2.len(), 128);
-    assert_eq!(body2, Bytes::from(vec![0x5Au8; 128]));
+    assert_eq!(body2, full_body);
 }
 
 #[tokio::test]
 async fn test_proxy_with_cache_marks_multi_range_as_invalid_request() {
     let mock_server = MockServer::start().await;
-
-    Mock::given(method("HEAD"))
-        .and(path("/multi-range.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("Content-Length", "4096")
-                .insert_header("Accept-Ranges", "bytes"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
 
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
     let url = mock_public_url(&mock_server, "/multi-range.bin");
@@ -3546,11 +3770,6 @@ async fn test_lock_timeout_returns_stale_data() {
     let _url = format!("{}/h1-test.bin", mock_server.uri());
     let _headers: HashMap<String, String> = HashMap::new();
 
-    // Pre-populate cache with a short TTL entry using put_full_body
-    // is not directly possible, so we use a separate fast mock first.
-    // Actually, let's use a different approach: mount a fast mock first,
-    // populate the cache, then replace with slow mock.
-
     // This test primarily validates that the timeout code path exists
     // and doesn't panic. The full concurrent lock-timeout scenario is
     // harder to test deterministically without controlling task scheduling.
@@ -3736,181 +3955,6 @@ async fn test_206_response_accepts_missing_content_range_total_when_slice_matche
     assert_eq!(cached, body);
 }
 
-// H2: OOM protection for chunked responses without Content-Length
-
-/// When upstream returns a chunked response without Content-Length that
-/// exceeds max_cacheable_body, it should be handled without OOM (BYPASS).
-#[tokio::test]
-async fn test_full_body_oom_protection() {
-    let mock_server = MockServer::start().await;
-
-    // Configure very small max_cacheable_body
-    let config = SliceCacheConfig {
-        max_cacheable_body: 100,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    // Upstream returns 500 bytes WITHOUT Content-Length header (chunked).
-    // This simulates a chunked transfer where we don't know size upfront.
-    let body = Bytes::from(vec![0xEEu8; 500]);
-    Mock::given(method("GET"))
-        .and(path("/h2-test.bin"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_bytes(body.clone()),
-            // No Content-Length header - simulates chunked response
-        )
-        .mount(&mock_server)
-        .await;
-
-    let url = mock_public_url(&mock_server, "/h2-test.bin");
-    let provider_headers = HashMap::new();
-
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    // Should get BYPASS since the body exceeds max_cacheable_body
-    assert_eq!(resp.status(), StatusCode::OK);
-    let cache_status = resp
-        .headers()
-        .get("X-Cache-Status")
-        .map(|v| v.to_str().unwrap().to_string());
-    assert_eq!(
-        cache_status.as_deref(),
-        Some("BYPASS"),
-        "Oversized chunked response without Content-Length should be BYPASS"
-    );
-}
-
-// H3: Connection reuse after oversized body drain
-
-/// Verify that when a chunked response exceeds max_cacheable_body, the
-/// remaining body is fully consumed (drained) to allow connection reuse.
-///
-/// This test uses two sequential requests to the same server to verify
-/// that the connection can be reused after an oversized body is drained.
-/// Without proper draining, reqwest would not reuse the connection.
-#[tokio::test]
-async fn test_full_body_oversized_drains_for_connection_reuse() {
-    let mock_server = MockServer::start().await;
-
-    // Configure very small max_cacheable_body
-    let config = SliceCacheConfig {
-        max_cacheable_body: 100,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    // Upstream returns 500 bytes WITHOUT Content-Length header (chunked).
-    // The body is much larger than max_cacheable_body (100 bytes).
-    let body = Bytes::from(vec![0xAAu8; 500]);
-    Mock::given(method("GET"))
-        .and(path("/drain-test.bin"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_bytes(body.clone()),
-            // No Content-Length header - simulates chunked response
-        )
-        .expect(2) // Should be called twice
-        .mount(&mock_server)
-        .await;
-
-    let url = mock_public_url(&mock_server, "/drain-test.bin");
-    let provider_headers = HashMap::new();
-
-    // First request - body exceeds max_cacheable_body, should be BYPASS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    assert_eq!(resp1.status(), StatusCode::OK);
-    assert_eq!(
-        resp1
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("BYPASS"),
-        "Oversized response should be BYPASS"
-    );
-
-    // Consume the response body completely
-    let _ = resp1.into_body().collect().await.unwrap().to_bytes();
-
-    // Second request to the same URL - since body was too large to cache,
-    // it should hit upstream again. The key assertion is that this works
-    // correctly (no connection pool pollution from incomplete drain).
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .unwrap();
-
-    assert_eq!(resp2.status(), StatusCode::OK);
-    assert_eq!(
-        resp2
-            .headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("BYPASS"),
-        "Second oversized response should also be BYPASS"
-    );
-    let _ = resp2.into_body().collect().await.unwrap().to_bytes();
-
-    // Verify mock was called exactly twice (connection worked both times)
-    mock_server.verify().await;
-}
-
-/// Test that the body drain works correctly even with very large responses.
-/// This verifies that the fix properly drains all chunks, not just the first.
-#[tokio::test]
-async fn test_full_body_oversized_large_stream_drain() {
-    let mock_server = MockServer::start().await;
-
-    // Configure very small max_cacheable_body
-    let config = SliceCacheConfig {
-        max_cacheable_body: 50,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-
-    // Using multiple "chunks" worth of data
-    let body = Bytes::from(vec![0xBBu8; 2000]);
-    Mock::given(method("GET"))
-        .and(path("/large-stream.bin"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_bytes(body.clone()),
-            // No Content-Length - simulates chunked streaming
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    let url = mock_public_url(&mock_server, "/large-stream.bin");
-    let provider_headers = HashMap::new();
-
-    // Request should complete successfully without hanging
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
-        .await
-        .expect("Request should complete without error");
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers()
-            .get("X-Cache-Status")
-            .map(|v| v.to_str().unwrap()),
-        Some("BYPASS")
-    );
-
-    // The response body should contain the data we buffered (up to max + one chunk)
-    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    // We should have received some data (the buffered portion)
-    assert!(
-        !body_bytes.is_empty(),
-        "Should have received some body data"
-    );
-
-    // Verify mock was called exactly once
-    mock_server.verify().await;
-}
-
 // H4: FileBackend header_len bounds check
 
 /// A corrupted cache file with an absurdly large header_len should be
@@ -3949,72 +3993,5 @@ async fn test_file_backend_rejects_corrupt_header_len() {
     assert!(
         result.is_none(),
         "Corrupted cache file with huge header_len should not be loaded"
-    );
-}
-
-// M2: Lock cleanup also called on full-body path
-
-/// After a full-body cache put, lock cleanup should still be triggered.
-/// This test verifies that put_full_body calls maybe_cleanup_locks().
-#[tokio::test]
-async fn test_full_body_put_triggers_lock_cleanup() {
-    let mock_server = MockServer::start().await;
-
-    let total_size: u64 = 2048;
-    let slice_data = Bytes::from(vec![0xFFu8; 1024]);
-
-    Mock::given(method("GET"))
-        .and(path("/m2-slice.bin"))
-        .and(header("Range", "bytes=0-1023"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .set_body_bytes(slice_data.clone())
-                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
-                .insert_header("Content-Length", "1024"),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let config = SliceCacheConfig {
-        slice_size: 1024,
-        ..Default::default()
-    };
-    let cache = slice_cache_for_mock(config, &mock_server);
-    let url = mock_public_url(&mock_server, "/m2-slice.bin");
-    let headers = HashMap::new();
-
-    let _ = cache
-        .get_or_fetch_slice(&url, &headers, 0, total_size)
-        .await
-        .unwrap();
-    assert!(cache.lock_count() > 0, "Should have created a lock");
-
-    // Now do full-body cache operations via the public API.
-    // This verifies that the full-body path also triggers lock cleanup.
-    let body = Bytes::from(vec![0xBBu8; 100]);
-    for i in 0..5 {
-        Mock::given(method("GET"))
-            .and(path(format!("/m2-full-{i}.bin")))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_bytes(body.clone())
-                    .insert_header("Content-Length", "100"),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let url_i = mock_public_url(&mock_server, &format!("/m2-full-{i}.bin"));
-        let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url_i, &headers)
-            .await
-            .unwrap();
-        let _ = resp.into_body().collect().await.unwrap().to_bytes();
-    }
-
-    // After explicit cleanup, all stale locks should be removed
-    cache.cleanup_stale_locks();
-    assert_eq!(
-        cache.lock_count(),
-        0,
-        "Locks should be cleaned up after explicit cleanup"
     );
 }

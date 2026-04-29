@@ -119,6 +119,8 @@ async fn test_stream_proxy() {
 
     let p = provider();
     let fake_services = fake_proxy_services();
+    let mut request_headers = http::HeaderMap::new();
+    request_headers.insert(http::header::RANGE, "bytes=10-20".parse().unwrap());
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: Some(&store),
@@ -127,12 +129,18 @@ async fn test_stream_proxy() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &request_headers,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
             assert_eq!(url, "https://alist.example.com/d/movie.mp4");
             assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
+            assert_eq!(range_header.as_deref(), Some("bytes=10-20"));
         }
         other => panic!("Expected FetchAndForward, got {other:?}"),
     }
@@ -164,10 +172,11 @@ async fn test_thumbnail_proxy_uses_cached_playback_metadata() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://alist.example.com/thumb/movie.jpg");
             assert_eq!(headers.get("Authorization").unwrap(), "Bearer tok");
         }
@@ -243,6 +252,7 @@ async fn test_m3u8_proxy() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -326,6 +336,7 @@ async fn test_hls_modes_sign_and_resolve_to_their_own_m3u8_urls() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -353,6 +364,8 @@ async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
 
     let p = provider();
     let fake_services = fake_proxy_services();
+    let mut request_headers = http::HeaderMap::new();
+    request_headers.insert(http::header::RANGE, "bytes=512-1023".parse().unwrap());
     let ctx = ProxyRequestContext {
         sub_path: "alist-segment",
         store: Some(&store),
@@ -361,12 +374,18 @@ async fn test_m3u8_rewritten_segment_query_fetches_target_url() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &request_headers,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward {
+            url,
+            headers,
+            range_header,
+        } => {
             assert_eq!(url, "https://aliyun.example.com/hd/seg-1.ts");
             assert!(headers.is_empty());
+            assert_eq!(range_header.as_deref(), Some("bytes=512-1023"));
         }
         other => panic!("Expected FetchAndForward, got {other:?}"),
     }
@@ -394,6 +413,7 @@ async fn test_unknown_sub_path() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -488,6 +508,7 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
 
     let action = p
@@ -496,7 +517,7 @@ async fn test_signed_subtitle_url_round_trips_for_matching_mode() {
         .expect("signed subtitle path should resolve to the same playback mode");
 
     match action {
-        ProxyAction::FetchAndForward { url, headers } => {
+        ProxyAction::FetchAndForward { url, headers, .. } => {
             assert_eq!(url, "https://alist.example.com/subtitles/movie-en.srt");
             assert!(headers.is_empty());
         }
@@ -527,6 +548,7 @@ async fn test_expired_version() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -547,6 +569,7 @@ async fn test_no_store() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -568,6 +591,7 @@ async fn test_no_slash_in_sub_path() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -589,6 +613,7 @@ async fn test_version_not_in_store() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -623,6 +648,7 @@ async fn test_m3u8_preserves_headers() {
         proxy_base: "/api/providers/proxy/alist",
         verified_claims: None,
         request_context: None,
+        request_headers: &http::HeaderMap::new(),
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {

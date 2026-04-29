@@ -98,6 +98,7 @@ fn build_thumbnail_proxy_action(
             "X-Emby-Token".to_string(),
             api_key.to_string(),
         )]),
+        range_header: None,
     })
 }
 
@@ -798,7 +799,7 @@ mod tests {
         .expect("emby credential should build thumbnail proxy action");
 
         match action {
-            ProxyAction::FetchAndForward { url, headers } => {
+            ProxyAction::FetchAndForward { url, headers, .. } => {
                 assert_eq!(
                     url,
                     "https://emby.example.com/base/Items/item-123/Images/Primary?maxHeight=300&maxWidth=640&quality=90"

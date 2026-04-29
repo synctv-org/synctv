@@ -43,6 +43,13 @@ async fn test_cors_origin_in_allowed_list_returns_headers() {
         headers.get("Access-Control-Allow-Methods").is_some(),
         "Should include Allow-Methods"
     );
+    assert_eq!(
+        headers
+            .get("Access-Control-Allow-Methods")
+            .map(|v| v.to_str().unwrap()),
+        Some("GET, HEAD, OPTIONS"),
+        "Proxy preflight must advertise GET, HEAD, and OPTIONS"
+    );
 }
 
 /// Test that Origin NOT in allowed list is rejected

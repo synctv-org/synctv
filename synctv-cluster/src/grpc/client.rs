@@ -29,8 +29,10 @@ const FAN_OUT_AGGREGATE_TIMEOUT: Duration = Duration::from_secs(5);
 use super::circuit_breaker::GrpcCircuitBreakerRegistry;
 use super::synctv::cluster::cluster_service_client::ClusterServiceClient;
 use super::synctv::cluster::{
-    GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
-    GetUserOnlineStatusResponse, RoomConnection, UserOnlineStatus,
+    EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse, GetRoomConnectionsRequest,
+    GetRoomConnectionsResponse, GetSliceCacheStatsRequest, GetUserOnlineStatusRequest,
+    GetUserOnlineStatusResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse, RoomConnection,
+    SliceCacheStatsResponse, UserOnlineStatus,
 };
 use crate::discovery::ClusterNodeDirectory;
 use crate::error::{Error, Result};
@@ -239,6 +241,14 @@ impl ClusterClient {
     pub fn invalidate_all_channels(&self) {
         self.channels.invalidate_all();
         debug!("Invalidated all cached gRPC channels");
+    }
+
+    async fn find_routable_node(&self, target_node_id: &str) -> Result<crate::discovery::NodeInfo> {
+        let (nodes, _view_mode) = self.node_registry.get_routable_nodes().await?;
+        nodes
+            .into_iter()
+            .find(|node| node.node_id == target_node_id)
+            .ok_or_else(|| Error::Rpc(format!("cluster node '{target_node_id}' is not routable")))
     }
 
     /// Generic fan-out to all remote nodes in parallel.
@@ -535,6 +545,168 @@ impl ClusterClient {
                 self.circuit_breakers.on_error(address).await;
                 Err(Error::Rpc(format!(
                     "GetRoomConnections RPC failed for {address}: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Query one remote node for slice cache stats.
+    pub async fn get_slice_cache_stats_node(
+        &self,
+        node_id: &str,
+    ) -> Result<SliceCacheStatsResponse> {
+        let node = self.find_routable_node(node_id).await?;
+        self.query_slice_cache_stats_single(&node.node_id, &node.api_address)
+            .await
+    }
+
+    /// Fan-out `GetSliceCacheStats` to all remote nodes in parallel.
+    pub async fn fan_out_slice_cache_stats(
+        &self,
+    ) -> Result<FanOutResult<Vec<SliceCacheStatsResponse>>> {
+        self.fan_out(
+            "GetSliceCacheStats",
+            |node_id, address| async move {
+                self.query_slice_cache_stats_single(&node_id, &address)
+                    .await
+            },
+            |response: SliceCacheStatsResponse| vec![response],
+        )
+        .await
+    }
+
+    async fn query_slice_cache_stats_single(
+        &self,
+        node_id: &str,
+        address: &str,
+    ) -> Result<SliceCacheStatsResponse> {
+        if !self.circuit_breakers.is_call_permitted(address).await {
+            return Err(Error::Rpc(format!(
+                "GetSliceCacheStats rejected: circuit breaker open for {address}"
+            )));
+        }
+
+        let channel = self.get_channel(node_id, address).await?;
+        let mut client = Self::make_client(channel);
+        let mut request = tonic::Request::new(GetSliceCacheStatsRequest {});
+        self.attach_secret(&mut request)?;
+
+        match client.get_slice_cache_stats(request).await {
+            Ok(response) => {
+                self.circuit_breakers.on_success(address).await;
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                self.circuit_breakers.on_error(address).await;
+                Err(Error::Rpc(format!(
+                    "GetSliceCacheStats RPC failed for {address}: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Purge slice cache on one remote node.
+    pub async fn purge_slice_cache_node(&self, node_id: &str) -> Result<PurgeSliceCacheResponse> {
+        let node = self.find_routable_node(node_id).await?;
+        self.query_purge_slice_cache_single(&node.node_id, &node.api_address)
+            .await
+    }
+
+    /// Fan-out `PurgeSliceCache` to all remote nodes in parallel.
+    pub async fn fan_out_purge_slice_cache(
+        &self,
+    ) -> Result<FanOutResult<Vec<PurgeSliceCacheResponse>>> {
+        self.fan_out(
+            "PurgeSliceCache",
+            |node_id, address| async move {
+                self.query_purge_slice_cache_single(&node_id, &address)
+                    .await
+            },
+            |response: PurgeSliceCacheResponse| vec![response],
+        )
+        .await
+    }
+
+    async fn query_purge_slice_cache_single(
+        &self,
+        node_id: &str,
+        address: &str,
+    ) -> Result<PurgeSliceCacheResponse> {
+        if !self.circuit_breakers.is_call_permitted(address).await {
+            return Err(Error::Rpc(format!(
+                "PurgeSliceCache rejected: circuit breaker open for {address}"
+            )));
+        }
+
+        let channel = self.get_channel(node_id, address).await?;
+        let mut client = Self::make_client(channel);
+        let mut request = tonic::Request::new(PurgeSliceCacheRequest {});
+        self.attach_secret(&mut request)?;
+
+        match client.purge_slice_cache(request).await {
+            Ok(response) => {
+                self.circuit_breakers.on_success(address).await;
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                self.circuit_breakers.on_error(address).await;
+                Err(Error::Rpc(format!(
+                    "PurgeSliceCache RPC failed for {address}: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Evict expired slice cache entries on one remote node.
+    pub async fn evict_expired_slice_cache_node(
+        &self,
+        node_id: &str,
+    ) -> Result<EvictExpiredSliceCacheResponse> {
+        let node = self.find_routable_node(node_id).await?;
+        self.query_evict_expired_slice_cache_single(&node.node_id, &node.api_address)
+            .await
+    }
+
+    /// Fan-out `EvictExpiredSliceCache` to all remote nodes in parallel.
+    pub async fn fan_out_evict_expired_slice_cache(
+        &self,
+    ) -> Result<FanOutResult<Vec<EvictExpiredSliceCacheResponse>>> {
+        self.fan_out(
+            "EvictExpiredSliceCache",
+            |node_id, address| async move {
+                self.query_evict_expired_slice_cache_single(&node_id, &address)
+                    .await
+            },
+            |response: EvictExpiredSliceCacheResponse| vec![response],
+        )
+        .await
+    }
+
+    async fn query_evict_expired_slice_cache_single(
+        &self,
+        node_id: &str,
+        address: &str,
+    ) -> Result<EvictExpiredSliceCacheResponse> {
+        if !self.circuit_breakers.is_call_permitted(address).await {
+            return Err(Error::Rpc(format!(
+                "EvictExpiredSliceCache rejected: circuit breaker open for {address}"
+            )));
+        }
+
+        let channel = self.get_channel(node_id, address).await?;
+        let mut client = Self::make_client(channel);
+        let mut request = tonic::Request::new(EvictExpiredSliceCacheRequest {});
+        self.attach_secret(&mut request)?;
+
+        match client.evict_expired_slice_cache(request).await {
+            Ok(response) => {
+                self.circuit_breakers.on_success(address).await;
+                Ok(response.into_inner())
+            }
+            Err(e) => {
+                self.circuit_breakers.on_error(address).await;
+                Err(Error::Rpc(format!(
+                    "EvictExpiredSliceCache RPC failed for {address}: {e}"
                 )))
             }
         }

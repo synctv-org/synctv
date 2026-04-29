@@ -23,7 +23,6 @@ use axum::{
 };
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use std::sync::Arc;
 
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::proxy::{ProxyAction, ProxyRequestContext};
@@ -134,10 +133,7 @@ pub(crate) async fn execute_proxy_action_with_state(
             live::execute_live_stream_action(state, action, None).await
         }
         ProxyAction::FetchAndForward { url, headers } => {
-            let cache_enabled =
-                proxy_cache_enabled(state.settings_registry.as_ref()).map_err(|e| {
-                    AppError::internal(format!("Failed to load proxy cache setting: {e}"))
-                })?;
+            let cache_enabled = state.proxy_slice_cache.config().enabled;
             let range_header = client_headers
                 .get(axum::http::header::RANGE)
                 .and_then(|value| value.to_str().ok());
@@ -175,15 +171,6 @@ pub(crate) async fn execute_proxy_action_with_state(
             .await
         }
     }
-}
-
-fn proxy_cache_enabled(
-    settings_registry: Option<&Arc<synctv_core::service::SettingsRegistry>>,
-) -> Result<bool, synctv_core::Error> {
-    settings_registry
-        .map(|registry| registry.proxy_cache_enable.get())
-        .transpose()
-        .map(|value: Option<bool>| value.unwrap_or(false))
 }
 
 const fn should_use_proxy_cache(cache_enabled: bool, range_header: Option<&str>) -> bool {
@@ -662,37 +649,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_proxy_cache_enabled_reads_runtime_setting() {
-        let (_pg, pool) = create_test_pool().await;
-
-        let settings_service = Arc::new(SettingsService::new(
-            SettingsRepository::new(pool.clone()),
-            pool.clone(),
-        ));
-        settings_service.initialize().await.unwrap();
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
-        sqlx::query(
-            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (key) DO NOTHING",
-        )
-        .bind("proxy.proxy_cache_enable")
-        .bind("proxy")
-        .bind("false")
-        .execute(&pool)
-        .await
-        .unwrap();
-        settings_registry
-            .proxy_cache_enable
-            .set(true)
-            .await
-            .unwrap();
-
-        assert!(proxy_cache_enabled(Some(&settings_registry)).unwrap());
-        assert!(!proxy_cache_enabled(None).unwrap());
-    }
-
     fn test_app_state_with_proxy_cache(
         settings_registry: Option<Arc<SettingsRegistry>>,
         proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
@@ -1058,103 +1014,6 @@ mod tests {
         .expect_err("closed room must not keep serving old proxy URLs");
 
         assert_eq!(err.status, StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    async fn test_execute_proxy_action_with_state_honors_runtime_cache_toggle_even_when_cache_was_built_disabled(
-    ) {
-        let Some(mock_server) = start_mock_server_or_skip().await else {
-            return;
-        };
-        let total_size: u64 = 10 * 1024 * 1024;
-        let slice_body = Bytes::from(vec![0xEF; 2 * 1024 * 1024]);
-
-        Mock::given(method("HEAD"))
-            .and(path("/runtime-enabled.mp4"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Length", total_size.to_string())
-                    .insert_header("Accept-Ranges", "bytes"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/runtime-enabled.mp4"))
-            .and(header("Range", "bytes=0-2097151"))
-            .respond_with(
-                ResponseTemplate::new(206)
-                    .set_body_bytes(slice_body)
-                    .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
-                    .insert_header("Content-Length", "2097152"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let (_pg, pool) = create_test_pool().await;
-        let settings_service = Arc::new(SettingsService::new(
-            SettingsRepository::new(pool.clone()),
-            pool.clone(),
-        ));
-        settings_service.initialize().await.unwrap();
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
-        sqlx::query(
-            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (key) DO NOTHING",
-        )
-        .bind("proxy.proxy_cache_enable")
-        .bind("proxy")
-        .bind("false")
-        .execute(&pool)
-        .await
-        .unwrap();
-        settings_registry
-            .proxy_cache_enable
-            .set(true)
-            .await
-            .unwrap();
-
-        let proxy_cache_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve("cdn.example.com", *mock_server.address())
-            .build()
-            .expect("client should build");
-        let state = test_app_state_with_proxy_cache(
-            Some(settings_registry),
-            Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-                SliceCacheConfig {
-                    enabled: false,
-                    ..SliceCacheConfig::default()
-                },
-                proxy_cache_client.clone(),
-            )),
-        );
-        let proxy_http_client = proxy_cache_client;
-        let mut state = state;
-        state.proxy_http_client = proxy_http_client;
-
-        let action = ProxyAction::FetchAndForward {
-            url: mock_public_url(&mock_server, "/runtime-enabled.mp4"),
-            headers: HashMap::new(),
-        };
-        let client_headers = axum::http::HeaderMap::from_iter([(
-            axum::http::header::RANGE,
-            axum::http::HeaderValue::from_static("bytes=0-999"),
-        )]);
-
-        let response1 =
-            execute_proxy_action_with_state(&state, action.clone(), &client_headers, None)
-                .await
-                .expect("first proxy response");
-        let response2 = execute_proxy_action_with_state(&state, action, &client_headers, None)
-            .await
-            .expect("second proxy response");
-
-        assert_eq!(response1.headers().get("X-Cache-Status").unwrap(), "MISS");
-        assert_eq!(response2.headers().get("X-Cache-Status").unwrap(), "HIT");
     }
 
     #[test]

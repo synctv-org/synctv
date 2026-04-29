@@ -7,9 +7,10 @@ use tonic::{Request, Response, Status};
 
 use super::synctv::cluster::cluster_service_server::ClusterService;
 use super::synctv::cluster::{
-    DeregisterNodeRequest, DeregisterNodeResponse, GetNodesRequest, GetNodesResponse,
-    GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
-    GetUserOnlineStatusResponse, NodeInfo, NodeStatus, RoomConnection, UserOnlineStatus,
+    GetNodesRequest, GetNodesResponse, GetRoomConnectionsRequest, GetRoomConnectionsResponse,
+    GetSliceCacheStatsRequest, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, NodeInfo,
+    PurgeSliceCacheRequest, PurgeSliceCacheResponse, RoomConnection, SliceCacheConfigInfo,
+    SliceCacheStatsResponse, UserOnlineStatus,
 };
 use super::ClusterAuthInterceptor;
 use crate::discovery::{ClusterNodeDirectory, NodeInfo as DiscoveryNodeInfo};
@@ -36,13 +37,13 @@ fn u64_to_i64(value: u64) -> i64 {
 /// | Endpoint | Status | Notes |
 /// |----------|--------|-------|
 /// | `GetNodes` | ACTIVE | Returns all known nodes from Redis registry |
-/// | `DeregisterNode` | ACTIVE | Handles graceful shutdown with epoch validation |
 /// | `GetUserOnlineStatus` | ACTIVE | Fan-out query for user presence across nodes |
 /// | `GetRoomConnections` | ACTIVE | Fan-out query for room participants across nodes |
 #[derive(Clone)]
 pub struct ClusterServer {
     node_registry: Arc<dyn ClusterNodeDirectory>,
     connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
+    proxy_slice_cache: Option<Arc<synctv_proxy::slice_cache::SliceCache>>,
     node_id: String,
     auth: Option<ClusterAuthInterceptor>,
 }
@@ -63,6 +64,7 @@ impl ClusterServer {
         Self {
             node_registry,
             connection_runtime: None,
+            proxy_slice_cache: None,
             node_id,
             auth: None,
         }
@@ -78,6 +80,16 @@ impl ClusterServer {
         self
     }
 
+    /// Set the local slice cache runtime for cluster-level management queries.
+    #[must_use]
+    pub fn with_slice_cache_runtime(
+        mut self,
+        proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    ) -> Self {
+        self.proxy_slice_cache = Some(proxy_slice_cache);
+        self
+    }
+
     /// Enable shared-secret authentication for cluster RPC handlers.
     ///
     /// Cluster RPCs are internal-only and must never be exposed without an
@@ -89,48 +101,15 @@ impl ClusterServer {
         self
     }
 
-    /// Maximum length for `node_id`
-    const MAX_NODE_ID_LEN: usize = 64;
     /// Maximum number of `user_ids` in a single request
     const MAX_USER_IDS: usize = 1000;
 
-    /// Validate a `node_id`: non-empty, max 64 chars, alphanumeric + underscore/hyphen
-    fn validate_node_id(node_id: &str) -> std::result::Result<(), Status> {
-        if node_id.is_empty() {
-            return Err(Status::invalid_argument("node_id must not be empty"));
-        }
-        if node_id.len() > Self::MAX_NODE_ID_LEN {
-            return Err(Status::invalid_argument(format!(
-                "node_id must be at most {} characters",
-                Self::MAX_NODE_ID_LEN
-            )));
-        }
-        if !node_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(Status::invalid_argument(
-                "node_id must contain only alphanumeric characters, underscores, or hyphens",
-            ));
-        }
-        Ok(())
-    }
-
     /// Convert discovery `NodeInfo` to proto `NodeInfo`.
-    ///
-    /// Proto enum `NodeStatus` mapping (see `synctv.cluster.proto`):
-    ///   0 = Unknown, 1 = Active, 2 = Draining, 3 = Offline
     fn discovery_to_proto_node(discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
             address: discovery.api_address.clone(),
-            region: String::new(),
-            status: NodeStatus::Active as i32,
-            // Use last_heartbeat as proxy for registered_at since
-            // DiscoveryNodeInfo doesn't track actual registration time.
-            registered_at: discovery.last_heartbeat.timestamp(),
             last_heartbeat: discovery.last_heartbeat.timestamp(),
-            metrics: None,
             epoch: discovery.epoch,
         }
     }
@@ -146,6 +125,36 @@ impl ClusterServer {
         };
 
         auth.validate_metadata(request.metadata())
+    }
+
+    fn slice_cache_stats_response(&self) -> std::result::Result<SliceCacheStatsResponse, Status> {
+        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
+            Status::failed_precondition("Proxy slice cache runtime is unavailable")
+        })?;
+        let stats = cache.stats();
+        Ok(SliceCacheStatsResponse {
+            node_id: self.node_id.clone(),
+            config: Some(SliceCacheConfigInfo {
+                engine_enabled: stats.engine_enabled,
+                backend: stats.backend,
+                file_cache_dir: stats.file_cache_dir.unwrap_or_default(),
+                slice_size: stats.slice_size,
+                max_cache_size: stats.max_cache_size,
+                max_cacheable_body: stats.max_cacheable_body,
+                manifest_ttl_secs: stats.manifest_ttl_secs,
+                segment_ttl_secs: stats.segment_ttl_secs,
+                stale_max_age_secs: stats.stale_max_age_secs,
+                stale_while_revalidate: stats.stale_while_revalidate,
+                eviction_interval_secs: stats.eviction_interval_secs,
+                watermark_ratio: stats.watermark_ratio,
+            }),
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
+        })
     }
 }
 
@@ -187,65 +196,6 @@ impl ClusterService for ClusterServer {
                 Err(Status::unavailable(e.to_string()))
             }
         }
-    }
-
-    /// Deregister a node from the cluster
-    async fn deregister_node(
-        &self,
-        request: Request<DeregisterNodeRequest>,
-    ) -> std::result::Result<Response<DeregisterNodeResponse>, Status> {
-        self.authorize(&request)?;
-        let start = std::time::Instant::now();
-        let req = request.into_inner();
-
-        Self::validate_node_id(&req.node_id)?;
-
-        // Epoch is required to prevent stale deregister requests from removing
-        // re-registered nodes.
-        if req.epoch == 0 {
-            return Err(Status::invalid_argument(
-                "epoch is required for deregister requests",
-            ));
-        }
-
-        // Remove the node from Redis registry with epoch validation
-        if let Err(e) = self
-            .node_registry
-            .unregister_remote(&req.node_id, Some(req.epoch))
-            .await
-        {
-            let elapsed = start.elapsed().as_secs_f64();
-            synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-                .with_label_values(&["cluster", "deregister_node", "error"])
-                .observe(elapsed);
-            synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                .with_label_values(&["cluster", "deregister_node", "error"])
-                .inc();
-            tracing::warn!(
-                node_id = %req.node_id,
-                epoch = req.epoch,
-                error = %e,
-                "Failed to deregister node from cluster"
-            );
-            return Err(Status::unavailable(e.to_string()));
-        }
-
-        let elapsed = start.elapsed().as_secs_f64();
-        synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-            .with_label_values(&["cluster", "deregister_node", "ok"])
-            .observe(elapsed);
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "deregister_node", "ok"])
-            .inc();
-
-        tracing::info!(
-            node_id = %req.node_id,
-            epoch = req.epoch,
-            reason = %req.reason,
-            "Node deregistered from cluster"
-        );
-
-        Ok(Response::new(DeregisterNodeResponse { success: true }))
     }
 
     /// Get online status of users on this node
@@ -358,5 +308,51 @@ impl ClusterService for ClusterServer {
             .inc();
 
         Ok(Response::new(GetRoomConnectionsResponse { connections }))
+    }
+
+    async fn get_slice_cache_stats(
+        &self,
+        request: Request<GetSliceCacheStatsRequest>,
+    ) -> std::result::Result<Response<SliceCacheStatsResponse>, Status> {
+        self.authorize(&request)?;
+        Ok(Response::new(self.slice_cache_stats_response()?))
+    }
+
+    async fn purge_slice_cache(
+        &self,
+        request: Request<PurgeSliceCacheRequest>,
+    ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
+        self.authorize(&request)?;
+        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
+            Status::failed_precondition("Proxy slice cache runtime is unavailable")
+        })?;
+        let result = cache.purge_all().await;
+        Ok(Response::new(PurgeSliceCacheResponse {
+            node_id: self.node_id.clone(),
+            success: true,
+            removed_entries: result.removed_entries,
+            freed_bytes: result.freed_bytes,
+            stats: Some(self.slice_cache_stats_response()?),
+        }))
+    }
+
+    async fn evict_expired_slice_cache(
+        &self,
+        request: Request<super::synctv::cluster::EvictExpiredSliceCacheRequest>,
+    ) -> std::result::Result<Response<super::synctv::cluster::EvictExpiredSliceCacheResponse>, Status>
+    {
+        self.authorize(&request)?;
+        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
+            Status::failed_precondition("Proxy slice cache runtime is unavailable")
+        })?;
+        let removed_expired_entries = cache.evict_expired_entries().await;
+        Ok(Response::new(
+            super::synctv::cluster::EvictExpiredSliceCacheResponse {
+                node_id: self.node_id.clone(),
+                success: true,
+                removed_expired_entries,
+                stats: Some(self.slice_cache_stats_response()?),
+            },
+        ))
     }
 }

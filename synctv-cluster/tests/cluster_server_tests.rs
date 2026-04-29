@@ -3,7 +3,6 @@
 //! - `validate_node_id`: empty/long/invalid -> error
 //! - `get_user_online_status`: `MAX_USER_IDS+1` -> `invalid_argument`
 //! - `connection_runtime=None` -> empty results
-//! - `deregister_node`: epoch-required check
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -15,7 +14,8 @@ use synctv_cluster::grpc::server::ClusterServer;
 // Import the ClusterService trait to call the gRPC methods
 use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::grpc::synctv::cluster::{
-    DeregisterNodeRequest, GetRoomConnectionsRequest, GetUserOnlineStatusRequest,
+    EvictExpiredSliceCacheRequest, GetRoomConnectionsRequest, GetSliceCacheStatsRequest,
+    GetUserOnlineStatusRequest, PurgeSliceCacheRequest,
 };
 
 /// Helper: create a `ClusterServer` with no connection query runtime.
@@ -38,119 +38,18 @@ fn make_authenticated_server() -> ClusterServer {
     make_server().with_cluster_secret("cluster-test-secret".to_string())
 }
 
+fn make_authenticated_slice_cache_server() -> ClusterServer {
+    let cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
+        synctv_proxy::slice_cache::SliceCacheConfig::default(),
+    ));
+    make_authenticated_server().with_slice_cache_runtime(cache)
+}
+
 fn with_cluster_secret<T>(mut request: Request<T>, secret: &str) -> Request<T> {
     request
         .metadata_mut()
         .insert("x-cluster-secret", secret.parse().unwrap());
     request
-}
-
-// validate_node_id tests
-
-/// Empty `node_id` -> `invalid_argument`.
-#[tokio::test]
-async fn test_deregister_node_empty_id_rejected() {
-    let server = make_authenticated_server();
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: String::new(),
-            epoch: 1,
-            reason: "test".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(result.is_err(), "Empty node_id should be rejected");
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::InvalidArgument,
-        "Error code should be InvalidArgument"
-    );
-    assert!(
-        status.message().contains("must not be empty"),
-        "Error message should mention empty, got: {}",
-        status.message()
-    );
-}
-
-/// `node_id` longer than 64 chars -> `invalid_argument`.
-#[tokio::test]
-async fn test_deregister_node_too_long_id_rejected() {
-    let server = make_authenticated_server();
-    let long_id = "a".repeat(65);
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: long_id,
-            epoch: 1,
-            reason: "test".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(result.is_err(), "Too-long node_id should be rejected");
-
-    let status = result.unwrap_err();
-    assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    assert!(
-        status.message().contains("at most 64 characters"),
-        "Error message should mention length limit, got: {}",
-        status.message()
-    );
-}
-
-/// `node_id` with invalid characters -> `invalid_argument`.
-#[tokio::test]
-async fn test_deregister_node_invalid_chars_rejected() {
-    let server = make_authenticated_server();
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: "node id with spaces!@#".to_string(),
-            epoch: 1,
-            reason: "test".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(
-        result.is_err(),
-        "node_id with invalid chars should be rejected"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    assert!(
-        status.message().contains("alphanumeric"),
-        "Error message should mention allowed chars, got: {}",
-        status.message()
-    );
-}
-
-/// Valid `node_id` characters: alphanumeric, underscore, hyphen.
-#[tokio::test]
-async fn test_deregister_node_valid_id_returns_error_when_registry_cleanup_fails() {
-    let server = make_authenticated_server();
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: "valid-node_123".to_string(),
-            epoch: 1,
-            reason: "graceful shutdown".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(
-        result.is_err(),
-        "registry cleanup failures must not be reported as successful deregistration"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Unavailable);
 }
 
 // get_user_online_status: MAX_USER_IDS+1 -> invalid_argument
@@ -248,60 +147,6 @@ async fn test_get_room_connections_no_connection_manager() {
     );
 }
 
-// deregister_node: epoch-required check
-
-/// `deregister_node` with epoch=0 -> `invalid_argument` (epoch is required).
-#[tokio::test]
-async fn test_deregister_node_epoch_zero_rejected() {
-    let server = make_authenticated_server();
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: "valid-node".to_string(),
-            epoch: 0,
-            reason: "test".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(result.is_err(), "epoch=0 should be rejected");
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::InvalidArgument,
-        "Error code should be InvalidArgument"
-    );
-    assert!(
-        status.message().contains("epoch is required"),
-        "Error message should mention epoch requirement, got: {}",
-        status.message()
-    );
-}
-
-/// `deregister_node` with valid epoch should pass validation.
-#[tokio::test]
-async fn test_deregister_node_valid_epoch_returns_error_when_cleanup_fails() {
-    let server = make_authenticated_server();
-    let request = with_cluster_secret(
-        Request::new(DeregisterNodeRequest {
-            node_id: "valid-node".to_string(),
-            epoch: 42,
-            reason: "graceful shutdown".to_string(),
-        }),
-        "cluster-test-secret",
-    );
-
-    let result = server.deregister_node(request).await;
-    assert!(
-        result.is_err(),
-        "failed deregistration must not return success=true"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(status.code(), tonic::Code::Unavailable);
-}
-
 // With connection runtime: actual user/room queries
 
 #[tokio::test]
@@ -358,6 +203,76 @@ async fn test_get_user_online_status_with_connection_manager() {
         .find(|s| s.user_id == 10_000_029)
         .unwrap();
     assert!(!offline_user.is_online, "offline user should be offline");
+}
+
+#[tokio::test]
+async fn test_get_slice_cache_stats_returns_local_node_stats() {
+    let server = make_authenticated_slice_cache_server();
+    let request = with_cluster_secret(
+        Request::new(GetSliceCacheStatsRequest {}),
+        "cluster-test-secret",
+    );
+
+    let response = server
+        .get_slice_cache_stats(request)
+        .await
+        .expect("slice cache stats should succeed")
+        .into_inner();
+
+    assert_eq!(response.node_id, "test-node");
+    assert!(response.config.is_some());
+    assert_eq!(response.current_size_bytes, 0);
+    assert_eq!(response.entry_count, 0);
+}
+
+#[tokio::test]
+async fn test_purge_slice_cache_returns_node_result() {
+    let server = make_authenticated_slice_cache_server();
+    let request = with_cluster_secret(
+        Request::new(PurgeSliceCacheRequest {}),
+        "cluster-test-secret",
+    );
+
+    let response = server
+        .purge_slice_cache(request)
+        .await
+        .expect("purge should succeed")
+        .into_inner();
+
+    assert!(response.success);
+    assert_eq!(response.node_id, "test-node");
+    assert_eq!(response.removed_entries, 0);
+    assert_eq!(response.freed_bytes, 0);
+    assert_eq!(
+        response.stats.expect("purge should include stats").node_id,
+        "test-node"
+    );
+}
+
+#[tokio::test]
+async fn test_evict_expired_slice_cache_returns_node_result() {
+    let server = make_authenticated_slice_cache_server();
+    let request = with_cluster_secret(
+        Request::new(EvictExpiredSliceCacheRequest {}),
+        "cluster-test-secret",
+    );
+
+    let response = server
+        .evict_expired_slice_cache(request)
+        .await
+        .expect("evict expired should succeed")
+        .into_inner();
+
+    assert!(response.success);
+    assert_eq!(response.node_id, "test-node");
+    assert_eq!(response.removed_expired_entries, 0);
+    assert_eq!(
+        response
+            .stats
+            .expect("evict expired should include stats")
+            .node_id,
+        "test-node"
+    );
 }
 
 #[tokio::test]

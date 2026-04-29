@@ -22,21 +22,25 @@ use crate::proto::{
     CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
     DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
     EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-    EmbyLogoutRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
+    EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
+    EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
     GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
-    GetStreamInfoRequest, GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest,
-    KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+    GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
+    GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
+    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
+    ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
     ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
     ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
+    PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
     RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
-    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
-    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-    UnbanMemberRequest, UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest,
-    UpdatePlaybackRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
-    UpdateRoomSettingsRequest, UpdateSettingsRequest, UpdateUserPasswordRequest,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
+    SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo,
+    SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest,
+    StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
+    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
+    UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
+    UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
 };
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
@@ -120,6 +124,9 @@ pub struct ManagementServiceImpl {
     alist_api: Arc<AlistApiImpl>,
     bilibili_api: Arc<BilibiliApiImpl>,
     emby_api: Arc<EmbyApiImpl>,
+    proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
+    node_id: String,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
     public_id_codec: Arc<synctv_core::PublicIdCodec>,
@@ -134,6 +141,9 @@ pub struct ManagementServiceDependencies {
     pub alist_api: Arc<AlistApiImpl>,
     pub bilibili_api: Arc<BilibiliApiImpl>,
     pub emby_api: Arc<EmbyApiImpl>,
+    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
+    pub node_id: String,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub management_auth_token: String,
 }
@@ -150,6 +160,9 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
+            proxy_slice_cache,
+            cluster_client,
+            node_id,
             lifecycle_controller,
             management_auth_token,
         } = deps;
@@ -165,6 +178,9 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
+            proxy_slice_cache,
+            cluster_client,
+            node_id,
             lifecycle_controller,
             access_controller: ManagementAccessController::new(&management_auth_token),
             public_id_codec,
@@ -605,6 +621,314 @@ impl ManagementServiceImpl {
         } else {
             Some(trimmed.to_string())
         }
+    }
+
+    fn slice_cache_stats_response(&self) -> SliceCacheStatsResponse {
+        let stats = self.proxy_slice_cache.stats();
+        SliceCacheStatsResponse {
+            config: Some(SliceCacheConfigInfo {
+                engine_enabled: stats.engine_enabled,
+                backend: stats.backend,
+                file_cache_dir: stats.file_cache_dir.unwrap_or_default(),
+                slice_size: stats.slice_size,
+                max_cache_size: stats.max_cache_size,
+                max_cacheable_body: stats.max_cacheable_body,
+                manifest_ttl_secs: stats.manifest_ttl_secs,
+                segment_ttl_secs: stats.segment_ttl_secs,
+                stale_max_age_secs: stats.stale_max_age_secs,
+                stale_while_revalidate: stats.stale_while_revalidate,
+                eviction_interval_secs: stats.eviction_interval_secs,
+                watermark_ratio: stats.watermark_ratio,
+            }),
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
+            node_id: self.node_id.clone(),
+        }
+    }
+
+    fn validate_slice_cache_target(
+        node_id: &str,
+        all_nodes: bool,
+    ) -> Result<Option<String>, Status> {
+        let node_id = node_id.trim();
+        if all_nodes && !node_id.is_empty() {
+            return Err(Status::invalid_argument(
+                "node_id and all_nodes are mutually exclusive",
+            ));
+        }
+        Ok((!node_id.is_empty()).then(|| node_id.to_string()))
+    }
+
+    fn require_cluster_client(
+        &self,
+        target_node_id: &str,
+    ) -> Result<&Arc<synctv_cluster::grpc::ClusterClient>, Status> {
+        self.cluster_client.as_ref().ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "Cluster client is unavailable; cannot query slice cache for node '{target_node_id}'"
+            ))
+        })
+    }
+
+    fn cluster_failure(node_id: String, error: String) -> SliceCacheNodeFailure {
+        SliceCacheNodeFailure { node_id, error }
+    }
+
+    fn cluster_slice_cache_stats_to_management(
+        stats: synctv_cluster::grpc::synctv::cluster::SliceCacheStatsResponse,
+    ) -> SliceCacheStatsResponse {
+        SliceCacheStatsResponse {
+            config: stats.config.map(|config| SliceCacheConfigInfo {
+                engine_enabled: config.engine_enabled,
+                backend: config.backend,
+                file_cache_dir: config.file_cache_dir,
+                slice_size: config.slice_size,
+                max_cache_size: config.max_cache_size,
+                max_cacheable_body: config.max_cacheable_body,
+                manifest_ttl_secs: config.manifest_ttl_secs,
+                segment_ttl_secs: config.segment_ttl_secs,
+                stale_max_age_secs: config.stale_max_age_secs,
+                stale_while_revalidate: config.stale_while_revalidate,
+                eviction_interval_secs: config.eviction_interval_secs,
+                watermark_ratio: config.watermark_ratio,
+            }),
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
+            node_id: stats.node_id,
+        }
+    }
+
+    async fn slice_cache_stats_for_target(
+        &self,
+        target_node_id: &str,
+    ) -> Result<SliceCacheStatsResponse, Status> {
+        if target_node_id == self.node_id {
+            return Ok(self.slice_cache_stats_response());
+        }
+        let cluster_client = self.require_cluster_client(target_node_id)?;
+        cluster_client
+            .get_slice_cache_stats_node(target_node_id)
+            .await
+            .map(Self::cluster_slice_cache_stats_to_management)
+            .map_err(|error| Status::unavailable(error.to_string()))
+    }
+
+    async fn collect_slice_cache_stats(
+        &self,
+        target_node_id: Option<String>,
+        all_nodes: bool,
+    ) -> Result<GetSliceCacheStatsResponse, Status> {
+        if all_nodes {
+            let mut nodes = vec![self.slice_cache_stats_response()];
+            let mut failures = Vec::new();
+            if let Some(cluster_client) = &self.cluster_client {
+                let remote = cluster_client
+                    .fan_out_slice_cache_stats()
+                    .await
+                    .map_err(|error| Status::unavailable(error.to_string()))?;
+                nodes.extend(
+                    remote
+                        .data
+                        .into_iter()
+                        .map(Self::cluster_slice_cache_stats_to_management),
+                );
+                failures.extend(
+                    remote
+                        .failures
+                        .into_iter()
+                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
+                );
+            }
+            return Ok(GetSliceCacheStatsResponse { nodes, failures });
+        }
+
+        let node = match target_node_id {
+            Some(node_id) => self.slice_cache_stats_for_target(&node_id).await?,
+            None => self.slice_cache_stats_response(),
+        };
+        Ok(GetSliceCacheStatsResponse {
+            nodes: vec![node],
+            failures: Vec::new(),
+        })
+    }
+
+    async fn purge_local_slice_cache(&self) -> Result<PurgeSliceCacheNodeResult, Status> {
+        let result = self.proxy_slice_cache.purge_all().await;
+        Ok(PurgeSliceCacheNodeResult {
+            node_id: self.node_id.clone(),
+            success: true,
+            removed_entries: result.removed_entries,
+            freed_bytes: result.freed_bytes,
+            stats: Some(self.slice_cache_stats_response()),
+        })
+    }
+
+    fn cluster_purge_to_management(
+        response: synctv_cluster::grpc::synctv::cluster::PurgeSliceCacheResponse,
+    ) -> PurgeSliceCacheNodeResult {
+        PurgeSliceCacheNodeResult {
+            node_id: response.node_id,
+            success: response.success,
+            removed_entries: response.removed_entries,
+            freed_bytes: response.freed_bytes,
+            stats: response
+                .stats
+                .map(Self::cluster_slice_cache_stats_to_management),
+        }
+    }
+
+    fn purge_response_from_nodes(
+        nodes: Vec<PurgeSliceCacheNodeResult>,
+        failures: Vec<SliceCacheNodeFailure>,
+    ) -> PurgeSliceCacheResponse {
+        let removed_entries = nodes.iter().map(|node| node.removed_entries).sum();
+        let freed_bytes = nodes.iter().map(|node| node.freed_bytes).sum();
+        let stats = (nodes.len() == 1).then(|| nodes[0].stats.clone()).flatten();
+        PurgeSliceCacheResponse {
+            success: failures.is_empty() && nodes.iter().all(|node| node.success),
+            removed_entries,
+            freed_bytes,
+            stats,
+            nodes,
+            failures,
+        }
+    }
+
+    async fn purge_slice_cache_for_selection(
+        &self,
+        target_node_id: Option<String>,
+        all_nodes: bool,
+    ) -> Result<PurgeSliceCacheResponse, Status> {
+        if all_nodes {
+            let mut nodes = vec![self.purge_local_slice_cache().await?];
+            let mut failures = Vec::new();
+            if let Some(cluster_client) = &self.cluster_client {
+                let remote = cluster_client
+                    .fan_out_purge_slice_cache()
+                    .await
+                    .map_err(|error| Status::unavailable(error.to_string()))?;
+                nodes.extend(
+                    remote
+                        .data
+                        .into_iter()
+                        .map(Self::cluster_purge_to_management),
+                );
+                failures.extend(
+                    remote
+                        .failures
+                        .into_iter()
+                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
+                );
+            }
+            return Ok(Self::purge_response_from_nodes(nodes, failures));
+        }
+
+        let node = match target_node_id {
+            Some(node_id) if node_id != self.node_id => {
+                let cluster_client = self.require_cluster_client(&node_id)?;
+                cluster_client
+                    .purge_slice_cache_node(&node_id)
+                    .await
+                    .map(Self::cluster_purge_to_management)
+                    .map_err(|error| Status::unavailable(error.to_string()))?
+            }
+            Some(_) | None => self.purge_local_slice_cache().await?,
+        };
+        Ok(Self::purge_response_from_nodes(vec![node], Vec::new()))
+    }
+
+    async fn evict_expired_local_slice_cache(
+        &self,
+    ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
+        let removed_expired_entries = self.proxy_slice_cache.evict_expired_entries().await;
+        Ok(EvictExpiredSliceCacheNodeResult {
+            node_id: self.node_id.clone(),
+            success: true,
+            removed_expired_entries,
+            stats: Some(self.slice_cache_stats_response()),
+        })
+    }
+
+    fn cluster_evict_expired_to_management(
+        response: synctv_cluster::grpc::synctv::cluster::EvictExpiredSliceCacheResponse,
+    ) -> EvictExpiredSliceCacheNodeResult {
+        EvictExpiredSliceCacheNodeResult {
+            node_id: response.node_id,
+            success: response.success,
+            removed_expired_entries: response.removed_expired_entries,
+            stats: response
+                .stats
+                .map(Self::cluster_slice_cache_stats_to_management),
+        }
+    }
+
+    fn evict_expired_response_from_nodes(
+        nodes: Vec<EvictExpiredSliceCacheNodeResult>,
+        failures: Vec<SliceCacheNodeFailure>,
+    ) -> EvictExpiredSliceCacheResponse {
+        let removed_expired_entries = nodes.iter().map(|node| node.removed_expired_entries).sum();
+        let stats = (nodes.len() == 1).then(|| nodes[0].stats.clone()).flatten();
+        EvictExpiredSliceCacheResponse {
+            success: failures.is_empty() && nodes.iter().all(|node| node.success),
+            removed_expired_entries,
+            stats,
+            nodes,
+            failures,
+        }
+    }
+
+    async fn evict_expired_slice_cache_for_selection(
+        &self,
+        target_node_id: Option<String>,
+        all_nodes: bool,
+    ) -> Result<EvictExpiredSliceCacheResponse, Status> {
+        if all_nodes {
+            let mut nodes = vec![self.evict_expired_local_slice_cache().await?];
+            let mut failures = Vec::new();
+            if let Some(cluster_client) = &self.cluster_client {
+                let remote = cluster_client
+                    .fan_out_evict_expired_slice_cache()
+                    .await
+                    .map_err(|error| Status::unavailable(error.to_string()))?;
+                nodes.extend(
+                    remote
+                        .data
+                        .into_iter()
+                        .map(Self::cluster_evict_expired_to_management),
+                );
+                failures.extend(
+                    remote
+                        .failures
+                        .into_iter()
+                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
+                );
+            }
+            return Ok(Self::evict_expired_response_from_nodes(nodes, failures));
+        }
+
+        let node = match target_node_id {
+            Some(node_id) if node_id != self.node_id => {
+                let cluster_client = self.require_cluster_client(&node_id)?;
+                cluster_client
+                    .evict_expired_slice_cache_node(&node_id)
+                    .await
+                    .map(Self::cluster_evict_expired_to_management)
+                    .map_err(|error| Status::unavailable(error.to_string()))?
+            }
+            Some(_) | None => self.evict_expired_local_slice_cache().await?,
+        };
+        Ok(Self::evict_expired_response_from_nodes(
+            vec![node],
+            Vec::new(),
+        ))
     }
 
     fn map_api_result<T>(result: Result<T, ApiError>) -> Result<T, Status> {
@@ -2933,6 +3257,45 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Self::proto_response(response))
     }
 
+    async fn get_slice_cache_stats(
+        &self,
+        request: Request<GetSliceCacheStatsRequest>,
+    ) -> Result<Response<GetSliceCacheStatsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
+        Ok(Self::proto_response(
+            self.collect_slice_cache_stats(target_node_id, req.all_nodes)
+                .await?,
+        ))
+    }
+
+    async fn purge_slice_cache(
+        &self,
+        request: Request<PurgeSliceCacheRequest>,
+    ) -> Result<Response<PurgeSliceCacheResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
+        Ok(Self::proto_response(
+            self.purge_slice_cache_for_selection(target_node_id, req.all_nodes)
+                .await?,
+        ))
+    }
+
+    async fn evict_expired_slice_cache(
+        &self,
+        request: Request<EvictExpiredSliceCacheRequest>,
+    ) -> Result<Response<EvictExpiredSliceCacheResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
+        Ok(Self::proto_response(
+            self.evict_expired_slice_cache_for_selection(target_node_id, req.all_nodes)
+                .await?,
+        ))
+    }
+
     async fn list_active_streams(
         &self,
         request: Request<ListActiveStreamsRequest>,
@@ -3164,8 +3527,15 @@ fn map_api_error(err: &ApiError) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{stop_server_event_stream, validate_client_actor_user, ManagementAccessController};
+    use super::{
+        stop_server_event_stream, validate_client_actor_user, ManagementAccessController,
+        ManagementServiceImpl,
+    };
     use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
+    use crate::proto::{
+        EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult, SliceCacheNodeFailure,
+        SliceCacheStatsResponse,
+    };
     use futures::TryStreamExt;
     use synctv_core::models::{SignupMethod, User, UserStatus};
     use tonic::{Code, Request};
@@ -3279,6 +3649,86 @@ mod tests {
         controller
             .authorize(&request)
             .expect("matching management bearer token should be accepted");
+    }
+
+    #[test]
+    fn slice_cache_target_validation_rejects_conflicting_node_selection() {
+        let error = ManagementServiceImpl::validate_slice_cache_target("node-a", true)
+            .expect_err("node_id and all_nodes must be mutually exclusive");
+
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert_eq!(
+            error.message(),
+            "node_id and all_nodes are mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn slice_cache_target_validation_trims_node_id() {
+        let target = ManagementServiceImpl::validate_slice_cache_target("  node-a  ", false)
+            .expect("valid target should parse");
+
+        assert_eq!(target.as_deref(), Some("node-a"));
+    }
+
+    #[test]
+    fn purge_slice_cache_response_aggregates_nodes_and_failures() {
+        let response = ManagementServiceImpl::purge_response_from_nodes(
+            vec![
+                PurgeSliceCacheNodeResult {
+                    node_id: "node-a".to_string(),
+                    success: true,
+                    removed_entries: 2,
+                    freed_bytes: 128,
+                    stats: Some(SliceCacheStatsResponse::default()),
+                },
+                PurgeSliceCacheNodeResult {
+                    node_id: "node-b".to_string(),
+                    success: true,
+                    removed_entries: 3,
+                    freed_bytes: 256,
+                    stats: Some(SliceCacheStatsResponse::default()),
+                },
+            ],
+            vec![SliceCacheNodeFailure {
+                node_id: "node-c".to_string(),
+                error: "timeout".to_string(),
+            }],
+        );
+
+        assert!(!response.success);
+        assert_eq!(response.removed_entries, 5);
+        assert_eq!(response.freed_bytes, 384);
+        assert!(response.stats.is_none());
+        assert_eq!(response.nodes.len(), 2);
+        assert_eq!(response.failures.len(), 1);
+    }
+
+    #[test]
+    fn evict_expired_slice_cache_response_aggregates_nodes_and_failures() {
+        let response = ManagementServiceImpl::evict_expired_response_from_nodes(
+            vec![
+                EvictExpiredSliceCacheNodeResult {
+                    node_id: "node-a".to_string(),
+                    success: true,
+                    removed_expired_entries: 4,
+                    stats: Some(SliceCacheStatsResponse::default()),
+                },
+                EvictExpiredSliceCacheNodeResult {
+                    node_id: "node-b".to_string(),
+                    success: false,
+                    removed_expired_entries: 1,
+                    stats: Some(SliceCacheStatsResponse::default()),
+                },
+            ],
+            Vec::new(),
+        );
+
+        assert!(!response.success);
+        assert_eq!(response.removed_expired_entries, 5);
+        assert!(response.stats.is_none());
+        assert_eq!(response.nodes.len(), 2);
+        assert!(response.failures.is_empty());
     }
 
     #[tokio::test]

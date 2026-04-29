@@ -252,7 +252,6 @@ pub struct SettingsRegistry {
     pub movie_proxy: Setting<bool>,
     pub live_proxy: Setting<bool>,
     pub allow_proxy_to_local: Setting<bool>,
-    pub proxy_cache_enable: Setting<bool>,
 
     // RTMP settings
     pub custom_publish_host: Setting<String>,
@@ -424,10 +423,8 @@ impl SettingsRegistry {
                 bool,
                 "proxy.allow_proxy_to_local",
                 storage.clone(),
-                false
+                true
             ),
-            proxy_cache_enable: setting!(bool, "proxy.proxy_cache_enable", storage.clone(), false),
-
             // RTMP settings
             custom_publish_host: setting!(
                 String,

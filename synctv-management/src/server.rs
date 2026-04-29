@@ -30,6 +30,9 @@ pub struct ManagementServerConfig {
     pub alist_api: Arc<AlistApiImpl>,
     pub bilibili_api: Arc<BilibiliApiImpl>,
     pub emby_api: Arc<EmbyApiImpl>,
+    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
+    pub node_id: String,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
@@ -126,6 +129,9 @@ where
             alist_api: config.alist_api,
             bilibili_api: config.bilibili_api,
             emby_api: config.emby_api,
+            proxy_slice_cache: config.proxy_slice_cache,
+            cluster_client: config.cluster_client,
+            node_id: config.node_id,
             lifecycle_controller: config.lifecycle_controller,
             management_auth_token: config.config.management.auth_token.clone(),
         }))

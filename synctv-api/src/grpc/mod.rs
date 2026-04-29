@@ -1220,7 +1220,8 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let cluster_server =
             synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone(), cluster_node_id.clone())
                 .with_cluster_secret(config.server.cluster_secret.clone())
-                .with_connection_runtime(connection_service.clone());
+                .with_connection_runtime(connection_service.clone())
+                .with_slice_cache_runtime(shared_http_app_state.proxy_slice_cache.clone());
         routes.add_service(synctv_cluster::grpc::ClusterServiceServer::new(
             cluster_server,
         ));

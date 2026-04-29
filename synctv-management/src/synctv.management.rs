@@ -1067,6 +1067,150 @@ pub struct SendTestEmailRequest {
 pub struct GetSystemStatsRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSliceCacheStatsRequest {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub all_nodes: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PurgeSliceCacheRequest {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub all_nodes: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EvictExpiredSliceCacheRequest {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub all_nodes: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SliceCacheConfigInfo {
+    #[prost(bool, tag = "1")]
+    pub engine_enabled: bool,
+    #[prost(string, tag = "3")]
+    pub backend: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub file_cache_dir: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub slice_size: u64,
+    #[prost(uint64, tag = "6")]
+    pub max_cache_size: u64,
+    #[prost(uint64, tag = "7")]
+    pub max_cacheable_body: u64,
+    #[prost(uint64, tag = "8")]
+    pub manifest_ttl_secs: u64,
+    #[prost(uint64, tag = "9")]
+    pub segment_ttl_secs: u64,
+    #[prost(uint64, tag = "10")]
+    pub stale_max_age_secs: u64,
+    #[prost(bool, tag = "11")]
+    pub stale_while_revalidate: bool,
+    #[prost(uint64, tag = "12")]
+    pub eviction_interval_secs: u64,
+    #[prost(double, tag = "13")]
+    pub watermark_ratio: f64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SliceCacheStatsResponse {
+    #[prost(message, optional, tag = "1")]
+    pub config: ::core::option::Option<SliceCacheConfigInfo>,
+    #[prost(uint64, tag = "2")]
+    pub current_size_bytes: u64,
+    #[prost(uint64, tag = "3")]
+    pub entry_count: u64,
+    #[prost(uint64, tag = "4")]
+    pub metadata_entries: u64,
+    #[prost(uint64, tag = "5")]
+    pub updating_entries: u64,
+    #[prost(uint64, tag = "6")]
+    pub lock_count: u64,
+    #[prost(double, tag = "7")]
+    pub usage_ratio: f64,
+    #[prost(string, tag = "8")]
+    pub node_id: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SliceCacheNodeFailure {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetSliceCacheStatsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub nodes: ::prost::alloc::vec::Vec<SliceCacheStatsResponse>,
+    #[prost(message, repeated, tag = "2")]
+    pub failures: ::prost::alloc::vec::Vec<SliceCacheNodeFailure>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PurgeSliceCacheNodeResult {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+    #[prost(uint64, tag = "3")]
+    pub removed_entries: u64,
+    #[prost(uint64, tag = "4")]
+    pub freed_bytes: u64,
+    #[prost(message, optional, tag = "5")]
+    pub stats: ::core::option::Option<SliceCacheStatsResponse>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PurgeSliceCacheResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(uint64, tag = "2")]
+    pub removed_entries: u64,
+    #[prost(uint64, tag = "3")]
+    pub freed_bytes: u64,
+    #[prost(message, optional, tag = "4")]
+    pub stats: ::core::option::Option<SliceCacheStatsResponse>,
+    #[prost(message, repeated, tag = "5")]
+    pub nodes: ::prost::alloc::vec::Vec<PurgeSliceCacheNodeResult>,
+    #[prost(message, repeated, tag = "6")]
+    pub failures: ::prost::alloc::vec::Vec<SliceCacheNodeFailure>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvictExpiredSliceCacheNodeResult {
+    #[prost(string, tag = "1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+    #[prost(uint64, tag = "3")]
+    pub removed_expired_entries: u64,
+    #[prost(message, optional, tag = "4")]
+    pub stats: ::core::option::Option<SliceCacheStatsResponse>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EvictExpiredSliceCacheResponse {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+    #[prost(uint64, tag = "2")]
+    pub removed_expired_entries: u64,
+    #[prost(message, optional, tag = "3")]
+    pub stats: ::core::option::Option<SliceCacheStatsResponse>,
+    #[prost(message, repeated, tag = "4")]
+    pub nodes: ::prost::alloc::vec::Vec<EvictExpiredSliceCacheNodeResult>,
+    #[prost(message, repeated, tag = "5")]
+    pub failures: ::prost::alloc::vec::Vec<SliceCacheNodeFailure>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListActiveStreamsRequest {
     #[prost(int32, tag = "1")]
     pub page: i32,
@@ -4419,6 +4563,93 @@ pub mod management_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_slice_cache_stats(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSliceCacheStatsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSliceCacheStatsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/GetSliceCacheStats",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "GetSliceCacheStats",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn purge_slice_cache(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PurgeSliceCacheRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PurgeSliceCacheResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/PurgeSliceCache",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "PurgeSliceCache",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn evict_expired_slice_cache(
+            &mut self,
+            request: impl tonic::IntoRequest<super::EvictExpiredSliceCacheRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::EvictExpiredSliceCacheResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.management.ManagementService/EvictExpiredSliceCache",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "synctv.management.ManagementService",
+                        "EvictExpiredSliceCache",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn list_user_registration_reviews(
             &mut self,
             request: impl tonic::IntoRequest<super::ListUserRegistrationReviewsRequest>,
@@ -5460,6 +5691,27 @@ pub mod management_service_server {
             request: tonic::Request<super::KickStreamRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::admin::KickStreamResponse>,
+            tonic::Status,
+        >;
+        async fn get_slice_cache_stats(
+            &self,
+            request: tonic::Request<super::GetSliceCacheStatsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSliceCacheStatsResponse>,
+            tonic::Status,
+        >;
+        async fn purge_slice_cache(
+            &self,
+            request: tonic::Request<super::PurgeSliceCacheRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PurgeSliceCacheResponse>,
+            tonic::Status,
+        >;
+        async fn evict_expired_slice_cache(
+            &self,
+            request: tonic::Request<super::EvictExpiredSliceCacheRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::EvictExpiredSliceCacheResponse>,
             tonic::Status,
         >;
         async fn list_user_registration_reviews(
@@ -10122,6 +10374,150 @@ pub mod management_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = KickStreamSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/GetSliceCacheStats" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSliceCacheStatsSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::GetSliceCacheStatsRequest>
+                    for GetSliceCacheStatsSvc<T> {
+                        type Response = super::GetSliceCacheStatsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetSliceCacheStatsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::get_slice_cache_stats(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSliceCacheStatsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/PurgeSliceCache" => {
+                    #[allow(non_camel_case_types)]
+                    struct PurgeSliceCacheSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::PurgeSliceCacheRequest>
+                    for PurgeSliceCacheSvc<T> {
+                        type Response = super::PurgeSliceCacheResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PurgeSliceCacheRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::purge_slice_cache(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PurgeSliceCacheSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.management.ManagementService/EvictExpiredSliceCache" => {
+                    #[allow(non_camel_case_types)]
+                    struct EvictExpiredSliceCacheSvc<T: ManagementService>(pub Arc<T>);
+                    impl<
+                        T: ManagementService,
+                    > tonic::server::UnaryService<super::EvictExpiredSliceCacheRequest>
+                    for EvictExpiredSliceCacheSvc<T> {
+                        type Response = super::EvictExpiredSliceCacheResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::EvictExpiredSliceCacheRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ManagementService>::evict_expired_slice_cache(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = EvictExpiredSliceCacheSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

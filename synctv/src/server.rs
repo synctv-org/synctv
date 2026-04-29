@@ -152,10 +152,7 @@ fn build_proxy_slice_cache_config(
     };
 
     synctv_proxy::slice_cache::SliceCacheConfig {
-        // Runtime enablement is decided per request from SettingsRegistry.
-        // Keep the cache engine itself available so toggling the setting does
-        // not require a process restart.
-        enabled: true,
+        enabled: config.cache.proxy_slice_cache_enabled,
         backend,
         ..synctv_proxy::slice_cache::SliceCacheConfig::default()
     }
@@ -1599,6 +1596,26 @@ impl SyncTvServer {
         shared_http_app_state: Arc<synctv_api::http::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let management_apis = management_apis_from_http_state(shared_http_app_state.as_ref())?;
+        let node_id = self.services.realtime_event_service.as_ref().map_or_else(
+            || "single-node".to_string(),
+            |service| service.node_id().to_string(),
+        );
+        let cluster_client = self
+            .services
+            .node_registry
+            .as_ref()
+            .filter(|_| self.config.cluster_runtime_enabled())
+            .filter(|_| !self.config.server.cluster_secret.is_empty())
+            .map(|node_registry| {
+                Arc::new(synctv_cluster::grpc::ClusterClient::from_runtime(
+                    node_registry.clone(),
+                    synctv_cluster::grpc::ClusterClientConfig {
+                        cluster_secret: self.config.server.cluster_secret.clone(),
+                        self_node_id: node_id.clone(),
+                        ..synctv_cluster::grpc::ClusterClientConfig::default()
+                    },
+                ))
+            });
 
         spawn_management_server(ManagementServerConfig {
             config: Arc::new(self.config.clone()),
@@ -1609,6 +1626,9 @@ impl SyncTvServer {
             alist_api: management_apis.alist,
             bilibili_api: management_apis.bilibili,
             emby_api: management_apis.emby,
+            proxy_slice_cache: shared_http_app_state.proxy_slice_cache.clone(),
+            cluster_client,
+            node_id,
             lifecycle_controller: self.lifecycle_controller.clone(),
             shutdown_rx,
         })
@@ -2003,13 +2023,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_slice_cache_runtime_toggle_keeps_engine_available() {
+    async fn test_proxy_slice_cache_config_controls_startup_enablement() {
         let registry = test_settings_registry();
-        let config = build_proxy_slice_cache_config(&Config::default(), &registry);
+        let mut app_config = Config::default();
 
+        let enabled_config = build_proxy_slice_cache_config(&app_config, &registry);
         assert!(
-            config.enabled,
-            "proxy slice cache engine must stay available so runtime settings can enable caching without restart"
+            enabled_config.enabled,
+            "proxy slice cache should be enabled by default at startup"
+        );
+
+        app_config.cache.proxy_slice_cache_enabled = false;
+        let disabled_config = build_proxy_slice_cache_config(&app_config, &registry);
+        assert!(
+            !disabled_config.enabled,
+            "startup config must be able to disable proxy slice cache"
         );
     }
 

@@ -12,64 +12,35 @@ package synctv.cluster;
 //
 // Endpoint Usage:
 // - GetNodes: ACTIVE - returns all known nodes from Redis registry
-// - DeregisterNode: ACTIVE - handles graceful shutdown with epoch validation
 // - GetUserOnlineStatus: ACTIVE - fan-out query for user presence
 // - GetRoomConnections: ACTIVE - fan-out query for room participants
 //
 service ClusterService {
-    // Node discovery and shutdown
+    // Node discovery
     rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
-    rpc DeregisterNode(DeregisterNodeRequest) returns (DeregisterNodeResponse);
 
     // User connection tracking - ACTIVE endpoints for fan-out queries
     rpc GetUserOnlineStatus(GetUserOnlineStatusRequest) returns (GetUserOnlineStatusResponse);
     rpc GetRoomConnections(GetRoomConnectionsRequest) returns (GetRoomConnectionsResponse);
+
+    // Proxy slice cache management - ACTIVE endpoints for management fan-out
+    rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (SliceCacheStatsResponse);
+    rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (PurgeSliceCacheResponse);
+    rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (EvictExpiredSliceCacheResponse);
 }
 
 // Node information
 message NodeInfo {
     string node_id = 1;
     string address = 2; // gRPC address (host:port)
-    string region = 3; // Optional region/zone info
-    NodeStatus status = 4;
-    int64 registered_at = 5;
-    int64 last_heartbeat = 6;
-    NodeMetrics metrics = 7;
-    uint64 epoch = 8; // Fencing token epoch for stale-registration protection
+    int64 last_heartbeat = 3;
+    uint64 epoch = 4; // Fencing token epoch for stale-registration protection
 }
 
-enum NodeStatus {
-    NODE_STATUS_UNKNOWN = 0;
-    NODE_STATUS_ACTIVE = 1;
-    NODE_STATUS_DRAINING = 2;
-    NODE_STATUS_OFFLINE = 3;
-}
-
-message NodeMetrics {
-    int32 active_connections = 1;
-    int32 active_streams = 2;
-    int32 active_rooms = 3;
-    double cpu_usage = 4;
-    double memory_usage_mb = 5;
-    double network_bandwidth_mbps = 6;
-}
-
-message GetNodesRequest {
-    NodeStatus status_filter = 1; // Optional filter
-}
+message GetNodesRequest {}
 
 message GetNodesResponse {
     repeated NodeInfo nodes = 1;
-}
-
-message DeregisterNodeRequest {
-    string node_id = 1;
-    string reason = 2; // shutdown, upgrade, failure, etc.
-    uint64 epoch = 3; // Fencing token epoch (required for stale-deregister protection)
-}
-
-message DeregisterNodeResponse {
-    bool success = 1;
 }
 
 // User connection tracking
@@ -101,4 +72,51 @@ message RoomConnection {
     string node_id = 2;
     int64 connected_at = 3;
     int64 last_activity = 4;
+}
+
+message GetSliceCacheStatsRequest {}
+
+message PurgeSliceCacheRequest {}
+
+message EvictExpiredSliceCacheRequest {}
+
+message SliceCacheConfigInfo {
+    bool engine_enabled = 1;
+    string backend = 3;
+    string file_cache_dir = 4;
+    uint64 slice_size = 5;
+    uint64 max_cache_size = 6;
+    uint64 max_cacheable_body = 7;
+    uint64 manifest_ttl_secs = 8;
+    uint64 segment_ttl_secs = 9;
+    uint64 stale_max_age_secs = 10;
+    bool stale_while_revalidate = 11;
+    uint64 eviction_interval_secs = 12;
+    double watermark_ratio = 13;
+}
+
+message SliceCacheStatsResponse {
+    string node_id = 1;
+    SliceCacheConfigInfo config = 2;
+    uint64 current_size_bytes = 3;
+    uint64 entry_count = 4;
+    uint64 metadata_entries = 5;
+    uint64 updating_entries = 6;
+    uint64 lock_count = 7;
+    double usage_ratio = 8;
+}
+
+message PurgeSliceCacheResponse {
+    string node_id = 1;
+    bool success = 2;
+    uint64 removed_entries = 3;
+    uint64 freed_bytes = 4;
+    SliceCacheStatsResponse stats = 5;
+}
+
+message EvictExpiredSliceCacheResponse {
+    string node_id = 1;
+    bool success = 2;
+    uint64 removed_expired_entries = 3;
+    SliceCacheStatsResponse stats = 4;
 }

@@ -87,7 +87,7 @@ pub async fn probe_node_identity(
         return None;
     };
     let mut client = ClusterServiceClient::new(channel);
-    let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
+    let mut request = tonic::Request::new(GetNodesRequest {});
 
     if !cluster_secret.is_empty() {
         match cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
@@ -158,11 +158,7 @@ mod tests {
             nodes: vec![cluster::NodeInfo {
                 node_id: "peer-node-1".to_string(),
                 address: "10.0.0.5:50051".to_string(),
-                region: String::new(),
-                status: cluster::NodeStatus::Active as i32,
-                registered_at: 100,
                 last_heartbeat: 100,
-                metrics: None,
                 epoch: 7,
             }],
         };

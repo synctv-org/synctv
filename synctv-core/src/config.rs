@@ -2431,6 +2431,10 @@ impl Config {
             &mut self.cache.permission_cache_ttl_seconds,
         )?;
         env_override_bool(
+            "SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED",
+            &mut self.cache.proxy_slice_cache_enabled,
+        )?;
+        env_override_bool(
             "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED",
             &mut self.cache.proxy_slice_file_backend_enabled,
         )?;
@@ -3912,6 +3916,8 @@ pub struct CacheConfig {
     pub permission_cache_capacity: u64,
     /// Permission cache TTL in seconds (reserved for future use)
     pub permission_cache_ttl_seconds: u64,
+    /// Whether proxy slice caching is enabled at process startup.
+    pub proxy_slice_cache_enabled: bool,
     /// Whether the proxy slice cache should persist entries to disk.
     pub proxy_slice_file_backend_enabled: bool,
     /// Root directory for persisted proxy slice cache entries.
@@ -3930,6 +3936,7 @@ impl Default for CacheConfig {
             username_cache_ttl_seconds: 3600, // 1 hour
             permission_cache_capacity: 1000,
             permission_cache_ttl_seconds: 300,
+            proxy_slice_cache_enabled: true,
             proxy_slice_file_backend_enabled: false,
             proxy_slice_file_cache_dir: String::new(),
         }
@@ -4953,6 +4960,7 @@ metrics:
     cert_path: "tls/metrics.crt"
     key_path: "tls/metrics.key"
 cache:
+  proxy_slice_cache_enabled: false
   proxy_slice_file_backend_enabled: true
   proxy_slice_file_cache_dir: "proxy-cache"
 logging:
@@ -4984,6 +4992,7 @@ livestream:
             Path::new(&config.metrics.tls.key_path),
             config_dir.join("tls").join("metrics.key")
         );
+        assert!(!config.cache.proxy_slice_cache_enabled);
         assert!(config.cache.proxy_slice_file_backend_enabled);
         assert_eq!(
             Path::new(&config.cache.proxy_slice_file_cache_dir),
@@ -5081,11 +5090,16 @@ management:
                 "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED".to_string(),
                 "true".to_string(),
             ),
+            (
+                "SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED".to_string(),
+                "false".to_string(),
+            ),
         ]);
 
         let config = Config::from_env_map(&env).expect("env-backed config should load");
         let expected_data_dir = cwd.join("var").join("synctv");
 
+        assert!(!config.cache.proxy_slice_cache_enabled);
         assert!(config.cache.proxy_slice_file_backend_enabled);
         assert_eq!(
             Path::new(&config.cache.proxy_slice_file_cache_dir),

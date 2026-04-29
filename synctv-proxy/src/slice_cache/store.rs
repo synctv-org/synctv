@@ -82,6 +82,36 @@ pub struct SliceCache {
     lock_ops: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Operational snapshot of the slice cache runtime.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SliceCacheStats {
+    pub engine_enabled: bool,
+    pub backend: String,
+    pub file_cache_dir: Option<String>,
+    pub slice_size: u64,
+    pub max_cache_size: u64,
+    pub max_cacheable_body: u64,
+    pub manifest_ttl_secs: u64,
+    pub segment_ttl_secs: u64,
+    pub stale_max_age_secs: u64,
+    pub stale_while_revalidate: bool,
+    pub eviction_interval_secs: u64,
+    pub watermark_ratio: f64,
+    pub current_size_bytes: u64,
+    pub entry_count: u64,
+    pub metadata_entries: u64,
+    pub updating_entries: u64,
+    pub lock_count: u64,
+    pub usage_ratio: f64,
+}
+
+/// Result of purging all slice-cache entries.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct SliceCachePurgeResult {
+    pub removed_entries: u64,
+    pub freed_bytes: u64,
+}
+
 impl Clone for SliceCache {
     fn clone(&self) -> Self {
         Self {
@@ -111,6 +141,15 @@ impl UpdatingKeyGuard {
 impl Drop for UpdatingKeyGuard {
     fn drop(&mut self) {
         self.updating_keys.remove(&self.key);
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn ratio_u64(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
     }
 }
 
@@ -352,6 +391,64 @@ impl SliceCache {
     #[must_use]
     pub const fn client(&self) -> &reqwest::Client {
         &self.client
+    }
+
+    /// Return an operational snapshot of the cache backend and runtime state.
+    #[must_use]
+    pub fn stats(&self) -> SliceCacheStats {
+        let (backend, file_cache_dir) = match &self.config.backend {
+            CacheBackendConfig::Memory => ("memory".to_string(), None),
+            CacheBackendConfig::File { cache_dir, .. } => {
+                ("file".to_string(), Some(cache_dir.display().to_string()))
+            }
+        };
+        let current_size_bytes = self.backend.current_size();
+        let usage_ratio = ratio_u64(current_size_bytes, self.config.max_cache_size);
+
+        SliceCacheStats {
+            engine_enabled: self.config.enabled,
+            backend,
+            file_cache_dir,
+            slice_size: u64::try_from(self.config.slice_size).unwrap_or(u64::MAX),
+            max_cache_size: self.config.max_cache_size,
+            max_cacheable_body: u64::try_from(self.config.max_cacheable_body).unwrap_or(u64::MAX),
+            manifest_ttl_secs: self.config.manifest_ttl.as_secs(),
+            segment_ttl_secs: self.config.segment_ttl.as_secs(),
+            stale_max_age_secs: self.config.stale_max_age.as_secs(),
+            stale_while_revalidate: self.config.stale_while_revalidate,
+            eviction_interval_secs: self.config.eviction_interval.as_secs(),
+            watermark_ratio: self.config.watermark_ratio,
+            current_size_bytes,
+            entry_count: self.backend.entry_count(),
+            metadata_entries: u64::try_from(self.meta.len()).unwrap_or(u64::MAX),
+            updating_entries: u64::try_from(self.updating_keys.len()).unwrap_or(u64::MAX),
+            lock_count: u64::try_from(self.locks.len()).unwrap_or(u64::MAX),
+            usage_ratio,
+        }
+    }
+
+    /// Remove every cached body/slice entry and clear in-memory metadata.
+    pub async fn purge_all(&self) -> SliceCachePurgeResult {
+        let freed_bytes = self.backend.current_size();
+        let keys = self.backend.keys().await;
+        let removed_entries = u64::try_from(keys.len()).unwrap_or(u64::MAX);
+        for key in keys {
+            self.backend.remove(&key).await;
+        }
+        self.meta.clear();
+        self.updating_keys.clear();
+        self.locks.clear();
+        self.seen_keys.invalidate_all();
+
+        SliceCachePurgeResult {
+            removed_entries,
+            freed_bytes,
+        }
+    }
+
+    /// Remove expired cached entries using the same backend primitive as the lifecycle manager.
+    pub async fn evict_expired_entries(&self) -> u64 {
+        self.backend.evict_expired().await
     }
 
     // Cache key helpers
@@ -1205,5 +1302,98 @@ mod tests {
         cache.cleanup_stale_meta_with_limit(4);
 
         assert_eq!(cache.meta_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn stats_reports_backend_and_runtime_counters() {
+        let cache = test_cache();
+        cache
+            .backend
+            .put(
+                "slice-1",
+                StoredEntry::new(Bytes::from_static(b"cached"), Duration::from_mins(1)),
+            )
+            .await
+            .expect("entry should be cached");
+        cache.meta.insert(
+            "meta-1".to_string(),
+            CachedResourceMeta {
+                etag: Some("etag".to_string()),
+                last_modified: None,
+                total_size: Some(6),
+                content_type: Some("video/mp2t".to_string()),
+                last_accessed: std::time::SystemTime::now(),
+            },
+        );
+        cache.updating_keys.insert("slice-1".to_string());
+        cache
+            .locks
+            .insert("slice-1".to_string(), Arc::new(Mutex::new(())));
+
+        let stats = cache.stats();
+
+        assert!(stats.engine_enabled);
+        assert_eq!(stats.backend, "memory");
+        assert_eq!(stats.file_cache_dir, None);
+        assert_eq!(stats.current_size_bytes, 6);
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.metadata_entries, 1);
+        assert_eq!(stats.updating_entries, 1);
+        assert_eq!(stats.lock_count, 1);
+        assert!(stats.usage_ratio > 0.0);
+    }
+
+    #[tokio::test]
+    async fn purge_all_removes_entries_and_runtime_metadata() {
+        let cache = test_cache();
+        cache
+            .backend
+            .put(
+                "slice-1",
+                StoredEntry::new(Bytes::from_static(b"cached"), Duration::from_mins(1)),
+            )
+            .await
+            .expect("entry should be cached");
+        cache.meta.insert(
+            "meta-1".to_string(),
+            CachedResourceMeta {
+                etag: None,
+                last_modified: None,
+                total_size: None,
+                content_type: None,
+                last_accessed: std::time::SystemTime::now(),
+            },
+        );
+        cache.updating_keys.insert("slice-1".to_string());
+        cache
+            .locks
+            .insert("slice-1".to_string(), Arc::new(Mutex::new(())));
+
+        let result = cache.purge_all().await;
+
+        assert_eq!(result.removed_entries, 1);
+        assert_eq!(result.freed_bytes, 6);
+        assert_eq!(cache.backend.entry_count(), 0);
+        assert_eq!(cache.meta_count(), 0);
+        assert!(cache.updating_keys.is_empty());
+        assert!(cache.locks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn evict_expired_entries_removes_expired_backend_entries() {
+        let cache = test_cache();
+        cache
+            .backend
+            .put(
+                "expired-slice",
+                StoredEntry::new(Bytes::from_static(b"old"), Duration::ZERO),
+            )
+            .await
+            .expect("entry should be cached");
+
+        let removed = cache.evict_expired_entries().await;
+
+        assert_eq!(removed, 1);
+        assert_eq!(cache.backend.entry_count(), 0);
     }
 }

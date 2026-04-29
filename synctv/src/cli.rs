@@ -72,6 +72,8 @@ pub enum Commands {
     Settings(SettingsCommand),
     /// System inspection commands through the management endpoint
     System(SystemCommand),
+    /// Proxy slice cache management through the management endpoint
+    SliceCache(SliceCacheCommand),
     /// Generate shell completions
     Completion(CompletionArgs),
     /// Print version information
@@ -818,6 +820,22 @@ pub enum SystemStreamSubcommand {
     List(SystemStreamListArgs),
     /// Kick an active stream
     Kick(SystemStreamKickArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SliceCacheCommand {
+    #[command(subcommand)]
+    pub command: SliceCacheSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SliceCacheSubcommand {
+    /// Show proxy slice cache runtime statistics and configuration
+    Stats(SliceCacheStatsArgs),
+    /// Remove all cached slice entries and metadata
+    Purge(SliceCachePurgeArgs),
+    /// Remove only expired cached slice entries
+    EvictExpired(SliceCacheEvictExpiredArgs),
 }
 
 #[derive(Debug, Args)]
@@ -2518,6 +2536,44 @@ pub struct SystemStatsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct SliceCacheStatsArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub target: SliceCacheTargetArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SliceCachePurgeArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub target: SliceCacheTargetArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct SliceCacheEvictExpiredArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub target: SliceCacheTargetArgs,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+pub struct SliceCacheTargetArgs {
+    /// Query or manage slice cache on a specific cluster node through the connected management endpoint
+    #[arg(long, value_name = "NODE_ID", conflicts_with = "all_nodes")]
+    pub node_id: Option<String>,
+
+    /// Query or manage slice cache on the connected node and all reachable cluster nodes
+    #[arg(long)]
+    pub all_nodes: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct SystemStreamListArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -3518,6 +3574,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Provider(provider) => execute_provider(provider).await,
         Commands::Settings(settings) => execute_settings(settings).await,
         Commands::System(system) => execute_system(system).await,
+        Commands::SliceCache(slice_cache) => execute_slice_cache(slice_cache).await,
         Commands::Completion(args) => execute_completion(&args),
         Commands::Version => {
             println!("{}", version_string());
@@ -3548,6 +3605,7 @@ fn apply_root_global_overrides(mut cli: Cli) -> Cli {
         Commands::Provider(command) => merge_provider_command_globals(command, &root),
         Commands::Settings(command) => merge_settings_command_globals(command, &root),
         Commands::System(command) => merge_system_command_globals(command, &root),
+        Commands::SliceCache(command) => merge_slice_cache_command_globals(command, &root),
         Commands::Completion(_) | Commands::Version => {}
     }
     cli
@@ -3841,6 +3899,16 @@ fn merge_system_command_globals(command: &mut SystemCommand, root: &GlobalConfig
             SystemStreamSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
             SystemStreamSubcommand::Kick(args) => merge_remote_access_args(&mut args.remote, root),
         },
+    }
+}
+
+fn merge_slice_cache_command_globals(command: &mut SliceCacheCommand, root: &GlobalConfigArgs) {
+    match &mut command.command {
+        SliceCacheSubcommand::Stats(args) => merge_remote_access_args(&mut args.remote, root),
+        SliceCacheSubcommand::Purge(args) => merge_remote_access_args(&mut args.remote, root),
+        SliceCacheSubcommand::EvictExpired(args) => {
+            merge_remote_access_args(&mut args.remote, root);
+        }
     }
 }
 
@@ -6090,6 +6158,51 @@ async fn execute_system(system_command: SystemCommand) -> Result<()> {
     }
 }
 
+async fn execute_slice_cache(slice_cache_command: SliceCacheCommand) -> Result<()> {
+    let SliceCacheCommand { command } = slice_cache_command;
+    match command {
+        SliceCacheSubcommand::Stats(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "get slice cache stats",
+                get_slice_cache_stats,
+                management_proto::GetSliceCacheStatsRequest {
+                    node_id: args.target.node_id.unwrap_or_default(),
+                    all_nodes: args.target.all_nodes,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
+        SliceCacheSubcommand::Purge(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "purge slice cache",
+                purge_slice_cache,
+                management_proto::PurgeSliceCacheRequest {
+                    node_id: args.target.node_id.unwrap_or_default(),
+                    all_nodes: args.target.all_nodes,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
+        SliceCacheSubcommand::EvictExpired(args) => {
+            let session = connect_remote_access(&args.remote).await?;
+            let response = management_unary_call!(
+                session,
+                "evict expired slice cache entries",
+                evict_expired_slice_cache,
+                management_proto::EvictExpiredSliceCacheRequest {
+                    node_id: args.target.node_id.unwrap_or_default(),
+                    all_nodes: args.target.all_nodes,
+                }
+            )?;
+            args.remote.print_output(&response)
+        }
+    }
+}
+
 async fn management_unary_response<T>(
     operation: &'static str,
     future: impl std::future::Future<Output = std::result::Result<tonic::Response<T>, tonic::Status>>,
@@ -8179,6 +8292,14 @@ impl_identity_to_human!(
     synctv_proto::providers::common::DeleteProviderInstanceResponse,
     synctv_proto::admin::UpdateSettingsResponse,
     synctv_proto::admin::SendTestEmailResponse,
+    synctv_management::proto::SliceCacheConfigInfo,
+    synctv_management::proto::SliceCacheStatsResponse,
+    synctv_management::proto::SliceCacheNodeFailure,
+    synctv_management::proto::GetSliceCacheStatsResponse,
+    synctv_management::proto::PurgeSliceCacheNodeResult,
+    synctv_management::proto::PurgeSliceCacheResponse,
+    synctv_management::proto::EvictExpiredSliceCacheNodeResult,
+    synctv_management::proto::EvictExpiredSliceCacheResponse,
     synctv_proto::client::LeaveRoomResponse,
     synctv_proto::client::DeleteRoomResponse,
     synctv_proto::client::GetRoomSettingsResponse,
@@ -12390,6 +12511,76 @@ mod tests {
                 ..
             }) => {}
             other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_slice_cache_stats() {
+        let cli = Cli::parse_from(["synctv", "slice-cache", "stats"]);
+        match cli.command {
+            Commands::SliceCache(SliceCacheCommand {
+                command: SliceCacheSubcommand::Stats(args),
+                ..
+            }) => {
+                assert!(args.target.node_id.is_none());
+                assert!(!args.target.all_nodes);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_slice_cache_cluster_target_flags() {
+        let cli = Cli::parse_from(["synctv", "slice-cache", "stats", "--node-id", "node-a"]);
+        match cli.command {
+            Commands::SliceCache(SliceCacheCommand {
+                command: SliceCacheSubcommand::Stats(args),
+            }) => {
+                assert_eq!(args.target.node_id.as_deref(), Some("node-a"));
+                assert!(!args.target.all_nodes);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+
+        let cli = Cli::parse_from(["synctv", "slice-cache", "purge", "--all-nodes"]);
+        match cli.command {
+            Commands::SliceCache(SliceCacheCommand {
+                command: SliceCacheSubcommand::Purge(args),
+            }) => {
+                assert!(args.target.node_id.is_none());
+                assert!(args.target.all_nodes);
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_slice_cache_conflicting_cluster_target_flags() {
+        let error = Cli::try_parse_from([
+            "synctv",
+            "slice-cache",
+            "stats",
+            "--node-id",
+            "node-a",
+            "--all-nodes",
+        ])
+        .expect_err("node-id and all-nodes must conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_parses_slice_cache_maintenance_subcommands() {
+        for (raw_command, expected) in [("purge", "purge"), ("evict-expired", "evict-expired")] {
+            let cli = Cli::parse_from(["synctv", "slice-cache", raw_command]);
+            let parsed = match cli.command {
+                Commands::SliceCache(SliceCacheCommand { command }) => match command {
+                    SliceCacheSubcommand::Purge(_) => "purge",
+                    SliceCacheSubcommand::EvictExpired(_) => "evict-expired",
+                    SliceCacheSubcommand::Stats(_) => "stats",
+                },
+                other => panic!("unexpected command parsed: {other:?}"),
+            };
+            assert_eq!(parsed, expected);
         }
     }
 

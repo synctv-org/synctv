@@ -11,6 +11,7 @@ k8s = ["kube", "k8s-openapi"]
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
     "synctv-common/tls-aws-lc",
+    "synctv-proxy/tls-aws-lc",
     "tonic/tls-aws-lc",
     "synctv-core-testing/tls-aws-lc",
     "testcontainers/aws-lc-rs",
@@ -20,6 +21,7 @@ tls-aws-lc = [
 tls-ring = [
     "synctv-core/tls-ring",
     "synctv-common/tls-ring",
+    "synctv-proxy/tls-ring",
     "tonic/tls-ring",
     "synctv-core-testing/tls-ring",
     "testcontainers/ring",
@@ -29,6 +31,7 @@ tls-ring = [
 tls-webpki-roots = [
     "synctv-core/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
+    "synctv-proxy/tls-webpki-roots",
     "tonic/tls-webpki-roots",
     "redis/tokio-rustls-comp",
     "redis/tls-rustls-webpki-roots",
@@ -38,6 +41,7 @@ tls-webpki-roots = [
 tls-native-roots = [
     "synctv-core/tls-native-roots",
     "synctv-common/tls-native-roots",
+    "synctv-proxy/tls-native-roots",
     "tonic/tls-native-roots",
     "redis/tokio-rustls-comp",
     "kube?/rustls-tls",
@@ -47,6 +51,7 @@ tls-native-roots = [
 # Internal
 synctv-core = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
+synctv-proxy = { workspace = true, default-features = false }
 
 # Async
 tokio.workspace = true

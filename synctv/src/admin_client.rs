@@ -334,7 +334,9 @@ mod tests {
     use futures_util::stream;
     #[cfg(unix)]
     use std::sync::Arc;
-    use std::sync::{Mutex, OnceLock};
+    #[cfg(unix)]
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
     #[cfg(unix)]
     use synctv_management::proto::{
         management_service_server::{ManagementService, ManagementServiceServer},
@@ -352,14 +354,17 @@ mod tests {
         CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
         DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
         EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-        EmbyLogoutRequest, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
-        GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
-        GetStreamInfoRequest, GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest,
-        KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
-        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
-        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
-        MovePlaylistRequest, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
+        GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
+        GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
+        GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
+        GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
+        KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
+        ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+        ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
+        ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+        MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
+        RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
         SendTestEmailRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
         StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
@@ -398,7 +403,6 @@ mod tests {
             }
         }
 
-        #[cfg(unix)]
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             std::env::set_var(key, value);
@@ -471,6 +475,27 @@ mod tests {
                     );
             }
             Ok(Response::new(admin_proto::GetSystemStatsResponse::default()))
+        }
+
+        async fn get_slice_cache_stats(
+            &self,
+            _: Request<GetSliceCacheStatsRequest>,
+        ) -> std::result::Result<Response<GetSliceCacheStatsResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+
+        async fn purge_slice_cache(
+            &self,
+            _: Request<PurgeSliceCacheRequest>,
+        ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+
+        async fn evict_expired_slice_cache(
+            &self,
+            _: Request<EvictExpiredSliceCacheRequest>,
+        ) -> std::result::Result<Response<EvictExpiredSliceCacheResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
         }
 
         async fn list_users(

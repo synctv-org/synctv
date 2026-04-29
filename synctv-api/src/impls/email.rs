@@ -8,6 +8,11 @@ use synctv_core::service::{
     rate_limit::RateLimitError, EmailService, EmailTokenService, EmailTokenType,
     RequestRateLimiterService, UserService,
 };
+use synctv_proto::client::{
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
+    ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    SendVerificationEmailRequest, SendVerificationEmailResponse,
+};
 
 use crate::impls::ApiError;
 
@@ -221,6 +226,19 @@ impl EmailApiImpl {
         })
     }
 
+    pub async fn send_verification_email_response_with_control(
+        &self,
+        req: SendVerificationEmailRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<SendVerificationEmailResponse, ApiError> {
+        let result = self
+            .send_verification_email_with_control(&req.email, control)
+            .await?;
+        Ok(SendVerificationEmailResponse {
+            message: result.message,
+        })
+    }
+
     /// Confirm an email verification token.
     pub async fn confirm_email(
         &self,
@@ -294,6 +312,20 @@ impl EmailApiImpl {
         })
     }
 
+    pub async fn confirm_email_response_with_control(
+        &self,
+        req: ConfirmEmailRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmEmailResponse, ApiError> {
+        let result = self
+            .confirm_email_with_control(&req.email, &req.token, control)
+            .await?;
+        Ok(ConfirmEmailResponse {
+            message: result.message,
+            user_id: result.user_id,
+        })
+    }
+
     /// Request a password reset email.
     /// Returns generic message regardless of whether user exists (anti-enumeration).
     pub async fn request_password_reset(
@@ -341,6 +373,19 @@ impl EmailApiImpl {
 
         Ok(RequestPasswordResetResult {
             message: GENERIC_PASSWORD_RESET_MESSAGE.to_string(),
+        })
+    }
+
+    pub async fn request_password_reset_response_with_control(
+        &self,
+        req: RequestPasswordResetRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestPasswordResetResponse, ApiError> {
+        let result = self
+            .request_password_reset_with_control(&req.email, control)
+            .await?;
+        Ok(RequestPasswordResetResponse {
+            message: result.message,
         })
     }
 
@@ -471,6 +516,20 @@ impl EmailApiImpl {
         Ok(ConfirmPasswordResetResult {
             message: "Password reset successfully".to_string(),
             user_id: self.public_user_id(user.id),
+        })
+    }
+
+    pub async fn confirm_password_reset_response_with_control(
+        &self,
+        req: ConfirmPasswordResetRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ConfirmPasswordResetResponse, ApiError> {
+        let result = self
+            .confirm_password_reset_with_control(&req.email, &req.token, &req.new_password, control)
+            .await?;
+        Ok(ConfirmPasswordResetResponse {
+            message: result.message,
+            user_id: result.user_id,
         })
     }
 

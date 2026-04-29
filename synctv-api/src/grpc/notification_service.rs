@@ -8,10 +8,6 @@ use tonic::{Request, Response, Status};
 
 use synctv_core::Config;
 
-use crate::impls::notification::{
-    build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
-    notification_counts_to_proto, notification_to_proto,
-};
 use crate::impls::NotificationApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use crate::proto::client::{
@@ -60,33 +56,21 @@ impl NotificationService for NotificationServiceImpl {
         );
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
-        let result = self
+        let response = self
             .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     notification_api
-                        .list_notifications(&authenticated.user_id, req)
+                        .list_notifications_response(&authenticated.user_id, req)
                         .await
                 },
             )
             .await
             .map_err(map_api_error)?;
-        let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)
-            .map_err(map_api_error)?;
 
-        Ok(Response::new(ListNotificationsResponse {
-            notifications: result
-                .notifications
-                .into_iter()
-                .map(|notification| {
-                    notification_to_proto(notification, self.notification_api.public_id_codec())
-                })
-                .collect(),
-            total,
-            unread_count,
-        }))
+        Ok(Response::new(response))
     }
 
     async fn get_notification(
@@ -101,28 +85,21 @@ impl NotificationService for NotificationServiceImpl {
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
-        let notification_id = build_get_notification_request(&req).map_err(map_api_error)?;
-
-        let notification = self
+        let response = self
             .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     notification_api
-                        .get_notification(&authenticated.user_id, notification_id)
+                        .get_notification_response(&authenticated.user_id, req)
                         .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(GetNotificationResponse {
-            notification: Some(notification_to_proto(
-                notification,
-                self.notification_api.public_id_codec(),
-            )),
-        }))
+        Ok(Response::new(response))
     }
 
     async fn mark_as_read(
@@ -137,23 +114,21 @@ impl NotificationService for NotificationServiceImpl {
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
-        let notification_ids = build_mark_as_read_request(&req).map_err(map_api_error)?;
-
-        self.request_executor
+        let response = self
+            .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .mark_as_read(&authenticated.user_id, notification_ids)
-                        .await?;
-                    Ok(())
+                        .mark_as_read_response(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(MarkAsReadResponse {}))
+        Ok(Response::new(response))
     }
 
     async fn mark_all_as_read(
@@ -168,29 +143,21 @@ impl NotificationService for NotificationServiceImpl {
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
-        let before = req
-            .before
-            .map(|ts| {
-                chrono::DateTime::from_timestamp(ts, 0)
-                    .ok_or_else(|| Status::invalid_argument("Invalid timestamp"))
-            })
-            .transpose()?;
-
-        self.request_executor
+        let response = self
+            .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .mark_all_as_read(&authenticated.user_id, before)
-                        .await?;
-                    Ok(())
+                        .mark_all_as_read_response(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(MarkAllAsReadResponse {}))
+        Ok(Response::new(response))
     }
 
     async fn delete_notification(
@@ -205,23 +172,21 @@ impl NotificationService for NotificationServiceImpl {
         let req = request.into_inner();
         let notification_api = Arc::clone(&self.notification_api);
 
-        let notification_id = build_delete_notification_request(&req).map_err(map_api_error)?;
-
-        self.request_executor
+        let response = self
+            .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .delete_notification(&authenticated.user_id, notification_id)
-                        .await?;
-                    Ok(())
+                        .delete_notification_response(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(DeleteNotificationResponse {}))
+        Ok(Response::new(response))
     }
 
     async fn delete_all_read(
@@ -235,20 +200,20 @@ impl NotificationService for NotificationServiceImpl {
         );
         let notification_api = Arc::clone(&self.notification_api);
 
-        self.request_executor
+        let response = self
+            .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     notification_api
-                        .delete_all_read(&authenticated.user_id)
-                        .await?;
-                    Ok(())
+                        .delete_all_read_response(&authenticated.user_id)
+                        .await
                 },
             )
             .await
             .map_err(map_api_error)?;
 
-        Ok(Response::new(DeleteAllReadResponse {}))
+        Ok(Response::new(response))
     }
 }

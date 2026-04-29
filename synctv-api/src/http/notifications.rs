@@ -10,10 +10,6 @@ use crate::http::error::AppResult;
 use crate::http::middleware::RequestMetadata;
 use crate::http::validation::ValidatedQuery;
 use crate::http::AppState;
-use crate::impls::notification::{
-    build_delete_notification_request, build_get_notification_request, build_mark_as_read_request,
-    notification_counts_to_proto, notification_to_proto,
-};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
@@ -74,22 +70,12 @@ pub async fn list_notifications(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { api.list_notifications(&auth.user_id, query).await },
+            |auth| async move { api.list_notifications_response(&auth.user_id, query).await },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)
-        .map_err(crate::http::error::map_api_error)?;
 
-    Ok(Json(ListNotificationsResponse {
-        notifications: result
-            .notifications
-            .into_iter()
-            .map(|notification| notification_to_proto(notification, api.public_id_codec()))
-            .collect(),
-        total,
-        unread_count,
-    }))
+    Ok(Json(result))
 }
 
 /// GET /api/notifications/:id - Get a specific notification
@@ -122,22 +108,18 @@ pub async fn get_notification(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let notification_id =
-        build_get_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
-    let notification = state
+    let response = state
         .client_api
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move { api.get_notification(&auth.user_id, notification_id).await },
+            |auth| async move { api.get_notification_response(&auth.user_id, req).await },
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
 
-    Ok(Json(GetNotificationResponse {
-        notification: Some(notification_to_proto(notification, api.public_id_codec())),
-    }))
+    Ok(Json(response))
 }
 
 /// POST /api/notifications/read - Mark notifications as read
@@ -169,17 +151,15 @@ pub async fn mark_as_read(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
-    let notification_ids =
-        build_mark_as_read_request(&req).map_err(crate::http::error::map_api_error)?;
-
     state
         .client_api
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.mark_as_read(&auth.user_id, notification_ids).await?;
-                Ok::<(), crate::impls::ApiError>(())
+                api.mark_as_read_response(&auth.user_id, req)
+                    .await
+                    .map(|_| ())
             },
         )
         .await
@@ -217,13 +197,7 @@ pub async fn mark_all_as_read(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
-    let before = req
-        .and_then(|r| r.before)
-        .map(|ts| {
-            chrono::DateTime::from_timestamp(ts, 0)
-                .ok_or_else(|| crate::http::AppError::bad_request("Invalid timestamp"))
-        })
-        .transpose()?;
+    let req = req.map_or_else(MarkAllAsReadRequest::default, |Json(req)| req);
 
     state
         .client_api
@@ -231,8 +205,9 @@ pub async fn mark_all_as_read(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.mark_all_as_read(&auth.user_id, before).await?;
-                Ok::<(), crate::impls::ApiError>(())
+                api.mark_all_as_read_response(&auth.user_id, req)
+                    .await
+                    .map(|_| ())
             },
         )
         .await
@@ -271,8 +246,6 @@ pub async fn delete_notification(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let notification_id =
-        build_delete_notification_request(&req).map_err(crate::http::error::map_api_error)?;
 
     state
         .client_api
@@ -280,9 +253,9 @@ pub async fn delete_notification(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.delete_notification(&auth.user_id, notification_id)
-                    .await?;
-                Ok::<(), crate::impls::ApiError>(())
+                api.delete_notification_response(&auth.user_id, req)
+                    .await
+                    .map(|_| ())
             },
         )
         .await
@@ -323,8 +296,9 @@ pub async fn delete_all_read(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                api.delete_all_read(&auth.user_id).await?;
-                Ok::<(), crate::impls::ApiError>(())
+                api.delete_all_read_response(&auth.user_id)
+                    .await
+                    .map(|_| ())
             },
         )
         .await

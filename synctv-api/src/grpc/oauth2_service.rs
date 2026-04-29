@@ -76,19 +76,6 @@ impl OAuth2GrpcService {
     }
 }
 
-fn validate_oauth2_proto_request<T>(request: &T) -> Result<(), Status>
-where
-    T: prost_reflect::ReflectMessage,
-{
-    crate::impls::validate_proto_request(request)
-        .map_err(|error| Status::invalid_argument(error.to_string()))
-}
-
-fn optional_non_empty_trimmed(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
 #[tonic::async_trait]
 impl OAuth2Service for OAuth2GrpcService {
     /// Get authorization URL for `OAuth2` login flow (PUBLIC - no auth required)
@@ -102,22 +89,16 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        validate_oauth2_proto_request(&req)?;
-        let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+        let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
-        let provider = req.provider.clone();
-        let (authorization_url, state) = self
+        let response = self
             .request_executor
             .execute_public_with_control(
                 &metadata,
                 EndpointRateLimitCategory::Read,
                 move |request_control| async move {
                     oauth2_api
-                        .get_authorization_url_with_control(
-                            &provider,
-                            redirect_url,
-                            Some(&request_control),
-                        )
+                        .get_authorization_url_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
@@ -129,13 +110,10 @@ impl OAuth2Service for OAuth2GrpcService {
 
         debug!(
             "Generated OAuth2 authorization URL for provider: {}",
-            req.provider
+            provider_for_log
         );
 
-        Ok(Response::new(GetAuthorizationUrlResponse {
-            authorization_url,
-            state,
-        }))
+        Ok(Response::new(response))
     }
 
     /// Get authorization URL for binding `OAuth2` provider to existing user account
@@ -150,22 +128,19 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        validate_oauth2_proto_request(&req)?;
-        let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
+        let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
-        let provider = req.provider.clone();
 
-        let (authorization_url, state) = self
+        let response = self
             .request_executor
             .execute_user_with_control(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |request_control, authenticated| async move {
                     oauth2_api
-                        .get_authorization_url_for_bind_with_control(
+                        .get_authorization_url_for_bind_response_with_control(
                             &authenticated.user_id,
-                            &provider,
-                            redirect_url,
+                            req,
                             Some(&request_control),
                         )
                         .await
@@ -177,12 +152,12 @@ impl OAuth2Service for OAuth2GrpcService {
                 map_api_error(e)
             })?;
 
-        debug!("Generated OAuth2 bind URL for provider: {}", req.provider);
+        debug!(
+            "Generated OAuth2 bind URL for provider: {}",
+            provider_for_log
+        );
 
-        Ok(Response::new(GetAuthorizationUrlForBindResponse {
-            authorization_url,
-            state,
-        }))
+        Ok(Response::new(response))
     }
 
     /// Exchange authorization code for JWT token (optional auth)
@@ -201,12 +176,9 @@ impl OAuth2Service for OAuth2GrpcService {
         );
         let client_ip = super::extract_client_ip(&request, &self.config);
         let req = request.into_inner();
-        validate_oauth2_proto_request(&req)?;
+        let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
-        let provider = req.provider.clone();
-        let code = req.code.clone();
-        let state_token = req.state.clone();
-        let result = self
+        let response = self
             .request_executor
             .execute_optional_user_with_control(
                 &metadata,
@@ -214,10 +186,8 @@ impl OAuth2Service for OAuth2GrpcService {
                 move |request_control, authenticated| async move {
                     let current_user_id = authenticated.as_ref().map(|token| &token.user_id);
                     oauth2_api
-                        .exchange_authorization_code_with_control(
-                            &provider,
-                            &code,
-                            &state_token,
+                        .exchange_authorization_code_response_with_control(
+                            req,
                             current_user_id,
                             client_ip,
                             Some(&request_control),
@@ -233,17 +203,10 @@ impl OAuth2Service for OAuth2GrpcService {
 
         info!(
             "OAuth2 exchange successful for provider: {} (is_bind: {})",
-            req.provider, result.is_bind
+            provider_for_log, response.is_bind
         );
 
-        Ok(Response::new(ExchangeAuthorizationCodeResponse {
-            access_token: result.access_token.unwrap_or_default(),
-            refresh_token: result.refresh_token.unwrap_or_default(),
-            expires_in: result.expires_in,
-            user_info: result.user_info,
-            redirect_url: result.redirect_url.unwrap_or_default(),
-            is_bind: result.is_bind,
-        }))
+        Ok(Response::new(response))
     }
 
     /// List all available `OAuth2` provider instances (PUBLIC - no auth required)
@@ -257,12 +220,12 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         );
         let oauth2_api = Arc::clone(&self.oauth2_api);
-        let providers = self
+        let response = self
             .request_executor
             .execute_public(
                 &metadata,
                 EndpointRateLimitCategory::Read,
-                move || async move { oauth2_api.list_available_providers().await },
+                move || async move { oauth2_api.list_available_providers_response().await },
             )
             .await
             .map_err(|e| {
@@ -270,14 +233,7 @@ impl OAuth2Service for OAuth2GrpcService {
                 map_api_error(e)
             })?;
 
-        let response = providers
-            .into_iter()
-            .map(std::convert::Into::into)
-            .collect();
-
-        Ok(Response::new(ListAvailableProvidersResponse {
-            providers: response,
-        }))
+        Ok(Response::new(response))
     }
 
     /// Unlink `OAuth2` provider from user account (AUTHENTICATED - requires JWT)
@@ -291,23 +247,17 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         );
         let req = request.into_inner();
-        validate_oauth2_proto_request(&req)?;
-        let provider_user_id = optional_non_empty_trimmed(&req.provider_user_id);
+        let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
-        let provider = req.provider.clone();
 
-        let result = self
+        let response = self
             .request_executor
             .execute_user(
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     oauth2_api
-                        .unlink_provider(
-                            &authenticated.user_id,
-                            &provider,
-                            provider_user_id.as_deref(),
-                        )
+                        .unlink_provider_response(&authenticated.user_id, req)
                         .await
                 },
             )
@@ -317,12 +267,9 @@ impl OAuth2Service for OAuth2GrpcService {
                 map_api_error(e)
             })?;
 
-        info!("OAuth2 provider unlinked: {}", req.provider);
+        info!("OAuth2 provider unlinked: {}", provider_for_log);
 
-        Ok(Response::new(UnlinkProviderResponse {
-            success: result.success,
-            removed_count: result.removed_count,
-        }))
+        Ok(Response::new(response))
     }
 
     /// Get linked `OAuth2` providers for authenticated user (AUTHENTICATED - requires JWT)
@@ -336,13 +283,13 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         );
 
-        let providers = self
+        let response = self
             .request_executor
             .execute_user(&metadata, EndpointRateLimitCategory::Read, {
                 let oauth2_api = Arc::clone(&self.oauth2_api);
                 move |authenticated| async move {
                     oauth2_api
-                        .get_linked_providers(&authenticated.user_id)
+                        .get_linked_providers_response(&authenticated.user_id)
                         .await
                 }
             })
@@ -352,14 +299,7 @@ impl OAuth2Service for OAuth2GrpcService {
                 map_api_error(e)
             })?;
 
-        let response = providers
-            .into_iter()
-            .map(std::convert::Into::into)
-            .collect();
-
-        Ok(Response::new(GetLinkedProvidersResponse {
-            providers: response,
-        }))
+        Ok(Response::new(response))
     }
 }
 
@@ -370,10 +310,11 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_rejects_invalid_redirect_url() {
-        let err = validate_oauth2_proto_request(&GetAuthorizationUrlRequest {
+        let err = crate::impls::validate_proto_request(&GetAuthorizationUrlRequest {
             provider: "github".to_string(),
             redirect_url: "javascript:alert(1)".to_string(),
         })
+        .map_err(|error| Status::invalid_argument(error.to_string()))
         .expect_err("invalid redirect URL must be rejected before hitting oauth2 impl");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("redirect_url"));
@@ -381,11 +322,12 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_rejects_invalid_state() {
-        let err = validate_oauth2_proto_request(&ExchangeAuthorizationCodeRequest {
+        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
             provider: "github".to_string(),
             code: "code.with.dots".to_string(),
             state: "short".to_string(),
         })
+        .map_err(|error| Status::invalid_argument(error.to_string()))
         .expect_err("invalid OAuth2 state must be rejected before exchange");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("state"));
@@ -393,11 +335,12 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_rejects_invalid_code() {
-        let err = validate_oauth2_proto_request(&ExchangeAuthorizationCodeRequest {
+        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
             provider: "github".to_string(),
             code: "code with spaces".to_string(),
             state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
         })
+        .map_err(|error| Status::invalid_argument(error.to_string()))
         .expect_err("invalid OAuth2 code must be rejected before exchange");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("code"));
@@ -406,10 +349,11 @@ mod tests {
     #[test]
     fn test_validate_oauth2_proto_request_rejects_too_long_provider_user_id() {
         let too_long = "a".repeat(257);
-        let err = validate_oauth2_proto_request(&UnlinkProviderRequest {
+        let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
             provider: "github".to_string(),
             provider_user_id: too_long,
         })
+        .map_err(|error| Status::invalid_argument(error.to_string()))
         .expect_err("overlong provider_user_id must be rejected");
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("provider_user_id"));

@@ -16,8 +16,10 @@ use synctv_core::service::UserNotificationService;
 use crate::impls::ApiError;
 use crate::proto::client::SortDirection as ProtoSortDirection;
 use crate::proto::client::{
-    DeleteNotificationRequest, GetNotificationRequest, ListNotificationsRequest,
-    MarkAsReadRequest as ProtoMarkAsReadRequest,
+    DeleteAllReadResponse, DeleteNotificationRequest, DeleteNotificationResponse,
+    GetNotificationRequest, GetNotificationResponse, ListNotificationsRequest,
+    ListNotificationsResponse, MarkAllAsReadRequest as ProtoMarkAllAsReadRequest,
+    MarkAllAsReadResponse, MarkAsReadRequest as ProtoMarkAsReadRequest, MarkAsReadResponse,
     NotificationListSortBy as ProtoNotificationListSortBy, NotificationProto,
     NotificationType as ProtoNotificationType,
 };
@@ -223,6 +225,33 @@ pub(crate) fn notification_counts_to_proto(
     Ok((total, unread_count))
 }
 
+fn notification_list_response_to_proto(
+    result: ListNotificationsResult,
+    public_id_codec: &PublicIdCodec,
+) -> Result<ListNotificationsResponse, ApiError> {
+    let (total, unread_count) = notification_counts_to_proto(result.total, result.unread_count)?;
+    Ok(ListNotificationsResponse {
+        notifications: result
+            .notifications
+            .into_iter()
+            .map(|notification| notification_to_proto(notification, public_id_codec))
+            .collect(),
+        total,
+        unread_count,
+    })
+}
+
+fn proto_mark_all_before(
+    req: &ProtoMarkAllAsReadRequest,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+    req.before
+        .map(|ts| {
+            chrono::DateTime::from_timestamp(ts, 0)
+                .ok_or_else(|| ApiError::InvalidInput("Invalid timestamp".to_string()))
+        })
+        .transpose()
+}
+
 fn map_notification_lookup_error(err: synctv_core::Error) -> ApiError {
     match err {
         synctv_core::Error::NotFound(_) => ApiError::NotFound("Notification not found".to_string()),
@@ -278,6 +307,15 @@ impl NotificationApiImpl {
         })
     }
 
+    pub async fn list_notifications_response(
+        &self,
+        user_id: &UserId,
+        req: ListNotificationsRequest,
+    ) -> Result<ListNotificationsResponse, ApiError> {
+        let result = self.list_notifications(user_id, req).await?;
+        notification_list_response_to_proto(result, &self.public_id_codec)
+    }
+
     /// Get a single notification by ID.
     pub async fn get_notification(
         &self,
@@ -288,6 +326,18 @@ impl NotificationApiImpl {
             .get(user_id, notification_id)
             .await
             .map_err(map_notification_lookup_error)
+    }
+
+    pub async fn get_notification_response(
+        &self,
+        user_id: &UserId,
+        req: GetNotificationRequest,
+    ) -> Result<GetNotificationResponse, ApiError> {
+        let notification_id = build_get_notification_request(&req)?;
+        let notification = self.get_notification(user_id, notification_id).await?;
+        Ok(GetNotificationResponse {
+            notification: Some(notification_to_proto(notification, &self.public_id_codec)),
+        })
     }
 
     /// Mark specific notifications as read.
@@ -303,6 +353,16 @@ impl NotificationApiImpl {
             .map_err(map_notification_mutation_error)
     }
 
+    pub async fn mark_as_read_response(
+        &self,
+        user_id: &UserId,
+        req: ProtoMarkAsReadRequest,
+    ) -> Result<MarkAsReadResponse, ApiError> {
+        let notification_ids = build_mark_as_read_request(&req)?;
+        self.mark_as_read(user_id, notification_ids).await?;
+        Ok(MarkAsReadResponse {})
+    }
+
     /// Mark all notifications as read, optionally before a timestamp.
     pub async fn mark_all_as_read(
         &self,
@@ -314,6 +374,16 @@ impl NotificationApiImpl {
             .await
             .map(|_| ())
             .map_err(map_notification_mutation_error)
+    }
+
+    pub async fn mark_all_as_read_response(
+        &self,
+        user_id: &UserId,
+        req: ProtoMarkAllAsReadRequest,
+    ) -> Result<MarkAllAsReadResponse, ApiError> {
+        let before = proto_mark_all_before(&req)?;
+        self.mark_all_as_read(user_id, before).await?;
+        Ok(MarkAllAsReadResponse {})
     }
 
     /// Delete a specific notification.
@@ -328,6 +398,16 @@ impl NotificationApiImpl {
             .map_err(map_notification_lookup_error)
     }
 
+    pub async fn delete_notification_response(
+        &self,
+        user_id: &UserId,
+        req: DeleteNotificationRequest,
+    ) -> Result<DeleteNotificationResponse, ApiError> {
+        let notification_id = build_delete_notification_request(&req)?;
+        self.delete_notification(user_id, notification_id).await?;
+        Ok(DeleteNotificationResponse {})
+    }
+
     /// Delete all read notifications for a user.
     pub async fn delete_all_read(&self, user_id: &UserId) -> Result<(), ApiError> {
         self.notification_service
@@ -335,6 +415,14 @@ impl NotificationApiImpl {
             .await
             .map(|_| ())
             .map_err(map_notification_mutation_error)
+    }
+
+    pub async fn delete_all_read_response(
+        &self,
+        user_id: &UserId,
+    ) -> Result<DeleteAllReadResponse, ApiError> {
+        self.delete_all_read(user_id).await?;
+        Ok(DeleteAllReadResponse {})
     }
 }
 

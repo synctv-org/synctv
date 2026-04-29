@@ -174,6 +174,10 @@ pub(crate) fn build_create_websocket_ticket_request(
     ))
 }
 
+fn websocket_ticket_service_unavailable_error() -> ApiError {
+    ApiError::ServiceUnavailable("WebSocket ticket service is not available.".to_string())
+}
+
 type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
 
 fn build_get_chat_history_request(
@@ -564,6 +568,66 @@ impl ClientApiImpl {
             playback_state,
             membership_status: member_status_to_proto(member.status),
             requires_approval,
+        })
+    }
+
+    pub async fn create_websocket_ticket_with_control(
+        &self,
+        user_id: &UserId,
+        password_version: i32,
+        req: crate::proto::client::CreateWebSocketTicketRequest,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::CreateWebSocketTicketResponse, ApiError> {
+        let room_id = build_create_websocket_ticket_request(&req, &self.public_id_codec)?;
+        let requested_room_id = req.room_id;
+        let ws_ticket_service = self
+            .ws_ticket_service
+            .as_ref()
+            .ok_or_else(websocket_ticket_service_unavailable_error)?;
+
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|err| match err {
+                synctv_core::Error::NotFound(_) => {
+                    ApiError::NotFound(format!("Room {requested_room_id} not found"))
+                }
+                other => ApiError::from(other),
+            })?;
+
+        if room.is_banned {
+            return Err(ApiError::Authorization("Room is banned".to_string()));
+        }
+
+        let is_member = self
+            .room_service
+            .member_service()
+            .is_member(&room_id, user_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if !is_member {
+            return Err(ApiError::Authorization(
+                "Not a member of this room. Join the room first.".to_string(),
+            ));
+        }
+
+        let ticket = ws_ticket_service
+            .create_ticket_with_control(user_id, &room_id, password_version, request_control)
+            .await
+            .map_err(ApiError::from)?;
+
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(ApiError::Internal)?;
+
+        Ok(crate::proto::client::CreateWebSocketTicketResponse {
+            ticket,
+            room_id: public_room_id.clone(),
+            expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
+            usage: format!("Use in WebSocket URL: ws://host/ws/rooms/{public_room_id}?ticket=xxx"),
         })
     }
 
@@ -1146,6 +1210,7 @@ mod tests {
         build_check_room_request, build_create_websocket_ticket_request,
         build_get_chat_history_request, build_my_room_list_query, build_public_room_list_query,
         build_transfer_room_ownership_request, settings_registry_unavailable_error,
+        websocket_ticket_service_unavailable_error,
     };
     use crate::impls::ErrorKind;
 
@@ -1343,6 +1408,17 @@ mod tests {
         .expect("valid room id");
 
         assert_eq!(parsed, room_id);
+    }
+
+    #[test]
+    fn websocket_ticket_service_unavailable_maps_to_service_unavailable() {
+        let err = websocket_ticket_service_unavailable_error();
+
+        assert!(matches!(
+            err,
+            crate::impls::ApiError::ServiceUnavailable(ref message)
+                if message == "WebSocket ticket service is not available."
+        ));
     }
 
     #[test]

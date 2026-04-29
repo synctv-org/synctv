@@ -456,7 +456,8 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_provider_stores(provider_stores.clone())
         .with_request_executor(request_executor.clone())
         .with_email_api(email_api.clone())
-        .with_passkey_service(config.passkey_service.clone()),
+        .with_passkey_service(config.passkey_service.clone())
+        .with_websocket_ticket_service(config.ws_ticket_service.clone()),
     );
 
     let client_api = if let Some(ref event_service) = config.event_service {

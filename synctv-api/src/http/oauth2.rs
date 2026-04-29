@@ -54,24 +54,12 @@ fn require_oauth2_api(state: &AppState) -> Result<Arc<crate::impls::OAuth2ApiImp
         .ok_or_else(oauth2_unavailable_error)
 }
 
-fn validate_oauth2_proto_request<T>(request: &T) -> AppResult<()>
-where
-    T: prost_reflect::ReflectMessage,
-{
-    crate::impls::validate_proto_request(request).map_err(super::error::map_api_error)
-}
-
 fn validate_oauth2_path<T>(path: T) -> AppResult<T>
 where
     T: prost_reflect::ReflectMessage,
 {
-    validate_oauth2_proto_request(&path)?;
+    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     Ok(path)
-}
-
-fn optional_non_empty_trimmed(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Get `OAuth2` authorization URL for login flow
@@ -101,23 +89,17 @@ pub async fn get_authorize_url(
 ) -> AppResult<Json<GetAuthorizationUrlResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     req.provider = validate_oauth2_path(path)?.provider;
-    validate_oauth2_proto_request(&req)?;
-    let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
-    let provider = req.provider.clone();
+    let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let (authorization_url, state_token) = state
+    let response = state
         .request_executor
         .execute_public_with_control(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |request_control| async move {
                 oauth2_api
-                    .get_authorization_url_with_control(
-                        &provider,
-                        redirect_url,
-                        Some(&request_control),
-                    )
+                    .get_authorization_url_response_with_control(req, Some(&request_control))
                     .await
             },
         )
@@ -129,13 +111,10 @@ pub async fn get_authorize_url(
 
     debug!(
         "Generated OAuth2 authorization URL for provider: {}",
-        req.provider
+        provider_for_log
     );
 
-    Ok(Json(GetAuthorizationUrlResponse {
-        authorization_url,
-        state: state_token,
-    }))
+    Ok(Json(response))
 }
 
 /// Exchange authorization code for JWT token (frontend-driven flow)
@@ -174,16 +153,15 @@ pub async fn exchange_authorization_code(
     let oauth2_api = require_oauth2_api(&state)?;
     let mut req = req;
     req.provider = validate_oauth2_path(path)?.provider;
-    validate_oauth2_proto_request(&req)?;
+    let provider_for_log = req.provider.clone();
     let client_ip = crate::client_ip::extract_client_ip_from_headers(
         &state.config,
         connect_info.0.ip(),
         &headers,
     );
-    let provider = req.provider.clone();
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let result = state
+    let response = state
         .request_executor
         .execute_optional_user_with_control(
             &request_meta,
@@ -191,10 +169,8 @@ pub async fn exchange_authorization_code(
             move |request_control, authenticated| async move {
                 let current_user_id = authenticated.as_ref().map(|token| &token.user_id);
                 oauth2_api
-                    .exchange_authorization_code_with_control(
-                        &provider,
-                        &req.code,
-                        &req.state,
+                    .exchange_authorization_code_response_with_control(
+                        req,
                         current_user_id,
                         Some(client_ip),
                         Some(&request_control),
@@ -210,17 +186,10 @@ pub async fn exchange_authorization_code(
 
     info!(
         "OAuth2 exchange successful for provider: {} (is_bind: {})",
-        req.provider, result.is_bind
+        provider_for_log, response.is_bind
     );
 
-    Ok(Json(ExchangeAuthorizationCodeResponse {
-        access_token: result.access_token.unwrap_or_default(),
-        refresh_token: result.refresh_token.unwrap_or_default(),
-        expires_in: result.expires_in,
-        user_info: result.user_info,
-        redirect_url: result.redirect_url.unwrap_or_default(),
-        is_bind: result.is_bind,
-    }))
+    Ok(Json(response))
 }
 
 /// Get authorization URL for binding `OAuth2` provider to authenticated user
@@ -257,22 +226,19 @@ pub async fn get_bind_authorize_url(
 ) -> AppResult<Json<GetAuthorizationUrlForBindResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     req.provider = validate_oauth2_path(path)?.provider;
-    validate_oauth2_proto_request(&req)?;
-    let redirect_url = optional_non_empty_trimmed(&req.redirect_url);
-    let provider = req.provider.clone();
+    let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let (authorization_url, state_token) = state
+    let response = state
         .request_executor
         .execute_user_with_control(
             &request_meta,
             EndpointRateLimitCategory::Write,
             move |request_control, authenticated| async move {
                 oauth2_api
-                    .get_authorization_url_for_bind_with_control(
+                    .get_authorization_url_for_bind_response_with_control(
                         &authenticated.user_id,
-                        &provider,
-                        redirect_url,
+                        req,
                         Some(&request_control),
                     )
                     .await
@@ -284,12 +250,12 @@ pub async fn get_bind_authorize_url(
             map_api_error(e)
         })?;
 
-    debug!("Generated OAuth2 bind URL for provider: {}", req.provider);
+    debug!(
+        "Generated OAuth2 bind URL for provider: {}",
+        provider_for_log
+    );
 
-    Ok(Json(GetAuthorizationUrlForBindResponse {
-        authorization_url,
-        state: state_token,
-    }))
+    Ok(Json(response))
 }
 
 /// Unlink `OAuth2` provider from authenticated user
@@ -323,23 +289,17 @@ pub async fn unlink_provider(
 ) -> AppResult<Json<UnlinkProviderResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
     req.provider = validate_oauth2_path(path)?.provider;
-    validate_oauth2_proto_request(&req)?;
-    let provider_user_id = optional_non_empty_trimmed(&req.provider_user_id);
-    let provider = req.provider.clone();
+    let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let result = state
+    let response = state
         .request_executor
         .execute_user(
             &request_meta,
             EndpointRateLimitCategory::Write,
             move |authenticated| async move {
                 oauth2_api
-                    .unlink_provider(
-                        &authenticated.user_id,
-                        &provider,
-                        provider_user_id.as_deref(),
-                    )
+                    .unlink_provider_response(&authenticated.user_id, req)
                     .await
             },
         )
@@ -349,12 +309,9 @@ pub async fn unlink_provider(
             map_api_error(e)
         })?;
 
-    info!("OAuth2 provider unlinked: {}", req.provider);
+    info!("OAuth2 provider unlinked: {}", provider_for_log);
 
-    Ok(Json(UnlinkProviderResponse {
-        success: result.success,
-        removed_count: result.removed_count,
-    }))
+    Ok(Json(response))
 }
 
 /// List all available `OAuth2` provider instances
@@ -382,12 +339,12 @@ pub async fn list_available_providers(
     let oauth2_api = require_oauth2_api(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let providers = state
+    let response = state
         .request_executor
         .execute_public(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            || async move { oauth2_api.list_available_providers().await },
+            || async move { oauth2_api.list_available_providers_response().await },
         )
         .await
         .map_err(|e| {
@@ -395,14 +352,7 @@ pub async fn list_available_providers(
             map_api_error(e)
         })?;
 
-    let response = providers
-        .into_iter()
-        .map(std::convert::Into::into)
-        .collect();
-
-    Ok(Json(ListAvailableProvidersResponse {
-        providers: response,
-    }))
+    Ok(Json(response))
 }
 
 /// Get linked `OAuth2` providers for authenticated user
@@ -432,14 +382,14 @@ pub async fn get_linked_providers(
     let oauth2_api = require_oauth2_api(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
 
-    let providers = state
+    let response = state
         .request_executor
         .execute_user(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 oauth2_api
-                    .get_linked_providers(&authenticated.user_id)
+                    .get_linked_providers_response(&authenticated.user_id)
                     .await
             },
         )
@@ -449,14 +399,7 @@ pub async fn get_linked_providers(
             map_api_error(e)
         })?;
 
-    let response = providers
-        .into_iter()
-        .map(std::convert::Into::into)
-        .collect();
-
-    Ok(Json(GetLinkedProvidersResponse {
-        providers: response,
-    }))
+    Ok(Json(response))
 }
 
 #[cfg(test)]
@@ -465,25 +408,12 @@ mod tests {
     use axum::http::StatusCode;
 
     #[test]
-    fn test_optional_non_empty_trimmed() {
-        assert_eq!(optional_non_empty_trimmed(""), None);
-        assert_eq!(optional_non_empty_trimmed("   "), None);
-        assert_eq!(
-            optional_non_empty_trimmed("  https://example.com/callback  "),
-            Some("https://example.com/callback".to_string())
-        );
-        assert_eq!(
-            optional_non_empty_trimmed("  provider-user-123  "),
-            Some("provider-user-123".to_string())
-        );
-    }
-
-    #[test]
     fn test_validate_oauth2_proto_request_rejects_javascript_redirect_url() {
-        let err = validate_oauth2_proto_request(&GetAuthorizationUrlRequest {
+        let err = crate::impls::validate_proto_request(&GetAuthorizationUrlRequest {
             provider: "github".to_string(),
             redirect_url: "javascript:alert(document.cookie)".to_string(),
         })
+        .map_err(map_api_error)
         .expect_err("dangerous redirect URL must be rejected");
 
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -492,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_accepts_native_app_redirect_url() {
-        validate_oauth2_proto_request(&GetAuthorizationUrlForBindRequest {
+        crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
             provider: "logto1".to_string(),
             redirect_url: "io.github.synctv://oauth2/callback".to_string(),
         })
@@ -501,11 +431,12 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_rejects_invalid_exchange_code() {
-        let err = validate_oauth2_proto_request(&ExchangeAuthorizationCodeRequest {
+        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
             provider: "github".to_string(),
             code: "code with spaces".to_string(),
             state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
         })
+        .map_err(map_api_error)
         .expect_err("invalid code must be rejected");
 
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -514,10 +445,11 @@ mod tests {
 
     #[test]
     fn test_validate_oauth2_proto_request_rejects_too_long_provider_user_id() {
-        let err = validate_oauth2_proto_request(&UnlinkProviderRequest {
+        let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
             provider: "github".to_string(),
             provider_user_id: "a".repeat(257),
         })
+        .map_err(map_api_error)
         .expect_err("overlong provider_user_id must be rejected");
 
         assert_eq!(err.status, StatusCode::BAD_REQUEST);

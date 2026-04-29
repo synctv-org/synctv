@@ -23,7 +23,13 @@ use std::sync::Arc;
 use synctv_core::models::{User, UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{OAuth2Service, UserService};
-use synctv_proto::client::{LinkedProvider, OAuth2ProviderInstance, OAuth2UserInfo};
+use synctv_proto::client::{
+    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
+    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
+    GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
+    LinkedProvider, ListAvailableProvidersResponse, OAuth2ProviderInstance, OAuth2UserInfo,
+    UnlinkProviderRequest, UnlinkProviderResponse,
+};
 
 use super::ApiError;
 
@@ -36,6 +42,11 @@ pub struct OAuth2ApiImpl {
 }
 
 impl OAuth2ApiImpl {
+    fn optional_non_empty_trimmed(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
     fn oauth2_identity_unlink_counts(
         linked_mappings: &[synctv_core::models::oauth2_client::UserOAuthProviderMapping],
         provider_type: &synctv_core::models::OAuth2Provider,
@@ -112,6 +123,23 @@ impl OAuth2ApiImpl {
         Ok((auth_url, state))
     }
 
+    pub async fn get_authorization_url_response_with_control(
+        &self,
+        req: GetAuthorizationUrlRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<GetAuthorizationUrlResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
+        let (authorization_url, state) = self
+            .get_authorization_url_with_control(&req.provider, redirect_url, control)
+            .await?;
+
+        Ok(GetAuthorizationUrlResponse {
+            authorization_url,
+            state,
+        })
+    }
+
     /// Get authorization URL for binding `OAuth2` provider to existing user
     ///
     /// Requires authentication. The `user_id` should come from the JWT token.
@@ -163,6 +191,29 @@ impl OAuth2ApiImpl {
             .map_err(ApiError::from)?;
 
         Ok((auth_url, state))
+    }
+
+    pub async fn get_authorization_url_for_bind_response_with_control(
+        &self,
+        user_id: &UserId,
+        req: GetAuthorizationUrlForBindRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<GetAuthorizationUrlForBindResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let redirect_url = Self::optional_non_empty_trimmed(&req.redirect_url);
+        let (authorization_url, state) = self
+            .get_authorization_url_for_bind_with_control(
+                user_id,
+                &req.provider,
+                redirect_url,
+                control,
+            )
+            .await?;
+
+        Ok(GetAuthorizationUrlForBindResponse {
+            authorization_url,
+            state,
+        })
     }
 
     /// Exchange authorization code for JWT token
@@ -332,6 +383,35 @@ impl OAuth2ApiImpl {
         })
     }
 
+    pub async fn exchange_authorization_code_response_with_control(
+        &self,
+        req: ExchangeAuthorizationCodeRequest,
+        current_user_id: Option<&UserId>,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<ExchangeAuthorizationCodeResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let result = self
+            .exchange_authorization_code_with_control(
+                &req.provider,
+                &req.code,
+                &req.state,
+                current_user_id,
+                client_ip,
+                control,
+            )
+            .await?;
+
+        Ok(ExchangeAuthorizationCodeResponse {
+            access_token: result.access_token.unwrap_or_default(),
+            refresh_token: result.refresh_token.unwrap_or_default(),
+            expires_in: result.expires_in,
+            user_info: result.user_info,
+            redirect_url: result.redirect_url.unwrap_or_default(),
+            is_bind: result.is_bind,
+        })
+    }
+
     /// List all available `OAuth2` provider instances
     pub async fn list_available_providers(&self) -> Result<Vec<ProviderInfo>, ApiError> {
         let providers = self.oauth2_service.list_available_instances().await;
@@ -345,6 +425,19 @@ impl OAuth2ApiImpl {
             .collect();
 
         Ok(result)
+    }
+
+    pub async fn list_available_providers_response(
+        &self,
+    ) -> Result<ListAvailableProvidersResponse, ApiError> {
+        let providers = self
+            .list_available_providers()
+            .await?
+            .into_iter()
+            .map(std::convert::Into::into)
+            .collect();
+
+        Ok(ListAvailableProvidersResponse { providers })
     }
 
     /// Unlink `OAuth2` provider from user account
@@ -419,6 +512,23 @@ impl OAuth2ApiImpl {
         })
     }
 
+    pub async fn unlink_provider_response(
+        &self,
+        user_id: &UserId,
+        req: UnlinkProviderRequest,
+    ) -> Result<UnlinkProviderResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let provider_user_id = Self::optional_non_empty_trimmed(&req.provider_user_id);
+        let result = self
+            .unlink_provider(user_id, &req.provider, provider_user_id.as_deref())
+            .await?;
+
+        Ok(UnlinkProviderResponse {
+            success: result.success,
+            removed_count: result.removed_count,
+        })
+    }
+
     /// Get linked `OAuth2` providers for authenticated user
     pub async fn get_linked_providers(
         &self,
@@ -441,6 +551,20 @@ impl OAuth2ApiImpl {
             .collect();
 
         Ok(result)
+    }
+
+    pub async fn get_linked_providers_response(
+        &self,
+        user_id: &UserId,
+    ) -> Result<GetLinkedProvidersResponse, ApiError> {
+        let providers = self
+            .get_linked_providers(user_id)
+            .await?
+            .into_iter()
+            .map(std::convert::Into::into)
+            .collect();
+
+        Ok(GetLinkedProvidersResponse { providers })
     }
 }
 

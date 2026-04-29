@@ -127,15 +127,13 @@ pub async fn send_verification_email(
         request_meta,
         move |email_api, request_control| async move {
             email_api
-                .send_verification_email_with_control(&req.email, Some(&request_control))
+                .send_verification_email_response_with_control(req, Some(&request_control))
                 .await
         },
     )
     .await?;
 
-    Ok(Json(SendVerificationEmailResponse {
-        message: result.message,
-    }))
+    Ok(Json(result))
 }
 
 /// Confirm email verification
@@ -165,16 +163,13 @@ pub async fn confirm_email(
         request_meta,
         move |email_api, request_control| async move {
             email_api
-                .confirm_email_with_control(&req.email, &req.token, Some(&request_control))
+                .confirm_email_response_with_control(req, Some(&request_control))
                 .await
         },
     )
     .await?;
 
-    Ok(Json(ConfirmEmailResponse {
-        message: result.message,
-        user_id: result.user_id,
-    }))
+    Ok(Json(result))
 }
 
 /// Request password reset
@@ -207,15 +202,13 @@ pub async fn request_password_reset(
         request_meta,
         move |email_api, request_control| async move {
             email_api
-                .request_password_reset_with_control(&req.email, Some(&request_control))
+                .request_password_reset_response_with_control(req, Some(&request_control))
                 .await
         },
     )
     .await?;
 
-    Ok(Json(RequestPasswordResetResponse {
-        message: result.message,
-    }))
+    Ok(Json(result))
 }
 
 /// Confirm password reset
@@ -245,21 +238,13 @@ pub async fn confirm_password_reset(
         request_meta,
         move |email_api, request_control| async move {
             email_api
-                .confirm_password_reset_with_control(
-                    &req.email,
-                    &req.token,
-                    &req.new_password,
-                    Some(&request_control),
-                )
+                .confirm_password_reset_response_with_control(req, Some(&request_control))
                 .await
         },
     )
     .await?;
 
-    Ok(Json(ConfirmPasswordResetResponse {
-        message: result.message,
-        user_id: result.user_id,
-    }))
+    Ok(Json(result))
 }
 
 #[cfg(test)]

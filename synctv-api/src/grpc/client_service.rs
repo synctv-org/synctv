@@ -2176,16 +2176,14 @@ impl EmailService for ClientServiceImpl {
                 EndpointRateLimitCategory::Email,
                 move |request_control| async move {
                     email_api
-                        .send_verification_email_with_control(&req.email, Some(&request_control))
+                        .send_verification_email_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_email_flow_error)?;
 
-        Ok(Response::new(SendVerificationEmailResponse {
-            message: result.message,
-        }))
+        Ok(Response::new(result))
     }
 
     async fn confirm_email(
@@ -2203,17 +2201,14 @@ impl EmailService for ClientServiceImpl {
                 EndpointRateLimitCategory::Email,
                 move |request_control| async move {
                     email_api
-                        .confirm_email_with_control(&req.email, &req.token, Some(&request_control))
+                        .confirm_email_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_email_flow_error)?;
 
-        Ok(Response::new(ConfirmEmailResponse {
-            message: result.message,
-            user_id: result.user_id,
-        }))
+        Ok(Response::new(result))
     }
 
     async fn request_password_reset(
@@ -2231,16 +2226,14 @@ impl EmailService for ClientServiceImpl {
                 EndpointRateLimitCategory::Email,
                 move |request_control| async move {
                     email_api
-                        .request_password_reset_with_control(&req.email, Some(&request_control))
+                        .request_password_reset_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_email_flow_error)?;
 
-        Ok(Response::new(RequestPasswordResetResponse {
-            message: result.message,
-        }))
+        Ok(Response::new(result))
     }
 
     async fn confirm_password_reset(
@@ -2258,22 +2251,14 @@ impl EmailService for ClientServiceImpl {
                 EndpointRateLimitCategory::Email,
                 move |request_control| async move {
                     email_api
-                        .confirm_password_reset_with_control(
-                            &req.email,
-                            &req.token,
-                            &req.new_password,
-                            Some(&request_control),
-                        )
+                        .confirm_password_reset_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_email_flow_error)?;
 
-        Ok(Response::new(ConfirmPasswordResetResponse {
-            message: result.message,
-            user_id: result.user_id,
-        }))
+        Ok(Response::new(result))
     }
 }
 

@@ -28,7 +28,6 @@ mod webrtc;
 pub(crate) use playback::{
     build_start_playback_request, build_update_playback, PlaybackUpdateCommand,
 };
-pub(crate) use room::build_create_websocket_ticket_request;
 
 // Proto conversion helpers used across impls modules within this crate.
 pub(crate) mod convert;
@@ -171,6 +170,8 @@ pub struct ClientApiImpl {
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     /// Shared WebAuthn service for passkey flows that are exposed by multiple transports.
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
+    /// Shared WebSocket ticket service for issuing short-lived room-bound tickets.
+    pub ws_ticket_service: Option<Arc<dyn synctv_core::service::WebSocketTicketService>>,
 }
 
 impl ClientApiImpl {
@@ -282,6 +283,7 @@ impl ClientApiImpl {
             request_executor: None,
             email_api: None,
             passkey_service: None,
+            ws_ticket_service: None,
         }
     }
 
@@ -343,6 +345,7 @@ impl ClientApiImpl {
             request_executor: None,
             email_api: config.email_api,
             passkey_service: config.passkey_service,
+            ws_ticket_service: None,
         }
     }
 
@@ -391,6 +394,15 @@ impl ClientApiImpl {
         passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     ) -> Self {
         self.passkey_service = passkey_service;
+        self
+    }
+
+    #[must_use]
+    pub fn with_websocket_ticket_service(
+        mut self,
+        ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
+    ) -> Self {
+        self.ws_ticket_service = Some(ws_ticket_service);
         self
     }
 

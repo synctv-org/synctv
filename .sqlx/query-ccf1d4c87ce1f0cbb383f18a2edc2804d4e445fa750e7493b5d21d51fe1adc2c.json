@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE media_provider_instances\n            SET endpoint = $2, comment = $3, jwt_secret = $4, custom_ca = $5,\n                timeout = $6, tls = $7, insecure_tls = $8, providers = $9, enabled = $10,\n                updated_at = NOW()\n            WHERE name = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Bool",
+        "Bool",
+        "TextArray",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ccf1d4c87ce1f0cbb383f18a2edc2804d4e445fa750e7493b5d21d51fe1adc2c"
+}

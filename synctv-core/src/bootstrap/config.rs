@@ -241,6 +241,15 @@ mod tests {
         EnvVarGuard::set("SYNCTV_MANAGEMENT_AUTH_TOKEN", "test-management-auth-token")
     }
 
+    fn clear_secret_env_overrides() -> Vec<EnvVarGuard> {
+        vec![
+            EnvVarGuard::remove("SYNCTV_JWT_SECRET"),
+            EnvVarGuard::remove("SYNCTV_JWT_SECRET_FILE"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET"),
+            EnvVarGuard::remove("SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE"),
+        ]
+    }
+
     #[test]
     fn test_load_config_fails_for_invalid_auto_discovered_file() {
         let _lock = acquire_process_config_test_lock();
@@ -311,6 +320,7 @@ mod tests {
         let dir = tempdir().expect("temp dir should be created");
         let _cwd = CurrentDirGuard::change_to(dir.path());
         let _management_auth = management_auth_token_guard();
+        let _secret_env = clear_secret_env_overrides();
         let config_path = dir.path().join("explicit-synctv.yaml");
         std::fs::write(
             &config_path,
@@ -389,6 +399,7 @@ server:
     fn test_load_config_with_options_can_skip_validation() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().expect("temp dir should be created");
+        let _secret_env = clear_secret_env_overrides();
         let config_path = dir.path().join("invalid-but-loadable.yaml");
         std::fs::write(
             &config_path,

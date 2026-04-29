@@ -4,7 +4,40 @@ use super::convert::user_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 use std::future::Future;
+use std::net::IpAddr;
 use synctv_core::provider::ExecutionControl;
+
+pub(crate) struct PasskeyAuthChallenge {
+    pub session_id: String,
+    pub options_json: Vec<u8>,
+}
+
+fn normalize_optional_email(email: &str) -> Result<Option<String>, ApiError> {
+    if email.trim().is_empty() {
+        Ok(None)
+    } else {
+        crate::http::validation::validate_email(email)
+            .map(Some)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))
+    }
+}
+
+fn normalize_exactly_one_identifier(username: &str, email: &str) -> Result<String, ApiError> {
+    let has_username = !username.trim().is_empty();
+    let has_email = !email.trim().is_empty();
+    if has_username == has_email {
+        return Err(ApiError::InvalidInput(
+            "Provide exactly one of username or email".to_string(),
+        ));
+    }
+    if has_email {
+        crate::http::validation::validate_email(email)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))
+    } else {
+        crate::http::validation::validate_username(username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))
+    }
+}
 
 /// Outcome of a logout operation.
 ///
@@ -254,6 +287,162 @@ impl ClientApiImpl {
             access_token: access_token.unwrap_or_default(),
             refresh_token: refresh_token.unwrap_or_default(),
         })
+    }
+
+    pub(crate) async fn start_passkey_registration_challenge_with_control(
+        &self,
+        username: String,
+        email: String,
+        name: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<PasskeyAuthChallenge, ApiError> {
+        let username = crate::http::validation::validate_username(&username)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+        let email = normalize_optional_email(&email)?;
+        let credential_name = if name.trim().is_empty() {
+            None
+        } else {
+            Some(name.trim().to_string())
+        };
+        let challenge = self
+            .passkey_service()?
+            .start_account_registration(username, email, credential_name, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(PasskeyAuthChallenge {
+            session_id: challenge.session_id,
+            options_json: challenge.options_json,
+        })
+    }
+
+    pub async fn start_passkey_registration_with_control(
+        &self,
+        req: crate::proto::client::StartPasskeyRegistrationRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::StartPasskeyRegistrationResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let challenge = self
+            .start_passkey_registration_challenge_with_control(
+                req.username,
+                req.email,
+                req.name,
+                client_ip,
+                control,
+            )
+            .await?;
+        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        Ok(crate::proto::client::StartPasskeyRegistrationResponse {
+            session_id: challenge.session_id,
+            options,
+        })
+    }
+
+    pub(crate) async fn finish_passkey_registration_bytes_with_control(
+        &self,
+        session_id: &str,
+        credential_json: &[u8],
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        let (user, access_token, refresh_token) = self
+            .passkey_service()?
+            .finish_account_registration(session_id, credential_json, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::RegisterResponse {
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            access_token,
+            refresh_token,
+        })
+    }
+
+    pub async fn finish_passkey_registration_with_control(
+        &self,
+        req: crate::proto::client::FinishPasskeyRegistrationRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.finish_passkey_registration_bytes_with_control(
+            &req.session_id,
+            req.credential.as_bytes(),
+            client_ip,
+            control,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_passkey_login_challenge_with_control(
+        &self,
+        username: String,
+        email: String,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<PasskeyAuthChallenge, ApiError> {
+        let identifier = normalize_exactly_one_identifier(&username, &email)?;
+        let challenge = self
+            .passkey_service()?
+            .start_login(&identifier, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(PasskeyAuthChallenge {
+            session_id: challenge.session_id,
+            options_json: challenge.options_json,
+        })
+    }
+
+    pub async fn start_passkey_login_with_control(
+        &self,
+        req: crate::proto::client::StartPasskeyLoginRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::StartPasskeyLoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let challenge = self
+            .start_passkey_login_challenge_with_control(req.username, req.email, client_ip, control)
+            .await?;
+        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        Ok(crate::proto::client::StartPasskeyLoginResponse {
+            session_id: challenge.session_id,
+            options,
+        })
+    }
+
+    pub(crate) async fn finish_passkey_login_bytes_with_control(
+        &self,
+        session_id: &str,
+        credential_json: &[u8],
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        let (user, access_token, refresh_token) = self
+            .passkey_service()?
+            .finish_login(session_id, credential_json, client_ip, control)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::LoginResponse {
+            user: Some(user_to_proto(&user, &self.public_id_codec)),
+            access_token,
+            refresh_token,
+        })
+    }
+
+    pub async fn finish_passkey_login_with_control(
+        &self,
+        req: crate::proto::client::FinishPasskeyLoginRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.finish_passkey_login_bytes_with_control(
+            &req.session_id,
+            req.credential.as_bytes(),
+            client_ip,
+            control,
+        )
+        .await
     }
 
     pub async fn refresh_token(

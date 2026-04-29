@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM auth_email_tokens\n            WHERE expires_at < CURRENT_TIMESTAMP\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ad9851a4d8756affb739aa27643de4a4d368531ae775e7bab3f485c15051a5a8"
+}

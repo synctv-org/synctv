@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_email_tokens (token, user_id, token_type, expires_at, created_at)\n            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)\n            RETURNING id, token, user_id as \"user_id: UserId\", token_type, expires_at, used_at, created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int8",
+        "Int2",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "6730aad0701adf85cd71df91cf3b862872f5727d4c04e535678c7d8c83126106"
+}

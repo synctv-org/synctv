@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 
 use crate::{
-    models::{RoomId, RoomPlaybackState, UserId},
+    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     Error, Result,
 };
 
@@ -25,27 +25,36 @@ impl RoomPlaybackStateRepository {
         let state = RoomPlaybackState::new(*room_id);
 
         // Attempt insert; if the row already exists, do nothing
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO room_playback_state (room_id, \"current_time\", speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (room_id) DO NOTHING"
+             ON CONFLICT (room_id) DO NOTHING",
+            room_id as &RoomId,
+            state.current_time,
+            state.speed,
+            state.is_playing,
+            state.updated_at,
+            state.version,
         )
-        .bind(room_id)
-        .bind(state.current_time)
-        .bind(state.speed)
-        .bind(state.is_playing)
-        .bind(state.updated_at)
-        .bind(state.version)
         .execute(&self.pool)
         .await?;
 
         // Fetch the row (either just inserted or already existing)
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"SELECT room_id as "room_id: RoomId",
+                      playing_media_id as "playing_media_id: MediaId",
+                      playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      target,
+                      "current_time",
+                      speed,
+                      is_playing,
+                      updated_at,
+                      version
              FROM room_playback_state
-             WHERE room_id = $1"
+             WHERE room_id = $1"#,
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -66,26 +75,35 @@ impl RoomPlaybackStateRepository {
     ) -> Result<RoomPlaybackState> {
         let state = RoomPlaybackState::new(*room_id);
 
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO room_playback_state (room_id, \"current_time\", speed, is_playing, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (room_id) DO NOTHING"
+             ON CONFLICT (room_id) DO NOTHING",
+            room_id as &RoomId,
+            state.current_time,
+            state.speed,
+            state.is_playing,
+            state.updated_at,
+            state.version,
         )
-        .bind(room_id)
-        .bind(state.current_time)
-        .bind(state.speed)
-        .bind(state.is_playing)
-        .bind(state.updated_at)
-        .bind(state.version)
         .execute(&mut *conn)
         .await?;
 
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"SELECT room_id as "room_id: RoomId",
+                      playing_media_id as "playing_media_id: MediaId",
+                      playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      target,
+                      "current_time",
+                      speed,
+                      is_playing,
+                      updated_at,
+                      version
              FROM room_playback_state
-             WHERE room_id = $1"
+             WHERE room_id = $1"#,
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_one(&mut *conn)
         .await?;
 
@@ -94,12 +112,21 @@ impl RoomPlaybackStateRepository {
 
     /// Get playback state
     pub async fn get(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "SELECT room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"SELECT room_id as "room_id: RoomId",
+                      playing_media_id as "playing_media_id: MediaId",
+                      playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      target,
+                      "current_time",
+                      speed,
+                      is_playing,
+                      updated_at,
+                      version
              FROM room_playback_state
-             WHERE room_id = $1",
+             WHERE room_id = $1"#,
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -108,22 +135,31 @@ impl RoomPlaybackStateRepository {
 
     /// Update playback state with optimistic locking
     pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
-        let result = sqlx::query_as::<_, RoomPlaybackState>(
-            "UPDATE room_playback_state
+        let result = sqlx::query_as!(
+            RoomPlaybackState,
+            r#"UPDATE room_playback_state
              SET playing_media_id = $2, playing_playlist_id = $3, target = $4,
-                 \"current_time\" = $5, speed = $6, is_playing = $7,
+                 "current_time" = $5, speed = $6, is_playing = $7,
                  updated_at = NOW(), version = version + 1
              WHERE room_id = $1 AND version = $8
-             RETURNING room_id, playing_media_id, playing_playlist_id, target, \"current_time\", speed, is_playing, updated_at, version",
+             RETURNING room_id as "room_id: RoomId",
+                       playing_media_id as "playing_media_id: MediaId",
+                       playing_playlist_id as "playing_playlist_id: PlaylistId",
+                       target,
+                       "current_time",
+                       speed,
+                       is_playing,
+                       updated_at,
+                       version"#,
+            state.room_id as RoomId,
+            state.playing_media_id as Option<MediaId>,
+            state.playing_playlist_id as Option<PlaylistId>,
+            state.target.clone(),
+            state.current_time,
+            state.speed,
+            state.is_playing,
+            state.version,
         )
-        .bind(state.room_id)
-        .bind(state.playing_media_id)
-        .bind(state.playing_playlist_id)
-        .bind(&state.target)
-        .bind(state.current_time)
-        .bind(state.speed)
-        .bind(state.is_playing)
-        .bind(state.version)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -139,7 +175,8 @@ impl RoomPlaybackStateRepository {
         &self,
         creator_id: &UserId,
     ) -> Result<Vec<RoomPlaybackState>> {
-        let states = sqlx::query_as::<_, RoomPlaybackState>(
+        let states = sqlx::query_as!(
+            RoomPlaybackState,
             r#"
             WITH impacted_rooms AS (
                 SELECT DISTINCT rps.room_id
@@ -159,11 +196,18 @@ impl RoomPlaybackStateRepository {
                 version = version + 1
             FROM impacted_rooms impacted
             WHERE rps.room_id = impacted.room_id
-            RETURNING rps.room_id, rps.playing_media_id, rps.playing_playlist_id, rps.target,
-                      rps."current_time", rps.speed, rps.is_playing, rps.updated_at, rps.version
+            RETURNING rps.room_id as "room_id: RoomId",
+                      rps.playing_media_id as "playing_media_id: MediaId",
+                      rps.playing_playlist_id as "playing_playlist_id: PlaylistId",
+                      rps.target,
+                      rps."current_time",
+                      rps.speed,
+                      rps.is_playing,
+                      rps.updated_at,
+                      rps.version
             "#,
+            creator_id as &UserId,
         )
-        .bind(creator_id)
         .fetch_all(&self.pool)
         .await?;
 

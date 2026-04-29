@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT family_revoked_at as \"family_revoked_at!\"\n             FROM auth_token_blacklist\n             WHERE jti = $1\n               AND expires_at > NOW()\n               AND family_revoked_at IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "family_revoked_at!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e30814a11d2490821e39f37da11059ee4af442bed28d8d55e7ec4b8cf7220b23"
+}

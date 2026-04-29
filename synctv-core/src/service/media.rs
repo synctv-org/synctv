@@ -907,12 +907,13 @@ impl MediaService {
         let mut tx = self.media_repo.pool().begin().await?;
 
         // Lock room_playback_state FOR UPDATE and reject if target media is playing
-        let playing_media_id: Option<MediaId> = sqlx::query_scalar(
-            "SELECT playing_media_id FROM room_playback_state \
-             WHERE room_id = $1 \
-             FOR UPDATE",
+        let playing_media_id = sqlx::query_scalar!(
+            r#"SELECT playing_media_id AS "playing_media_id?: MediaId"
+             FROM room_playback_state
+             WHERE room_id = $1
+             FOR UPDATE"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?
         .flatten();
@@ -924,8 +925,7 @@ impl MediaService {
         }
 
         // Delete within the transaction
-        sqlx::query("DELETE FROM media WHERE id = $1")
-            .bind(media_id)
+        sqlx::query!("DELETE FROM media WHERE id = $1", media_id.as_i64())
             .execute(&mut *tx)
             .await?;
 
@@ -1092,12 +1092,13 @@ impl MediaService {
         }
 
         // Lock room_playback_state FOR UPDATE and reject if any target media is playing
-        let playing_media_id: Option<MediaId> = sqlx::query_scalar(
-            "SELECT playing_media_id FROM room_playback_state \
-             WHERE room_id = $1 \
-             FOR UPDATE",
+        let playing_media_id = sqlx::query_scalar!(
+            r#"SELECT playing_media_id AS "playing_media_id?: MediaId"
+             FROM room_playback_state
+             WHERE room_id = $1
+             FOR UPDATE"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?
         .flatten();

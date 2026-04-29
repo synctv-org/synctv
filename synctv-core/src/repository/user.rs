@@ -1,5 +1,5 @@
 use chrono::Utc;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
@@ -433,29 +433,31 @@ impl UserRepository {
         &self,
         user_id: &UserId,
     ) -> Result<Option<StoredOpaquePasswordCredential>> {
-        let row = sqlx::query(
-            r"
-            SELECT opaque_record, opaque_credential_identifier,
-                   opaque_ciphersuite, opaque_server_setup_version
+        let row = sqlx::query!(
+            r#"
+            SELECT opaque_record as "opaque_record!",
+                   opaque_credential_identifier as "opaque_credential_identifier!",
+                   opaque_ciphersuite as "opaque_ciphersuite!",
+                   opaque_server_setup_version as "opaque_server_setup_version!"
             FROM auth_password_credentials
             WHERE user_id = $1
               AND opaque_record IS NOT NULL
               AND opaque_credential_identifier IS NOT NULL
               AND opaque_ciphersuite IS NOT NULL
               AND opaque_server_setup_version IS NOT NULL
-            ",
+            "#,
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
 
         row.map(|row| {
             Ok(StoredOpaquePasswordCredential {
                 record: OpaquePasswordRecord {
-                    record: row.try_get("opaque_record")?,
-                    credential_identifier: row.try_get("opaque_credential_identifier")?,
-                    ciphersuite: row.try_get("opaque_ciphersuite")?,
-                    server_setup_version: row.try_get("opaque_server_setup_version")?,
+                    record: row.opaque_record,
+                    credential_identifier: row.opaque_credential_identifier,
+                    ciphersuite: row.opaque_ciphersuite,
+                    server_setup_version: row.opaque_server_setup_version,
                 },
             })
         })
@@ -464,8 +466,8 @@ impl UserRepository {
     }
 
     pub async fn has_opaque_password_credential(&self, user_id: &UserId) -> Result<bool> {
-        sqlx::query_scalar(
-            r"
+        sqlx::query_scalar!(
+            r#"
             SELECT EXISTS(
                 SELECT 1
                 FROM auth_password_credentials
@@ -474,10 +476,10 @@ impl UserRepository {
                   AND opaque_credential_identifier IS NOT NULL
                   AND opaque_ciphersuite IS NOT NULL
                   AND opaque_server_setup_version IS NOT NULL
-            )
-            ",
+            ) as "exists!"
+            "#,
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_one(&self.pool)
         .await
         .map_err(Error::Database)
@@ -672,15 +674,15 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE users
             SET deleted_at = $2, version = version + 1
             WHERE id = $1 AND deleted_at IS NULL
             ",
+            user_id as &UserId,
+            Utc::now(),
         )
-        .bind(user_id)
-        .bind(Utc::now())
         .execute(executor)
         .await?;
 
@@ -852,7 +854,7 @@ impl UserRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let now = Utc::now();
-        let inserted = sqlx::query(
+        let inserted = sqlx::query!(
             r"
             INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
             SELECT u.id, $2, $3, $4
@@ -863,13 +865,13 @@ impl UserRepository {
                   WHERE ub.user_id = u.id
                     AND ub.revoked_at IS NULL
                     AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
-              )
+                  )
             ",
+            user_id as &UserId,
+            banned_by.map(UserId::as_i64),
+            reason,
+            now,
         )
-        .bind(user_id)
-        .bind(banned_by.map(UserId::as_i64))
-        .bind(reason)
-        .bind(now)
         .execute(executor)
         .await?;
 
@@ -884,7 +886,7 @@ impl UserRepository {
 
     /// Clear a global user ban without changing lifecycle status.
     pub async fn unban(&self, user_id: &UserId) -> Result<User> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE user_bans ub
             SET revoked_at = $2
@@ -895,9 +897,9 @@ impl UserRepository {
               AND ub.revoked_at IS NULL
               AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
             ",
+            user_id as &UserId,
+            Utc::now(),
         )
-        .bind(user_id)
-        .bind(Utc::now())
         .execute(&self.pool)
         .await?;
 
@@ -917,8 +919,8 @@ impl UserRepository {
 
     /// Check whether a user has an active global ban.
     pub async fn is_banned(&self, user_id: &UserId) -> Result<bool> {
-        let is_banned = sqlx::query_scalar::<_, bool>(
-            r"
+        let is_banned = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1 FROM user_bans ub
                 JOIN users u ON u.id = ub.user_id
@@ -926,10 +928,10 @@ impl UserRepository {
                   AND u.deleted_at IS NULL
                   AND ub.revoked_at IS NULL
                   AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
-            )
-            ",
+            ) as "exists!"
+            "#,
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1102,35 +1104,39 @@ impl UserRepository {
 
     /// Check if username exists
     pub async fn username_exists(&self, username: &str) -> Result<bool> {
-        let count: i64 = sqlx::query_scalar(
-            r"
-            SELECT COUNT(*) as count
-            FROM users
-            WHERE username = $1 AND deleted_at IS NULL
-            ",
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM users
+                WHERE username = $1 AND deleted_at IS NULL
+            ) as "exists!"
+            "#,
+            username,
         )
-        .bind(username)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count > 0)
+        Ok(exists)
     }
 
     /// Check if email exists
     pub async fn email_exists(&self, email: &str) -> Result<bool> {
-        let count: i64 = sqlx::query_scalar(
-            r"
-            SELECT COUNT(*) as count
-            FROM auth_email_identities aei
-            JOIN users u ON u.id = aei.user_id
-            WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
-            ",
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM auth_email_identities aei
+                JOIN users u ON u.id = aei.user_id
+                WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL
+            ) as "exists!"
+            "#,
+            email,
         )
-        .bind(email)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count > 0)
+        Ok(exists)
     }
 }
 

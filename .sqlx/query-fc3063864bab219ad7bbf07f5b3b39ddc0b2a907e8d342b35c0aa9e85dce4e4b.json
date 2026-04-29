@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: RoomId\"\n             FROM rooms\n             WHERE created_by = $1 AND deleted_at IS NULL\n             ORDER BY id\n             FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomId",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fc3063864bab219ad7bbf07f5b3b39ddc0b2a907e8d342b35c0aa9e85dce4e4b"
+}

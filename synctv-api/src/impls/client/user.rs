@@ -195,9 +195,57 @@ impl ClientApiImpl {
                     .await
                     .map_err(ApiError::from)?
             }
-            OpaquePasswordUpdateVerificationMethod::Unspecified
-            | OpaquePasswordUpdateVerificationMethod::EmailToken
-            | OpaquePasswordUpdateVerificationMethod::Passkey => {
+            OpaquePasswordUpdateVerificationMethod::EmailToken => {
+                let email_api = self.email_api.as_ref().ok_or_else(|| {
+                    ApiError::ServiceUnavailable(
+                        synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
+                    )
+                })?;
+                if req.email_token.is_empty() {
+                    return Err(ApiError::InvalidInput(
+                        "email_token is required for email verification".to_string(),
+                    ));
+                }
+                email_api
+                    .email_token_service
+                    .validate_token_for_user(
+                        &req.email_token,
+                        synctv_core::service::EmailTokenType::PasswordReset,
+                        user_id,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                self.user_service
+                    .start_opaque_password_update_after_external_verification(
+                        user_id,
+                        req.registration_request,
+                    )
+                    .await
+                    .map_err(ApiError::from)?
+            }
+            OpaquePasswordUpdateVerificationMethod::Passkey => {
+                let passkey_challenge = self
+                    .passkey_service()?
+                    .start_user_verification(user_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                let challenge = self
+                    .user_service
+                    .start_opaque_password_update_pending_passkey_verification(
+                        user_id,
+                        req.registration_request,
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+                return Ok(crate::proto::client::StartOpaquePasswordUpdateResponse {
+                    session_id: challenge.session_id,
+                    credential_response: Vec::new(),
+                    registration_response: challenge.registration_response,
+                    passkey_session_id: passkey_challenge.session_id,
+                    passkey_options: passkey_challenge.options_json,
+                });
+            }
+            OpaquePasswordUpdateVerificationMethod::Unspecified => {
                 return Err(ApiError::InvalidInput(
                     "Unsupported verification_method for this endpoint".to_string(),
                 ));
@@ -219,7 +267,20 @@ impl ClientApiImpl {
         req: crate::proto::client::FinishOpaquePasswordUpdateRequest,
     ) -> Result<crate::proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let user = if req.credential_finalization.is_empty() {
+        let user = if !req.passkey_session_id.is_empty() || !req.passkey_credential.is_empty() {
+            self.passkey_service()?
+                .finish_user_verification(&req.passkey_session_id, &req.passkey_credential, user_id)
+                .await
+                .map_err(ApiError::from)?;
+            self.user_service
+                .finish_opaque_password_update_after_passkey_verification(
+                    user_id,
+                    &req.session_id,
+                    req.registration_upload,
+                )
+                .await
+                .map_err(ApiError::from)?
+        } else if req.credential_finalization.is_empty() {
             self.user_service
                 .finish_opaque_password_update_after_external_verification(
                     user_id,

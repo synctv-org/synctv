@@ -120,7 +120,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 
 # Database
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "postgres",
     "migrate",

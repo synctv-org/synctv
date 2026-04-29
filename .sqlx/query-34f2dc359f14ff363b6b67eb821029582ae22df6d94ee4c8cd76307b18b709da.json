@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM chat_messages WHERE created_at <= NOW() - $1::text::interval",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "34f2dc359f14ff363b6b67eb821029582ae22df6d94ee4c8cd76307b18b709da"
+}

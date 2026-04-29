@@ -16,6 +16,10 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+# Compile SQLx query macros from checked-in .sqlx metadata instead of requiring
+# a build-time database connection.
+ENV SQLX_OFFLINE=true
+
 # Copy entire source tree
 COPY . .
 

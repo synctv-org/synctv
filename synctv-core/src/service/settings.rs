@@ -6,7 +6,7 @@
 //! Design reference: external design doc 19-configuration-management.md §6.3
 
 use dashmap::DashMap;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -296,43 +296,25 @@ impl SettingsService {
         let mut updated = Vec::with_capacity(updates.len());
         for (key, value) in &updates {
             let group_name = group_name_from_setting_key(key);
-            let row = sqlx::query(
-                "INSERT INTO settings (key, group_name, value, version)
+            let setting = sqlx::query_as!(
+                crate::models::settings::SettingsGroup,
+                r#"
+                 INSERT INTO settings (key, group_name, value, version)
                  VALUES ($1, $2, $3, 0)
                  ON CONFLICT (key) DO UPDATE
                  SET group_name = EXCLUDED.group_name,
                      value = EXCLUDED.value,
                      version = settings.version + 1,
                      updated_at = NOW()
-                 RETURNING key, group_name, value, version, created_at, updated_at",
+                 RETURNING key, group_name, value, version, created_at, updated_at
+                "#,
+                key.as_str(),
+                group_name,
+                value.as_str(),
             )
-            .bind(key.as_str())
-            .bind(group_name)
-            .bind(value.as_str())
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
-
-            let setting = crate::models::settings::SettingsGroup {
-                key: row
-                    .try_get("key")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting key: {e}")))?,
-                group_name: row
-                    .try_get("group_name")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting group: {e}")))?,
-                value: row
-                    .try_get("value")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting value: {e}")))?,
-                version: row
-                    .try_get("version")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting version: {e}")))?,
-                created_at: row.try_get("created_at").map_err(|e| {
-                    Error::Internal(format!("Failed to read setting created_at: {e}"))
-                })?,
-                updated_at: row.try_get("updated_at").map_err(|e| {
-                    Error::Internal(format!("Failed to read setting updated_at: {e}"))
-                })?,
-            };
             updated.push(setting);
         }
 

@@ -58,6 +58,7 @@ impl std::fmt::Debug for SharedInvalidationService {
 #[derive(Clone)]
 pub struct PermissionService {
     member_repo: RoomMemberRepository,
+    room_repo: RoomRepository,
     room_settings_repo: Option<RoomSettingsRepository>,
     cache: Arc<moka::future::Cache<String, PermissionBits>>,
     /// Short-term fallback cache used during degraded mode (Pub/Sub lag).
@@ -107,13 +108,14 @@ impl PermissionService {
     #[must_use]
     pub fn new(
         member_repo: RoomMemberRepository,
-        _room_repo: RoomRepository,
+        room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
     ) -> Self {
         Self {
             member_repo,
+            room_repo,
             room_settings_repo: None, // Will be set later if needed
             cache: Arc::new(
                 moka::future::CacheBuilder::new(cache_size)
@@ -143,6 +145,7 @@ impl PermissionService {
     #[must_use]
     pub fn new_with_runtime(
         member_repo: RoomMemberRepository,
+        room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
@@ -151,6 +154,7 @@ impl PermissionService {
     ) -> Self {
         Self {
             member_repo,
+            room_repo,
             room_settings_repo,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(cache_size)
@@ -188,7 +192,7 @@ impl PermissionService {
     #[must_use]
     pub fn with_invalidation(
         member_repo: RoomMemberRepository,
-        _room_repo: RoomRepository,
+        room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
         cache_size: u64,
         cache_ttl_secs: u64,
@@ -196,6 +200,7 @@ impl PermissionService {
     ) -> Self {
         Self::new_with_runtime(
             member_repo,
+            room_repo,
             settings_registry,
             cache_size,
             cache_ttl_secs,
@@ -208,11 +213,12 @@ impl PermissionService {
     #[must_use]
     pub fn without_cache(
         member_repo: RoomMemberRepository,
-        _room_repo: RoomRepository,
+        room_repo: RoomRepository,
         settings_registry: Option<Arc<SettingsRegistry>>,
     ) -> Self {
         Self {
             member_repo,
+            room_repo,
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(1)
@@ -616,6 +622,24 @@ impl PermissionService {
         format!("perm:room:{room_id}:user:{user_id}")
     }
 
+    async fn ensure_room_accepts_member_actions(&self, room_id: &RoomId) -> Result<()> {
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        if room.is_banned {
+            return Err(Error::Authorization("Room is banned".to_string()));
+        }
+
+        if !room.status.is_active() {
+            return Err(Error::Authorization("Room is not active".to_string()));
+        }
+
+        Ok(())
+    }
+
     /// Check if a user has a specific permission in a room
     ///
     /// When the cache is degraded (e.g., due to Pub/Sub lag), uses a short-TTL
@@ -628,6 +652,8 @@ impl PermissionService {
         user_id: &UserId,
         permission: u64,
     ) -> Result<()> {
+        self.ensure_room_accepts_member_actions(room_id).await?;
+
         let permissions = if self.cache_degraded.load(Ordering::Acquire) {
             // Use degraded cache with short TTL instead of no cache at all
             self.get_user_permissions_degraded(room_id, user_id).await?
@@ -659,6 +685,8 @@ impl PermissionService {
         user_id: &UserId,
         permission: u64,
     ) -> Result<()> {
+        self.ensure_room_accepts_member_actions(room_id).await?;
+
         let permissions = self.get_user_permissions_no_cache(room_id, user_id).await?;
 
         if !permissions.has_all(permission) {
@@ -972,7 +1000,8 @@ mod tests {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
         });
         PermissionService {
-            member_repo: RoomMemberRepository::new(pool),
+            member_repo: RoomMemberRepository::new(pool.clone()),
+            room_repo: RoomRepository::new(pool),
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
@@ -1008,7 +1037,8 @@ mod tests {
         // When called from within an async context, we can use the current context
         let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
         PermissionService {
-            member_repo: RoomMemberRepository::new(pool),
+            member_repo: RoomMemberRepository::new(pool.clone()),
+            room_repo: RoomRepository::new(pool),
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)

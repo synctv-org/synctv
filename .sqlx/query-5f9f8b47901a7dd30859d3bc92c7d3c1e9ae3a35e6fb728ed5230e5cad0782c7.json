@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n            SELECT 1\n            FROM room_members rm\n            LEFT JOIN room_settings rs\n              ON rs.room_id = rm.room_id\n             AND rs.key = '_settings'\n            WHERE rm.room_id = $1\n              AND rm.user_id = $2\n              AND rm.left_at IS NULL\n              AND (\n                  rm.role = 1\n                  OR (\n                      CASE rm.role\n                          WHEN 2 THEN\n                              (((($4 | COALESCE((rs.value::jsonb ->> 'admin_added_permissions')::bigint, 0::bigint) | rm.admin_added_permissions) &\n                               ~COALESCE((rs.value::jsonb ->> 'admin_removed_permissions')::bigint, 0::bigint) & ~rm.admin_removed_permissions) & $3) = $3)\n                          WHEN 3 THEN\n                              (((($5 | (COALESCE((rs.value::jsonb ->> 'member_added_permissions')::bigint, 0::bigint) & $4) | rm.added_permissions) &\n                               ~COALESCE((rs.value::jsonb ->> 'member_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)\n                          WHEN 4 THEN\n                              (((($6 | (COALESCE((rs.value::jsonb ->> 'guest_added_permissions')::bigint, 0::bigint) & $5) | rm.added_permissions) &\n                               ~COALESCE((rs.value::jsonb ->> 'guest_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)\n                          ELSE FALSE\n                      END\n                  )\n              )\n        ) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5f9f8b47901a7dd30859d3bc92c7d3c1e9ae3a35e6fb728ed5230e5cad0782c7"
+}

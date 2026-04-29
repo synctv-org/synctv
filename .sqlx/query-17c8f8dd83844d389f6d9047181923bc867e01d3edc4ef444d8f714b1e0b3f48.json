@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1 FROM user_bans ub\n                JOIN users u ON u.id = ub.user_id\n                WHERE u.id = $1\n                  AND u.deleted_at IS NULL\n                  AND ub.revoked_at IS NULL\n                  AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n            ) as \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "17c8f8dd83844d389f6d9047181923bc867e01d3edc4ef444d8f714b1e0b3f48"
+}

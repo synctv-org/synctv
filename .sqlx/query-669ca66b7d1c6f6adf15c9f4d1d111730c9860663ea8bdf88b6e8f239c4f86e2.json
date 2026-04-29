@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE playlist_tree AS (\n                SELECT id, 0 AS depth\n                FROM playlists\n                WHERE id = $1\n                UNION ALL\n                SELECT p.id, pt.depth + 1\n                FROM playlists p\n                JOIN playlist_tree pt ON p.parent_id = pt.id\n                WHERE p.room_id = $2\n            )\n            SELECT id, MAX(depth) AS depth\n            FROM playlist_tree\n            GROUP BY id\n            ORDER BY MAX(depth) DESC, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "depth",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "669ca66b7d1c6f6adf15c9f4d1d111730c9860663ea8bdf88b6e8f239c4f86e2"
+}

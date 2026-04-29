@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM room_settings WHERE room_id = $1 AND key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "14ac2beb04bc3d0289756863cb9ad371695eee679b66e3626f2cce220ed2e0c0"
+}

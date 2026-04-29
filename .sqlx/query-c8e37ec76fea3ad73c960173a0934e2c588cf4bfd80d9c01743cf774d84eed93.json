@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_email_tokens\n            SET used_at = CURRENT_TIMESTAMP\n            WHERE token = $1\n              AND token_type = $2\n              AND used_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            RETURNING id, token, user_id as \"user_id: UserId\", token_type, expires_at, used_at, created_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_type",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "c8e37ec76fea3ad73c960173a0934e2c588cf4bfd80d9c01743cf774d84eed93"
+}

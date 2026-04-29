@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE rooms\n            SET description = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1\n            WHERE id = $2 AND deleted_at IS NULL\n            RETURNING id AS \"id: RoomId\",\n                      name,\n                      description,\n                      created_by AS \"created_by: UserId\",\n                      closed_at,\n                      false AS \"is_banned!\",\n                      created_at,\n                      updated_at,\n                      deleted_at,\n                      version,\n                      last_activity_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_by: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "closed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_banned!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "7b90305d9ab0831c9180d5c0f9ea0122df8e32d228418930af2fd22483202889"
+}

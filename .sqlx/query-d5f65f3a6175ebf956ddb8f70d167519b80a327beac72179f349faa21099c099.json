@@ -1,0 +1,75 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_media_provider_credentials\n            (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)\n            VALUES ($1, $2, $3, $4, $5, $6)\n            ON CONFLICT (user_id, provider, server_id)\n            DO UPDATE SET\n                provider_instance_name = EXCLUDED.provider_instance_name,\n                credential_data = EXCLUDED.credential_data,\n                expires_at = EXCLUDED.expires_at,\n                updated_at = NOW()\n            RETURNING id, user_id as \"user_id: UserId\", provider, server_id,\n                      provider_instance_name, credential_data as \"credential_data!: serde_json::Value\",\n                      expires_at, created_at, updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "server_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_instance_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_data!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "d5f65f3a6175ebf956ddb8f70d167519b80a327beac72179f349faa21099c099"
+}

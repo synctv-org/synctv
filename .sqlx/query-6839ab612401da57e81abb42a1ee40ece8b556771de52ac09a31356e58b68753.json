@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT playing_media_id AS \"playing_media_id?: MediaId\",\n                  playing_playlist_id AS \"playing_playlist_id?: PlaylistId\"\n         FROM room_playback_state\n         WHERE room_id = $1\n         FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playing_media_id?: MediaId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "playing_playlist_id?: PlaylistId",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "6839ab612401da57e81abb42a1ee40ece8b556771de52ac09a31356e58b68753"
+}

@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE playlists\n            SET name = $2, position = $3, source_provider = $4, source_config = $5,\n                provider_instance_name = $6, version = version + 1\n            WHERE id = $1 AND version = $7\n            RETURNING id AS \"id: PlaylistId\",\n                      room_id AS \"room_id: RoomId\",\n                      creator_id AS \"creator_id?: crate::models::UserId\",\n                      name,\n                      parent_id AS \"parent_id?: PlaylistId\",\n                      position,\n                      source_provider,\n                      source_config AS \"source_config?: serde_json::Value\",\n                      NULLIF(provider_instance_name, '') AS provider_instance_name,\n                      created_at, updated_at, version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "creator_id?: crate::models::UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "parent_id?: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "position",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_provider",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_config?: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "provider_instance_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Float8",
+        "Varchar",
+        "Jsonb",
+        "Varchar",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "80aea543787694be0db7bb8556db7e4ae3dfb60ce880a314323fa937ed0e35c3"
+}

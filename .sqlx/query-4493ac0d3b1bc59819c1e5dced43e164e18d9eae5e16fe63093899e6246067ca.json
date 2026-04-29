@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE rooms\n            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, version = version + 1\n            WHERE deleted_at IS NULL\n              AND last_activity_at < CURRENT_TIMESTAMP - ($1::bigint * INTERVAL '1 second')\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4493ac0d3b1bc59819c1e5dced43e164e18d9eae5e16fe63093899e6246067ca"
+}

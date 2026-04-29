@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) as count\n            FROM room_members rm\n            WHERE rm.room_id = $1\n              AND rm.left_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1 FROM room_member_bans rmb\n                  WHERE rmb.room_id = rm.room_id\n                    AND rmb.user_id = rm.user_id\n                    AND rmb.revoked_at IS NULL\n                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)\n              )\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "49def12e39a703a82f09306c94db9e0f4b388d7ecd35b1a6cec4ce7fcedf0eb4"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE room_creation_requests\n            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85e1e8c9ec82522867a9b56c187d619657c0cd81d1fa1f5b0feaa6cf66a27989"
+}

@@ -4818,8 +4818,11 @@ bootstrap:
         let unknown_keys =
             Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
                 .expect("supported _file keys should not be reported as unknown");
-        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
-            .expect("typed _file references should load");
+        let config = Config::load_with_env_map(
+            Some(config_path.to_str().expect("utf-8 path")),
+            &HashMap::new(),
+        )
+        .expect("typed _file references should load");
 
         assert!(
             unknown_keys.is_empty(),
@@ -4879,8 +4882,11 @@ redis:
         )
         .expect("config file should be written");
 
-        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
-            .expect("split database config should load");
+        let config = Config::load_with_env_map(
+            Some(config_path.to_str().expect("utf-8 path")),
+            &HashMap::new(),
+        )
+        .expect("split database config should load");
 
         assert!(config.database.url.is_empty());
         assert_eq!(config.database.username, "synctv");
@@ -5967,8 +5973,11 @@ jwt:
             let path = std::env::temp_dir().join(unique);
             std::fs::write(&path, contents).expect("write config fixture");
 
-            let config = Config::from_file(path.to_str().expect("utf-8 path"))
-                .expect("supported config format should load");
+            let config = Config::load_with_env_map(
+                Some(path.to_str().expect("utf-8 path")),
+                &HashMap::new(),
+            )
+            .expect("supported config format should load");
             let _ = std::fs::remove_file(&path);
 
             assert_eq!(config.jwt.secret, secret);

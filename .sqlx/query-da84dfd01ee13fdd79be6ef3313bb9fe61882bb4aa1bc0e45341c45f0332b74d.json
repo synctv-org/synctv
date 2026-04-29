@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT room_id as \"room_id: RoomId\", value, version\n            FROM room_settings\n            WHERE room_id = ANY($1) AND key = '_settings'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da84dfd01ee13fdd79be6ef3313bb9fe61882bb4aa1bc0e45341c45f0332b74d"
+}

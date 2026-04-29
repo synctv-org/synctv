@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::{
-    models::{ChatMessage, RoomId},
+    models::{ChatMessage, RoomId, UserId},
     Result,
 };
 
@@ -20,18 +20,24 @@ impl ChatRepository {
 
     /// Create a new chat message
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
-        let msg = sqlx::query_as::<_, ChatMessage>(
-            r"
+        let msg = sqlx::query_as!(
+            ChatMessage,
+            r#"
             INSERT INTO chat_messages (room_id, user_id, content, message_type, created_at)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, room_id, user_id, content, message_type, created_at
-            ",
+            RETURNING id,
+                      room_id as "room_id: RoomId",
+                      user_id as "user_id: UserId",
+                      content,
+                      message_type,
+                      created_at
+            "#,
+            message.room_id as RoomId,
+            message.user_id as Option<UserId>,
+            message.content.as_str(),
+            message.message_type,
+            message.created_at,
         )
-        .bind(message.room_id)
-        .bind(message.user_id)
-        .bind(&message.content)
-        .bind(message.message_type)
-        .bind(message.created_at)
         .fetch_one(&self.pool)
         .await?;
 
@@ -58,36 +64,48 @@ impl ChatRepository {
         let limit = limit.clamp(1, 100);
 
         let messages = if let Some((cursor_created_at, cursor_id)) = cursor {
-            sqlx::query_as::<_, ChatMessage>(
-                r"
-                SELECT id, room_id, user_id, content, message_type, created_at
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                SELECT id,
+                       room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       content,
+                       message_type,
+                       created_at
                 FROM chat_messages
                 WHERE room_id = $1 AND (created_at, id) < ($2, $3)
                 ORDER BY created_at DESC, id DESC
-                LIMIT $4
-                ",
+                LIMIT $4::int4
+                "#,
+                room_id as &RoomId,
+                cursor_created_at,
+                cursor_id,
+                limit,
             )
-            .bind(room_id)
-            .bind(cursor_created_at)
-            .bind(cursor_id)
-            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             // Initial load (no cursor): add a created_at lower bound so PostgreSQL
             // can prune old partitions. Matches the 90-day retention period.
-            sqlx::query_as::<_, ChatMessage>(
-                r"
-                SELECT id, room_id, user_id, content, message_type, created_at
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                SELECT id,
+                       room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       content,
+                       message_type,
+                       created_at
                 FROM chat_messages
                 WHERE room_id = $1
                   AND created_at >= NOW() - INTERVAL '90 days'
                 ORDER BY created_at DESC, id DESC
-                LIMIT $2
-                ",
+                LIMIT $2::int4
+                "#,
+                room_id as &RoomId,
+                limit,
             )
-            .bind(room_id)
-            .bind(limit)
             .fetch_all(&self.pool)
             .await?
         };
@@ -114,14 +132,20 @@ impl ChatRepository {
     /// pruning and may scan multiple partitions. However, since this is a
     /// primary key lookup, it remains efficient.
     pub async fn get_by_id(&self, message_id: i64) -> Result<Option<ChatMessage>> {
-        let msg = sqlx::query_as::<_, ChatMessage>(
-            r"
-            SELECT id, room_id, user_id, content, message_type, created_at
+        let msg = sqlx::query_as!(
+            ChatMessage,
+            r#"
+            SELECT id,
+                   room_id as "room_id: RoomId",
+                   user_id as "user_id: UserId",
+                   content,
+                   message_type,
+                   created_at
             FROM chat_messages
             WHERE id = $1
-            ",
+            "#,
+            message_id,
         )
-        .bind(message_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -133,15 +157,15 @@ impl ChatRepository {
     /// Requires `created_at` to enable partition pruning. Without it, `PostgreSQL`
     /// would scan all partitions to find the row.
     pub async fn delete(&self, message_id: i64, created_at: DateTime<Utc>) -> Result<bool> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE id = $1
               AND created_at = $2
             ",
+            message_id,
+            created_at,
         )
-        .bind(message_id)
-        .bind(created_at)
         .execute(&self.pool)
         .await?;
 
@@ -153,19 +177,19 @@ impl ChatRepository {
     /// Scans only recent partitions (last 90 days) to avoid full partition scan.
     /// This matches the default retention period for chat messages.
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
+        let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*) as count
             FROM chat_messages
             WHERE room_id = $1
               AND created_at >= NOW() - INTERVAL '90 days'
             ",
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count)
+        Ok(count.unwrap_or(0))
     }
 
     /// Delete old messages for a room (keep only last N messages).
@@ -183,7 +207,7 @@ impl ChatRepository {
             return Ok(0);
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE room_id = $1
@@ -196,12 +220,12 @@ impl ChatRepository {
                     WHERE room_id = $1
                       AND created_at > NOW() - INTERVAL '90 days'
                 ) ranked
-                WHERE rn > $2
+                WHERE rn > $2::int4
             )
             ",
+            room_id as &RoomId,
+            keep_count,
         )
-        .bind(room_id)
-        .bind(keep_count)
         .execute(&self.pool)
         .await?;
 
@@ -219,7 +243,7 @@ impl ChatRepository {
     /// # Returns
     /// Total number of messages deleted
     pub async fn delete_messages_older_than_retention(&self) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE created_at <= NOW() - INTERVAL '90 days'
@@ -259,7 +283,7 @@ impl ChatRepository {
             return Ok(0);
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE created_at > NOW() - INTERVAL '90 days'
@@ -275,12 +299,12 @@ impl ChatRepository {
                     )
                       AND created_at > NOW() - INTERVAL '90 days'
                 ) ranked_messages
-                WHERE rn > $1
+                WHERE rn > $1::int4
             )
             ",
+            keep_count,
+            activity_window_minutes,
         )
-        .bind(keep_count)
-        .bind(activity_window_minutes)
         .execute(&self.pool)
         .await?;
 

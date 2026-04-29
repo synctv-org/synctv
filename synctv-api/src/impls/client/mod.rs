@@ -17,6 +17,7 @@ mod auth;
 pub use auth::LogoutOutcome;
 pub(crate) mod media;
 mod member;
+pub(crate) mod passkey;
 mod playback;
 mod playback_lifecycle;
 pub(crate) mod playlist;
@@ -118,6 +119,8 @@ pub struct ClientApiConfig {
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
     pub public_id_codec: Arc<crate::PublicIdCodec>,
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
 
 /// Client API implementation
@@ -164,6 +167,10 @@ pub struct ClientApiImpl {
     /// Shared sqids codec for API-facing resource identifiers.
     pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub request_executor: Option<Arc<RequestExecutor>>,
+    /// Shared email API for email-token flows that are exposed by multiple transports.
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    /// Shared WebAuthn service for passkey flows that are exposed by multiple transports.
+    pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
 
 impl ClientApiImpl {
@@ -273,6 +280,8 @@ impl ClientApiImpl {
             jwt_validator,
             public_id_codec,
             request_executor: None,
+            email_api: None,
+            passkey_service: None,
         }
     }
 
@@ -332,6 +341,8 @@ impl ClientApiImpl {
             jwt_validator,
             public_id_codec: config.public_id_codec,
             request_executor: None,
+            email_api: config.email_api,
+            passkey_service: config.passkey_service,
         }
     }
 
@@ -365,6 +376,21 @@ impl ClientApiImpl {
         );
         self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
         self.cluster_fanout = cluster_fanout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_email_api(mut self, email_api: Option<Arc<crate::impls::EmailApiImpl>>) -> Self {
+        self.email_api = email_api;
+        self
+    }
+
+    #[must_use]
+    pub fn with_passkey_service(
+        mut self,
+        passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
+    ) -> Self {
+        self.passkey_service = passkey_service;
         self
     }
 

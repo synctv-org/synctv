@@ -20,6 +20,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   SYNCTV_LOGGING_BACKTRACE: true
+  SQLX_OFFLINE: true
 
 jobs:
   # Check code formatting
@@ -56,6 +57,26 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --verbose --locked
+
+  # SQLx offline metadata
+  sqlx-offline:
+    name: SQLx Offline Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check SQLx offline metadata
+        run: cargo check --workspace --all-targets --locked
 
   # Test non-ignored cases
   test-default:

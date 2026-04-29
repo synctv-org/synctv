@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT m.playlist_id AS \"playlist_id!: PlaylistId\", COUNT(*) AS \"cnt!\"\n            FROM media m\n            LEFT JOIN users u\n              ON m.creator_id = u.id\n             AND u.deleted_at IS NULL\n            WHERE m.playlist_id = ANY($1)\n              AND (m.creator_id IS NULL OR (\n                  u.id IS NOT NULL AND NOT EXISTS (\n                      SELECT 1 FROM user_bans ub\n                      WHERE ub.user_id = u.id\n                        AND ub.revoked_at IS NULL\n                        AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n                  )\n              ))\n            GROUP BY m.playlist_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playlist_id!: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cnt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "4828283bb0f312bd157cc38ee9ba499725dcecf132c2e2d4c4b6fb1ed4ded48e"
+}

@@ -66,7 +66,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -330,21 +330,21 @@ impl RoomService {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        let request_id = sqlx::query_scalar::<_, i64>(
-            r"
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO room_creation_requests (
                 requested_by, name, description, password_hash, settings_payload, status, requested_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
             RETURNING id
-            ",
+            "#,
+            requested_by.as_i64(),
+            name,
+            description,
+            password_hash,
+            settings_payload,
+            i16::from(ReviewStatus::Pending),
         )
-        .bind(requested_by)
-        .bind(name)
-        .bind(description)
-        .bind(password_hash)
-        .bind(settings_payload)
-        .bind(ReviewStatus::Pending)
         .fetch_one(&self.pool)
         .await?;
 
@@ -358,31 +358,36 @@ impl RoomService {
         request_id: &RoomId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRoomCreationRequest>> {
-        let row = sqlx::query(
-            r"
-            SELECT id, requested_by, name, description, password_hash, settings_payload
+        let row = sqlx::query!(
+            r#"
+            SELECT id AS "id: RoomId",
+                   requested_by AS "requested_by: UserId",
+                   name,
+                   description,
+                   password_hash,
+                   settings_payload AS "settings_payload?: serde_json::Value"
             FROM room_creation_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Pending),
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Pending)
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
             let settings_payload = row
-                .try_get::<Option<serde_json::Value>, _>("settings_payload")?
+                .settings_payload
                 .unwrap_or_else(|| serde_json::json!({}));
             let settings = serde_json::from_value::<RoomSettings>(settings_payload)
                 .map_err(|e| sqlx::Error::Decode(e.into()))?;
             Ok(PendingRoomCreationRequest {
-                id: row.try_get("id")?,
-                requested_by: row.try_get("requested_by")?,
-                name: row.try_get("name")?,
-                description: row.try_get("description")?,
-                password_hash: row.try_get("password_hash")?,
+                id: row.id,
+                requested_by: row.requested_by,
+                name: row.name,
+                description: row.description,
+                password_hash: row.password_hash,
                 settings,
             })
         })
@@ -822,6 +827,7 @@ impl RoomService {
     ) -> Self {
         let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
+            RoomRepository::new(pool.clone()),
             None,
             PermissionService::DEFAULT_CACHE_SIZE,
             PermissionService::DEFAULT_CACHE_TTL_SECS,
@@ -1699,34 +1705,34 @@ impl RoomService {
         user_id: &UserId,
         role: RoomRole,
     ) -> Result<RoomMember> {
-        let existing_request_id = sqlx::query_scalar::<_, i64>(
-            r"
+        let existing_request_id = sqlx::query_scalar!(
+            r#"
             SELECT id
             FROM room_join_requests
             WHERE room_id = $1
               AND user_id = $2
               AND reviewed_at IS NULL
             LIMIT 1
-            ",
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
         )
-        .bind(room_id)
-        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
 
         if existing_request_id.is_none() {
-            let insert_result = sqlx::query(
-                r"
+            let insert_result = sqlx::query!(
+                r#"
                 INSERT INTO room_join_requests (
                     room_id, user_id, requested_role, status, requested_at
                 )
                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-                ",
+                "#,
+                room_id.as_i64(),
+                user_id.as_i64(),
+                i16::from(role),
+                i16::from(ROOM_JOIN_REQUEST_PENDING),
             )
-            .bind(room_id)
-            .bind(user_id)
-            .bind(role)
-            .bind(ROOM_JOIN_REQUEST_PENDING)
             .execute(&self.pool)
             .await;
 
@@ -1751,28 +1757,27 @@ impl RoomService {
         room_id: &RoomId,
         request_id: ReviewRequestId,
     ) -> Result<(UserId, RoomRole)> {
-        let row = sqlx::query(
-            r"
-            SELECT user_id, COALESCE(requested_role, $3) AS requested_role
+        let row = sqlx::query!(
+            r#"
+            SELECT user_id AS "user_id: UserId",
+                   COALESCE(requested_role, $3) AS "requested_role!: RoomRole"
             FROM room_join_requests
             WHERE id = $1
               AND room_id = $2
               AND reviewed_at IS NULL
               AND status = $4
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            room_id.as_i64(),
+            i16::from(RoomRole::Member),
+            i16::from(ROOM_JOIN_REQUEST_PENDING),
         )
-        .bind(request_id)
-        .bind(room_id)
-        .bind(RoomRole::Member)
-        .bind(ROOM_JOIN_REQUEST_PENDING)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
 
-        let user_id: UserId = row.try_get("user_id")?;
-        let requested_role: RoomRole = row.try_get("requested_role")?;
-        Ok((user_id, requested_role))
+        Ok((row.user_id, row.requested_role))
     }
 
     async fn load_pending_join_request_by_id(
@@ -1780,27 +1785,26 @@ impl RoomService {
         room_id: &RoomId,
         request_id: ReviewRequestId,
     ) -> Result<(UserId, RoomRole)> {
-        let row = sqlx::query(
-            r"
-            SELECT user_id, COALESCE(requested_role, $3) AS requested_role
+        let row = sqlx::query!(
+            r#"
+            SELECT user_id AS "user_id: UserId",
+                   COALESCE(requested_role, $3) AS "requested_role!: RoomRole"
             FROM room_join_requests
             WHERE id = $1
               AND room_id = $2
               AND reviewed_at IS NULL
               AND status = $4
-            ",
+            "#,
+            request_id.as_i64(),
+            room_id.as_i64(),
+            i16::from(RoomRole::Member),
+            i16::from(ROOM_JOIN_REQUEST_PENDING),
         )
-        .bind(request_id)
-        .bind(room_id)
-        .bind(RoomRole::Member)
-        .bind(ROOM_JOIN_REQUEST_PENDING)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| Error::NotFound("Pending join request not found".to_string()))?;
 
-        let user_id: UserId = row.try_get("user_id")?;
-        let requested_role: RoomRole = row.try_get("requested_role")?;
-        Ok((user_id, requested_role))
+        Ok((row.user_id, row.requested_role))
     }
 
     async fn resolve_pending_join_request_as_approved_tx(
@@ -1809,8 +1813,8 @@ impl RoomService {
         user_id: &UserId,
         reviewed_by: Option<&UserId>,
     ) -> Result<u64> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE room_join_requests
             SET status = $3,
                 reviewed_at = CURRENT_TIMESTAMP,
@@ -1819,13 +1823,13 @@ impl RoomService {
               AND user_id = $2
               AND reviewed_at IS NULL
               AND status = $5
-            ",
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            i16::from(ROOM_JOIN_REQUEST_APPROVED),
+            reviewed_by.map(UserId::as_i64),
+            i16::from(ROOM_JOIN_REQUEST_PENDING),
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind(ROOM_JOIN_REQUEST_APPROVED)
-        .bind(reviewed_by.map(UserId::as_i64))
-        .bind(ROOM_JOIN_REQUEST_PENDING)
         .execute(&mut **tx)
         .await?;
         Ok(result.rows_affected())
@@ -2095,20 +2099,20 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let (target_user_id, _) =
             Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
             UPDATE room_join_requests
             SET status = $2,
                 reviewed_at = CURRENT_TIMESTAMP,
                 reviewed_by = $3,
                 rejection_reason = $4
             WHERE id = $1
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ROOM_JOIN_REQUEST_REJECTED),
+            actor_id.as_i64(),
+            reason,
         )
-        .bind(request_id)
-        .bind(ROOM_JOIN_REQUEST_REJECTED)
-        .bind(actor_id)
-        .bind(reason)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2290,20 +2294,20 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
         let (target_user_id, _) =
             Self::load_pending_join_request_by_id_for_update(&mut tx, &room_id, request_id).await?;
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
             UPDATE room_join_requests
             SET status = $2,
                 reviewed_at = CURRENT_TIMESTAMP,
                 reviewed_by = $3,
                 rejection_reason = $4
             WHERE id = $1
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ROOM_JOIN_REQUEST_REJECTED),
+            reviewed_by.map(UserId::as_i64),
+            reason,
         )
-        .bind(request_id)
-        .bind(ROOM_JOIN_REQUEST_REJECTED)
-        .bind(reviewed_by.map(UserId::as_i64))
-        .bind(reason)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2609,16 +2613,16 @@ impl RoomService {
             .create_or_get_with_executor(&updated.id, &mut tx)
             .await?;
 
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
             UPDATE room_creation_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
             WHERE id = $1
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            admin_id.map(UserId::as_i64),
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Approved)
-        .bind(admin_id.map(UserId::as_i64))
         .execute(&mut *tx)
         .await?;
 
@@ -2684,17 +2688,17 @@ impl RoomService {
                 Error::NotFound(format!("Pending room creation request {room_id} not found"))
             })?;
 
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
             UPDATE room_creation_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1
-            ",
+            "#,
+            room_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            admin_id.map(UserId::as_i64),
+            reason.as_deref(),
         )
-        .bind(room_id)
-        .bind(ReviewStatus::Rejected)
-        .bind(admin_id.map(UserId::as_i64))
-        .bind(reason.as_deref())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2742,41 +2746,45 @@ impl RoomService {
             ));
         }
 
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)
+        let total = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
             FROM room_creation_requests
             WHERE reviewed_at IS NULL AND status = $1
-            ",
+            "#,
+            i16::from(ReviewStatus::Pending),
         )
-        .bind(ReviewStatus::Pending)
         .fetch_one(&self.pool)
         .await?;
 
-        let rows = sqlx::query(
-            r"
-            SELECT id, requested_by, name, description, requested_at
+        let rows = sqlx::query!(
+            r#"
+            SELECT id AS "id: RoomId",
+                   requested_by AS "requested_by: UserId",
+                   name,
+                   description,
+                   requested_at
             FROM room_creation_requests
             WHERE reviewed_at IS NULL AND status = $1
             ORDER BY requested_at DESC, id DESC
             LIMIT $2 OFFSET $3
-            ",
+            "#,
+            i16::from(ReviewStatus::Pending),
+            i64::try_from(pagination.limit()).unwrap_or(i64::MAX),
+            i64::try_from(pagination.offset()).unwrap_or(i64::MAX),
         )
-        .bind(ReviewStatus::Pending)
-        .bind(i64::try_from(pagination.limit()).unwrap_or(i64::MAX))
-        .bind(i64::try_from(pagination.offset()).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await?;
 
         let rooms = rows
             .into_iter()
             .map(|row| {
-                let requested_at = row.try_get("requested_at")?;
-                Ok(Room {
-                    id: row.try_get("id")?,
-                    name: row.try_get("name")?,
-                    description: row.try_get("description")?,
-                    created_by: row.try_get("requested_by")?,
+                let requested_at = row.requested_at;
+                Room {
+                    id: row.id,
+                    name: row.name,
+                    description: row.description,
+                    created_by: row.requested_by,
                     status: RoomStatus::Active,
                     is_banned: false,
                     closed_at: None,
@@ -2785,9 +2793,9 @@ impl RoomService {
                     deleted_at: None,
                     version: 0,
                     last_activity_at: requested_at,
-                })
+                }
             })
-            .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+            .collect();
 
         Ok((rooms, total))
     }
@@ -3478,30 +3486,30 @@ impl RoomService {
                 .internal_with_err("Failed to serialize room settings")?;
 
             let cas_result = if version == 0 {
-                sqlx::query(
-                    r"
+                sqlx::query_scalar!(
+                    r#"
                     INSERT INTO room_settings (room_id, key, value, version)
                     VALUES ($1, '_settings', $2, 1)
                     ON CONFLICT (room_id, key) DO NOTHING
-                    RETURNING version
-                    ",
+                    RETURNING version AS "version!"
+                    "#,
+                    room_id.as_i64(),
+                    &json_value,
                 )
-                .bind(room_id)
-                .bind(&json_value)
                 .fetch_optional(&mut *tx)
                 .await?
             } else {
-                sqlx::query(
-                    r"
+                sqlx::query_scalar!(
+                    r#"
                     UPDATE room_settings
                     SET value = $2, version = version + 1, updated_at = NOW()
                     WHERE room_id = $1 AND key = '_settings' AND version = $3
-                    RETURNING version
-                    ",
+                    RETURNING version AS "version!"
+                    "#,
+                    room_id.as_i64(),
+                    &json_value,
+                    version,
                 )
-                .bind(room_id)
-                .bind(&json_value)
-                .bind(version)
                 .fetch_optional(&mut *tx)
                 .await?
             };
@@ -4244,60 +4252,58 @@ impl RoomService {
         // where another user starts playing media between the check and the clear.
         let mut tx = self.pool.begin().await?;
 
-        let deleted_media_ids: Vec<MediaId> = sqlx::query_scalar(
-            "SELECT id
+        let deleted_media_ids = sqlx::query_scalar!(
+            r#"SELECT id AS "id: MediaId"
              FROM media
              WHERE room_id = $1
                AND playlist_id IS NULL
-             ORDER BY position ASC",
+             ORDER BY position ASC"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .collect();
+        .await?;
 
         // Lock the playback state row to prevent concurrent playback switches
-        let row = sqlx::query(
-            "SELECT playing_media_id, playing_playlist_id FROM room_playback_state
+        let row = sqlx::query!(
+            r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
+                      playing_playlist_id AS "playing_playlist_id?: PlaylistId"
+             FROM room_playback_state
              WHERE room_id = $1
-             FOR UPDATE",
+             FOR UPDATE"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_optional(&mut *tx)
         .await?;
 
         // If the currently playing media is at the room root, reset playback state
         let mut playback_reset = false;
         if let Some(row) = row {
-            use sqlx::Row;
-            let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
-            if let Some(ref mid) = playing_media_id {
+            if let Some(ref mid) = row.playing_media_id {
                 // Check if the playing media belongs to the room root.
-                let in_playlist: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(
+                let in_playlist = sqlx::query_scalar!(
+                    r#"SELECT EXISTS(
                         SELECT 1
                         FROM media
                         WHERE id = $1
                           AND room_id = $2
                           AND playlist_id IS NULL
-                    )",
+                    ) AS "exists!""#,
+                    mid.as_i64(),
+                    room_id.as_i64(),
                 )
-                .bind(mid)
-                .bind(room_id)
                 .fetch_one(&mut *tx)
                 .await?;
 
                 if in_playlist {
                     // Reset playback state to stopped within the same transaction
-                    sqlx::query(
+                    sqlx::query!(
                         "UPDATE room_playback_state
                          SET playing_media_id = NULL, playing_playlist_id = NULL,
                              \"current_time\" = 0, is_playing = false,
                              version = version + 1, updated_at = NOW()
                          WHERE room_id = $1",
+                        room_id.as_i64(),
                     )
-                    .bind(room_id)
                     .execute(&mut *tx)
                     .await?;
                     playback_reset = true;
@@ -4306,10 +4312,12 @@ impl RoomService {
         }
 
         // Delete all media at the room root within the transaction
-        let result = sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id IS NULL")
-            .bind(room_id)
-            .execute(&mut *tx)
-            .await?;
+        let result = sqlx::query!(
+            "DELETE FROM media WHERE room_id = $1 AND playlist_id IS NULL",
+            room_id.as_i64(),
+        )
+        .execute(&mut *tx)
+        .await?;
 
         let count = result.rows_affected().cast_signed();
         tx.commit().await?;
@@ -5251,8 +5259,8 @@ async fn has_room_permission_in_tx(
     let admin_default = PermissionBits::DEFAULT_ADMIN.cast_signed();
     let member_default = PermissionBits::DEFAULT_MEMBER.cast_signed();
     let guest_default = PermissionBits::DEFAULT_GUEST.cast_signed();
-    let has_permission: Option<bool> = sqlx::query_scalar(
-        "SELECT EXISTS (
+    let has_permission = sqlx::query_scalar!(
+        r#"SELECT EXISTS (
             SELECT 1
             FROM room_members rm
             LEFT JOIN room_settings rs
@@ -5278,19 +5286,18 @@ async fn has_room_permission_in_tx(
                       END
                   )
               )
-        )",
+        ) AS "exists!""#,
+        room_id.as_i64(),
+        user_id.as_i64(),
+        required_permission,
+        admin_default,
+        member_default,
+        guest_default,
     )
-    .bind(room_id)
-    .bind(user_id)
-    .bind(required_permission)
-    .bind(admin_default)
-    .bind(member_default)
-    .bind(guest_default)
-    .fetch_optional(&mut **tx)
-    .await?
-    .flatten();
+    .fetch_one(&mut **tx)
+    .await?;
 
-    Ok(has_permission.unwrap_or(false))
+    Ok(has_permission)
 }
 
 async fn collect_target_playlist_nodes_in_tx(
@@ -5304,8 +5311,8 @@ async fn collect_target_playlist_nodes_in_tx(
 
     let playlist_ids: Vec<i64> = root_playlist_ids.iter().map(PlaylistId::as_i64).collect();
 
-    let rows = sqlx::query(
-        "WITH RECURSIVE target_playlists AS (
+    let rows = sqlx::query!(
+        r#"WITH RECURSIVE target_playlists AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -5316,31 +5323,28 @@ async fn collect_target_playlist_nodes_in_tx(
             JOIN target_playlists tp ON p.parent_id = tp.id
             WHERE p.room_id = $1
         )
-        SELECT id, MAX(depth) AS depth
+        SELECT id AS "id!", MAX(depth) AS depth
         FROM target_playlists
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id",
+        ORDER BY MAX(depth) DESC, id"#,
+        room_id.as_i64(),
+        &playlist_ids,
     )
-    .bind(room_id)
-    .bind(&playlist_ids)
     .fetch_all(&mut **tx)
     .await?;
 
-    rows.into_iter()
-        .map(|row| {
-            let playlist_id = row.try_get::<i64, _>("id")?;
-            let depth = row.try_get::<i32, _>("depth")?;
-            Ok((PlaylistId::from(playlist_id), depth))
-        })
-        .collect()
+    Ok(rows
+        .into_iter()
+        .map(|row| (PlaylistId::from(row.id), row.depth.unwrap_or(0)))
+        .collect())
 }
 
 async fn collect_all_room_playlist_nodes_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<Vec<(PlaylistId, i32)>> {
-    let rows = sqlx::query(
-        "WITH RECURSIVE playlist_tree AS (
+    let rows = sqlx::query!(
+        r#"WITH RECURSIVE playlist_tree AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -5351,36 +5355,33 @@ async fn collect_all_room_playlist_nodes_in_tx(
             JOIN playlist_tree pt ON p.parent_id = pt.id
             WHERE p.room_id = $1
         )
-        SELECT id, MAX(depth) AS depth
+        SELECT id AS "id!", MAX(depth) AS depth
         FROM playlist_tree
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id",
+        ORDER BY MAX(depth) DESC, id"#,
+        room_id.as_i64(),
     )
-    .bind(room_id)
     .fetch_all(&mut **tx)
     .await?;
 
-    rows.into_iter()
-        .map(|row| {
-            let playlist_id = row.try_get::<i64, _>("id")?;
-            let depth = row.try_get::<i32, _>("depth")?;
-            Ok((PlaylistId::from(playlist_id), depth))
-        })
-        .collect()
+    Ok(rows
+        .into_iter()
+        .map(|row| (PlaylistId::from(row.id), row.depth.unwrap_or(0)))
+        .collect())
 }
 
 async fn collect_room_root_media_ids_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<Vec<MediaId>> {
-    let media_ids: Vec<MediaId> = sqlx::query_scalar(
-        "SELECT id
+    let media_ids = sqlx::query_scalar!(
+        r#"SELECT id AS "id: MediaId"
          FROM media
          WHERE room_id = $1
            AND playlist_id IS NULL
-         ORDER BY id",
+         ORDER BY id"#,
+        room_id.as_i64(),
     )
-    .bind(room_id)
     .fetch_all(&mut **tx)
     .await?;
 
@@ -5400,8 +5401,8 @@ async fn collect_deleted_media_ids_in_tx(
     let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
     let explicit_media_id_strs: Vec<i64> = explicit_media_ids.iter().map(MediaId::as_i64).collect();
 
-    let rows = sqlx::query(
-        "WITH RECURSIVE target_playlists AS (
+    let rows = sqlx::query!(
+        r#"WITH RECURSIVE target_playlists AS (
             SELECT id
             FROM playlists
             WHERE id = ANY($1)
@@ -5417,20 +5418,15 @@ async fn collect_deleted_media_ids_in_tx(
               m.id = ANY($3)
               OR m.playlist_id IN (SELECT id FROM target_playlists)
           )
-        ORDER BY m.id",
+        ORDER BY m.id"#,
+        &playlist_id_strs,
+        room_id.as_i64(),
+        &explicit_media_id_strs,
     )
-    .bind(&playlist_id_strs)
-    .bind(room_id)
-    .bind(&explicit_media_id_strs)
     .fetch_all(&mut **tx)
     .await?;
 
-    rows.into_iter()
-        .map(|row| {
-            let media_id: MediaId = row.try_get("id")?;
-            Ok(media_id)
-        })
-        .collect()
+    Ok(rows.into_iter().map(|row| MediaId::from(row.id)).collect())
 }
 
 async fn plan_playback_reset_for_deleted_entries_in_tx(
@@ -5440,13 +5436,14 @@ async fn plan_playback_reset_for_deleted_entries_in_tx(
     deleted_media_ids: &[MediaId],
     force: bool,
 ) -> Result<bool> {
-    let playback_row = sqlx::query(
-        "SELECT playing_media_id, playing_playlist_id
+    let playback_row = sqlx::query!(
+        r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
+                  playing_playlist_id AS "playing_playlist_id?: PlaylistId"
          FROM room_playback_state
          WHERE room_id = $1
-         FOR UPDATE",
+         FOR UPDATE"#,
+        room_id.as_i64(),
     )
-    .bind(room_id)
     .fetch_optional(&mut **tx)
     .await?;
 
@@ -5454,16 +5451,13 @@ async fn plan_playback_reset_for_deleted_entries_in_tx(
         return Ok(false);
     };
 
-    let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
-    let playing_playlist_id: Option<PlaylistId> = row.try_get("playing_playlist_id")?;
-
-    let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
+    let deletes_playing_media = row.playing_media_id.as_ref().is_some_and(|current_id| {
         deleted_media_ids
             .iter()
             .any(|media_id| media_id == current_id)
     });
 
-    let deletes_playing_playlist = playing_playlist_id.as_ref().is_some_and(|current_id| {
+    let deletes_playing_playlist = row.playing_playlist_id.as_ref().is_some_and(|current_id| {
         deleted_playlist_ids
             .iter()
             .any(|playlist_id| playlist_id == current_id)
@@ -5499,8 +5493,7 @@ async fn delete_playlist_ids_in_depth_order_in_tx(
     }
 
     for (_depth, ids) in ids_by_depth.into_iter().rev() {
-        sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
-            .bind(&ids)
+        sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &ids)
             .execute(&mut **tx)
             .await?;
     }
@@ -5523,19 +5516,19 @@ async fn apply_delete_entries_impact_in_tx(
     impact: &EntryDeletionImpact,
 ) -> Result<()> {
     if impact.playback_reset {
-        sqlx::query(
-            "UPDATE room_playback_state
+        sqlx::query!(
+            r#"UPDATE room_playback_state
              SET playing_media_id = NULL,
                  playing_playlist_id = NULL,
                  target = ''::bytea,
-                 \"current_time\" = 0,
+                 "current_time" = 0,
                  speed = 1.0,
                  is_playing = false,
                  version = version + 1,
                  updated_at = NOW()
-             WHERE room_id = $1",
+             WHERE room_id = $1"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .execute(&mut **tx)
         .await?;
     }
@@ -5546,8 +5539,7 @@ async fn apply_delete_entries_impact_in_tx(
             .iter()
             .map(MediaId::as_i64)
             .collect();
-        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
-            .bind(&media_id_strs)
+        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
             .execute(&mut **tx)
             .await?;
     }
@@ -5594,13 +5586,14 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<RoomCleanupImpact> {
-    let deleted = sqlx::query(
-        "UPDATE rooms
+    let now = chrono::Utc::now();
+    let deleted = sqlx::query!(
+        r#"UPDATE rooms
          SET deleted_at = $2, updated_at = $2, version = version + 1
-         WHERE id = $1 AND deleted_at IS NULL",
+         WHERE id = $1 AND deleted_at IS NULL"#,
+        room_id.as_i64(),
+        now,
     )
-    .bind(room_id)
-    .bind(chrono::Utc::now())
     .execute(&mut **tx)
     .await?;
 
@@ -5620,39 +5613,46 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &root_media_ids)
             .await?;
 
-    let playback_rows_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+    let playback_rows_deleted = sqlx::query!(
+        "DELETE FROM room_playback_state WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
 
     if !deleted_media_ids.is_empty() {
         let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
-        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
-            .bind(&media_id_strs)
+        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
             .execute(&mut **tx)
             .await?;
     }
 
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
 
-    let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+    let members_deleted = sqlx::query!(
+        "DELETE FROM room_members WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
 
-    let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+    let settings_deleted = sqlx::query!(
+        "DELETE FROM room_settings WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
 
-    let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
+    let chat_deleted = sqlx::query!(
+        "DELETE FROM chat_messages WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
 
     Ok(RoomCleanupImpact {
         deleted_playlist_ids,
@@ -5668,10 +5668,12 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<bool> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)")
-        .bind(room_id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1) AS "exists!""#,
+        room_id.as_i64(),
+    )
+    .fetch_one(&mut **tx)
+    .await?;
     if !exists {
         return Ok(false);
     }
@@ -5686,36 +5688,42 @@ pub(crate) async fn hard_delete_room_and_cleanup_in_tx(
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &root_media_ids)
             .await?;
 
-    sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM room_playback_state WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
 
     if !deleted_media_ids.is_empty() {
         let media_id_strs: Vec<i64> = deleted_media_ids.iter().map(MediaId::as_i64).collect();
-        sqlx::query("DELETE FROM media WHERE id = ANY($1)")
-            .bind(&media_id_strs)
+        sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
             .execute(&mut **tx)
             .await?;
     }
 
     delete_playlist_ids_in_depth_order_in_tx(tx, &playlist_nodes).await?;
 
-    sqlx::query("DELETE FROM room_members WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
-        .bind(room_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM room_members WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM room_settings WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM chat_messages WHERE room_id = $1",
+        room_id.as_i64(),
+    )
+    .execute(&mut **tx)
+    .await?;
 
-    let deleted = sqlx::query("DELETE FROM rooms WHERE id = $1")
-        .bind(room_id)
+    let deleted = sqlx::query!("DELETE FROM rooms WHERE id = $1", room_id.as_i64())
         .execute(&mut **tx)
         .await?;
 

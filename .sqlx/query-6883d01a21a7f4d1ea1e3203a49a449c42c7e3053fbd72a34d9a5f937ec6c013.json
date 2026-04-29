@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT user_id AS \"user_id: UserId\",\n                   COALESCE(requested_role, $3) AS \"requested_role!: RoomRole\"\n            FROM room_join_requests\n            WHERE id = $1\n              AND room_id = $2\n              AND reviewed_at IS NULL\n              AND status = $4\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "requested_role!: RoomRole",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int2",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "6883d01a21a7f4d1ea1e3203a49a449c42c7e3053fbd72a34d9a5f937ec6c013"
+}

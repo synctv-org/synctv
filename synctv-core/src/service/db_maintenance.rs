@@ -86,7 +86,7 @@ impl DatabaseMaintenanceService {
 
     /// Delete expired email tokens.
     pub async fn run_cleanup_email_tokens(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("SELECT cleanup_expired_auth_email_tokens()")
+        sqlx::query!("SELECT cleanup_expired_auth_email_tokens()")
             .execute(&self.pool)
             .await?;
         info!("Expired email token cleanup completed");
@@ -95,12 +95,13 @@ impl DatabaseMaintenanceService {
 
     /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
-        let result =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_old_notifications($1, $2)")
-                .bind(self.notification_retention_days())
-                .bind(self.notification_max_retention_days())
-                .fetch_one(&self.pool)
-                .await?;
+        let result = sqlx::query_scalar!(
+            r#"SELECT cleanup_old_notifications($1, $2) as "result!: serde_json::Value""#,
+            self.notification_retention_days(),
+            self.notification_max_retention_days(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         let read_deleted = result["read_deleted"].as_i64().unwrap_or(0);
         let expired_deleted = result["expired_deleted"].as_i64().unwrap_or(0);
@@ -125,11 +126,12 @@ impl DatabaseMaintenanceService {
         let retention_days = self.chat_message_retention_days();
         let interval = format!("{retention_days} days");
 
-        let result =
-            sqlx::query("DELETE FROM chat_messages WHERE created_at <= NOW() - $1::interval")
-                .bind(&interval)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query!(
+            "DELETE FROM chat_messages WHERE created_at <= NOW() - $1::text::interval",
+            interval,
+        )
+        .execute(&self.pool)
+        .await?;
 
         let deleted = result.rows_affected();
         if deleted > 0 {
@@ -143,11 +145,12 @@ impl DatabaseMaintenanceService {
 
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
-        let result =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
-                .bind(self.expired_credential_buffer_hours())
-                .fetch_one(&self.pool)
-                .await?;
+        let result = sqlx::query_scalar!(
+            r#"SELECT cleanup_expired_credentials($1) as "result!: serde_json::Value""#,
+            self.expired_credential_buffer_hours(),
+        )
+        .fetch_one(&self.pool)
+        .await?;
 
         let deleted = result["deleted_count"].as_i64().unwrap_or(0);
         if deleted > 0 {

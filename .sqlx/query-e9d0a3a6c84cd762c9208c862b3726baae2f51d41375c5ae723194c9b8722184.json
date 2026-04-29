@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_webauthn_credentials (\n                user_id, credential_id, passkey, public_key, name\n            )\n            VALUES ($1, $2, $3, $4, $5)\n            RETURNING id,\n                      user_id as \"user_id: UserId\",\n                      credential_id,\n                      passkey as \"passkey!: serde_json::Value\",\n                      sign_count,\n                      name,\n                      last_used_at,\n                      created_at,\n                      updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "credential_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "passkey!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "sign_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Jsonb",
+        "Jsonb",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e9d0a3a6c84cd762c9208c862b3726baae2f51d41375c5ae723194c9b8722184"
+}

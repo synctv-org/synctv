@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_id FROM room_members\n                 WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL\n                 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7ea6af420bfc70f80462557e271595bf223152b92d78770de449acd0e18a70cc"
+}

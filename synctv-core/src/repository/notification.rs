@@ -27,21 +27,30 @@ impl NotificationRepository {
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
         let now = Utc::now();
 
-        let n = sqlx::query_as::<_, Notification>(
-            r"
+        let n = sqlx::query_as!(
+            Notification,
+            r#"
             INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, user_id, type, title, content, data, is_read, created_at, updated_at
-            ",
+            RETURNING id,
+                      user_id as "user_id: UserId",
+                      type as "notification_type: NotificationType",
+                      title,
+                      content,
+                      data as "data!: serde_json::Value",
+                      is_read,
+                      created_at,
+                      updated_at
+            "#,
+            req.user_id as UserId,
+            req.notification_type.to_string(),
+            req.title.as_str(),
+            req.content.as_str(),
+            req.data.clone(),
+            false,
+            now,
+            now,
         )
-        .bind(req.user_id)
-        .bind(req.notification_type.to_string())
-        .bind(&req.title)
-        .bind(&req.content)
-        .bind(&req.data)
-        .bind(false)
-        .bind(now)
-        .bind(now)
         .fetch_one(&self.pool)
         .await?;
 
@@ -58,18 +67,27 @@ impl NotificationRepository {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        let n = sqlx::query_as::<_, Notification>(
-            r"
-            SELECT id, user_id, type, title, content, data, is_read, created_at, updated_at
+        let n = sqlx::query_as!(
+            Notification,
+            r#"
+            SELECT id,
+                   user_id as "user_id: UserId",
+                   type as "notification_type: NotificationType",
+                   title,
+                   content,
+                   data as "data!: serde_json::Value",
+                   is_read,
+                   created_at,
+                   updated_at
             FROM notifications
             WHERE id = $1
               AND created_at >= $2
               AND created_at <= $3
-            ",
+            "#,
+            notification_id,
+            one_year_ago,
+            now,
         )
-        .bind(notification_id)
-        .bind(one_year_ago)
-        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -187,19 +205,19 @@ impl NotificationRepository {
     /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
     /// partition pruning on the range-partitioned `notifications` table.
     pub async fn count_unread(&self, user_id: &UserId) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
+        let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*)
             FROM notifications
             WHERE user_id = $1 AND is_read = FALSE
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count)
+        Ok(count.unwrap_or(0))
     }
 
     /// Mark notifications as read
@@ -211,16 +229,16 @@ impl NotificationRepository {
             return Ok(0);
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE notifications
             SET is_read = TRUE, updated_at = NOW()
             WHERE user_id = $1 AND id = ANY($2)
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
+            user_id as &UserId,
+            notification_ids,
         )
-        .bind(user_id)
-        .bind(notification_ids)
         .execute(&self.pool)
         .await?;
 
@@ -237,28 +255,28 @@ impl NotificationRepository {
         before: Option<DateTime<Utc>>,
     ) -> Result<u64> {
         let result = if let Some(before_time) = before {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 UPDATE notifications
                 SET is_read = TRUE, updated_at = NOW()
                 WHERE user_id = $1 AND is_read = FALSE AND created_at <= $2
                   AND created_at >= NOW() - INTERVAL '6 months'
                 ",
+                user_id as &UserId,
+                before_time,
             )
-            .bind(user_id)
-            .bind(before_time)
             .execute(&self.pool)
             .await?
         } else {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 UPDATE notifications
                 SET is_read = TRUE, updated_at = NOW()
                 WHERE user_id = $1 AND is_read = FALSE
                   AND created_at >= NOW() - INTERVAL '6 months'
                 ",
+                user_id as &UserId,
             )
-            .bind(user_id)
             .execute(&self.pool)
             .await?
         };
@@ -273,15 +291,15 @@ impl NotificationRepository {
     /// Notifications older than 6 months are purged by `delete_older_than`,
     /// so this time bound is safe for user-facing delete operations.
     pub async fn delete(&self, user_id: &UserId, notification_id: i64) -> Result<()> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE user_id = $1 AND id = $2
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
+            user_id as &UserId,
+            notification_id,
         )
-        .bind(user_id)
-        .bind(notification_id)
         .execute(&self.pool)
         .await?;
 
@@ -297,14 +315,14 @@ impl NotificationRepository {
     /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
     /// partition pruning on the range-partitioned `notifications` table.
     pub async fn delete_all_read(&self, user_id: &UserId) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE user_id = $1 AND is_read = TRUE
               AND created_at >= NOW() - INTERVAL '6 months'
             ",
+            user_id as &UserId,
         )
-        .bind(user_id)
         .execute(&self.pool)
         .await?;
 
@@ -315,13 +333,13 @@ impl NotificationRepository {
     /// regardless of read status. Prevents unbounded table growth from
     /// unread notifications that are never acknowledged.
     pub async fn delete_older_than(&self, days: i32) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days,
         )
-        .bind(days)
         .execute(&self.pool)
         .await?;
 

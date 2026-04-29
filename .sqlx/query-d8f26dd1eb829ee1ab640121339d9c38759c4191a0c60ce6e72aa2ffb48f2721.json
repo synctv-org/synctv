@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_playback_state\n             SET playing_media_id = NULL,\n                 playing_playlist_id = NULL,\n                 target = ''::bytea,\n                 \"current_time\" = 0,\n                 speed = 1.0,\n                 is_playing = false,\n                 version = version + 1,\n                 updated_at = NOW()\n             WHERE room_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8f26dd1eb829ee1ab640121339d9c38759c4191a0c60ce6e72aa2ffb48f2721"
+}

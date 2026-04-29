@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_settings (room_id, key, value, version)\n            VALUES ($1, $2, $3, 1)\n            ON CONFLICT (room_id, key)\n            DO UPDATE SET value = $3, version = room_settings.version + 1, updated_at = NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb5a8c7f72ab6f48e568450d81d6e992be4392ae59e573925125c539ec1ebc22"
+}

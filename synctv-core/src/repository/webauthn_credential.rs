@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
 use crate::{models::UserId, Error, InternalExt, Result};
@@ -28,21 +28,20 @@ impl WebAuthnCredentialRepository {
         Self { pool }
     }
 
-    fn row_to_credential(row: &sqlx::postgres::PgRow) -> Result<WebAuthnCredential> {
-        let passkey_value: serde_json::Value = row.try_get("passkey")?;
-        let passkey = serde_json::from_value(passkey_value)
+    fn row_to_credential(row: WebAuthnCredentialRow) -> Result<WebAuthnCredential> {
+        let passkey = serde_json::from_value(row.passkey)
             .internal_with_err("Failed to deserialize stored WebAuthn passkey")?;
 
         Ok(WebAuthnCredential {
-            id: row.try_get("id")?,
-            user_id: UserId::from(row.try_get::<i64, _>("user_id")?),
-            credential_id: row.try_get("credential_id")?,
+            id: row.id,
+            user_id: row.user_id,
+            credential_id: row.credential_id,
             passkey,
-            sign_count: row.try_get("sign_count")?,
-            name: row.try_get("name")?,
-            last_used_at: row.try_get("last_used_at")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
+            sign_count: row.sign_count,
+            name: row.name,
+            last_used_at: row.last_used_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
         })
     }
 
@@ -71,21 +70,29 @@ impl WebAuthnCredentialRepository {
             .internal_with_err("Failed to serialize WebAuthn passkey")?;
         let public_key_json = serde_json::to_value(passkey.get_public_key())
             .internal_with_err("Failed to serialize WebAuthn public key")?;
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            WebAuthnCredentialRow,
+            r#"
             INSERT INTO auth_webauthn_credentials (
                 user_id, credential_id, passkey, public_key, name
             )
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, user_id, credential_id, passkey, sign_count, name,
-                      last_used_at, created_at, updated_at
-            ",
+            RETURNING id,
+                      user_id as "user_id: UserId",
+                      credential_id,
+                      passkey as "passkey!: serde_json::Value",
+                      sign_count,
+                      name,
+                      last_used_at,
+                      created_at,
+                      updated_at
+            "#,
+            user_id as &UserId,
+            credential_id,
+            passkey_json,
+            public_key_json,
+            name,
         )
-        .bind(user_id)
-        .bind(&credential_id)
-        .bind(sqlx::types::Json(passkey_json))
-        .bind(sqlx::types::Json(public_key_json))
-        .bind(name)
         .fetch_one(executor)
         .await
         .map_err(|error| match error {
@@ -95,43 +102,59 @@ impl WebAuthnCredentialRepository {
             other => Error::Database(other),
         })?;
 
-        Self::row_to_credential(&row)
+        Self::row_to_credential(row)
     }
 
     pub async fn list_by_user(&self, user_id: &UserId) -> Result<Vec<WebAuthnCredential>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, user_id, credential_id, passkey, sign_count, name,
-                   last_used_at, created_at, updated_at
+        let rows = sqlx::query_as!(
+            WebAuthnCredentialRow,
+            r#"
+            SELECT id,
+                   user_id as "user_id: UserId",
+                   credential_id,
+                   passkey as "passkey!: serde_json::Value",
+                   sign_count,
+                   name,
+                   last_used_at,
+                   created_at,
+                   updated_at
             FROM auth_webauthn_credentials
             WHERE user_id = $1
             ORDER BY created_at ASC, id ASC
-            ",
+            "#,
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(Self::row_to_credential).collect()
+        rows.into_iter().map(Self::row_to_credential).collect()
     }
 
     pub async fn get_by_credential_id(
         &self,
         credential_id: &[u8],
     ) -> Result<Option<WebAuthnCredential>> {
-        let row = sqlx::query(
-            r"
-            SELECT id, user_id, credential_id, passkey, sign_count, name,
-                   last_used_at, created_at, updated_at
+        let row = sqlx::query_as!(
+            WebAuthnCredentialRow,
+            r#"
+            SELECT id,
+                   user_id as "user_id: UserId",
+                   credential_id,
+                   passkey as "passkey!: serde_json::Value",
+                   sign_count,
+                   name,
+                   last_used_at,
+                   created_at,
+                   updated_at
             FROM auth_webauthn_credentials
             WHERE credential_id = $1
-            ",
+            "#,
+            credential_id,
         )
-        .bind(credential_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        row.as_ref().map(Self::row_to_credential).transpose()
+        row.map(Self::row_to_credential).transpose()
     }
 
     pub async fn update_after_authentication(
@@ -144,7 +167,7 @@ impl WebAuthnCredentialRepository {
             .internal_with_err("Failed to serialize updated WebAuthn passkey")?;
         let public_key_json = serde_json::to_value(passkey.get_public_key())
             .internal_with_err("Failed to serialize updated WebAuthn public key")?;
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE auth_webauthn_credentials
             SET passkey = $2,
@@ -153,11 +176,11 @@ impl WebAuthnCredentialRepository {
                 last_used_at = NOW()
             WHERE credential_id = $1
             ",
+            credential_id,
+            passkey_json,
+            public_key_json,
+            sign_count,
         )
-        .bind(credential_id)
-        .bind(sqlx::types::Json(passkey_json))
-        .bind(sqlx::types::Json(public_key_json))
-        .bind(sign_count)
         .execute(&self.pool)
         .await?;
 
@@ -181,11 +204,11 @@ impl WebAuthnCredentialRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "DELETE FROM auth_webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
+            user_id as &UserId,
+            credential_id,
         )
-        .bind(user_id)
-        .bind(credential_id)
         .execute(executor)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -199,12 +222,13 @@ impl WebAuthnCredentialRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM auth_webauthn_credentials WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_one(executor)
-                .await?;
-        Ok(count)
+        let count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM auth_webauthn_credentials WHERE user_id = $1",
+            user_id as &UserId,
+        )
+        .fetch_one(executor)
+        .await?;
+        Ok(count.unwrap_or(0))
     }
 
     pub async fn exists_for_user_with_executor<'e, E>(
@@ -216,19 +240,31 @@ impl WebAuthnCredentialRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let exists: bool = sqlx::query_scalar(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM auth_webauthn_credentials
                 WHERE user_id = $1 AND credential_id = $2
-            )
-            ",
+            ) as "exists!"
+            "#,
+            user_id as &UserId,
+            credential_id,
         )
-        .bind(user_id)
-        .bind(credential_id)
         .fetch_one(executor)
         .await?;
         Ok(exists)
     }
+}
+
+struct WebAuthnCredentialRow {
+    id: i64,
+    user_id: UserId,
+    credential_id: Vec<u8>,
+    passkey: serde_json::Value,
+    sign_count: i64,
+    name: Option<String>,
+    last_used_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM auth_password_credentials\n                WHERE user_id = $1\n                  AND opaque_record IS NOT NULL\n                  AND opaque_credential_identifier IS NOT NULL\n                  AND opaque_ciphersuite IS NOT NULL\n                  AND opaque_server_setup_version IS NOT NULL\n            ) as \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e317448fc8f99e23cc9de56a4ef2a861f927003ef72a9da746ad46d0669e9195"
+}

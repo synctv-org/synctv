@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
@@ -80,7 +80,8 @@ pub enum OpaqueRegistrationPurpose {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OpaquePasswordUpdateVerification {
     CurrentOpaquePassword { server_login_state: Vec<u8> },
-    External,
+    VerifiedExternal,
+    PendingPasskey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -761,14 +762,14 @@ impl UserService {
         user_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<RoomId>> {
-        let room_ids: Vec<RoomId> = sqlx::query_scalar(
-            "SELECT id
+        let room_ids = sqlx::query_scalar!(
+            r#"SELECT id AS "id: RoomId"
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL
              ORDER BY id
-             FOR UPDATE",
+             FOR UPDATE"#,
+            user_id.as_i64(),
         )
-        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
@@ -781,22 +782,22 @@ impl UserService {
         owned_room_ids: &HashSet<RoomId>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<RoomId>> {
-        let rows = sqlx::query(
-            "SELECT DISTINCT rm.room_id
+        let rows = sqlx::query!(
+            r#"SELECT DISTINCT rm.room_id AS "room_id: RoomId"
              FROM room_members rm
              JOIN rooms r ON r.id = rm.room_id
              WHERE rm.user_id = $1
                AND rm.left_at IS NULL
                AND r.deleted_at IS NULL
-             ORDER BY rm.room_id",
+             ORDER BY rm.room_id"#,
+            user_id.as_i64(),
         )
-        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         let mut room_ids = Vec::new();
         for row in rows {
-            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            let room_id = row.room_id;
             if !owned_room_ids.contains(&room_id) {
                 room_ids.push(room_id);
             }
@@ -813,54 +814,52 @@ impl UserService {
     ) -> Result<HashMap<RoomId, UserOwnedRoomEntries>> {
         let mut entries_by_room = HashMap::<RoomId, UserOwnedRoomEntries>::new();
 
-        let playlist_rows = sqlx::query(
-            "SELECT p.id, p.room_id
+        let playlist_rows = sqlx::query!(
+            r#"SELECT p.id AS "id: PlaylistId", p.room_id AS "room_id: RoomId"
              FROM playlists p
              JOIN rooms r ON r.id = p.room_id
              WHERE p.creator_id = $1
                AND r.deleted_at IS NULL
-             ORDER BY p.room_id, p.id",
+             ORDER BY p.room_id, p.id"#,
+            user_id.as_i64(),
         )
-        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         for row in playlist_rows {
-            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            let room_id = row.room_id;
             if owned_room_ids.contains(&room_id) {
                 continue;
             }
-            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
             entries_by_room
                 .entry(room_id)
                 .or_default()
                 .playlist_ids
-                .push(playlist_id);
+                .push(row.id);
         }
 
-        let media_rows = sqlx::query(
-            "SELECT m.id, m.room_id
+        let media_rows = sqlx::query!(
+            r#"SELECT m.id AS "id: MediaId", m.room_id AS "room_id: RoomId"
              FROM media m
              JOIN rooms r ON r.id = m.room_id
              WHERE m.creator_id = $1
                AND r.deleted_at IS NULL
-             ORDER BY m.room_id, m.id",
+             ORDER BY m.room_id, m.id"#,
+            user_id.as_i64(),
         )
-        .bind(user_id)
         .fetch_all(&mut **tx)
         .await?;
 
         for row in media_rows {
-            let room_id = RoomId::from(row.try_get::<i64, _>("room_id")?);
+            let room_id = row.room_id;
             if owned_room_ids.contains(&room_id) {
                 continue;
             }
-            let media_id = MediaId::from(row.try_get::<i64, _>("id")?);
             entries_by_room
                 .entry(room_id)
                 .or_default()
                 .media_ids
-                .push(media_id);
+                .push(row.id);
         }
 
         Ok(entries_by_room)
@@ -879,8 +878,8 @@ impl UserService {
         let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
 
-        let rows = sqlx::query(
-            "WITH RECURSIVE target_playlists AS (
+        let rows = sqlx::query!(
+            r#"WITH RECURSIVE target_playlists AS (
                 SELECT id
                 FROM playlists
                 WHERE id = ANY($1)
@@ -896,20 +895,15 @@ impl UserService {
                   m.id = ANY($3)
                   OR m.playlist_id IN (SELECT id FROM target_playlists)
               )
-            ORDER BY m.id",
+            ORDER BY m.id"#,
+            &playlist_id_strs,
+            room_id.as_i64(),
+            &media_id_strs,
         )
-        .bind(&playlist_id_strs)
-        .bind(room_id)
-        .bind(&media_id_strs)
         .fetch_all(&mut **tx)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                let media_id = row.try_get::<i64, _>("id")?;
-                Ok(MediaId::from(media_id))
-            })
-            .collect()
+        Ok(rows.into_iter().map(|row| MediaId::from(row.id)).collect())
     }
 
     async fn delete_owned_entries_in_room_in_tx(
@@ -922,35 +916,34 @@ impl UserService {
         let deleted_media_ids =
             Self::collect_deleted_media_ids_in_tx(tx, room_id, &playlist_ids, &media_ids).await?;
 
-        let playback_row = sqlx::query(
-            "SELECT playing_media_id, playing_playlist_id
+        let playback_row = sqlx::query!(
+            r#"SELECT playing_media_id AS "playing_media_id?: MediaId",
+                      playing_playlist_id AS "playing_playlist_id?: PlaylistId"
              FROM room_playback_state
              WHERE room_id = $1
-             FOR UPDATE",
+             FOR UPDATE"#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_optional(&mut **tx)
         .await?;
 
         let mut playback_reset = false;
         if let Some(row) = playback_row {
-            let playing_media_id: Option<MediaId> = row.try_get("playing_media_id")?;
-            let playing_playlist_id: Option<PlaylistId> = row.try_get("playing_playlist_id")?;
-
-            let deletes_playing_media = playing_media_id.as_ref().is_some_and(|current_id| {
+            let deletes_playing_media = row.playing_media_id.as_ref().is_some_and(|current_id| {
                 deleted_media_ids
                     .iter()
                     .any(|media_id| media_id == current_id)
             });
 
-            let deletes_playing_playlist = if let Some(playing_playlist_id) = playing_playlist_id {
-                if playlist_ids.is_empty() {
-                    false
-                } else {
-                    let playlist_id_strs: Vec<i64> =
-                        playlist_ids.iter().map(PlaylistId::as_i64).collect();
-                    sqlx::query_scalar(
-                        "WITH RECURSIVE target_playlists AS (
+            let deletes_playing_playlist =
+                if let Some(playing_playlist_id) = row.playing_playlist_id {
+                    if playlist_ids.is_empty() {
+                        false
+                    } else {
+                        let playlist_id_strs: Vec<i64> =
+                            playlist_ids.iter().map(PlaylistId::as_i64).collect();
+                        sqlx::query_scalar!(
+                            r#"WITH RECURSIVE target_playlists AS (
                             SELECT id
                             FROM playlists
                             WHERE id = ANY($1)
@@ -963,31 +956,31 @@ impl UserService {
                             SELECT 1
                             FROM target_playlists
                             WHERE id = $2
-                        )",
-                    )
-                    .bind(&playlist_id_strs)
-                    .bind(playing_playlist_id)
-                    .fetch_one(&mut **tx)
-                    .await?
-                }
-            } else {
-                false
-            };
+                        ) AS "exists!""#,
+                            &playlist_id_strs,
+                            playing_playlist_id.as_i64(),
+                        )
+                        .fetch_one(&mut **tx)
+                        .await?
+                    }
+                } else {
+                    false
+                };
 
             if deletes_playing_media || deletes_playing_playlist {
-                sqlx::query(
-                    "UPDATE room_playback_state
+                sqlx::query!(
+                    r#"UPDATE room_playback_state
                      SET playing_media_id = NULL,
                          playing_playlist_id = NULL,
                          target = ''::bytea,
-                         \"current_time\" = 0,
+                         "current_time" = 0,
                          speed = 1.0,
                          is_playing = false,
                          version = version + 1,
                          updated_at = NOW()
-                     WHERE room_id = $1",
+                     WHERE room_id = $1"#,
+                    room_id.as_i64(),
                 )
-                .bind(room_id)
                 .execute(&mut **tx)
                 .await?;
                 playback_reset = true;
@@ -996,18 +989,19 @@ impl UserService {
 
         if !media_ids.is_empty() {
             let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
-            sqlx::query("DELETE FROM media WHERE id = ANY($1)")
-                .bind(&media_id_strs)
+            sqlx::query!("DELETE FROM media WHERE id = ANY($1)", &media_id_strs)
                 .execute(&mut **tx)
                 .await?;
         }
 
         if !playlist_ids.is_empty() {
             let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
-                .bind(&playlist_id_strs)
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query!(
+                "DELETE FROM playlists WHERE id = ANY($1)",
+                &playlist_id_strs
+            )
+            .execute(&mut **tx)
+            .await?;
         }
 
         Ok(UserDeletedRoomImpact {
@@ -1073,92 +1067,110 @@ impl UserService {
             }
         }
 
-        let oauth_mappings_deleted =
-            sqlx::query("DELETE FROM auth_oauth2_identities WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
+        let oauth_mappings_deleted = sqlx::query!(
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        let email_tokens_deleted = sqlx::query("DELETE FROM auth_email_tokens WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&mut **tx)
-            .await?
-            .rows_affected();
+        let email_tokens_deleted = sqlx::query!(
+            "DELETE FROM auth_email_tokens WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        let email_identities_deleted =
-            sqlx::query("DELETE FROM auth_email_identities WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
+        let email_identities_deleted = sqlx::query!(
+            "DELETE FROM auth_email_identities WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        sqlx::query("DELETE FROM auth_password_credentials WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM auth_password_credentials WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?;
 
-        sqlx::query("DELETE FROM auth_webauthn_credentials WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM auth_webauthn_credentials WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?;
 
-        let provider_credentials_deleted =
-            sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
+        let provider_credentials_deleted = sqlx::query!(
+            "DELETE FROM user_media_provider_credentials WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        let notifications_deleted = sqlx::query("DELETE FROM notifications WHERE user_id = $1")
-            .bind(user_id)
-            .execute(&mut **tx)
-            .await?
-            .rows_affected();
+        let notifications_deleted = sqlx::query!(
+            "DELETE FROM notifications WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        let mut room_member_bans_cleared =
-            sqlx::query("UPDATE room_member_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-        room_member_bans_cleared +=
-            sqlx::query("UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-        room_member_bans_cleared +=
-            sqlx::query("UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-        room_member_bans_cleared +=
-            sqlx::query("UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-        room_member_bans_cleared +=
-            sqlx::query("UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-        room_member_bans_cleared +=
-            sqlx::query("UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
+        let mut room_member_bans_cleared = sqlx::query!(
+            "UPDATE room_member_bans SET banned_by = NULL WHERE banned_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        room_member_bans_cleared += sqlx::query!(
+            "UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        room_member_bans_cleared += sqlx::query!(
+            "UPDATE user_bans SET banned_by = NULL WHERE banned_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        room_member_bans_cleared += sqlx::query!(
+            "UPDATE user_bans SET revoked_by = NULL WHERE revoked_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        room_member_bans_cleared += sqlx::query!(
+            "UPDATE room_bans SET banned_by = NULL WHERE banned_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        room_member_bans_cleared += sqlx::query!(
+            "UPDATE room_bans SET revoked_by = NULL WHERE revoked_by = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        let chat_messages_anonymized =
-            sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
+        let chat_messages_anonymized = sqlx::query!(
+            "UPDATE chat_messages SET user_id = NULL WHERE user_id = $1",
+            user_id.as_i64(),
+        )
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
         let room_member_repo = RoomMemberRepository::new(self.repository.pool().clone());
         let memberships_removed = room_member_repo
@@ -1394,18 +1406,18 @@ impl UserService {
         username: &str,
         email: Option<&str>,
     ) -> Result<bool> {
-        let exists = sqlx::query_scalar::<_, bool>(
-            r"
+        let exists = sqlx::query_scalar!(
+            r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM user_registration_requests
                 WHERE reviewed_at IS NULL
                   AND (username = $1 OR ($2::TEXT IS NOT NULL AND email = $2))
-            )
-            ",
+            ) AS "exists!"
+            "#,
+            username,
+            email,
         )
-        .bind(username)
-        .bind(email)
         .fetch_one(self.repository.pool())
         .await?;
 
@@ -1420,8 +1432,8 @@ impl UserService {
         opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
-        let request_id = sqlx::query_scalar::<_, i64>(
-            r"
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO user_registration_requests (
                 username, email, legacy_password_hash, opaque_record,
                 opaque_credential_identifier, opaque_ciphersuite,
@@ -1429,17 +1441,17 @@ impl UserService {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
             RETURNING id
-            ",
+            "#,
+            username,
+            email,
+            legacy_password_hash,
+            &opaque_record.record,
+            &opaque_record.credential_identifier,
+            opaque_record.ciphersuite.as_str(),
+            opaque_record.server_setup_version,
+            i16::from(signup_method),
+            i16::from(ReviewStatus::Pending),
         )
-        .bind(username)
-        .bind(email)
-        .bind(legacy_password_hash)
-        .bind(&opaque_record.record)
-        .bind(&opaque_record.credential_identifier)
-        .bind(opaque_record.ciphersuite.as_str())
-        .bind(opaque_record.server_setup_version)
-        .bind(signup_method)
-        .bind(ReviewStatus::Pending)
         .fetch_one(self.repository.pool())
         .await
         .map_err(|e| match e {
@@ -1466,31 +1478,31 @@ impl UserService {
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRegistrationRequest>> {
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query!(
+            r#"
             SELECT username, email, legacy_password_hash, opaque_record,
                    opaque_credential_identifier, opaque_ciphersuite,
-                   opaque_server_setup_version, signup_method
+                   opaque_server_setup_version, signup_method AS "signup_method: SignupMethod"
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Pending),
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Pending)
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
             Ok(PendingRegistrationRequest {
-                username: row.try_get("username")?,
-                email: row.try_get("email")?,
-                legacy_password_hash: row.try_get("legacy_password_hash")?,
-                opaque_record: row.try_get("opaque_record")?,
-                opaque_credential_identifier: row.try_get("opaque_credential_identifier")?,
-                opaque_ciphersuite: row.try_get("opaque_ciphersuite")?,
-                opaque_server_setup_version: row.try_get("opaque_server_setup_version")?,
-                signup_method: row.try_get("signup_method")?,
+                username: row.username,
+                email: row.email,
+                legacy_password_hash: row.legacy_password_hash,
+                opaque_record: row.opaque_record,
+                opaque_credential_identifier: row.opaque_credential_identifier,
+                opaque_ciphersuite: row.opaque_ciphersuite,
+                opaque_server_setup_version: row.opaque_server_setup_version,
+                signup_method: row.signup_method,
             })
         })
         .transpose()
@@ -1549,16 +1561,16 @@ impl UserService {
             .create_with_password_credentials(&user, credential_material, &mut *tx)
             .await?;
 
-        sqlx::query(
-            r"
+        sqlx::query!(
+            r#"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
             WHERE id = $1
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Approved),
+            reviewed_by.map(UserId::as_i64),
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Approved)
-        .bind(reviewed_by.map(UserId::as_i64))
         .execute(&mut *tx)
         .await?;
 
@@ -2186,15 +2198,15 @@ impl UserService {
             )
             .await?;
         if user.status == crate::models::UserStatus::Banned {
-            sqlx::query(
-                r"
+            sqlx::query!(
+                r#"
                 INSERT INTO user_bans (user_id, banned_by, reason, starts_at)
                 VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-                ",
+                "#,
+                created_user.id.as_i64(),
+                banned_by.map(UserId::as_i64),
+                "created with banned status",
             )
-            .bind(created_user.id)
-            .bind(banned_by.map(UserId::as_i64))
-            .bind("created with banned status")
             .execute(&mut *tx)
             .await?;
         }
@@ -2857,6 +2869,33 @@ impl UserService {
         user_id: &UserId,
         registration_request: Vec<u8>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
+        self.start_opaque_password_update_after_verification(
+            user_id,
+            registration_request,
+            OpaquePasswordUpdateVerification::VerifiedExternal,
+        )
+        .await
+    }
+
+    pub async fn start_opaque_password_update_pending_passkey_verification(
+        &self,
+        user_id: &UserId,
+        registration_request: Vec<u8>,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
+        self.start_opaque_password_update_after_verification(
+            user_id,
+            registration_request,
+            OpaquePasswordUpdateVerification::PendingPasskey,
+        )
+        .await
+    }
+
+    async fn start_opaque_password_update_after_verification(
+        &self,
+        user_id: &UserId,
+        registration_request: Vec<u8>,
+        verification: OpaquePasswordUpdateVerification,
+    ) -> Result<OpaqueRegistrationStartChallenge> {
         let user = self
             .repository
             .get_by_id(user_id)
@@ -2876,7 +2915,7 @@ impl UserService {
                     purpose: OpaqueRegistrationPurpose::PasswordUpdate {
                         user_id: *user_id,
                         expected_password_version: user.password_version,
-                        verification: OpaquePasswordUpdateVerification::External,
+                        verification,
                     },
                 },
                 Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
@@ -2931,7 +2970,7 @@ impl UserService {
                     purpose: OpaqueRegistrationPurpose::PasswordUpdate {
                         user_id: *user_id,
                         expected_password_version: user.password_version,
-                        verification: OpaquePasswordUpdateVerification::External,
+                        verification: OpaquePasswordUpdateVerification::VerifiedExternal,
                     },
                 },
                 Duration::from_secs(OPAQUE_REGISTRATION_SESSION_TTL_SECS),
@@ -3002,7 +3041,42 @@ impl UserService {
         let OpaqueRegistrationPurpose::PasswordUpdate {
             user_id: session_user_id,
             expected_password_version,
-            verification: OpaquePasswordUpdateVerification::External,
+            verification: OpaquePasswordUpdateVerification::VerifiedExternal,
+        } = session.purpose
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+        if session_user_id != *user_id {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        self.finish_opaque_password_update_after_verified_session(
+            user_id,
+            session.credential_identifier,
+            expected_password_version,
+            registration_upload,
+        )
+        .await
+    }
+
+    pub async fn finish_opaque_password_update_after_passkey_verification(
+        &self,
+        user_id: &UserId,
+        session_id: &str,
+        registration_upload: Vec<u8>,
+    ) -> Result<User> {
+        let Some(session) = self
+            .opaque_registration_session_store
+            .consume(session_id)
+            .await?
+        else {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let OpaqueRegistrationPurpose::PasswordUpdate {
+            user_id: session_user_id,
+            expected_password_version,
+            verification: OpaquePasswordUpdateVerification::PendingPasskey,
         } = session.purpose
         else {
             return Err(Error::Authentication("Authentication failed".to_string()));
@@ -3689,7 +3763,9 @@ impl UserService {
     /// - `Err` if the database connection fails
     pub async fn health_check(&self) -> Result<()> {
         // Execute a simple query to verify database connectivity
-        sqlx::query("SELECT 1").execute(self.pool()).await?;
+        sqlx::query_scalar!(r#"SELECT 1 AS "one!""#)
+            .fetch_one(self.pool())
+            .await?;
 
         Ok(())
     }

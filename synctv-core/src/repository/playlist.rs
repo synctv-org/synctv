@@ -10,6 +10,41 @@ use crate::{
 use sqlx::{FromRow, PgPool, Row};
 use std::collections::BTreeMap;
 
+#[derive(Debug, sqlx::FromRow)]
+struct PlaylistRow {
+    id: PlaylistId,
+    room_id: RoomId,
+    creator_id: Option<crate::models::UserId>,
+    name: String,
+    parent_id: Option<PlaylistId>,
+    position: f64,
+    source_provider: Option<String>,
+    source_config: Option<serde_json::Value>,
+    provider_instance_name: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    version: i32,
+}
+
+impl From<PlaylistRow> for Playlist {
+    fn from(row: PlaylistRow) -> Self {
+        Self {
+            id: row.id,
+            room_id: row.room_id,
+            creator_id: row.creator_id,
+            name: row.name,
+            parent_id: row.parent_id,
+            position: row.position,
+            source_provider: row.source_provider,
+            source_config: row.source_config,
+            provider_instance_name: row.provider_instance_name,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            version: row.version,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlaylistListItem {
     pub playlist: Playlist,
@@ -191,23 +226,30 @@ impl PlaylistRepository {
 
     /// Get playlist by ID
     pub async fn get_by_id(&self, id: &PlaylistId) -> Result<Option<Playlist>> {
-        let row = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+        let row = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id!: PlaylistId",
+                   room_id AS "room_id!: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name AS "name!",
+                   parent_id AS "parent_id?: PlaylistId",
+                   position AS "position!",
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM playlists
             WHERE id = $1
-            ",
+            "#,
+            id.as_i64(),
         )
-        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => Ok(Some(Playlist::from_row(&row)?)),
-            None => Ok(None),
-        }
+        Ok(row.map(Into::into))
     }
 
     /// Get playlists by IDs using a provided executor (for transaction support)
@@ -224,57 +266,73 @@ impl PlaylistRepository {
         }
 
         let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id!: PlaylistId",
+                   room_id AS "room_id!: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name AS "name!",
+                   parent_id AS "parent_id?: PlaylistId",
+                   position AS "position!",
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM playlists
             WHERE id = ANY($1)
-            ",
+            "#,
+            &id_strs,
         )
-        .bind(&id_strs)
         .fetch_all(executor)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get top-level playlists in a room.
     pub async fn get_top_level(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id!: PlaylistId",
+                   room_id AS "room_id!: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name AS "name!",
+                   parent_id AS "parent_id?: PlaylistId",
+                   position AS "position!",
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL
             ORDER BY position ASC
-            ",
+            "#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Count top-level playlists in a room.
     pub async fn count_top_level(&self, room_id: &RoomId) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
+        let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND parent_id IS NULL
             ",
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count)
+        Ok(count.unwrap_or(0))
     }
 
     /// Get paginated top-level playlists in a room.
@@ -284,61 +342,73 @@ impl PlaylistRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL
             ORDER BY position ASC
             LIMIT $2 OFFSET $3
-            ",
+            "#,
+            room_id.as_i64(),
+            limit,
+            offset,
         )
-        .bind(room_id)
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get children playlists of a parent
     pub async fn get_children(&self, parent_id: &PlaylistId) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE parent_id = $1
             ORDER BY position ASC
-            ",
+            "#,
+            parent_id.as_i64(),
         )
-        .bind(parent_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get count of children playlists for a parent.
     pub async fn count_children(&self, parent_id: &PlaylistId) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
+        let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*) FROM playlists WHERE parent_id = $1
             ",
+            parent_id as &PlaylistId,
         )
-        .bind(parent_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count)
+        Ok(count.unwrap_or(0))
     }
 
     /// Get paginated children playlists for a parent.
@@ -348,61 +418,73 @@ impl PlaylistRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE parent_id = $1
             ORDER BY position ASC
             LIMIT $2 OFFSET $3
-            ",
+            "#,
+            parent_id.as_i64(),
+            limit,
+            offset,
         )
-        .bind(parent_id)
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Get all playlists in a room (tree structure)
     pub async fn get_by_room(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1
             ORDER BY parent_id NULLS FIRST, position ASC
-            ",
+            "#,
+            room_id.as_i64(),
         )
-        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Count all playlists in a room
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
+        let count = sqlx::query_scalar!(
             r"
             SELECT COUNT(*) FROM playlists WHERE room_id = $1
             ",
+            room_id as &RoomId,
         )
-        .bind(room_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count)
+        Ok(count.unwrap_or(0))
     }
 
     /// Get paginated playlists in a room
@@ -412,26 +494,32 @@ impl PlaylistRepository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let rows = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1
             ORDER BY parent_id NULLS FIRST, position ASC
             LIMIT $2 OFFSET $3
-            ",
+            "#,
+            room_id.as_i64(),
+            limit,
+            offset,
         )
-        .bind(room_id)
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     const ORDER_STEP: f64 = 1024.0;
@@ -447,10 +535,12 @@ impl PlaylistRepository {
         parent_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(Self::scope_lock_key(room_id, parent_id))
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock($1)",
+            Self::scope_lock_key(room_id, parent_id),
+        )
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -463,7 +553,7 @@ impl PlaylistRepository {
         anchor_playlist_id: &PlaylistId,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<Option<f64>> {
-        sqlx::query_scalar(
+        sqlx::query_scalar!(
             r"
             SELECT position
             FROM playlists
@@ -477,12 +567,12 @@ impl PlaylistRepository {
             ORDER BY position DESC, id DESC
             LIMIT 1
             ",
+            room_id as &RoomId,
+            parent_id.map(PlaylistId::as_i64),
+            exclude_playlist_id as &PlaylistId,
+            anchor_position,
+            anchor_playlist_id as &PlaylistId,
         )
-        .bind(room_id)
-        .bind(parent_id.map(PlaylistId::as_i64))
-        .bind(exclude_playlist_id)
-        .bind(anchor_position)
-        .bind(anchor_playlist_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -497,7 +587,7 @@ impl PlaylistRepository {
         anchor_playlist_id: &PlaylistId,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<Option<f64>> {
-        sqlx::query_scalar(
+        sqlx::query_scalar!(
             r"
             SELECT position
             FROM playlists
@@ -511,12 +601,12 @@ impl PlaylistRepository {
             ORDER BY position ASC, id ASC
             LIMIT 1
             ",
+            room_id as &RoomId,
+            parent_id.map(PlaylistId::as_i64),
+            exclude_playlist_id as &PlaylistId,
+            anchor_position,
+            anchor_playlist_id as &PlaylistId,
         )
-        .bind(room_id)
-        .bind(parent_id.map(PlaylistId::as_i64))
-        .bind(exclude_playlist_id)
-        .bind(anchor_position)
-        .bind(anchor_playlist_id)
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
@@ -528,29 +618,30 @@ impl PlaylistRepository {
         parent_id: Option<&PlaylistId>,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        let rows = sqlx::query(
-            r"
-            SELECT id
+        let rows = sqlx::query!(
+            r#"
+            SELECT id as "id: PlaylistId"
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NOT DISTINCT FROM $2
             ORDER BY position ASC, id ASC
             FOR UPDATE
-            ",
+            "#,
+            room_id as &RoomId,
+            parent_id.map(PlaylistId::as_i64),
         )
-        .bind(room_id)
-        .bind(parent_id.map(PlaylistId::as_i64))
         .fetch_all(&mut **tx)
         .await?;
 
         let mut position = Self::ORDER_STEP;
         for row in rows {
-            let playlist_id: PlaylistId = row.try_get("id")?;
-            sqlx::query("UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1")
-                .bind(playlist_id)
-                .bind(position)
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query!(
+                "UPDATE playlists SET position = $2, version = version + 1 WHERE id = $1",
+                row.id as PlaylistId,
+                position,
+            )
+            .execute(&mut **tx)
+            .await?;
             position += Self::ORDER_STEP;
         }
 
@@ -586,30 +677,41 @@ impl PlaylistRepository {
         let source_provider_str = playlist.source_provider.as_deref();
         let parent_id = playlist.parent_id;
 
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            PlaylistRow,
+            r#"
             INSERT INTO playlists (room_id, creator_id, name, parent_id, position,
                                    source_provider, source_config, provider_instance_name)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, room_id, creator_id, name, parent_id, position,
-                      source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+            RETURNING id AS "id: PlaylistId",
+                      room_id AS "room_id: RoomId",
+                      creator_id AS "creator_id?: crate::models::UserId",
+                      name,
+                      parent_id AS "parent_id?: PlaylistId",
+                      position,
+                      source_provider,
+                      source_config AS "source_config?: serde_json::Value",
+                      NULLIF(provider_instance_name, '') AS provider_instance_name,
                       created_at, updated_at, version
-            ",
+            "#,
+            playlist.room_id.as_i64(),
+            playlist
+                .creator_id
+                .as_ref()
+                .map(crate::models::UserId::as_i64),
+            &playlist.name,
+            parent_id.as_ref().map(PlaylistId::as_i64),
+            playlist.position,
+            source_provider_str,
+            playlist.source_config.as_ref(),
+            Self::normalize_provider_instance_name_for_db(
+                playlist.provider_instance_name.as_deref(),
+            ),
         )
-        .bind(playlist.room_id)
-        .bind(playlist.creator_id)
-        .bind(&playlist.name)
-        .bind(parent_id)
-        .bind(playlist.position)
-        .bind(source_provider_str)
-        .bind(&playlist.source_config)
-        .bind(Self::normalize_provider_instance_name_for_db(
-            playlist.provider_instance_name.as_deref(),
-        ))
         .fetch_one(executor)
         .await?;
 
-        Ok(Playlist::from_row(&row)?)
+        Ok(row.into())
     }
 
     /// Get the next append position within a scope.
@@ -621,16 +723,16 @@ impl PlaylistRepository {
     ) -> Result<f64> {
         self.lock_scope_with_tx(room_id, parent_id, tx).await?;
 
-        let max_pos: Option<f64> = sqlx::query_scalar(
+        let max_pos = sqlx::query_scalar!(
             r"
             SELECT MAX(position)
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NOT DISTINCT FROM $2
             ",
+            room_id as &RoomId,
+            parent_id.map(PlaylistId::as_i64),
         )
-        .bind(room_id)
-        .bind(parent_id.map(PlaylistId::as_i64))
         .fetch_one(&mut **tx)
         .await?;
 
@@ -652,31 +754,39 @@ impl PlaylistRepository {
         expected_version: i32,
     ) -> Result<Playlist> {
         let source_provider_str = playlist.source_provider.as_deref();
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            PlaylistRow,
+            r#"
             UPDATE playlists
             SET name = $2, position = $3, source_provider = $4, source_config = $5,
                 provider_instance_name = $6, version = version + 1
             WHERE id = $1 AND version = $7
-            RETURNING id, room_id, creator_id, name, parent_id, position,
-                      source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+            RETURNING id AS "id: PlaylistId",
+                      room_id AS "room_id: RoomId",
+                      creator_id AS "creator_id?: crate::models::UserId",
+                      name,
+                      parent_id AS "parent_id?: PlaylistId",
+                      position,
+                      source_provider,
+                      source_config AS "source_config?: serde_json::Value",
+                      NULLIF(provider_instance_name, '') AS provider_instance_name,
                       created_at, updated_at, version
-            ",
+            "#,
+            playlist.id.as_i64(),
+            &playlist.name,
+            playlist.position,
+            source_provider_str,
+            playlist.source_config.as_ref(),
+            Self::normalize_provider_instance_name_for_db(
+                playlist.provider_instance_name.as_deref(),
+            ),
+            expected_version,
         )
-        .bind(playlist.id)
-        .bind(&playlist.name)
-        .bind(playlist.position)
-        .bind(source_provider_str)
-        .bind(&playlist.source_config)
-        .bind(Self::normalize_provider_instance_name_for_db(
-            playlist.provider_instance_name.as_deref(),
-        ))
-        .bind(expected_version)
         .fetch_optional(&self.pool)
         .await?;
 
         match row {
-            Some(row) => Ok(Playlist::from_row(&row)?),
+            Some(row) => Ok(row.into()),
             None => Err(crate::Error::OptimisticLockConflict),
         }
     }
@@ -702,38 +812,52 @@ impl PlaylistRepository {
             ));
         }
 
-        let moved = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let moved: Playlist = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
             FOR UPDATE
-            ",
+            "#,
+            playlist_id.as_i64(),
         )
-        .bind(playlist_id)
         .fetch_optional(&mut **tx)
         .await?
-        .map(|row| Playlist::from_row(&row))
-        .transpose()?
+        .map(Into::into)
         .ok_or_else(|| crate::Error::NotFound("Playlist not found".to_string()))?;
 
-        let anchor = sqlx::query(
-            r"
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+        let anchor: Playlist = sqlx::query_as!(
+            PlaylistRow,
+            r#"
+            SELECT id AS "id: PlaylistId",
+                   room_id AS "room_id: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name,
+                   parent_id AS "parent_id?: PlaylistId",
+                   position,
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
             FOR UPDATE
-            ",
+            "#,
+            anchor_id.as_i64(),
         )
-        .bind(anchor_id)
         .fetch_optional(&mut **tx)
         .await?
-        .map(|row| Playlist::from_row(&row))
-        .transpose()?
+        .map(Into::into)
         .ok_or_else(|| crate::Error::NotFound("Anchor playlist not found".to_string()))?;
 
         if moved.room_id != anchor.room_id || moved.parent_id != anchor.parent_id {
@@ -747,11 +871,12 @@ impl PlaylistRepository {
             .await?;
 
         for _ in 0..2 {
-            let anchor_position: f64 =
-                sqlx::query_scalar("SELECT position FROM playlists WHERE id = $1 FOR UPDATE")
-                    .bind(anchor.id)
-                    .fetch_one(&mut **tx)
-                    .await?;
+            let anchor_position: f64 = sqlx::query_scalar!(
+                "SELECT position FROM playlists WHERE id = $1 FOR UPDATE",
+                anchor.id as PlaylistId,
+            )
+            .fetch_one(&mut **tx)
+            .await?;
 
             let new_position = if before_playlist_id.is_some() {
                 match self
@@ -786,22 +911,30 @@ impl PlaylistRepository {
             };
 
             if let Some(position) = new_position.filter(|position| position.is_finite()) {
-                let row = sqlx::query(
-                    r"
+                let row = sqlx::query_as!(
+                    PlaylistRow,
+                    r#"
                     UPDATE playlists
                     SET position = $2, version = version + 1
                     WHERE id = $1
-                    RETURNING id, room_id, creator_id, name, parent_id, position,
-                              source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+                    RETURNING id AS "id: PlaylistId",
+                              room_id AS "room_id: RoomId",
+                              creator_id AS "creator_id?: crate::models::UserId",
+                              name,
+                              parent_id AS "parent_id?: PlaylistId",
+                              position,
+                              source_provider,
+                              source_config AS "source_config?: serde_json::Value",
+                              NULLIF(provider_instance_name, '') AS provider_instance_name,
                               created_at, updated_at, version
-                    ",
+                    "#,
+                    moved.id.as_i64(),
+                    position,
                 )
-                .bind(moved.id)
-                .bind(position)
                 .fetch_one(&mut **tx)
                 .await?;
 
-                return Ok(Playlist::from_row(&row)?);
+                return Ok(row.into());
             }
 
             self.rebalance_scope_with_tx(&moved.room_id, moved.parent_id.as_ref(), tx)
@@ -821,17 +954,18 @@ impl PlaylistRepository {
     pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
-        let room_id: Option<RoomId> =
-            sqlx::query_scalar("SELECT room_id FROM playlists WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let room_id = sqlx::query_scalar!(
+            r#"SELECT room_id as "room_id: RoomId" FROM playlists WHERE id = $1"#,
+            id as &PlaylistId,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         let Some(room_id) = room_id else {
             return Ok(false);
         };
 
-        let rows = sqlx::query(
-            "WITH RECURSIVE playlist_tree AS (
+        let rows = sqlx::query!(
+            r#"WITH RECURSIVE playlist_tree AS (
                 SELECT id, 0 AS depth
                 FROM playlists
                 WHERE id = $1
@@ -844,35 +978,36 @@ impl PlaylistRepository {
             SELECT id, MAX(depth) AS depth
             FROM playlist_tree
             GROUP BY id
-            ORDER BY MAX(depth) DESC, id",
+            ORDER BY MAX(depth) DESC, id"#,
+            id as &PlaylistId,
+            room_id as RoomId,
         )
-        .bind(id)
-        .bind(room_id)
         .fetch_all(&mut *tx)
         .await?;
 
         let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
-            let depth = row.try_get::<i32, _>("depth")?;
+            let playlist_id = PlaylistId::from(row.id.unwrap_or_default());
+            let depth = row.depth.unwrap_or_default();
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
 
         if !playlist_ids.is_empty() {
             let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)")
-                .bind(room_id)
-                .bind(&playlist_ids_raw)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)",
+                room_id as RoomId,
+                &playlist_ids_raw,
+            )
+            .execute(&mut *tx)
+            .await?;
         }
 
         for (_depth, ids) in ids_by_depth.into_iter().rev() {
             let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
-                .bind(&ids_raw)
+            sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &ids_raw,)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -895,8 +1030,7 @@ impl PlaylistRepository {
         }
 
         let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-        let result = sqlx::query("DELETE FROM playlists WHERE id = ANY($1)")
-            .bind(&id_strs)
+        let result = sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &id_strs,)
             .execute(executor)
             .await?;
 
@@ -906,8 +1040,8 @@ impl PlaylistRepository {
     /// Convert database row to Playlist
     /// Get playlist path from a given node to root using a recursive CTE (single query)
     pub async fn get_path(&self, playlist_id: &PlaylistId) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query!(
+            r#"
             WITH RECURSIVE ancestors AS (
                 SELECT id, room_id, creator_id, name, parent_id, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
@@ -922,20 +1056,43 @@ impl PlaylistRepository {
                 JOIN ancestors a ON p.id = a.parent_id
                 WHERE a.depth < 50
             )
-            SELECT id, room_id, creator_id, name, parent_id, position,
-                   source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+            SELECT id AS "id!: PlaylistId",
+                   room_id AS "room_id!: RoomId",
+                   creator_id AS "creator_id?: crate::models::UserId",
+                   name AS "name!",
+                   parent_id AS "parent_id?: PlaylistId",
+                   position AS "position!",
+                   source_provider,
+                   source_config AS "source_config?: serde_json::Value",
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM ancestors
             ORDER BY depth DESC
-            ",
+            "#,
+            playlist_id.as_i64(),
         )
-        .bind(playlist_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| Ok(Playlist::from_row(&row)?))
-            .collect()
+        Ok(rows
+            .into_iter()
+            .map(|row| Playlist {
+                id: row.id,
+                room_id: row.room_id,
+                creator_id: row.creator_id,
+                name: row.name,
+                parent_id: row.parent_id,
+                position: row.position,
+                source_provider: row.source_provider,
+                source_config: row.source_config,
+                provider_instance_name: row.provider_instance_name,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                version: row.version,
+            })
+            .collect())
     }
 }
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n             SET left_at = $2, version = version + 1\n             WHERE user_id = $1 AND left_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc960ba161a60787362799137edced987fa9288b0dfbec3b783d3fa774630017"
+}

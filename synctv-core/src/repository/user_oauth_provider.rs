@@ -9,7 +9,7 @@ use crate::{
     },
     Result,
 };
-use sqlx::{FromRow, PgPool};
+use sqlx::PgPool;
 
 /// OAuth2/OIDC provider repository
 ///
@@ -57,7 +57,7 @@ impl UserOAuthProviderRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             INSERT INTO auth_oauth2_identities (provider, provider_user_id, user_id, username, email, avatar_url)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -68,14 +68,14 @@ impl UserOAuthProviderRepository {
                 avatar_url = EXCLUDED.avatar_url,
                 updated_at = CURRENT_TIMESTAMP
             WHERE auth_oauth2_identities.user_id = EXCLUDED.user_id
-            "
+            ",
+            provider.as_str(),
+            provider_user_id,
+            user_id as &UserId,
+            user_info.username.as_str(),
+            user_info.email.as_deref(),
+            user_info.avatar.as_deref(),
         )
-        .bind(provider.as_str())
-        .bind(provider_user_id)
-        .bind(user_id)
-        .bind(&user_info.username)
-        .bind(&user_info.email)
-        .bind(&user_info.avatar)
         .execute(executor)
         .await?;
 
@@ -111,11 +111,17 @@ impl UserOAuthProviderRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query_as::<_, OAuth2ClientRow>(
-            "SELECT * FROM auth_oauth2_identities WHERE provider = $1 AND provider_user_id = $2",
+        let row = sqlx::query_as!(
+            OAuth2ClientRow,
+            r#"
+            SELECT id, provider, provider_user_id, user_id as "user_id: UserId",
+                   username, email, avatar_url, created_at, updated_at
+            FROM auth_oauth2_identities
+            WHERE provider = $1 AND provider_user_id = $2
+            "#,
+            provider.as_str(),
+            provider_user_id,
         )
-        .bind(provider.as_str())
-        .bind(provider_user_id)
         .fetch_optional(executor)
         .await?;
 
@@ -124,10 +130,16 @@ impl UserOAuthProviderRepository {
 
     /// Find all `OAuth2` providers for a user
     pub async fn find_by_user(&self, user_id: &UserId) -> Result<Vec<UserOAuthProviderMapping>> {
-        let rows = sqlx::query_as::<_, OAuth2ClientRow>(
-            "SELECT * FROM auth_oauth2_identities WHERE user_id = $1",
+        let rows = sqlx::query_as!(
+            OAuth2ClientRow,
+            r#"
+            SELECT id, provider, provider_user_id, user_id as "user_id: UserId",
+                   username, email, avatar_url, created_at, updated_at
+            FROM auth_oauth2_identities
+            WHERE user_id = $1
+            "#,
+            user_id as &UserId,
         )
-        .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -141,12 +153,12 @@ impl UserOAuthProviderRepository {
         provider: &OAuth2Provider,
         provider_user_id: &str,
     ) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2 AND provider_user_id = $3"
+        let result = sqlx::query!(
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2 AND provider_user_id = $3",
+            user_id as &UserId,
+            provider.as_str(),
+            provider_user_id,
         )
-        .bind(user_id)
-        .bind(provider.as_str())
-        .bind(provider_user_id)
         .execute(&self.pool)
         .await?;
 
@@ -173,10 +185,12 @@ impl UserOAuthProviderRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let result = sqlx::query("DELETE FROM auth_oauth2_identities WHERE user_id = $1")
-            .bind(user_id)
-            .execute(executor)
-            .await?;
+        let result = sqlx::query!(
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1",
+            user_id as &UserId,
+        )
+        .execute(executor)
+        .await?;
 
         Ok(result.rows_affected())
     }
@@ -187,19 +201,19 @@ impl UserOAuthProviderRepository {
         user_id: &UserId,
         provider: &OAuth2Provider,
     ) -> Result<bool> {
-        let result =
-            sqlx::query("DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2")
-                .bind(user_id)
-                .bind(provider.as_str())
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query!(
+            "DELETE FROM auth_oauth2_identities WHERE user_id = $1 AND provider = $2",
+            user_id as &UserId,
+            provider.as_str(),
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(result.rows_affected() > 0)
     }
 }
 
 /// Row representation for SQL queries.
-#[derive(FromRow)]
 struct OAuth2ClientRow {
     pub id: i64,
     pub provider: String,

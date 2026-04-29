@@ -1,6 +1,6 @@
 //! Settings repository for database operations
 
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use tracing::debug;
 
 use crate::{Error, Result};
@@ -21,7 +21,8 @@ impl SettingsRepository {
 
     /// Get all settings
     pub async fn get_all(&self) -> Result<Vec<SettingsGroup>> {
-        let rows = sqlx::query(
+        let groups = sqlx::query_as!(
+            SettingsGroup,
             r"
             SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
@@ -31,48 +32,25 @@ impl SettingsRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let groups: Result<Vec<_>> = rows
-            .into_iter()
-            .map(|row| {
-                Ok(SettingsGroup {
-                    key: row.try_get("key")?,
-                    group_name: row.try_get("group_name")?,
-                    value: row.try_get("value")?,
-                    version: row.try_get("version")?,
-                    created_at: row.try_get("created_at")?,
-                    updated_at: row.try_get("updated_at")?,
-                })
-            })
-            .collect();
-
-        debug!(
-            "Retrieved {} settings",
-            groups.as_ref().map_or(0, std::vec::Vec::len)
-        );
-        groups
+        debug!("Retrieved {} settings", groups.len());
+        Ok(groups)
     }
 
     /// Get a single setting by key
     pub async fn get(&self, key: &str) -> Result<SettingsGroup> {
-        let row = sqlx::query(
+        let row = sqlx::query_as!(
+            SettingsGroup,
             r"
             SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
             WHERE key = $1
             ",
+            key,
         )
-        .bind(key)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(SettingsGroup {
-            key: row.try_get("key")?,
-            group_name: row.try_get("group_name")?,
-            value: row.try_get("value")?,
-            version: row.try_get("version")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
+        Ok(row)
     }
 
     /// Update a setting value by key
@@ -81,35 +59,30 @@ impl SettingsRepository {
     /// NOTIFY on the `settings_changed` channel so other replicas can
     /// reload the changed setting.
     pub async fn update(&self, key: &str, value: &str) -> Result<SettingsGroup> {
-        let row = sqlx::query(
+        let row = sqlx::query_as!(
+            SettingsGroup,
             r"
             UPDATE settings
             SET value = $1, version = version + 1, updated_at = NOW()
             WHERE key = $2
             RETURNING key, group_name, value, version, created_at, updated_at
             ",
+            value,
+            key,
         )
-        .bind(value)
-        .bind(key)
         .fetch_one(&self.pool)
         .await?;
 
         // Notification is handled by the database trigger (settings_change_trigger)
         // which fires pg_notify('settings_changed', key) on INSERT/UPDATE/DELETE.
         debug!("Updated setting '{}'", key);
-        Ok(SettingsGroup {
-            key: row.try_get("key")?,
-            group_name: row.try_get("group_name")?,
-            value: row.try_get("value")?,
-            version: row.try_get("version")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
+        Ok(row)
     }
 
     /// Insert or update a setting value by key.
     pub async fn upsert(&self, key: &str, group_name: &str, value: &str) -> Result<SettingsGroup> {
-        let row = sqlx::query(
+        let row = sqlx::query_as!(
+            SettingsGroup,
             r"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, 0)
@@ -120,22 +93,15 @@ impl SettingsRepository {
                 updated_at = NOW()
             RETURNING key, group_name, value, version, created_at, updated_at
             ",
+            key,
+            group_name,
+            value,
         )
-        .bind(key)
-        .bind(group_name)
-        .bind(value)
         .fetch_one(&self.pool)
         .await?;
 
         debug!("Upserted setting '{}'", key);
-        Ok(SettingsGroup {
-            key: row.try_get("key")?,
-            group_name: row.try_get("group_name")?,
-            value: row.try_get("value")?,
-            version: row.try_get("version")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
+        Ok(row)
     }
 
     /// Update a setting value by key with optimistic locking.
@@ -160,35 +126,27 @@ impl SettingsRepository {
         value: &str,
         expected_version: i32,
     ) -> Result<SettingsGroup> {
-        let row = sqlx::query(
+        let row = sqlx::query_as!(
+            SettingsGroup,
             r"
             UPDATE settings
             SET value = $1, version = version + 1, updated_at = NOW()
             WHERE key = $2 AND version = $3
             RETURNING key, group_name, value, version, created_at, updated_at
             ",
+            value,
+            key,
+            expected_version,
         )
-        .bind(value)
-        .bind(key)
-        .bind(expected_version)
         .fetch_optional(&self.pool)
         .await?;
 
         if let Some(row) = row {
             debug!(
                 "Updated setting '{}' with optimistic lock (version {} -> {})",
-                key,
-                expected_version,
-                row.try_get::<i32, _>("version")?
+                key, expected_version, row.version
             );
-            Ok(SettingsGroup {
-                key: row.try_get("key")?,
-                group_name: row.try_get("group_name")?,
-                value: row.try_get("value")?,
-                version: row.try_get("version")?,
-                created_at: row.try_get("created_at")?,
-                updated_at: row.try_get("updated_at")?,
-            })
+            Ok(row)
         } else {
             debug!(
                 "Optimistic lock conflict for setting '{}' (expected version {})",

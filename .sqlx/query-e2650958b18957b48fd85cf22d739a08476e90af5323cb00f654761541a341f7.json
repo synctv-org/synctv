@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, user_id as \"user_id: UserId\", provider, server_id,\n                   provider_instance_name, credential_data as \"credential_data!: serde_json::Value\",\n                   expires_at, created_at, updated_at\n            FROM user_media_provider_credentials\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "server_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_instance_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_data!: serde_json::Value",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e2650958b18957b48fd85cf22d739a08476e90af5323cb00f654761541a341f7"
+}

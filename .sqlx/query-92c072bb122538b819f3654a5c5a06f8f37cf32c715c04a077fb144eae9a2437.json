@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE user_media_provider_credentials\n            SET provider_instance_name = $2, credential_data = $3, expires_at = $4, updated_at = NOW()\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Varchar",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "92c072bb122538b819f3654a5c5a06f8f37cf32c715c04a077fb144eae9a2437"
+}

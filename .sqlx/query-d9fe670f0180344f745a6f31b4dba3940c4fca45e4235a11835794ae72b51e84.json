@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id: MediaId\"\n         FROM media\n         WHERE room_id = $1\n           AND playlist_id IS NULL\n         ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: MediaId",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d9fe670f0180344f745a6f31b4dba3940c4fca45e4235a11835794ae72b51e84"
+}

@@ -426,6 +426,14 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         config.rate_limiter.clone(),
     ));
 
+    let email_api = crate::impls::email::build_shared_email_api(
+        config.user_service.clone(),
+        config.email_service.clone(),
+        config.email_token_service.clone(),
+        config.rate_limiter.clone(),
+        public_id_codec.clone(),
+    );
+
     let client_api = Arc::new(
         crate::impls::ClientApiImpl::new(
             config.user_service.clone(),
@@ -446,7 +454,9 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_credential_repo(config.user_provider_credential_repository.clone())
         .with_signing_key(proxy_signing_key.clone())
         .with_provider_stores(provider_stores.clone())
-        .with_request_executor(request_executor.clone()),
+        .with_request_executor(request_executor.clone())
+        .with_email_api(email_api.clone())
+        .with_passkey_service(config.passkey_service.clone()),
     );
 
     let client_api = if let Some(ref event_service) = config.event_service {
@@ -495,14 +505,6 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         };
         Arc::new(admin_api)
     });
-    let email_api = crate::impls::email::build_shared_email_api(
-        config.user_service.clone(),
-        config.email_service.clone(),
-        config.email_token_service.clone(),
-        config.rate_limiter.clone(),
-        public_id_codec.clone(),
-    );
-
     // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
     let notification_api = config.notification_service.as_ref().map(|notif_svc| {
         Arc::new(crate::impls::NotificationApiImpl::new(

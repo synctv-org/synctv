@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT playlist_id AS \"playlist_id!: PlaylistId\", COUNT(*) AS \"cnt!\"\n            FROM media\n            WHERE playlist_id = ANY($1)\n            GROUP BY playlist_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playlist_id!: PlaylistId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cnt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "cb6efe48b186736ecfd9db6d308c3e8297503ea5fb3e34282008069d5e69079c"
+}

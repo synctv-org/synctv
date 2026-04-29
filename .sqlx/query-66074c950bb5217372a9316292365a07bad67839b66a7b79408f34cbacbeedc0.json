@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM auth_email_identities aei\n                JOIN users u ON u.id = aei.user_id\n                WHERE LOWER(aei.email) = LOWER($1) AND u.deleted_at IS NULL\n            ) as \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "66074c950bb5217372a9316292365a07bad67839b66a7b79408f34cbacbeedc0"
+}

@@ -352,12 +352,12 @@ impl RoomMemberRepository {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<RoomMember> {
         // 1. Check if room exists and lock the row
-        let room_row = sqlx::query(
+        let room_row = sqlx::query!(
             "SELECT id, closed_at FROM rooms
              WHERE id = $1
              FOR UPDATE",
+            member.room_id as RoomId,
         )
-        .bind(member.room_id)
         .fetch_optional(&mut **tx)
         .await?;
 
@@ -366,22 +366,19 @@ impl RoomMemberRepository {
         };
 
         // 2. Check if room is active (if option enabled)
-        if options.check_room_active {
-            let closed_at: Option<chrono::DateTime<chrono::Utc>> = room_row.try_get("closed_at")?;
-            if closed_at.is_some() {
-                return Err(Error::InvalidInput("Room is not active".to_string()));
-            }
+        if options.check_room_active && room_row.closed_at.is_some() {
+            return Err(Error::InvalidInput("Room is not active".to_string()));
         }
 
         // 3. Check if user is already a member (if option enabled)
         if options.check_duplicate {
-            let existing = sqlx::query(
+            let existing = sqlx::query_scalar!(
                 "SELECT user_id FROM room_members
                  WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
                  FOR UPDATE",
+                member.room_id as RoomId,
+                member.user_id as UserId,
             )
-            .bind(member.room_id)
-            .bind(member.user_id)
             .fetch_optional(&mut **tx)
             .await?;
 
@@ -402,25 +399,26 @@ impl RoomMemberRepository {
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
-                sqlx::query("SELECT id FROM rooms WHERE id = $1 FOR UPDATE")
-                    .bind(member.room_id)
-                    .execute(&mut **tx)
-                    .await?;
+                sqlx::query!(
+                    "SELECT id FROM rooms WHERE id = $1 FOR UPDATE",
+                    member.room_id as RoomId,
+                )
+                .fetch_optional(&mut **tx)
+                .await?;
 
                 // Lock all member rows for this room to prevent concurrent inserts
                 // from seeing the same count value
-                let count_row = sqlx::query(
+                let count = sqlx::query_scalar!(
                     "SELECT COUNT(*) as count FROM (
                         SELECT 1 FROM room_members
                         WHERE room_id = $1 AND left_at IS NULL
                         FOR UPDATE
                     ) sub",
+                    member.room_id as RoomId,
                 )
-                .bind(member.room_id)
                 .fetch_one(&mut **tx)
-                .await?;
-
-                let count: i64 = count_row.try_get("count")?;
+                .await?
+                .unwrap_or(0);
                 let current_count = count_i64_to_u64_saturating(count);
                 if current_count >= max_members {
                     tracing::warn!(
@@ -506,13 +504,13 @@ impl RoomMemberRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "UPDATE room_members
              SET left_at = $2, version = version + 1
              WHERE user_id = $1 AND left_at IS NULL",
+            user_id as &UserId,
+            chrono::Utc::now(),
         )
-        .bind(user_id)
-        .bind(chrono::Utc::now())
         .execute(executor)
         .await?;
 
@@ -535,13 +533,13 @@ impl RoomMemberRepository {
         }
 
         let room_id_strs: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "UPDATE room_members
              SET left_at = $2, version = version + 1
              WHERE room_id = ANY($1) AND left_at IS NULL",
+            &room_id_strs,
+            chrono::Utc::now(),
         )
-        .bind(&room_id_strs)
-        .bind(chrono::Utc::now())
         .execute(executor)
         .await?;
 
@@ -550,14 +548,14 @@ impl RoomMemberRepository {
 
     /// Remove user from room (soft delete - set `status = Left` and `left_at`)
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "UPDATE room_members
              SET left_at = $3, version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL",
+            room_id as &RoomId,
+            user_id as &UserId,
+            chrono::Utc::now(),
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
 
@@ -1285,7 +1283,7 @@ impl RoomMemberRepository {
     ) -> Result<RoomMember> {
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
-        let inserted = sqlx::query(
+        let inserted = sqlx::query!(
             r"
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
             SELECT rm.room_id, rm.user_id, $3, $4, $5
@@ -1297,14 +1295,14 @@ impl RoomMemberRepository {
                     AND rmb.user_id = rm.user_id
                     AND rmb.revoked_at IS NULL
                     AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-              )
+                  )
             ",
+            room_id as &RoomId,
+            user_id as &UserId,
+            banned_by.map(UserId::as_i64),
+            reason,
+            now,
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind(banned_by.map(UserId::as_i64))
-        .bind(reason)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 
@@ -1314,14 +1312,14 @@ impl RoomMemberRepository {
             ));
         }
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE room_members
              SET left_at = COALESCE(left_at, $3), version = version + 1
              WHERE room_id = $1 AND user_id = $2",
+            room_id as &RoomId,
+            user_id as &UserId,
+            now,
         )
-        .bind(room_id)
-        .bind(user_id)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 
@@ -1338,15 +1336,15 @@ impl RoomMemberRepository {
     /// `RowNotFound` panic-like error. Unban only clears ban metadata; it never
     /// restores lifecycle state or implicitly rejoins the user.
     pub async fn unban_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<RoomMember> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "UPDATE room_member_bans
              SET revoked_at = CURRENT_TIMESTAMP
              WHERE room_id = $1 AND user_id = $2
                AND revoked_at IS NULL
                AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)",
+            room_id as &RoomId,
+            user_id as &UserId,
         )
-        .bind(room_id)
-        .bind(user_id)
         .execute(&self.pool)
         .await?;
 
@@ -1363,49 +1361,65 @@ impl RoomMemberRepository {
 
     /// Check if user is an active member of room (excludes banned members)
     pub async fn is_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) as count
-             FROM room_members
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL",
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM room_members
+                WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+            ) as "exists!"
+            "#,
+            room_id as &RoomId,
+            user_id as &UserId,
         )
-        .bind(room_id)
-        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count > 0)
+        Ok(exists)
     }
 
     /// Check if user is banned from room
     pub async fn is_banned(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) as count
-             FROM room_member_bans
-             WHERE room_id = $1 AND user_id = $2
-               AND revoked_at IS NULL
-               AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)",
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM room_member_bans
+                WHERE room_id = $1 AND user_id = $2
+                  AND revoked_at IS NULL
+                  AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)
+            ) as "exists!"
+            "#,
+            room_id as &RoomId,
+            user_id as &UserId,
         )
-        .bind(room_id)
-        .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(count > 0)
+        Ok(exists)
     }
 
     /// Get member count for room
     pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i32> {
-        let count_sql = format!(
-            "SELECT COUNT(*) as count
-             FROM room_members rm
-             WHERE rm.room_id = $1
-               AND rm.left_at IS NULL
-               AND {ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL}"
-        );
-        let count: i64 = sqlx::query_scalar(&count_sql)
-            .bind(room_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let count = sqlx::query_scalar!(
+            r"
+            SELECT COUNT(*) as count
+            FROM room_members rm
+            WHERE rm.room_id = $1
+              AND rm.left_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM room_member_bans rmb
+                  WHERE rmb.room_id = rm.room_id
+                    AND rmb.user_id = rm.user_id
+                    AND rmb.revoked_at IS NULL
+                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+              )
+            ",
+            room_id as &RoomId,
+        )
+        .fetch_one(&self.pool)
+        .await?
+        .unwrap_or(0);
 
         Ok(i32::try_from(count).unwrap_or(i32::MAX))
     }
@@ -1423,24 +1437,29 @@ impl RoomMemberRepository {
         }
 
         let ids: Vec<i64> = room_ids.iter().map(|room_id| room_id.as_i64()).collect();
-        let batch_sql = format!(
-            "SELECT room_id, COUNT(*)::int as member_count
-             FROM room_members rm
-             WHERE rm.room_id = ANY($1)
-               AND rm.left_at IS NULL
-               AND {ACTIVE_MEMBER_BAN_NOT_EXISTS_SQL}
-             GROUP BY room_id",
-        );
-        let rows = sqlx::query(&batch_sql)
-            .bind(&ids)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query!(
+            r#"
+            SELECT room_id as "room_id: RoomId", COUNT(*)::int as "member_count!"
+            FROM room_members rm
+            WHERE rm.room_id = ANY($1)
+              AND rm.left_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM room_member_bans rmb
+                  WHERE rmb.room_id = rm.room_id
+                    AND rmb.user_id = rm.user_id
+                    AND rmb.revoked_at IS NULL
+                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
+              )
+            GROUP BY room_id
+            "#,
+            &ids,
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut map = std::collections::HashMap::with_capacity(rows.len());
         for row in rows {
-            let room_id: RoomId = row.try_get("room_id")?;
-            let count: i32 = row.try_get("member_count")?;
-            map.insert(room_id, count);
+            map.insert(row.room_id, row.member_count);
         }
 
         Ok(map)
@@ -1456,25 +1475,24 @@ impl RoomMemberRepository {
         let offset = pagination_u64_to_i64(pagination.offset());
 
         // Single query using COUNT(*) OVER() window function for atomic count + fetch
-        let rows = sqlx::query(
-            "SELECT rm.room_id, COUNT(*) OVER() as total_count
+        let rows = sqlx::query!(
+            r#"
+            SELECT rm.room_id as "room_id: RoomId", COUNT(*) OVER() as "total_count!"
              FROM room_members rm
              JOIN rooms r ON rm.room_id = r.id
              WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL
              ORDER BY rm.joined_at DESC
-             LIMIT $2 OFFSET $3",
+             LIMIT $2 OFFSET $3
+            "#,
+            user_id as &UserId,
+            limit,
+            offset,
         )
-        .bind(user_id)
-        .bind(limit)
-        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
-        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
-        let room_ids = rows
-            .into_iter()
-            .map(|r| r.get::<RoomId, _>("room_id"))
-            .collect();
+        let total_count = rows.first().map_or(0, |r| r.total_count);
+        let room_ids = rows.into_iter().map(|r| r.room_id).collect();
 
         Ok((room_ids, total_count))
     }
@@ -1746,7 +1764,7 @@ impl RoomMemberRepository {
         actor_id: &UserId,
         target_id: &UserId,
     ) -> Result<bool> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             "UPDATE room_members AS target
              SET left_at = $4, version = target.version + 1
              WHERE target.room_id = $1
@@ -1759,11 +1777,11 @@ impl RoomMemberRepository {
                      AND actor.left_at IS NULL
                      AND actor.role < target.role
                )",
+            room_id as &RoomId,
+            actor_id as &UserId,
+            target_id as &UserId,
+            chrono::Utc::now(),
         )
-        .bind(room_id)
-        .bind(actor_id)
-        .bind(target_id)
-        .bind(chrono::Utc::now())
         .execute(&self.pool)
         .await?;
 
@@ -1786,7 +1804,7 @@ impl RoomMemberRepository {
     ) -> Result<RoomMember> {
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
-        let inserted = sqlx::query(
+        let inserted = sqlx::query!(
             r"
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
             SELECT target.room_id, target.user_id, $3, $4, $5
@@ -1807,14 +1825,14 @@ impl RoomMemberRepository {
                     AND actor.user_id = $3
                     AND actor.left_at IS NULL
                     AND actor.role < target.role
-              )
+                  )
             ",
+            room_id as &RoomId,
+            target_id as &UserId,
+            actor_id as &UserId,
+            reason,
+            now,
         )
-        .bind(room_id)
-        .bind(target_id)
-        .bind(actor_id)
-        .bind(reason)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 
@@ -1824,14 +1842,14 @@ impl RoomMemberRepository {
             ));
         }
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE room_members
              SET left_at = $3, version = version + 1
              WHERE room_id = $1 AND user_id = $2",
+            room_id as &RoomId,
+            target_id as &UserId,
+            now,
         )
-        .bind(room_id)
-        .bind(target_id)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 

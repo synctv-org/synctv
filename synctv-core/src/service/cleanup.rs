@@ -293,15 +293,15 @@ impl CleanupService {
     ///
     /// Only affects rooms that are not already soft-deleted.
     async fn soft_delete_expired_rooms(&self, ttl_seconds: i64) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE rooms
             SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE deleted_at IS NULL
-              AND last_activity_at < CURRENT_TIMESTAMP - ($1 || ' seconds')::INTERVAL
+              AND last_activity_at < CURRENT_TIMESTAMP - ($1::bigint * INTERVAL '1 second')
             ",
+            ttl_seconds,
         )
-        .bind(ttl_seconds)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to soft-delete expired rooms")?;
@@ -312,16 +312,16 @@ impl CleanupService {
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.soft_delete_retention_days);
-        let user_ids: Vec<crate::models::UserId> = sqlx::query_scalar(
-            r"
-            SELECT id
+        let user_ids = sqlx::query_scalar!(
+            r#"
+            SELECT id as "id: crate::models::UserId"
             FROM users
             WHERE deleted_at IS NOT NULL
-              AND deleted_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+              AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ORDER BY deleted_at ASC, id ASC
-            ",
+            "#,
+            days,
         )
-        .bind(days)
         .fetch_all(&self.pool)
         .await
         .internal_with_err("Failed to list soft-deleted users for purge")?;
@@ -333,22 +333,24 @@ impl CleanupService {
             // User soft-delete keeps historical memberships by marking them as
             // `left`. Those rows still carry `ON DELETE RESTRICT` FKs, so they
             // must be removed before the hard delete can succeed.
-            sqlx::query("DELETE FROM room_members WHERE user_id = $1")
-                .bind(user_id)
-                .execute(&mut *tx)
-                .await
-                .internal_with_err("Failed to delete room memberships during user purge")?;
+            sqlx::query!(
+                "DELETE FROM room_members WHERE user_id = $1",
+                user_id as crate::models::UserId,
+            )
+            .execute(&mut *tx)
+            .await
+            .internal_with_err("Failed to delete room memberships during user purge")?;
 
-            match sqlx::query(
+            match sqlx::query!(
                 r"
                 DELETE FROM users
                 WHERE id = $1
                   AND deleted_at IS NOT NULL
-                  AND deleted_at < CURRENT_TIMESTAMP - ($2 || ' days')::INTERVAL
+                  AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $2)
                 ",
+                user_id as crate::models::UserId,
+                days,
             )
-            .bind(user_id)
-            .bind(days)
             .execute(&mut *tx)
             .await
             {
@@ -374,16 +376,16 @@ impl CleanupService {
     /// Permanently delete rooms that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_rooms(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.room_soft_delete_retention_days);
-        let room_ids: Vec<crate::models::RoomId> = sqlx::query_scalar(
-            r"
-            SELECT id
+        let room_ids = sqlx::query_scalar!(
+            r#"
+            SELECT id as "id: crate::models::RoomId"
             FROM rooms
             WHERE deleted_at IS NOT NULL
-              AND deleted_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+              AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ORDER BY deleted_at ASC, id ASC
-            ",
+            "#,
+            days,
         )
-        .bind(days)
         .fetch_all(&self.pool)
         .await
         .internal_with_err("Failed to list soft-deleted rooms for purge")?;
@@ -409,13 +411,13 @@ impl CleanupService {
     /// Delete email tokens that expired beyond the retention period
     async fn delete_expired_tokens(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.expired_token_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM auth_email_tokens
-            WHERE expires_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days,
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete expired tokens")?;
@@ -429,12 +431,13 @@ impl CleanupService {
     /// that expired more than `buffer_hours` ago.
     async fn delete_expired_credentials(&self) -> Result<u64> {
         let buffer_hours = Self::u32_to_i32_saturating(self.config.expired_credential_buffer_hours);
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
-                .bind(buffer_hours)
-                .fetch_one(&self.pool)
-                .await
-                .internal_with_err("Failed to delete expired credentials")?;
+        let result_json = sqlx::query_scalar!(
+            r#"SELECT cleanup_expired_credentials($1) as "result!: serde_json::Value""#,
+            buffer_hours,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .internal_with_err("Failed to delete expired credentials")?;
 
         let deleted_count = result_json["deleted_count"]
             .as_i64()
@@ -448,14 +451,14 @@ impl CleanupService {
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.notification_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE is_read = TRUE
-              AND created_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+              AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days,
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete old notifications")?;
@@ -469,13 +472,13 @@ impl CleanupService {
     /// acknowledged by users.
     async fn delete_expired_notifications(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.notification_max_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
-            WHERE created_at < CURRENT_TIMESTAMP - ($1 || ' days')::INTERVAL
+            WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days,
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete expired notifications")?;
@@ -487,15 +490,15 @@ impl CleanupService {
     ///
     /// Deletes expired token blacklist rows directly in PostgreSQL.
     async fn cleanup_token_blacklist(&self) -> Result<u64> {
-        let deleted_count = sqlx::query_scalar::<_, i64>(
-            r"
+        let deleted_count = sqlx::query_scalar!(
+            r#"
             WITH deleted AS (
                 DELETE FROM auth_token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )
-            SELECT COUNT(*)::BIGINT FROM deleted
-            ",
+            SELECT COUNT(*)::BIGINT as "count!"
+            "#,
         )
         .fetch_one(&self.pool)
         .await
@@ -511,7 +514,7 @@ impl CleanupService {
             return Ok(0);
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE id IN (
@@ -523,8 +526,8 @@ impl CleanupService {
                 WHERE rn > $1
             )
             ",
+            keep_count,
         )
-        .bind(keep_count)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to cleanup chat messages")?;

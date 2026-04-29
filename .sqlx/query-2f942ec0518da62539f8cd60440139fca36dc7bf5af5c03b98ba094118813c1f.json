@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) as count FROM (\n                        SELECT 1 FROM room_members\n                        WHERE room_id = $1 AND left_at IS NULL\n                        FOR UPDATE\n                    ) sub",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2f942ec0518da62539f8cd60440139fca36dc7bf5af5c03b98ba094118813c1f"
+}

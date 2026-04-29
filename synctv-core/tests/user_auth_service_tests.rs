@@ -384,6 +384,41 @@ async fn opaque_update_password_with_plain_password_verification(
         .await
 }
 
+async fn pending_passkey_opaque_update_upload(
+    service: &UserService,
+    user_id: &UserId,
+    new_password: &str,
+) -> synctv_core::Result<(String, Vec<u8>)> {
+    let mut rng = OsRng;
+    let registration_start =
+        ClientRegistration::<TestOpaqueCipherSuite>::start(&mut rng, new_password.as_bytes())
+            .expect("client OPAQUE registration start should succeed");
+    let challenge = service
+        .start_opaque_password_update_pending_passkey_verification(
+            user_id,
+            registration_start.message.serialize().to_vec(),
+        )
+        .await?;
+    let registration_response = RegistrationResponse::<TestOpaqueCipherSuite>::deserialize(
+        &challenge.registration_response,
+    )
+    .expect("server registration response should deserialize");
+    let registration_finish = registration_start
+        .state
+        .finish(
+            &mut rng,
+            new_password.as_bytes(),
+            registration_response,
+            ClientRegistrationFinishParameters::default(),
+        )
+        .expect("client OPAQUE registration finish should succeed");
+
+    Ok((
+        challenge.session_id,
+        registration_finish.message.serialize().to_vec(),
+    ))
+}
+
 async fn opaque_login(
     service: &UserService,
     identifier: String,
@@ -1627,6 +1662,87 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
     assert!(
         new_opaque_login.is_err(),
         "failed OPAQUE password update must not install the requested new credential"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey_session() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+
+    let username = format!("opaque_passkey_update_{}", synctv_common::snanoid!(6));
+    let (user, _, _) = service
+        .register(
+            username.clone(),
+            Some(format!(
+                "opaque_passkey_update_{}@test.com",
+                synctv_common::snanoid!(6)
+            )),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("legacy password registration should succeed");
+
+    let (session_id, registration_upload) =
+        pending_passkey_opaque_update_upload(&service, &user.id, "NewStrongPass1")
+            .await
+            .expect("pending passkey OPAQUE update should start");
+
+    let bypass_result = service
+        .finish_opaque_password_update_after_external_verification(
+            &user.id,
+            &session_id,
+            registration_upload,
+        )
+        .await;
+    assert!(
+        matches!(bypass_result, Err(Error::Authentication(_))),
+        "pending passkey sessions must not be finishable through generic external verification"
+    );
+
+    let legacy_login = service
+        .login(username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        legacy_login.is_ok(),
+        "failed passkey-bypass attempt must leave the original password intact"
+    );
+
+    let (session_id, registration_upload) =
+        pending_passkey_opaque_update_upload(&service, &user.id, "NewStrongPass1")
+            .await
+            .expect("second pending passkey OPAQUE update should start");
+    let updated_user = service
+        .finish_opaque_password_update_after_passkey_verification(
+            &user.id,
+            &session_id,
+            registration_upload,
+        )
+        .await
+        .expect("passkey-verified finish should accept pending passkey sessions");
+
+    assert!(
+        service
+            .has_usable_password_authentication(&updated_user)
+            .await
+            .expect("password auth capability check should succeed"),
+        "passkey-verified OPAQUE update must leave usable password authentication"
+    );
+
+    let old_legacy_login = service
+        .login(username.clone(), "StrongPass1".to_string(), None)
+        .await;
+    assert!(
+        old_legacy_login.is_err(),
+        "old legacy password must stop working after passkey-verified OPAQUE update"
+    );
+
+    let opaque_login_result = opaque_login(&service, username, "NewStrongPass1").await;
+    assert!(
+        opaque_login_result.is_ok(),
+        "new OPAQUE credential must work after passkey-verified password update"
     );
 }
 

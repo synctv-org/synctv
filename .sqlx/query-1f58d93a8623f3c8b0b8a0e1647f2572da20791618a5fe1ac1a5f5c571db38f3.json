@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS(\n                SELECT 1\n                FROM rooms\n                WHERE id = $1\n                  AND deleted_at IS NULL\n                  AND closed_at IS NULL\n                  AND NOT EXISTS (\n                      SELECT 1 FROM room_bans rb\n                      WHERE rb.room_id = rooms.id\n                        AND rb.revoked_at IS NULL\n                        AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                  )\n            ) as \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1f58d93a8623f3c8b0b8a0e1647f2572da20791618a5fe1ac1a5f5c571db38f3"
+}

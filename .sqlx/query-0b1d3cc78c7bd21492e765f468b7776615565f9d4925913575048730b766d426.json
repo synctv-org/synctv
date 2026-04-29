@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*)\n            FROM notifications\n            WHERE user_id = $1 AND is_read = FALSE\n              AND created_at >= NOW() - INTERVAL '6 months'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0b1d3cc78c7bd21492e765f468b7776615565f9d4925913575048730b766d426"
+}

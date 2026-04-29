@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_bans (user_id, banned_by, reason, starts_at)\n            SELECT u.id, $2, $3, $4\n            FROM users u\n            WHERE u.id = $1 AND u.deleted_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1 FROM user_bans ub\n                  WHERE ub.user_id = u.id\n                    AND ub.revoked_at IS NULL\n                    AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)\n                  )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2e17db65cb45b2b578537c74b17f1278ceb9f6269455a29b377fa00d39a1ebbf"
+}

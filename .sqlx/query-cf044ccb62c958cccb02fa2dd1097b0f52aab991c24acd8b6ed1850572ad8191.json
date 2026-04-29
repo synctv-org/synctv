@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                DELETE FROM users\n                WHERE id = $1\n                  AND deleted_at IS NOT NULL\n                  AND deleted_at < CURRENT_TIMESTAMP - make_interval(days => $2)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf044ccb62c958cccb02fa2dd1097b0f52aab991c24acd8b6ed1850572ad8191"
+}

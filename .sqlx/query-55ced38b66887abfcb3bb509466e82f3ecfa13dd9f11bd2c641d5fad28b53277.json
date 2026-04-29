@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT name, endpoint, comment, jwt_secret, custom_ca, timeout, tls,\n                   insecure_tls, providers, enabled, created_at, updated_at\n            FROM media_provider_instances\n            WHERE $1 = ANY(providers) AND enabled = true\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "endpoint",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "jwt_secret",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "custom_ca",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "timeout",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "tls",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "insecure_tls",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "providers",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "55ced38b66887abfcb3bb509466e82f3ecfa13dd9f11bd2c641d5fad28b53277"
+}

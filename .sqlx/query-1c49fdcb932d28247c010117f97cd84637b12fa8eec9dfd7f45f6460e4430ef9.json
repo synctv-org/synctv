@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c49fdcb932d28247c010117f97cd84637b12fa8eec9dfd7f45f6460e4430ef9"
+}

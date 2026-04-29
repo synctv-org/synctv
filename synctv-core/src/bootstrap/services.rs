@@ -12,7 +12,7 @@ use crate::{
     },
     repository::{
         ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
-        RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
+        RoomRepository, RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
         WebAuthnCredentialRepository,
     },
@@ -973,6 +973,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
     } = args;
     let permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
+        RoomRepository::new(pool.clone()),
         None,
         PermissionService::DEFAULT_CACHE_SIZE,
         PermissionService::DEFAULT_CACHE_TTL_SECS,

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM notifications\n            WHERE is_read = TRUE\n              AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8602dc68e94982597dafaedd42cda2123baf3ea6efc3dc5e3a2634b2003c7337"
+}

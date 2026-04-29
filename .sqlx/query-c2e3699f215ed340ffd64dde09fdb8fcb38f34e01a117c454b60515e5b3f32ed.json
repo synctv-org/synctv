@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE room_bans rb\n                SET revoked_at = CURRENT_TIMESTAMP\n                FROM rooms r\n                WHERE rb.room_id = r.id\n                  AND r.id = $1\n                  AND r.deleted_at IS NULL\n                  AND rb.revoked_at IS NULL\n                  AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c2e3699f215ed340ffd64dde09fdb8fcb38f34e01a117c454b60515e5b3f32ed"
+}

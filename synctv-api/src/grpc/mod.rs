@@ -919,7 +919,6 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         content_filter,
         connection_service: connection_service.clone(),
         email_api,
-        passkey_service: shared_http_app_state.passkey_service.clone(),
         settings_registry: settings_registry.clone(),
         providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),

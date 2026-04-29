@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_member_bans SET revoked_by = NULL WHERE revoked_by = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ef299da754a4d6df20fd124b8699cfe8a76f32cc1d9abddececbd49094d2db6"
+}

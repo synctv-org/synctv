@@ -220,6 +220,28 @@ docker compose up -d
 cargo nextest run --workspace
 ```
 
+### SQLx Offline Metadata
+
+Database queries that use SQLx macros are checked at compile time and cached in
+`.sqlx/` so CI can build without a live database. Refresh the cache after changing
+SQL, migrations, or query result types:
+
+```bash
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d postgres redis
+
+SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
+SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
+SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
+cargo run -p synctv --bin synctv -- db migrate
+
+DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
+cargo sqlx prepare --workspace
+
+SQLX_OFFLINE=true cargo check --workspace --all-targets
+```
+
 ### Run with Logging
 
 ```bash

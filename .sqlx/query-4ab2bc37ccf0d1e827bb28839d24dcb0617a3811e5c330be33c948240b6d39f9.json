@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4ab2bc37ccf0d1e827bb28839d24dcb0617a3811e5c330be33c948240b6d39f9"
+}

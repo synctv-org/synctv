@@ -492,25 +492,25 @@ impl AuditService {
         user_agent: Option<&str>,
         created_at: DateTime<Utc>,
     ) -> Result<()> {
-        let query = r"
+        sqlx::query!(
+            r#"
             INSERT INTO audit_logs (
                 actor_id, actor_username, action, target_type, target_id,
                 details, ip_address, user_agent, created_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ";
-
-        sqlx::query(query)
-            .bind(parse_actor_id_for_storage(actor_id))
-            .bind(actor_username)
-            .bind(action_str)
-            .bind(target_str)
-            .bind(target_id)
-            .bind(details)
-            .bind(ip_address)
-            .bind(user_agent)
-            .bind(created_at)
-            .execute(pool)
-            .await?;
+            "#,
+            parse_actor_id_for_storage(actor_id),
+            actor_username,
+            action_str,
+            target_str,
+            target_id,
+            details,
+            ip_address,
+            user_agent,
+            created_at,
+        )
+        .execute(pool)
+        .await?;
 
         Ok(())
     }
@@ -993,18 +993,43 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
         created_ats.push(record.created_at);
     }
 
-    let query = r"
-        INSERT INTO audit_logs (
-            actor_id, actor_username, action, target_type, target_id,
-            details, ip_address, user_agent, created_at
-        )
-        SELECT * FROM UNNEST(
-            $1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[],
-            $6::jsonb[], $7::text[], $8::text[], $9::timestamptz[]
-        )
-    ";
-
     for attempt in 0..FLUSH_MAX_RETRIES {
+        let query = r"
+            INSERT INTO audit_logs (
+                actor_id, actor_username, action, target_type, target_id,
+                details, ip_address, user_agent, created_at
+            )
+            SELECT actor_id::bigint,
+                   actor_username::text,
+                   action::text,
+                   target_type::text,
+                   target_id::text,
+                   details::jsonb,
+                   ip_address::text,
+                   user_agent::text,
+                   created_at::timestamptz
+            FROM UNNEST(
+                $1::bigint[],
+                $2::text[],
+                $3::text[],
+                $4::text[],
+                $5::text[],
+                $6::jsonb[],
+                $7::text[],
+                $8::text[],
+                $9::timestamptz[]
+            ) AS t(
+                actor_id,
+                actor_username,
+                action,
+                target_type,
+                target_id,
+                details,
+                ip_address,
+                user_agent,
+                created_at
+            )
+            ";
         match sqlx::query(query)
             .bind(&actor_ids)
             .bind(&actor_usernames)

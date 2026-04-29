@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room_members\n             SET left_at = COALESCE(left_at, $3), version = version + 1\n             WHERE room_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d77115e32b2a8697b87e505f1df668e003c2f98358dea047d28908fdaed2bf50"
+}

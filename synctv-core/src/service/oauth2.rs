@@ -1012,11 +1012,13 @@ impl OAuth2Service {
         // Serialize creation for a single external identity so concurrent logins
         // cannot race on local username/email creation before the winning mapping
         // becomes visible.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(&advisory_lock_key)
-            .execute(&mut *tx)
-            .await
-            .internal_with_err("Failed to acquire OAuth2 identity advisory lock")?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            advisory_lock_key,
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .internal_with_err("Failed to acquire OAuth2 identity advisory lock")?;
 
         // Re-check inside the transaction to guard against the race where another
         // concurrent request created the user between our initial lookup and here.
@@ -1154,10 +1156,10 @@ impl OAuth2Service {
 
         // Set email_verified if the provider confirmed the email.
         if user_info.email_verified && user_info.email.is_some() {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
+                new_user.id.as_i64(),
             )
-                .bind(new_user.id)
                 .execute(&mut *tx)
                 .await
                 .internal_with_err("Failed to set email_verified in transaction")?;

@@ -15,13 +15,12 @@ use crate::http::passkey_json::{
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
-    DeletePasskeyResponse, ListMyRoomsResponse, ListPasskeysResponse, PasskeyCredential,
+    DeletePasskeyRequest, DeletePasskeyResponse, ListMyRoomsResponse, ListPasskeysResponse,
     PasskeyCredentialResponse,
 };
 use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
-    OpaquePasswordUpdateVerificationMethod, StartOpaquePasswordUpdateRequest,
-    StartOpaquePasswordUpdateResponse,
+    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
 };
 pub use crate::proto::client::{UpdateUserRequest, UpdateUserResponse};
 
@@ -150,84 +149,14 @@ pub async fn start_opaque_password_update(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
     let client_api = state.client_api.clone();
-    let state_for_request = state.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                let method =
-                    OpaquePasswordUpdateVerificationMethod::try_from(req.verification_method)
-                        .map_err(|_| {
-                            crate::impls::ApiError::InvalidInput(
-                                "Invalid verification_method".to_string(),
-                            )
-                        })?;
-                match method {
-                    OpaquePasswordUpdateVerificationMethod::EmailToken => {
-                        let email_api = state_for_request.email_api.as_ref().ok_or_else(|| {
-                            crate::impls::ApiError::ServiceUnavailable(
-                                synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string(),
-                            )
-                        })?;
-                        if req.email_token.is_empty() {
-                            return Err(crate::impls::ApiError::InvalidInput(
-                                "email_token is required for email verification".to_string(),
-                            ));
-                        }
-                        email_api
-                            .email_token_service
-                            .validate_token_for_user(
-                                &req.email_token,
-                                synctv_core::service::EmailTokenType::PasswordReset,
-                                &auth.user_id,
-                            )
-                            .await
-                            .map_err(crate::impls::ApiError::from)?;
-                        let challenge = state_for_request
-                            .user_service
-                            .start_opaque_password_update_after_external_verification(
-                                &auth.user_id,
-                                req.registration_request,
-                            )
-                            .await
-                            .map_err(crate::impls::ApiError::from)?;
-                        Ok(StartOpaquePasswordUpdateResponse {
-                            session_id: challenge.session_id,
-                            credential_response: Vec::new(),
-                            registration_response: challenge.registration_response,
-                            passkey_session_id: String::new(),
-                            passkey_options: Vec::new(),
-                        })
-                    }
-                    OpaquePasswordUpdateVerificationMethod::Passkey => {
-                        let passkey_service = require_passkey_service(&state_for_request)?;
-                        let passkey_challenge = passkey_service
-                            .start_user_verification(&auth.user_id)
-                            .await
-                            .map_err(crate::impls::ApiError::from)?;
-                        let challenge = state_for_request
-                            .user_service
-                            .start_opaque_password_update_after_external_verification(
-                                &auth.user_id,
-                                req.registration_request,
-                            )
-                            .await
-                            .map_err(crate::impls::ApiError::from)?;
-                        Ok(StartOpaquePasswordUpdateResponse {
-                            session_id: challenge.session_id,
-                            credential_response: Vec::new(),
-                            registration_response: challenge.registration_response,
-                            passkey_session_id: passkey_challenge.session_id,
-                            passkey_options: passkey_challenge.options_json,
-                        })
-                    }
-                    _ => {
-                        client_api
-                            .start_opaque_password_update(&auth.user_id, req)
-                            .await
-                    }
-                }
+                client_api
+                    .start_opaque_password_update(&auth.user_id, req)
+                    .await
             },
         )
         .await
@@ -246,73 +175,20 @@ pub async fn finish_opaque_password_update(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
     let client_api = state.client_api.clone();
-    let state_for_request = state.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                if !req.passkey_session_id.is_empty() || !req.passkey_credential.is_empty() {
-                    let passkey_service = require_passkey_service(&state_for_request)?;
-                    passkey_service
-                        .finish_user_verification(
-                            &req.passkey_session_id,
-                            &req.passkey_credential,
-                            &auth.user_id,
-                        )
-                        .await
-                        .map_err(crate::impls::ApiError::from)?;
-                    let user = state_for_request
-                        .user_service
-                        .finish_opaque_password_update_after_external_verification(
-                            &auth.user_id,
-                            &req.session_id,
-                            req.registration_upload,
-                        )
-                        .await
-                        .map_err(crate::impls::ApiError::from)?;
-                    Ok(FinishOpaquePasswordUpdateResponse {
-                        user: Some(crate::impls::client::user_to_proto(
-                            &user,
-                            &state_for_request.public_id_codec,
-                        )),
-                    })
-                } else {
-                    client_api
-                        .finish_opaque_password_update(&auth.user_id, req)
-                        .await
-                }
+                client_api
+                    .finish_opaque_password_update(&auth.user_id, req)
+                    .await
             },
         )
         .await
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
-}
-
-fn require_passkey_service(
-    state: &AppState,
-) -> Result<std::sync::Arc<synctv_core::service::PasskeyService>, crate::impls::ApiError> {
-    state.passkey_service.clone().ok_or_else(|| {
-        crate::impls::ApiError::ServiceUnavailable(
-            "Passkey/WebAuthn service is not configured".to_string(),
-        )
-    })
-}
-
-fn passkey_credential_to_proto(
-    credential: &synctv_core::repository::WebAuthnCredential,
-) -> PasskeyCredential {
-    PasskeyCredential {
-        credential_id: synctv_core::service::PasskeyService::encode_credential_id(
-            &credential.credential_id,
-        ),
-        name: credential.name.clone().unwrap_or_default(),
-        sign_count: credential.sign_count,
-        created_at: credential.created_at.timestamp(),
-        updated_at: credential.updated_at.timestamp(),
-        last_used_at: credential.last_used_at.map_or(0, |value| value.timestamp()),
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -350,27 +226,15 @@ pub async fn start_passkey_bind(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let profile = state_for_request
-                    .user_service
-                    .get_user(&auth.user_id)
-                    .await
-                    .map_err(crate::impls::ApiError::from)?;
-                let credential_name = if req.name.trim().is_empty() {
-                    None
-                } else {
-                    Some(req.name.trim().to_string())
-                };
-                let challenge = passkey_service
-                    .start_registration(&profile, credential_name)
-                    .await
-                    .map_err(crate::impls::ApiError::from)?;
+                let challenge = client_api
+                    .start_passkey_bind_challenge(&auth.user_id, req.name)
+                    .await?;
                 let options = passkey_options_to_value(&challenge.options_json)?;
                 Ok::<_, crate::impls::ApiError>(StartPasskeyBindHttpResponse {
                     session_id: challenge.session_id,
@@ -396,20 +260,15 @@ pub async fn finish_passkey_bind(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let credential = passkey_service
-                    .finish_registration(&req.session_id, &credential_json, &auth.user_id)
+                client_api
+                    .finish_passkey_bind(&auth.user_id, &req.session_id, &credential_json)
                     .await
-                    .map_err(crate::impls::ApiError::from)?;
-                Ok::<_, crate::impls::ApiError>(PasskeyCredentialResponse {
-                    credential: Some(passkey_credential_to_proto(&credential)),
-                })
             },
         )
         .await
@@ -426,22 +285,12 @@ pub async fn list_passkeys(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Read,
-            |auth| async move {
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let credentials = passkey_service
-                    .list_credentials(&auth.user_id)
-                    .await
-                    .map_err(crate::impls::ApiError::from)?
-                    .iter()
-                    .map(passkey_credential_to_proto)
-                    .collect();
-                Ok::<_, crate::impls::ApiError>(ListPasskeysResponse { credentials })
-            },
+            |auth| async move { client_api.list_passkeys(&auth.user_id).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -458,21 +307,15 @@ pub async fn delete_passkey(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let executor = state.client_api.clone();
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
             |auth| async move {
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let credential_id =
-                    synctv_core::service::PasskeyService::decode_credential_id(&credential_id)
-                        .map_err(crate::impls::ApiError::from)?;
-                let deleted = passkey_service
-                    .delete_credential(&auth.user_id, &credential_id)
+                client_api
+                    .delete_passkey(&auth.user_id, DeletePasskeyRequest { credential_id })
                     .await
-                    .map_err(crate::impls::ApiError::from)?;
-                Ok::<_, crate::impls::ApiError>(DeletePasskeyResponse { deleted })
             },
         )
         .await

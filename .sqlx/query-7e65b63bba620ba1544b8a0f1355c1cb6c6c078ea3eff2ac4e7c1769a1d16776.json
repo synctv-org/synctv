@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT key, group_name, value, version, created_at, updated_at\n            FROM settings\n            ORDER BY group_name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "group_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "value",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7e65b63bba620ba1544b8a0f1355c1cb6c6c078ea3eff2ac4e7c1769a1d16776"
+}

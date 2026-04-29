@@ -332,14 +332,6 @@ pub async fn finish_opaque_login(
     Ok(Json(response))
 }
 
-fn require_passkey_service(
-    state: &AppState,
-) -> Result<std::sync::Arc<synctv_core::service::PasskeyService>, ApiError> {
-    state.passkey_service.clone().ok_or_else(|| {
-        ApiError::ServiceUnavailable("Passkey/WebAuthn service is not configured".to_string())
-    })
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StartPasskeyLoginHttpRequest {
@@ -407,7 +399,7 @@ pub async fn start_passkey_registration(
 ) -> AppResult<Json<StartPasskeyRegistrationHttpResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = state
         .client_api
         .execute_public_endpoint_with_control(
@@ -415,32 +407,15 @@ pub async fn start_passkey_registration(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<StartPasskeyRegistrationHttpRequest>(request).await?;
-                let username = crate::http::validation::validate_username(&req.username)
-                    .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
-                let email = if req.email.trim().is_empty() {
-                    None
-                } else {
-                    Some(
-                        crate::http::validation::validate_email(&req.email)
-                            .map_err(|error| ApiError::InvalidInput(error.to_string()))?,
-                    )
-                };
-                let credential_name = if req.name.trim().is_empty() {
-                    None
-                } else {
-                    Some(req.name.trim().to_string())
-                };
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let challenge = passkey_service
-                    .start_account_registration(
-                        username,
-                        email,
-                        credential_name,
+                let challenge = client_api
+                    .start_passkey_registration_challenge_with_control(
+                        req.username,
+                        req.email,
+                        req.name,
                         client_ip,
                         Some(&request_control),
                     )
-                    .await
-                    .map_err(ApiError::from)?;
+                    .await?;
                 let options = passkey_options_to_value(&challenge.options_json)?;
                 Ok::<_, ApiError>(StartPasskeyRegistrationHttpResponse {
                     session_id: challenge.session_id,
@@ -475,7 +450,7 @@ pub async fn finish_passkey_registration(
 ) -> AppResult<Json<RegisterResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = state
         .client_api
         .execute_public_endpoint_with_control(
@@ -485,24 +460,14 @@ pub async fn finish_passkey_registration(
                 let req = parse_auth_json::<FinishPasskeyRegistrationHttpRequest>(request).await?;
                 validate_passkey_session_id(&req.session_id)?;
                 let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let (user, access_token, refresh_token) = passkey_service
-                    .finish_account_registration(
+                client_api
+                    .finish_passkey_registration_bytes_with_control(
                         &req.session_id,
                         &credential_json,
                         client_ip,
                         Some(&request_control),
                     )
                     .await
-                    .map_err(ApiError::from)?;
-                Ok::<_, ApiError>(RegisterResponse {
-                    user: Some(crate::impls::client::user_to_proto(
-                        &user,
-                        &state_for_request.public_id_codec,
-                    )),
-                    access_token,
-                    refresh_token,
-                })
             },
         )
         .await
@@ -531,7 +496,7 @@ pub async fn start_passkey_login(
 ) -> AppResult<Json<StartPasskeyLoginHttpResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = state
         .client_api
         .execute_public_endpoint_with_control(
@@ -539,25 +504,14 @@ pub async fn start_passkey_login(
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<StartPasskeyLoginHttpRequest>(request).await?;
-                let has_username = !req.username.trim().is_empty();
-                let has_email = !req.email.trim().is_empty();
-                if has_username == has_email {
-                    return Err(ApiError::InvalidInput(
-                        "Provide exactly one of username or email".to_string(),
-                    ));
-                }
-                let identifier = if has_email {
-                    crate::http::validation::validate_email(&req.email)
-                        .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-                } else {
-                    crate::http::validation::validate_username(&req.username)
-                        .map_err(|e| ApiError::InvalidInput(e.to_string()))?
-                };
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let challenge = passkey_service
-                    .start_login(&identifier, client_ip, Some(&request_control))
-                    .await
-                    .map_err(ApiError::from)?;
+                let challenge = client_api
+                    .start_passkey_login_challenge_with_control(
+                        req.username,
+                        req.email,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await?;
                 let options = passkey_options_to_value(&challenge.options_json)?;
                 Ok::<_, ApiError>(StartPasskeyLoginHttpResponse {
                     session_id: challenge.session_id,
@@ -592,7 +546,7 @@ pub async fn finish_passkey_login(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let state_for_request = state.clone();
+    let client_api = state.client_api.clone();
     let response = state
         .client_api
         .execute_public_endpoint_with_control(
@@ -602,24 +556,14 @@ pub async fn finish_passkey_login(
                 let req = parse_auth_json::<FinishPasskeyLoginHttpRequest>(request).await?;
                 validate_passkey_session_id(&req.session_id)?;
                 let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
-                let passkey_service = require_passkey_service(&state_for_request)?;
-                let (user, access_token, refresh_token) = passkey_service
-                    .finish_login(
+                client_api
+                    .finish_passkey_login_bytes_with_control(
                         &req.session_id,
                         &credential_json,
                         client_ip,
                         Some(&request_control),
                     )
                     .await
-                    .map_err(ApiError::from)?;
-                Ok::<_, ApiError>(LoginResponse {
-                    user: Some(crate::impls::client::user_to_proto(
-                        &user,
-                        &state_for_request.public_id_codec,
-                    )),
-                    access_token,
-                    refresh_token,
-                })
             },
         )
         .await

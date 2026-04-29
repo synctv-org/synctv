@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)\n            SELECT target.room_id, target.user_id, $3, $4, $5\n            FROM room_members AS target\n            WHERE target.room_id = $1\n              AND target.user_id = $2\n              AND target.left_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1 FROM room_member_bans rmb\n                  WHERE rmb.room_id = target.room_id\n                    AND rmb.user_id = target.user_id\n                    AND rmb.revoked_at IS NULL\n                    AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)\n              )\n              AND EXISTS (\n                  SELECT 1 FROM room_members AS actor\n                  WHERE actor.room_id = $1\n                    AND actor.user_id = $3\n                    AND actor.left_at IS NULL\n                    AND actor.role < target.role\n                  )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "812bb374ebdd307598d4e3fd18cd7270d6706d02c72a3a1d9d4b4604320d3655"
+}

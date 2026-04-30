@@ -213,7 +213,7 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     );
     headers.insert(
         "User-Agent".to_string(),
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36".to_string(),
+        synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
     );
     headers
 }
@@ -371,6 +371,7 @@ pub fn sign_playback_urls(
                 user_id,
                 expires_at,
             );
+            subtitle.headers.clear();
         }
     }
 }
@@ -617,7 +618,10 @@ mod tests {
                         language: "zh-CN".to_string(),
                         name: "Chinese".to_string(),
                         url: "https://cdn.example.com/subtitle.json".to_string(),
-                        headers: std::collections::HashMap::new(),
+                        headers: std::collections::HashMap::from([(
+                            "Authorization".to_string(),
+                            "Bearer subtitle-token".to_string(),
+                        )]),
                         format: "json".to_string(),
                     }],
                     expires_at: None,
@@ -658,6 +662,10 @@ mod tests {
                 .url
                 .starts_with("/api/providers/proxy/bilibili/ver-1/subtitle%2Fdash%2F0?"),
             "subtitle URLs may still use the signed proxy contract"
+        );
+        assert!(
+            dash.subtitles[0].headers.is_empty(),
+            "signed subtitle proxy should not expose upstream headers to clients"
         );
     }
 

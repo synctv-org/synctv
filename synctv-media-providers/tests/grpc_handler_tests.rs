@@ -132,7 +132,7 @@ async fn test_alist_grpc_fs_get_rejects_missing_token_before_io() {
             token: String::new(),
             path: "/local/video.mp4".to_string(),
             password: String::new(),
-            user_agent: String::new(),
+            headers: std::collections::HashMap::new(),
         }))
         .await
         .unwrap_err();

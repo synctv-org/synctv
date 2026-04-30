@@ -3,8 +3,11 @@
 //! Tests for path validation, client creation, and HTTP API interactions using wiremock.
 
 #![allow(clippy::unwrap_used)]
+use std::collections::HashMap;
+
 use serde_json::json;
 use synctv_media_providers::alist::{AlistInterface, AlistService};
+use synctv_media_providers::error::PROVIDER_USER_AGENT;
 use synctv_media_providers::grpc::alist::{
     alist_client::AlistClient as GrpcAlistClient, alist_server::AlistServer, login_req, FsGetReq,
     FsListReq, FsOtherReq, FsSearchReq, LoginReq, MeReq,
@@ -21,11 +24,17 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // validate_path is a private function, but we test it indirectly through the public API
 // (fs_get, fs_list, etc.) which call validate_path internally.
 
+fn provider_headers() -> HashMap<String, String> {
+    HashMap::from([("User-Agent".to_string(), PROVIDER_USER_AGENT.to_string())])
+}
+
 #[tokio::test]
 async fn test_validate_path_url_encoded_dotdot_rejected() {
     // "%2e%2e" decodes to ".." which should be rejected
     let client = AlistClient::with_token("https://alist.example.com", "token123").unwrap();
-    let result = client.fs_get("/movies/%2e%2e/etc/passwd", None).await;
+    let result = client
+        .fs_get("/movies/%2e%2e/etc/passwd", None, &provider_headers())
+        .await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -38,7 +47,9 @@ async fn test_validate_path_url_encoded_dotdot_rejected() {
 async fn test_validate_path_url_encoded_slash_dotdot_rejected() {
     // "%2F%2e%2e" decodes to "/.." which should be rejected
     let client = AlistClient::with_token("https://alist.example.com", "token123").unwrap();
-    let result = client.fs_get("/movies%2F%2e%2e/secret", None).await;
+    let result = client
+        .fs_get("/movies%2F%2e%2e/secret", None, &provider_headers())
+        .await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -73,7 +84,9 @@ async fn test_validate_path_normal_paths_accepted() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let result = client.fs_get("/movies/video.mp4", None).await;
+    let result = client
+        .fs_get("/movies/video.mp4", None, &provider_headers())
+        .await;
     assert!(result.is_ok(), "Normal path should be accepted: {result:?}");
 }
 
@@ -102,7 +115,9 @@ async fn test_validate_path_dotfiles_accepted() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let result = client.fs_get("/movies/.hidden", None).await;
+    let result = client
+        .fs_get("/movies/.hidden", None, &provider_headers())
+        .await;
     assert!(
         result.is_ok(),
         "Dotfile path should be accepted: {result:?}"
@@ -180,7 +195,10 @@ async fn test_alist_client_fs_get_success() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let resp = client.fs_get("/movies/movie.mkv", None).await.unwrap();
+    let resp = client
+        .fs_get("/movies/movie.mkv", None, &provider_headers())
+        .await
+        .unwrap();
     assert_eq!(resp.name, "movie.mkv");
     assert_eq!(resp.size, 2_000_000_000);
     assert!(!resp.is_dir);
@@ -193,12 +211,6 @@ async fn test_alist_client_fs_get_sends_auth_headers_and_password() {
 
     Mock::given(method("POST"))
         .and(path("/api/fs/get"))
-        .and(header("authorization", "token123"))
-        .and(header("origin", server.uri()))
-        .and(body_json(json!({
-            "path": "/protected/movie.mkv",
-            "password": "dir-password"
-        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "code": 200,
             "message": "success",
@@ -217,12 +229,53 @@ async fn test_alist_client_fs_get_sends_auth_headers_and_password() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
+    let mut headers = provider_headers();
+    headers.insert("X-Alist-Test".to_string(), "custom-header".to_string());
     let resp = client
-        .fs_get("/protected/movie.mkv", Some("dir-password"))
+        .fs_get("/protected/movie.mkv", Some("dir-password"), &headers)
         .await
         .unwrap();
     assert_eq!(resp.name, "movie.mkv");
     assert!(resp.related.is_empty());
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("wiremock should record requests");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("token123")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("origin")
+            .and_then(|value| value.to_str().ok()),
+        Some(server.uri().as_str())
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some(PROVIDER_USER_AGENT)
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("x-alist-test")
+            .and_then(|value| value.to_str().ok()),
+        Some("custom-header")
+    );
+    let body: serde_json::Value = request.body_json().expect("fs/get body should be JSON");
+    assert_eq!(body["path"], json!("/protected/movie.mkv"));
+    assert_eq!(body["password"], json!("dir-password"));
+    assert_eq!(body["user_agent"], json!(PROVIDER_USER_AGENT));
 }
 
 #[tokio::test]
@@ -373,7 +426,9 @@ async fn test_alist_client_5xx_retries() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let result = client.fs_get("/movies/video.mp4", None).await;
+    let result = client
+        .fs_get("/movies/video.mp4", None, &provider_headers())
+        .await;
     assert!(result.is_ok(), "Should succeed after retry: {result:?}");
     assert_eq!(result.unwrap().name, "video.mp4");
 }
@@ -1016,7 +1071,10 @@ async fn test_openlist_container_exercises_real_alist_client_api() {
     assert_eq!(empty.total, 0);
     assert!(empty.content.is_empty());
 
-    let file = client.fs_get("/local/video.mp4", None).await.unwrap();
+    let file = client
+        .fs_get("/local/video.mp4", None, &provider_headers())
+        .await
+        .unwrap();
     assert_eq!(file.name, "video.mp4");
     assert_eq!(file.size, 15);
     assert_eq!(file.provider, "Local");
@@ -1121,7 +1179,7 @@ async fn test_openlist_container_exercises_real_alist_grpc_service() {
             token: token.clone(),
             path: "/local/video.mp4".to_string(),
             password: String::new(),
-            user_agent: String::new(),
+            headers: HashMap::new(),
         })
         .await
         .unwrap()

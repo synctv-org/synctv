@@ -76,7 +76,9 @@ impl AlistInterface for AlistService {
         } else {
             Some(request.password.as_str())
         };
-        let http_resp = client.fs_get(&request.path, password).await?;
+        let http_resp = client
+            .fs_get(&request.path, password, &request.headers)
+            .await?;
 
         Ok(http_resp.into())
     }

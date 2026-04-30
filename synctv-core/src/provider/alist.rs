@@ -29,6 +29,13 @@ const LIST_PAGE_SIZE: usize = 50;
 const SHUFFLE_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 
+fn alist_headers() -> HashMap<String, String> {
+    HashMap::from([(
+        "User-Agent".to_string(),
+        synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
+    )])
+}
+
 fn alist_modified_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -137,6 +144,7 @@ fn subtitle_name_from_task(task: &AlistSubtitleTask, index: usize) -> String {
 }
 
 fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<SubtitleTrack> {
+    let headers = alist_headers();
     preview.map_or_else(Vec::new, |preview| {
         preview
             .subtitle_tasks
@@ -153,7 +161,7 @@ fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<Subt
                     },
                     name,
                     url: sub.url.clone(),
-                    headers: HashMap::new(),
+                    headers: headers.clone(),
                     format: "srt".to_string(),
                 }
             })
@@ -162,6 +170,7 @@ fn subtitles_from_video_preview(preview: Option<&AlistVideoPreview>) -> Vec<Subt
 }
 
 fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<SubtitleTrack> {
+    let headers = alist_headers();
     related
         .iter()
         .filter(|related| {
@@ -173,7 +182,7 @@ fn subtitles_from_related_files(related: &[AlistRelatedFile]) -> Vec<SubtitleTra
             language: external_subtitle_language(&related.name),
             name: related.name.clone(),
             url: related.raw_url.clone(),
-            headers: HashMap::new(),
+            headers: headers.clone(),
             format: subtitle_format_from_name(&related.name),
         })
         .collect()
@@ -642,7 +651,7 @@ impl AlistProvider {
                 token: config.token.clone(),
                 path,
                 password: config.password.clone().unwrap_or_default(),
-                user_agent: String::new(),
+                headers: alist_headers(),
             };
 
             if let Ok(subtitle_info) = client.fs_get(request).await {
@@ -673,7 +682,7 @@ impl AlistProvider {
             token: config.token.clone(),
             path: config.path.clone(),
             password: config.password.clone().unwrap_or_default(),
-            user_agent: String::new(),
+            headers: alist_headers(),
         };
 
         // Call client (trait method - implementation handles local/remote)
@@ -750,6 +759,7 @@ impl AlistProvider {
         };
 
         let mut transcoded_modes = Vec::new();
+        let headers = alist_headers();
 
         if let Some(preview) = video_preview {
             // Add transcoding quality options
@@ -780,7 +790,7 @@ impl AlistProvider {
                         PlaybackInfo {
                             urls: vec![task.url.clone()],
                             format: "hls".to_string(),
-                            headers: HashMap::new(),
+                            headers: headers.clone(),
                             subtitles: combined_subtitles.clone(),
                             expires_at: task_expires_at,
                             cors_proxy_required: false,
@@ -837,7 +847,7 @@ impl AlistProvider {
                 PlaybackInfo {
                     urls: vec![file_info.raw_url.clone()],
                     format: Self::detect_format(&file_info.name),
-                    headers: HashMap::new(),
+                    headers: headers.clone(),
                     subtitles: combined_subtitles,
                     expires_at: direct_expires_at,
                     cors_proxy_required: false,
@@ -1753,6 +1763,10 @@ mod tests {
     #[async_trait]
     impl AlistInterface for FakeAlistSubtitleClient {
         async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
+            assert_eq!(
+                request.headers.get("User-Agent").map(String::as_str),
+                Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+            );
             self.requested_paths
                 .lock()
                 .expect("requested_paths mutex should not be poisoned")
@@ -2406,7 +2420,15 @@ mod tests {
             .get("transcoded_HD")
             .expect("transcoded HD mode should exist");
         assert_eq!(transcoded.format, "hls");
+        assert_eq!(
+            transcoded.headers.get("User-Agent").map(String::as_str),
+            Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+        );
         assert_eq!(transcoded.subtitles.len(), 3);
+        assert!(transcoded.subtitles.iter().all(|sub| {
+            sub.headers.get("User-Agent").map(String::as_str)
+                == Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+        }));
         assert!(transcoded
             .subtitles
             .iter()
@@ -2421,6 +2443,10 @@ mod tests {
             .get("direct")
             .expect("direct fallback should exist");
         assert_eq!(direct.format, "mkv");
+        assert_eq!(
+            direct.headers.get("User-Agent").map(String::as_str),
+            Some(synctv_media_providers::error::PROVIDER_USER_AGENT)
+        );
         assert_eq!(direct.subtitles.len(), 3);
         assert_eq!(result.metadata["transcoding_count"], json!(2));
         assert_eq!(result.metadata["video_preview_subtitle_count"], json!(1));

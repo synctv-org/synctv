@@ -246,6 +246,10 @@ fn grpc_playback_request_hints(
     )
 }
 
+fn emby_auth_headers(token: &str) -> HashMap<String, String> {
+    HashMap::from([("X-Emby-Token".to_string(), token.to_string())])
+}
+
 /// Emby `MediaProvider`
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
@@ -569,11 +573,7 @@ impl EmbyProvider {
         // Auth headers for Emby: use X-Emby-Token header instead of
         // embedding api_key in query strings to avoid credential exposure
         // in URLs (which end up in logs, browser history, Referer headers).
-        let emby_auth_headers = {
-            let mut h = HashMap::new();
-            h.insert("X-Emby-Token".to_string(), config.token.clone());
-            h
-        };
+        let emby_auth_headers = emby_auth_headers(&config.token);
 
         // Process media sources
         for (idx, source) in playback_info.media_source_info.iter().enumerate() {
@@ -593,9 +593,8 @@ impl EmbyProvider {
             };
 
             // Extract subtitles -- do NOT include api_key in the URL to avoid
-            // leaking the Emby token to clients. Instead, subtitle URLs are
-            // fetched through the server-side proxy which injects the
-            // X-Emby-Token header (same as video streams).
+            // leaking the Emby token to clients. Direct clients and the server
+            // proxy both use X-Emby-Token headers, same as video streams.
             let subtitles: Vec<SubtitleTrack> = source
                 .media_stream_info
                 .iter()
@@ -616,7 +615,7 @@ impl EmbyProvider {
                         language: stream.language.clone(),
                         name: stream.display_title.clone(),
                         url: subtitle_url,
-                        headers: HashMap::new(),
+                        headers: emby_auth_headers.clone(),
                         format: stream.codec.to_lowercase(),
                     })
                 })
@@ -1552,8 +1551,12 @@ impl DynamicFolder for EmbyProvider {
 mod tests {
     use super::*;
     use crate::models::UserId;
+    use crate::provider::ProviderClientManager;
     use crate::repository::ProviderInstanceRepository;
+    use async_trait::async_trait;
     use std::sync::Arc;
+    use synctv_media_providers::emby::{EmbyError, EmbyInterface};
+    use synctv_media_providers::grpc::emby as proto;
 
     fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
@@ -1577,6 +1580,169 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    struct MockEmbyClient;
+
+    fn mock_not_implemented() -> EmbyError {
+        EmbyError::NotImplemented("mock emby method not implemented".to_string())
+    }
+
+    #[async_trait]
+    impl EmbyInterface for MockEmbyClient {
+        async fn login(&self, _request: proto::LoginReq) -> Result<proto::LoginResp, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn me(&self, _request: proto::MeReq) -> Result<proto::MeResp, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_items(
+            &self,
+            _request: proto::GetItemsReq,
+        ) -> Result<proto::GetItemsResp, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_item(&self, _request: proto::GetItemReq) -> Result<proto::Item, EmbyError> {
+            Ok(proto::Item {
+                name: "Mock Movie".to_string(),
+                id: "item-1".to_string(),
+                r#type: "Movie".to_string(),
+                parent_id: String::new(),
+                series_name: String::new(),
+                series_id: String::new(),
+                season_name: String::new(),
+                season_id: String::new(),
+                is_folder: false,
+                media_source_info: Vec::new(),
+                collection_type: String::new(),
+            })
+        }
+
+        async fn fs_list(
+            &self,
+            _request: proto::FsListReq,
+        ) -> Result<proto::FsListResp, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_system_info(
+            &self,
+            _request: proto::SystemInfoReq,
+        ) -> Result<proto::SystemInfoResp, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn logout(&self, _request: proto::LogoutReq) -> Result<proto::Empty, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn playback_info(
+            &self,
+            _request: proto::PlaybackInfoReq,
+        ) -> Result<proto::PlaybackInfoResp, EmbyError> {
+            Ok(proto::PlaybackInfoResp {
+                play_session_id: "play-session-1".to_string(),
+                media_source_info: vec![proto::MediaSourceInfo {
+                    id: "source-1".to_string(),
+                    name: "Main".to_string(),
+                    path: String::new(),
+                    container: "mp4".to_string(),
+                    protocol: "File".to_string(),
+                    default_subtitle_stream_index: 2,
+                    default_audio_stream_index: 1,
+                    media_stream_info: vec![proto::MediaStreamInfo {
+                        codec: "srt".to_string(),
+                        language: "eng".to_string(),
+                        r#type: "Subtitle".to_string(),
+                        title: "English".to_string(),
+                        display_title: "English".to_string(),
+                        display_language: "English".to_string(),
+                        is_default: true,
+                        index: 2,
+                        protocol: "File".to_string(),
+                    }],
+                    direct_play_url: "/Videos/item-1/stream.mp4".to_string(),
+                    transcoding_url: String::new(),
+                }],
+            })
+        }
+
+        async fn delete_active_encodings(
+            &self,
+            _request: proto::DeleteActiveEncodingsReq,
+        ) -> Result<proto::Empty, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn report_playback_start(
+            &self,
+            _request: proto::ReportPlaybackStartReq,
+        ) -> Result<proto::Empty, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn report_playback_stop(
+            &self,
+            _request: proto::ReportPlaybackStopReq,
+        ) -> Result<proto::Empty, EmbyError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn report_playback_progress(
+            &self,
+            _request: proto::ReportPlaybackProgressReq,
+        ) -> Result<proto::Empty, EmbyError> {
+            Err(mock_not_implemented())
+        }
+    }
+
+    fn provider_with_mock_emby_client() -> EmbyProvider {
+        let default_clients = ProviderClientManager::new();
+        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
+            default_clients.local_alist_client(),
+            default_clients.local_bilibili_client(),
+            Arc::new(MockEmbyClient),
+        ));
+        EmbyProvider::with_client_manager(fake_provider_instance_manager(), client_manager)
+    }
+
+    #[tokio::test]
+    async fn test_emby_direct_playback_returns_subtitle_auth_headers() {
+        let provider = provider_with_mock_emby_client();
+        let result = provider
+            .resolve_from_api(
+                &ResolvedEmbyConfig {
+                    host: "https://emby.example.com".to_string(),
+                    token: "token-123".to_string(),
+                    user_id: "user-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    credential_owner_id: "owner-1".to_string(),
+                    credential_revision: "credential-1:1".to_string(),
+                    provider_instance_name: None,
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("mock Emby playback should resolve");
+
+        let playback = &result.playback_infos["Main"];
+        assert_eq!(
+            playback.headers.get("X-Emby-Token").map(String::as_str),
+            Some("token-123")
+        );
+        assert_eq!(playback.subtitles.len(), 1);
+        assert_eq!(
+            playback.subtitles[0]
+                .headers
+                .get("X-Emby-Token")
+                .map(String::as_str),
+            Some("token-123"),
+            "direct subtitle clients need the same Emby auth header as video streams"
+        );
     }
 
     #[test]

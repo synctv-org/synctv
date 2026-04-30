@@ -29,7 +29,7 @@ message FsGetReq {
   string path = 3;
   string password = 4;
 
-  string user_agent = 5;
+  map<string, string> headers = 5;
 }
 
 message FsGetResp {

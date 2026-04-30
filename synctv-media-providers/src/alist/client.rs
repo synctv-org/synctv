@@ -2,10 +2,14 @@
 //!
 //! Pure HTTP client for Alist API, no dependency on `MediaProvider`
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use reqwest::{
-    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT},
+    header::{
+        HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER,
+        USER_AGENT,
+    },
     Client,
 };
 use serde_json::json;
@@ -48,6 +52,18 @@ fn referer_value(url: &url::Url) -> Result<HeaderValue, AlistError> {
     referer.set_fragment(None);
     HeaderValue::from_str(referer.as_str())
         .map_err(|e| AlistError::InvalidConfig(format!("Invalid Referer header value: {e}")))
+}
+
+fn header_value<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+fn effective_user_agent(headers: &HashMap<String, String>) -> &str {
+    header_value(headers, USER_AGENT.as_str()).unwrap_or(crate::error::PROVIDER_USER_AGENT)
 }
 
 /// Shared HTTP client for all Alist requests (connection pooling).
@@ -126,17 +142,33 @@ impl AlistClient {
         self.token.is_some()
     }
 
-    /// Build request headers
-    fn build_headers(&self) -> Result<HeaderMap, AlistError> {
+    /// Build request headers.
+    fn build_headers(
+        &self,
+        request_headers: &HashMap<String, String>,
+    ) -> Result<HeaderMap, AlistError> {
         let parsed_host = parse_host_url(&self.host)?;
+        let user_agent = effective_user_agent(request_headers);
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(crate::error::PROVIDER_USER_AGENT),
-        );
+        headers.insert(USER_AGENT, HeaderValue::from_str(user_agent)?);
         headers.insert(ORIGIN, origin_value(&parsed_host)?);
         headers.insert(REFERER, referer_value(&parsed_host)?);
+
+        for (name, value) in request_headers {
+            if name.eq_ignore_ascii_case(CONTENT_TYPE.as_str())
+                || name.eq_ignore_ascii_case(AUTHORIZATION.as_str())
+                || name.eq_ignore_ascii_case(ORIGIN.as_str())
+                || name.eq_ignore_ascii_case(REFERER.as_str())
+            {
+                continue;
+            }
+
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|err| AlistError::InvalidHeader(err.to_string()))?;
+            let header_value = HeaderValue::from_str(value)?;
+            headers.insert(header_name, header_value);
+        }
 
         if let Some(ref token) = self.token {
             headers.insert(AUTHORIZATION, HeaderValue::from_str(token)?);
@@ -181,7 +213,7 @@ impl AlistClient {
             "password": password,
             "otp_code": otp_code.unwrap_or(""),
         });
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(&HashMap::new())?;
         let client = self.client.clone();
 
         let token = with_retry(|| {
@@ -228,14 +260,17 @@ impl AlistClient {
         &self,
         path: &str,
         password: Option<&str>,
+        request_headers: &HashMap<String, String>,
     ) -> Result<HttpFsGetResp, AlistError> {
         validate_path(path)?;
+        let user_agent = effective_user_agent(request_headers);
         let url = format!("{}/api/fs/get", self.host);
         let body = json!({
             "path": path,
             "password": password.unwrap_or(""),
+            "user_agent": user_agent,
         });
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(request_headers)?;
         let client = self.client.clone();
 
         let result = with_retry(|| {
@@ -307,7 +342,7 @@ impl AlistClient {
             "per_page": per_page,
             "refresh": refresh,
         });
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(&HashMap::new())?;
         let client = self.client.clone();
 
         let result = with_retry(|| {
@@ -371,7 +406,7 @@ impl AlistClient {
             "method": method,
             "password": password.unwrap_or(""),
         });
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(&HashMap::new())?;
         let client = self.client.clone();
 
         let result = with_retry(|| {
@@ -412,7 +447,7 @@ impl AlistClient {
     /// Requires authentication token
     pub async fn me(&self) -> Result<HttpMeResp, AlistError> {
         let url = format!("{}/api/me", self.host);
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(&HashMap::new())?;
         let client = self.client.clone();
 
         with_retry(|| {
@@ -486,7 +521,7 @@ impl AlistClient {
             "per_page": per_page,
             "password": password.unwrap_or(""),
         });
-        let headers = self.build_headers()?;
+        let headers = self.build_headers(&HashMap::new())?;
         let client = self.client.clone();
 
         with_retry(|| {
@@ -635,7 +670,7 @@ mod tests {
     #[test]
     fn test_build_headers_uses_origin_without_path_or_query() {
         let client = AlistClient::new("https://alist.example.com/base?token=secret#frag").unwrap();
-        let headers = client.build_headers().unwrap();
+        let headers = client.build_headers(&HashMap::new()).unwrap();
 
         assert_eq!(
             headers.get(ORIGIN).and_then(|v| v.to_str().ok()),
@@ -651,7 +686,7 @@ mod tests {
     fn test_build_headers_rejects_userinfo_in_host() {
         let client = AlistClient::new("https://user:pass@alist.example.com").unwrap();
         let err = client
-            .build_headers()
+            .build_headers(&HashMap::new())
             .expect_err("userinfo must not be accepted in provider host");
         assert!(
             err.to_string().contains("Origin header")

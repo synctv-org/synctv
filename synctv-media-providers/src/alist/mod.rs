@@ -11,7 +11,16 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut client = AlistClient::new("https://alist.example.com")?;
 //! let token = client.login("username", "password", false).await?;
-//! let file_info = client.fs_get("/movies/video.mp4", None).await?;
+//! let file_info = client
+//!     .fs_get(
+//!         "/movies/video.mp4",
+//!         None,
+//!         &std::collections::HashMap::from([(
+//!             "User-Agent".to_string(),
+//!             synctv_media_providers::error::PROVIDER_USER_AGENT.to_string(),
+//!         )]),
+//!     )
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```

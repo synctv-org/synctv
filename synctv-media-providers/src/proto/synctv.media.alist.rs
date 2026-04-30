@@ -29,7 +29,7 @@ pub struct LoginResp {
     pub token: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FsGetReq {
     #[prost(string, tag = "1")]
     pub host: ::prost::alloc::string::String,
@@ -39,8 +39,11 @@ pub struct FsGetReq {
     pub path: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub password: ::prost::alloc::string::String,
-    #[prost(string, tag = "5")]
-    pub user_agent: ::prost::alloc::string::String,
+    #[prost(map = "string, string", tag = "5")]
+    pub headers: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

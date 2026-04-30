@@ -817,6 +817,25 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
 // Use the shared bilibili_headers() from the parent module.
 use super::bilibili_headers;
 
+fn bilibili_subtitle_track(name: String, url: String) -> SubtitleTrack {
+    SubtitleTrack {
+        language: name.clone(),
+        name,
+        url,
+        headers: bilibili_headers(),
+        format: "json".to_string(),
+    }
+}
+
+fn bilibili_live_headers() -> HashMap<String, String> {
+    let mut headers = bilibili_headers();
+    headers.insert(
+        "Referer".to_string(),
+        "https://live.bilibili.com".to_string(),
+    );
+    headers
+}
+
 impl BilibiliProvider {
     /// Resolve danmaku connection info from a media item's source config.
     ///
@@ -996,13 +1015,7 @@ impl BilibiliProvider {
                         subtitles = subtitle_resp
                             .subtitles
                             .into_iter()
-                            .map(|(name, url)| SubtitleTrack {
-                                language: name.clone(),
-                                name,
-                                url,
-                                headers: HashMap::new(),
-                                format: "json".to_string(),
-                            })
+                            .map(|(name, url)| bilibili_subtitle_track(name, url))
                             .collect();
                     }
                     Err(e) => {
@@ -1076,13 +1089,7 @@ impl BilibiliProvider {
                         subtitles = subtitle_resp
                             .subtitles
                             .into_iter()
-                            .map(|(name, url)| SubtitleTrack {
-                                language: name.clone(),
-                                name,
-                                url,
-                                headers: HashMap::new(),
-                                format: "json".to_string(),
-                            })
+                            .map(|(name, url)| bilibili_subtitle_track(name, url))
                             .collect();
                     }
                     Err(e) => {
@@ -1155,14 +1162,7 @@ impl BilibiliProvider {
                         PlaybackInfo {
                             urls: stream.urls,
                             format: "hls".to_string(),
-                            headers: {
-                                let mut h = HashMap::new();
-                                h.insert(
-                                    "Referer".to_string(),
-                                    "https://live.bilibili.com".to_string(),
-                                );
-                                h
-                            },
+                            headers: bilibili_live_headers(),
                             subtitles: Vec::new(),
                             expires_at: live_expires_at,
                             cors_proxy_required: true,
@@ -1197,10 +1197,13 @@ impl BilibiliProvider {
 mod tests {
     use super::*;
     use crate::models::UserId;
-    use crate::provider::{MediaProvider, ProviderContext};
+    use crate::provider::{MediaProvider, ProviderClientManager, ProviderContext};
     use crate::repository::ProviderInstanceRepository;
     use crate::service::RemoteProviderManager;
+    use async_trait::async_trait;
     use std::sync::Arc;
+    use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
+    use synctv_media_providers::grpc::bilibili as proto;
 
     fn fake_provider_instance_manager() -> Arc<RemoteProviderManager> {
         let pool = sqlx::PgPool::connect_lazy("postgresql://fake").expect("lazy pool");
@@ -1217,6 +1220,254 @@ mod tests {
                     .validate_source_config(&ProviderContext::new("test"), config)
                     .await
             })
+    }
+
+    struct MockBilibiliClient;
+
+    fn mock_not_implemented() -> BilibiliError {
+        BilibiliError::NotImplemented("mock bilibili method not implemented".to_string())
+    }
+
+    #[async_trait]
+    impl BilibiliInterface for MockBilibiliClient {
+        async fn new_qr_code(
+            &self,
+            _request: proto::Empty,
+        ) -> Result<proto::NewQrCodeResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn login_with_qr_code(
+            &self,
+            _request: proto::LoginWithQrCodeReq,
+        ) -> Result<proto::LoginWithQrCodeResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn new_captcha(
+            &self,
+            _request: proto::Empty,
+        ) -> Result<proto::NewCaptchaResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn new_sms(
+            &self,
+            _request: proto::NewSmsReq,
+        ) -> Result<proto::NewSmsResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn login_with_sms(
+            &self,
+            _request: proto::LoginWithSmsReq,
+        ) -> Result<proto::LoginWithSmsResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn parse_video_page(
+            &self,
+            _request: proto::ParseVideoPageReq,
+        ) -> Result<proto::VideoPageInfo, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_video_url(
+            &self,
+            _request: proto::GetVideoUrlReq,
+        ) -> Result<proto::VideoUrl, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_dash_video_url(
+            &self,
+            _request: proto::GetDashVideoUrlReq,
+        ) -> Result<proto::GetDashVideoUrlResp, BilibiliError> {
+            Ok(mock_dash_response("https://upos.example/video.m4s"))
+        }
+
+        async fn get_subtitles(
+            &self,
+            _request: proto::GetSubtitlesReq,
+        ) -> Result<proto::GetSubtitlesResp, BilibiliError> {
+            Ok(proto::GetSubtitlesResp {
+                subtitles: HashMap::from([(
+                    "zh-CN".to_string(),
+                    "https://subtitle.example/zh.json".to_string(),
+                )]),
+            })
+        }
+
+        async fn parse_pgc_page(
+            &self,
+            _request: proto::ParsePgcPageReq,
+        ) -> Result<proto::VideoPageInfo, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_pgcurl(
+            &self,
+            _request: proto::GetPgcurlReq,
+        ) -> Result<proto::VideoUrl, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_dash_pgcurl(
+            &self,
+            _request: proto::GetDashPgcurlReq,
+        ) -> Result<proto::GetDashPgcurlResp, BilibiliError> {
+            Ok(proto::GetDashPgcurlResp {
+                dash: mock_dash_response("https://upos.example/pgc.m4s").dash,
+                hevc_dash: None,
+            })
+        }
+
+        async fn user_info(
+            &self,
+            _request: proto::UserInfoReq,
+        ) -> Result<proto::UserInfoResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn r#match(
+            &self,
+            _request: proto::MatchReq,
+        ) -> Result<proto::MatchResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_live_streams(
+            &self,
+            _request: proto::GetLiveStreamsReq,
+        ) -> Result<proto::GetLiveStreamsResp, BilibiliError> {
+            Ok(proto::GetLiveStreamsResp {
+                live_streams: vec![proto::LiveStream {
+                    quality: 10000,
+                    urls: vec!["https://live.example/stream.m3u8".to_string()],
+                    desc: "origin".to_string(),
+                }],
+            })
+        }
+
+        async fn parse_live_page(
+            &self,
+            _request: proto::ParseLivePageReq,
+        ) -> Result<proto::VideoPageInfo, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+
+        async fn get_live_danmu_info(
+            &self,
+            _request: proto::GetLiveDanmuInfoReq,
+        ) -> Result<proto::GetLiveDanmuInfoResp, BilibiliError> {
+            Err(mock_not_implemented())
+        }
+    }
+
+    fn mock_dash_response(url: &str) -> proto::GetDashVideoUrlResp {
+        proto::GetDashVideoUrlResp {
+            dash: Some(proto::DashInfo {
+                duration: 120.0,
+                min_buffer_time: 1.5,
+                video_streams: vec![proto::VideoStream {
+                    id: 80,
+                    base_url: url.to_string(),
+                    mime_type: "video/mp4".to_string(),
+                    codecs: "avc1.640028".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    frame_rate: "60".to_string(),
+                    bandwidth: 1_000_000,
+                    start_with_sap: 1,
+                    segment_base: None,
+                }],
+                audio_streams: Vec::new(),
+            }),
+            hevc_dash: None,
+        }
+    }
+
+    fn provider_with_mock_bilibili_client() -> BilibiliProvider {
+        let default_clients = ProviderClientManager::new();
+        let client_manager = Arc::new(ProviderClientManager::with_custom_clients(
+            default_clients.local_alist_client(),
+            Arc::new(MockBilibiliClient),
+            default_clients.local_emby_client(),
+        ));
+        BilibiliProvider::with_client_manager(fake_provider_instance_manager(), client_manager)
+    }
+
+    fn assert_bilibili_cdn_headers(headers: &HashMap<String, String>, expected_referer: &str) {
+        assert_eq!(
+            headers.get("Referer"),
+            Some(&expected_referer.to_string()),
+            "Bilibili direct playback must return the required Referer"
+        );
+        assert_eq!(
+            headers.get("User-Agent"),
+            Some(&synctv_media_providers::error::PROVIDER_USER_AGENT.to_string()),
+            "Bilibili direct playback must return the provider User-Agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_video_direct_playback_returns_stream_and_subtitle_headers() {
+        let provider = provider_with_mock_bilibili_client();
+        let result = provider
+            .generate_playback(
+                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &json!({
+                    "type": "video",
+                    "bvid": "BV1GJ411x7gL",
+                    "cid": 12345
+                }),
+            )
+            .await
+            .expect("mock video playback should resolve");
+
+        let dash = &result.playback_infos["dash"];
+        assert_bilibili_cdn_headers(&dash.headers, "https://www.bilibili.com");
+        assert_eq!(dash.subtitles.len(), 1);
+        assert_bilibili_cdn_headers(&dash.subtitles[0].headers, "https://www.bilibili.com");
+    }
+
+    #[tokio::test]
+    async fn test_pgc_direct_playback_returns_stream_and_subtitle_headers() {
+        let provider = provider_with_mock_bilibili_client();
+        let result = provider
+            .generate_playback(
+                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &json!({
+                    "type": "pgc",
+                    "epid": 98765,
+                    "cid": 12345
+                }),
+            )
+            .await
+            .expect("mock PGC playback should resolve");
+
+        let dash = &result.playback_infos["dash"];
+        assert_bilibili_cdn_headers(&dash.headers, "https://www.bilibili.com");
+        assert_eq!(dash.subtitles.len(), 1);
+        assert_bilibili_cdn_headers(&dash.subtitles[0].headers, "https://www.bilibili.com");
+    }
+
+    #[tokio::test]
+    async fn test_live_direct_playback_returns_live_headers() {
+        let provider = provider_with_mock_bilibili_client();
+        let result = provider
+            .generate_playback(
+                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &json!({
+                    "type": "live",
+                    "room_id": 12345
+                }),
+            )
+            .await
+            .expect("mock live playback should resolve");
+
+        let playback = &result.playback_infos[&result.default_mode];
+        assert_bilibili_cdn_headers(&playback.headers, "https://live.bilibili.com");
     }
 
     #[test]

@@ -9,9 +9,16 @@
 //! from the API responses as-is.
 
 #![allow(clippy::unwrap_used)]
+use std::collections::HashMap;
+
+use synctv_media_providers::error::PROVIDER_USER_AGENT;
 use synctv_media_providers::AlistClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn provider_headers() -> HashMap<String, String> {
+    HashMap::from([("User-Agent".to_string(), PROVIDER_USER_AGENT.to_string())])
+}
 
 #[tokio::test]
 async fn test_alist_fs_get_preserves_urls() {
@@ -39,7 +46,10 @@ async fn test_alist_fs_get_preserves_urls() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let resp = client.fs_get("/movies/video.mp4", None).await.unwrap();
+    let resp = client
+        .fs_get("/movies/video.mp4", None, &provider_headers())
+        .await
+        .unwrap();
 
     assert_eq!(resp.raw_url, "https://cdn.example.com/video.mp4");
     assert_eq!(resp.thumb, "https://cdn.example.com/thumb.jpg");
@@ -71,7 +81,10 @@ async fn test_alist_fs_get_empty_urls_preserved() {
         .await;
 
     let client = AlistClient::with_token(server.uri(), "token123").unwrap();
-    let resp = client.fs_get("/movies", None).await.unwrap();
+    let resp = client
+        .fs_get("/movies", None, &provider_headers())
+        .await
+        .unwrap();
 
     assert_eq!(resp.raw_url, "");
     assert_eq!(resp.thumb, "");

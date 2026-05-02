@@ -29,6 +29,22 @@ pub enum TokenType {
     Guest,   // default: 4 hours (configurable)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuthContext {
+    LocalTwoFactor,
+    OAuth2,
+}
+
+impl TokenAuthContext {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalTwoFactor => "local_2fa",
+            Self::OAuth2 => "oauth2",
+        }
+    }
+}
+
 /// JWT claims structure
 ///
 /// Note: Does NOT contain role/permissions - these must be fetched from database in real-time
@@ -48,6 +64,12 @@ pub struct Claims {
     /// Password version at time of token issuance.
     /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
     pub pv: i32,
+    /// Authentication context used when the token was issued.
+    ///
+    /// Omitted for ordinary local single-factor sessions. 2FA-enabled refresh
+    /// token rotation only accepts `local_2fa` or `oauth2`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amr: Option<String>,
     /// Issuer - identifies the service that issued the token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
@@ -75,6 +97,11 @@ impl Claims {
     #[must_use]
     pub fn is_guest_token(&self) -> bool {
         self.typ == "guest"
+    }
+
+    #[must_use]
+    pub fn satisfies_two_factor_requirement(&self) -> bool {
+        matches!(self.amr.as_deref(), Some("local_2fa" | "oauth2"))
     }
 }
 
@@ -485,6 +512,16 @@ impl JwtService {
         token_type: TokenType,
         password_version: i32,
     ) -> Result<String> {
+        self.sign_token_with_auth_context(user_id, token_type, password_version, None)
+    }
+
+    pub fn sign_token_with_auth_context(
+        &self,
+        user_id: &UserId,
+        token_type: TokenType,
+        password_version: i32,
+        auth_context: Option<TokenAuthContext>,
+    ) -> Result<String> {
         let now = Utc::now();
         let duration = match token_type {
             TokenType::Access => Duration::hours(u64_to_i64(self.access_token_duration_hours)),
@@ -503,6 +540,7 @@ impl JwtService {
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             pv: password_version,
+            amr: auth_context.map(|value| value.as_str().to_string()),
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
         };
@@ -929,6 +967,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            amr: None,
             iss: None,
             aud: None,
         };
@@ -943,6 +982,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            amr: None,
             iss: None,
             aud: None,
         };
@@ -957,6 +997,7 @@ mod tests {
             iat: 0,
             exp: 0,
             pv: 0,
+            amr: None,
             iss: None,
             aud: None,
         };
@@ -1056,6 +1097,7 @@ mod tests {
             iat: (past - Duration::hours(3)).timestamp(),
             exp: past.timestamp(), // expired 2 hours ago
             pv: 0,
+            amr: None,
             iss: None,
             aud: None,
         };

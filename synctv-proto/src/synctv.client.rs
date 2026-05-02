@@ -345,6 +345,28 @@ pub struct LoginResponse {
     pub access_token: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub refresh_token: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub mfa: ::core::option::Option<MfaChallenge>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.MfaChallenge")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MfaChallenge))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MfaChallenge {
+    #[prost(bool, tag = "1")]
+    pub required: bool,
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "MfaMethod", repeated, tag = "3")]
+    pub available_methods: ::prost::alloc::vec::Vec<i32>,
+    #[prost(string, tag = "4")]
+    pub masked_email: ::prost::alloc::string::String,
+    #[prost(int64, tag = "5")]
+    pub expires_at: i64,
 }
 /// Start a real OPAQUE password login. The server receives only the OPAQUE
 /// credential request, never the plaintext password. Provide exactly one login
@@ -626,6 +648,138 @@ pub struct DeletePasskeyResponse {
     pub deleted: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UserAuthFactors")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserAuthFactors))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserAuthFactors {
+    #[prost(bool, tag = "1")]
+    pub password: bool,
+    #[prost(bool, tag = "2")]
+    pub webauthn: bool,
+    #[prost(bool, tag = "3")]
+    pub email: bool,
+    #[prost(int32, tag = "4")]
+    pub eligible_count: i32,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UserPreferences")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserPreferences))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserPreferences {
+    #[prost(bool, tag = "1")]
+    pub two_factor_enabled: bool,
+    #[prost(message, optional, tag = "3")]
+    pub notifications: ::core::option::Option<UserNotificationPreferences>,
+    #[prost(message, optional, tag = "5")]
+    pub provider_defaults: ::core::option::Option<UserProviderDefaults>,
+    /// Low-priority extension payload; core preferences use typed fields.
+    #[prost(bytes = "vec", tag = "15")]
+    pub settings: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UserNotificationPreferences")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserNotificationPreferences))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserNotificationPreferences {
+    #[prost(bool, tag = "1")]
+    pub room_invitation_in_app: bool,
+    #[prost(bool, tag = "2")]
+    pub room_event_in_app: bool,
+    #[prost(bool, tag = "3")]
+    pub system_announcement_in_app: bool,
+    #[prost(bool, tag = "4")]
+    pub room_invitation_email: bool,
+    #[prost(bool, tag = "5")]
+    pub room_event_email: bool,
+    #[prost(bool, tag = "6")]
+    pub system_announcement_email: bool,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UserProviderDefaults")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserProviderDefaults))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserProviderDefaults {
+    #[prost(string, optional, tag = "1")]
+    pub alist_instance_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub emby_instance_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub bilibili_instance_name: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.GetUserPreferencesRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetUserPreferencesRequest))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetUserPreferencesRequest {}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.GetUserPreferencesResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetUserPreferencesResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetUserPreferencesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub preferences: ::core::option::Option<UserPreferences>,
+    #[prost(message, optional, tag = "2")]
+    pub auth_factors: ::core::option::Option<UserAuthFactors>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UpdateUserPreferencesRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateUserPreferencesRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateUserPreferencesRequest {
+    #[prost(bool, optional, tag = "1")]
+    #[serde(default)]
+    pub two_factor_enabled: ::core::option::Option<bool>,
+    #[prost(message, optional, tag = "3")]
+    pub notifications: ::core::option::Option<UserNotificationPreferences>,
+    #[prost(message, optional, tag = "5")]
+    pub provider_defaults: ::core::option::Option<UserProviderDefaults>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UpdateUserPreferencesResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "openapi",
+    schema(as = synctv_client_UpdateUserPreferencesResponse)
+)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateUserPreferencesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub preferences: ::core::option::Option<UserPreferences>,
+    #[prost(message, optional, tag = "2")]
+    pub auth_factors: ::core::option::Option<UserAuthFactors>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RequestEmailLoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -648,6 +802,103 @@ pub struct RequestEmailLoginRequest {
 pub struct RequestEmailLoginResponse {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.RequestMfaEmailCodeRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestMfaEmailCodeRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RequestMfaEmailCodeRequest {
+    #[prost(string, tag = "1")]
+    pub mfa_session_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.RequestMfaEmailCodeResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_RequestMfaEmailCodeResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RequestMfaEmailCodeResponse {
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub masked_email: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.VerifyMfaEmailCodeRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_VerifyMfaEmailCodeRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VerifyMfaEmailCodeRequest {
+    #[prost(string, tag = "1")]
+    pub mfa_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub email_token: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartMfaPasskeyRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartMfaPasskeyRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartMfaPasskeyRequest {
+    #[prost(string, tag = "1")]
+    pub mfa_session_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.StartMfaPasskeyResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_StartMfaPasskeyResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartMfaPasskeyResponse {
+    #[prost(string, tag = "1")]
+    pub passkey_session_id: ::prost::alloc::string::String,
+    /// WebAuthn PublicKeyCredentialRequestOptions JSON.
+    #[prost(string, tag = "2")]
+    pub options: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.FinishMfaPasskeyRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_FinishMfaPasskeyRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishMfaPasskeyRequest {
+    #[prost(string, tag = "1")]
+    pub mfa_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub passkey_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub credential: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.VerifyMfaPasswordRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_VerifyMfaPasswordRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VerifyMfaPasswordRequest {
+    #[prost(string, tag = "1")]
+    pub mfa_session_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub password: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.RefreshTokenRequest")]
@@ -4340,6 +4591,42 @@ impl ResourceAvailabilityFilter {
         }
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_MfaMethod))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MfaMethod {
+    Unspecified = 0,
+    Password = 1,
+    Webauthn = 2,
+    Email = 3,
+}
+impl MfaMethod {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MFA_METHOD_UNSPECIFIED",
+            Self::Password => "MFA_METHOD_PASSWORD",
+            Self::Webauthn => "MFA_METHOD_WEBAUTHN",
+            Self::Email => "MFA_METHOD_EMAIL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MFA_METHOD_UNSPECIFIED" => Some(Self::Unspecified),
+            "MFA_METHOD_PASSWORD" => Some(Self::Password),
+            "MFA_METHOD_WEBAUTHN" => Some(Self::Webauthn),
+            "MFA_METHOD_EMAIL" => Some(Self::Email),
+            _ => None,
+        }
+    }
+}
 /// Start changing the current user's password credential via OPAQUE. This is an
 /// authenticated endpoint; successful finish replaces password credentials with
 /// OPAQUE-only material and clears legacy password login.
@@ -5508,6 +5795,125 @@ pub mod auth_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn request_mfa_email_code(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RequestMfaEmailCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RequestMfaEmailCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/RequestMfaEmailCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "RequestMfaEmailCode"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn verify_mfa_email_code(
+            &mut self,
+            request: impl tonic::IntoRequest<super::VerifyMfaEmailCodeRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/VerifyMfaEmailCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "VerifyMfaEmailCode"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn start_mfa_passkey(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StartMfaPasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartMfaPasskeyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartMfaPasskey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.AuthService", "StartMfaPasskey"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_mfa_passkey(
+            &mut self,
+            request: impl tonic::IntoRequest<super::FinishMfaPasskeyRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishMfaPasskey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "FinishMfaPasskey"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn verify_mfa_password(
+            &mut self,
+            request: impl tonic::IntoRequest<super::VerifyMfaPasswordRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/VerifyMfaPassword",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "VerifyMfaPassword"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn refresh_token(
             &mut self,
             request: impl tonic::IntoRequest<super::RefreshTokenRequest>,
@@ -5615,6 +6021,32 @@ pub mod auth_service_server {
             tonic::Response<super::RequestEmailLoginResponse>,
             tonic::Status,
         >;
+        async fn request_mfa_email_code(
+            &self,
+            request: tonic::Request<super::RequestMfaEmailCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RequestMfaEmailCodeResponse>,
+            tonic::Status,
+        >;
+        async fn verify_mfa_email_code(
+            &self,
+            request: tonic::Request<super::VerifyMfaEmailCodeRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
+        async fn start_mfa_passkey(
+            &self,
+            request: tonic::Request<super::StartMfaPasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::StartMfaPasskeyResponse>,
+            tonic::Status,
+        >;
+        async fn finish_mfa_passkey(
+            &self,
+            request: tonic::Request<super::FinishMfaPasskeyRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
+        async fn verify_mfa_password(
+            &self,
+            request: tonic::Request<super::VerifyMfaPasswordRequest>,
+        ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
         async fn refresh_token(
             &self,
             request: tonic::Request<super::RefreshTokenRequest>,
@@ -6229,6 +6661,235 @@ pub mod auth_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.client.AuthService/RequestMfaEmailCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct RequestMfaEmailCodeSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::RequestMfaEmailCodeRequest>
+                    for RequestMfaEmailCodeSvc<T> {
+                        type Response = super::RequestMfaEmailCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RequestMfaEmailCodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::request_mfa_email_code(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RequestMfaEmailCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/VerifyMfaEmailCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct VerifyMfaEmailCodeSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::VerifyMfaEmailCodeRequest>
+                    for VerifyMfaEmailCodeSvc<T> {
+                        type Response = super::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::VerifyMfaEmailCodeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::verify_mfa_email_code(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = VerifyMfaEmailCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartMfaPasskey" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartMfaPasskeySvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::StartMfaPasskeyRequest>
+                    for StartMfaPasskeySvc<T> {
+                        type Response = super::StartMfaPasskeyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StartMfaPasskeyRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_mfa_passkey(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartMfaPasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishMfaPasskey" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishMfaPasskeySvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::FinishMfaPasskeyRequest>
+                    for FinishMfaPasskeySvc<T> {
+                        type Response = super::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::FinishMfaPasskeyRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_mfa_passkey(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishMfaPasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/VerifyMfaPassword" => {
+                    #[allow(non_camel_case_types)]
+                    struct VerifyMfaPasswordSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<super::VerifyMfaPasswordRequest>
+                    for VerifyMfaPasswordSvc<T> {
+                        type Response = super::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::VerifyMfaPasswordRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::verify_mfa_password(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = VerifyMfaPasswordSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.client.AuthService/RefreshToken" => {
                     #[allow(non_camel_case_types)]
                     struct RefreshTokenSvc<T: AuthService>(pub Arc<T>);
@@ -6660,6 +7321,58 @@ pub mod user_service_client {
                 .insert(GrpcMethod::new("synctv.client.UserService", "DeletePasskey"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/GetUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.UserService", "GetUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn update_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/UpdateUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.UserService", "UpdateUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// User-initiated room resource operations outside room-scoped context
         pub async fn create_room(
             &mut self,
@@ -6838,6 +7551,20 @@ pub mod user_service_server {
             request: tonic::Request<super::DeletePasskeyRequest>,
         ) -> std::result::Result<
             tonic::Response<super::DeletePasskeyResponse>,
+            tonic::Status,
+        >;
+        async fn get_user_preferences(
+            &self,
+            request: tonic::Request<super::GetUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetUserPreferencesResponse>,
+            tonic::Status,
+        >;
+        async fn update_user_preferences(
+            &self,
+            request: tonic::Request<super::UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateUserPreferencesResponse>,
             tonic::Status,
         >;
         /// User-initiated room resource operations outside room-scoped context
@@ -7397,6 +8124,98 @@ pub mod user_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeletePasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/GetUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetUserPreferencesSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::GetUserPreferencesRequest>
+                    for GetUserPreferencesSvc<T> {
+                        type Response = super::GetUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetUserPreferencesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::get_user_preferences(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetUserPreferencesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/UpdateUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateUserPreferencesSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<super::UpdateUserPreferencesRequest>
+                    for UpdateUserPreferencesSvc<T> {
+                        type Response = super::UpdateUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateUserPreferencesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::update_user_preferences(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateUserPreferencesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

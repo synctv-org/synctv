@@ -14,6 +14,7 @@
 //! - `webrtc`: ICE servers, network quality
 
 mod auth;
+pub(crate) use auth::login_outcome_to_proto;
 pub use auth::LogoutOutcome;
 pub(crate) mod media;
 mod member;
@@ -27,6 +28,10 @@ mod user;
 mod webrtc;
 pub(crate) use playback::{
     build_start_playback_request, build_update_playback, PlaybackUpdateCommand,
+};
+pub(crate) use user::{
+    user_notification_preferences_to_proto, user_preferences_update_from_proto,
+    user_provider_defaults_to_proto,
 };
 
 // Proto conversion helpers used across impls modules within this crate.
@@ -42,7 +47,6 @@ use synctv_core::service::{RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
-pub(crate) use convert::user_to_proto;
 pub use convert::{
     media_to_proto, proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
 };

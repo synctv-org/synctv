@@ -26,8 +26,8 @@ use synctv_core::{
     repository::{UserOAuthProviderRepository, UserRepository},
     service::{
         auth::{jwt::JwtService, TestPasswordHasher},
-        local_oauth_state_store, BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2Service,
-        RateLimiter, TokenBlacklistStore, UserService,
+        local_oauth_state_store, AuthenticatedLogin, BruteForceProtection,
+        InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -448,14 +448,37 @@ async fn opaque_login(
         )
         .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
 
-    service
+    let login = service
         .finish_opaque_login_with_control(
             &challenge.session_id,
             client_finish.message.serialize().to_vec(),
             None,
             None,
         )
-        .await
+        .await?;
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => Ok((user, access_token, refresh_token)),
+        AuthenticatedLogin::MfaRequired { .. } => Err(Error::Authentication(
+            "Unexpected MFA challenge in opaque_login test helper".to_string(),
+        )),
+    }
+}
+
+fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::User, String, String) {
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => (user, access_token, refresh_token),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("expected complete login, got MFA challenge")
+        }
+    }
 }
 
 async fn load_password_credential_row(pool: &PgPool, user_id: UserId) -> sqlx::postgres::PgRow {
@@ -1109,10 +1132,12 @@ async fn test_login_accepts_email_identifier_with_password() {
     assert!(access.is_some(), "registration should issue access token");
     assert!(refresh.is_some(), "registration should issue refresh token");
 
-    let (logged_in_user, access_token, refresh_token) = service
-        .login(email, "StrongPass1".to_string(), None)
-        .await
-        .expect("Email identifier login should succeed");
+    let (logged_in_user, access_token, refresh_token) = expect_complete_login(
+        service
+            .login(email, "StrongPass1".to_string(), None)
+            .await
+            .expect("Email identifier login should succeed"),
+    );
 
     assert_eq!(logged_in_user.username, username);
     assert!(!access_token.is_empty());
@@ -1512,6 +1537,42 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
     assert!(
         opaque_login_result.is_ok(),
         "OPAQUE login must work for OPAQUE-only registrations"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_opaque_only_password_is_not_plaintext_mfa_factor() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+    let username = format!("opaque_mfa_{}", synctv_common::snanoid!(6));
+    let email = format!("opaque_mfa_{}@test.com", synctv_common::snanoid!(6));
+    let (user, _, _) = opaque_register(&service, username, Some(email), "StrongPass1")
+        .await
+        .expect("OPAQUE registration should succeed");
+    service
+        .set_email_verified(&user.id, true)
+        .await
+        .expect("email should be verified for factor counting");
+
+    let (_preferences, factors) = service
+        .get_user_preferences(&user.id)
+        .await
+        .expect("preferences should load");
+    assert!(
+        !factors.password,
+        "OPAQUE-only password is not plaintext MFA"
+    );
+    assert!(factors.email);
+    assert!(!factors.supports_two_factor());
+
+    let result = service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect_err("email + OPAQUE-only password must not enable 2FA");
+    assert!(
+        matches!(result, Error::InvalidInput(_)),
+        "expected InvalidInput, got {result:?}"
     );
 }
 

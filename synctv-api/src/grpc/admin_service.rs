@@ -20,12 +20,13 @@ use crate::proto::admin::{
     DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
-    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserRequest,
-    GetUserResponse, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
-    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
-    ListBanRecordsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
-    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
+    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
+    GetUserPreferencesResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
+    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
+    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
+    ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse,
+    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
     ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
     ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
     RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
@@ -36,8 +37,8 @@ use crate::proto::admin::{
     UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
     UpdateSettingsResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
-    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
-    UpdateUserUsernameResponse,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UpdateUserRoleRequest,
+    UpdateUserRoleResponse, UpdateUserUsernameRequest, UpdateUserUsernameResponse,
 };
 use crate::proto::admin_service_server::AdminService;
 
@@ -277,6 +278,27 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetUserResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.get_user(req).await
+        })
+        .await
+    }
+
+    async fn get_user_preferences(
+        &self,
+        request: Request<GetUserPreferencesRequest>,
+    ) -> Result<Response<GetUserPreferencesResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.get_user_preferences(req).await
+        })
+        .await
+    }
+
+    async fn update_user_preferences(
+        &self,
+        request: Request<UpdateUserPreferencesRequest>,
+    ) -> Result<Response<UpdateUserPreferencesResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_user_preferences(req, &validated.user_id, &ctx)
+                .await
         })
         .await
     }

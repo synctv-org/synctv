@@ -17,6 +17,8 @@ service ManagementService {
     // =========================
     rpc ListUsers(ListUsersRequest) returns (synctv.admin.ListUsersResponse);
     rpc GetUser(GetUserRequest) returns (synctv.admin.GetUserResponse);
+    rpc GetUserPreferences(GetUserPreferencesRequest) returns (synctv.admin.GetUserPreferencesResponse);
+    rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (synctv.admin.UpdateUserPreferencesResponse);
     rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AddAdminResponse);
     rpc RemoveAdmin(RemoveAdminRequest) returns (synctv.admin.RemoveAdminResponse);
     rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
@@ -266,6 +268,17 @@ message UserRef {
 
 message GetUserRequest {
     UserRef user = 1;
+}
+
+message GetUserPreferencesRequest {
+    UserRef user = 1;
+}
+
+message UpdateUserPreferencesRequest {
+    UserRef user = 1;
+    optional bool two_factor_enabled = 2;
+    synctv.client.UserNotificationPreferences notifications = 4;
+    synctv.client.UserProviderDefaults provider_defaults = 6;
 }
 
 message AddAdminRequest {

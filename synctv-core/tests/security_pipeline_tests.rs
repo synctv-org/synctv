@@ -123,6 +123,7 @@ fn make_claims(user_id: &UserId, pv: i32) -> Claims {
         iat: now.timestamp(),
         exp: (now + chrono::Duration::hours(1)).timestamp(),
         pv,
+        amr: None,
         iss: None,
         aud: None,
     }

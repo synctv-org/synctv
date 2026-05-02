@@ -124,6 +124,7 @@ pub mod room_member;
 pub mod room_settings;
 pub mod settings;
 pub mod user;
+pub mod user_preferences;
 
 pub use chat::{ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest, SendDanmakuRequest};
 pub use id::{
@@ -171,6 +172,10 @@ pub use settings::{
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
     UserRole, UserStatus,
+};
+pub use user_preferences::{
+    UserAuthFactors, UserNotificationPreferences, UserPreferences, UserPreferencesUpdate,
+    UserProviderDefaults,
 };
 
 #[cfg(test)]

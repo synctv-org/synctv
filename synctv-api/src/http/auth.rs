@@ -16,8 +16,10 @@ use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
     FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, LoginRequest, LoginResponse,
     LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, StartOpaqueLoginRequest,
-    StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
+    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, VerifyMfaEmailCodeRequest,
+    VerifyMfaPasswordRequest,
 };
 
 /// Extract the real client IP from a request.
@@ -228,14 +230,10 @@ pub async fn login(
                             Some(&request_control),
                         )
                         .await?;
-                    return Ok(LoginResponse {
-                        user: Some(crate::impls::client::user_to_proto(
-                            &result.user,
-                            &state_for_login.public_id_codec,
-                        )),
-                        access_token: result.access_token,
-                        refresh_token: result.refresh_token,
-                    });
+                    return Ok(crate::impls::client::login_outcome_to_proto(
+                        result.login,
+                        &state_for_login.public_id_codec,
+                    ));
                 }
 
                 Err(ApiError::InvalidInput(
@@ -376,6 +374,27 @@ pub struct FinishPasskeyLoginHttpRequest {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FinishPasskeyRegistrationHttpRequest {
     session_id: String,
+    credential: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartMfaPasskeyHttpRequest {
+    mfa_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StartMfaPasskeyHttpResponse {
+    passkey_session_id: String,
+    options: Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FinishMfaPasskeyHttpRequest {
+    mfa_session_id: String,
+    passkey_session_id: String,
     credential: Value,
 }
 
@@ -620,6 +639,162 @@ pub async fn request_email_login(
     Ok(Json(RequestEmailLoginResponse {
         message: result.message,
     }))
+}
+
+pub async fn request_mfa_email_code(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<RequestMfaEmailCodeResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let state_for_request = state.clone();
+    let result = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<RequestMfaEmailCodeRequest>(request).await?;
+                crate::impls::validate_proto_request(&req)?;
+                let email_api = require_email_api_api(&state_for_request)?;
+                email_api
+                    .request_mfa_email_code_with_control(
+                        &req.mfa_session_id,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(RequestMfaEmailCodeResponse {
+        message: result.message,
+        masked_email: result.masked_email,
+    }))
+}
+
+pub async fn verify_mfa_email_code(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let state_for_request = state.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<VerifyMfaEmailCodeRequest>(request).await?;
+                crate::impls::validate_proto_request(&req)?;
+                let email_api = require_email_api_api(&state_for_request)?;
+                let outcome = email_api
+                    .verify_mfa_email_code_with_control(
+                        &req.mfa_session_id,
+                        &req.email_token,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await?;
+                Ok::<_, ApiError>(crate::impls::client::login_outcome_to_proto(
+                    outcome,
+                    &state_for_request.public_id_codec,
+                ))
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn start_mfa_passkey(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<StartMfaPasskeyHttpResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_api = state.client_api.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<StartMfaPasskeyHttpRequest>(request).await?;
+                let challenge = client_api
+                    .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
+                    .await?;
+                let options = passkey_options_to_value(&challenge.options_json)?;
+                let _ = request_control;
+                Ok::<_, ApiError>(StartMfaPasskeyHttpResponse {
+                    passkey_session_id: challenge.session_id,
+                    options,
+                })
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn finish_mfa_passkey(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let client_api = state.client_api.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<FinishMfaPasskeyHttpRequest>(request).await?;
+                validate_passkey_session_id(&req.passkey_session_id)?;
+                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                client_api
+                    .finish_mfa_passkey_bytes_with_control(
+                        &req.mfa_session_id,
+                        &req.passkey_session_id,
+                        &credential_json,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn verify_mfa_password(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<LoginResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_ip = request_meta.client_ip;
+    let client_api = state.client_api.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<VerifyMfaPasswordRequest>(request).await?;
+                client_api
+                    .verify_mfa_password_with_control(req, client_ip, Some(&request_control))
+                    .await
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
 }
 
 /// Refresh access token using refresh token.

@@ -13,14 +13,17 @@ use crate::{
     cache::{CacheInvalidationRuntime, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::oauth2_client::OAuth2Provider,
-    models::{MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserId, UserStatus},
+    models::{
+        MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserAuthFactors, UserId,
+        UserPreferences, UserStatus,
+    },
     repository::{
         PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
-        UserRepository,
+        UserPreferencesRepository, UserRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
-        TokenBlacklistStore, TokenType,
+        TokenAuthContext, TokenBlacklistStore, TokenType,
     },
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
@@ -33,6 +36,10 @@ const OPAQUE_LOGIN_SESSION_TTL_SECS: u64 = 300;
 const OPAQUE_LOGIN_SESSION_CAPACITY: u64 = 10_000;
 const OPAQUE_REGISTRATION_SESSION_TTL_SECS: u64 = 300;
 const OPAQUE_REGISTRATION_SESSION_CAPACITY: u64 = 10_000;
+const MFA_SESSION_TTL_SECS: u64 = 300;
+const MFA_SESSION_CAPACITY: u64 = 10_000;
+const TWO_FACTOR_REQUIRED_MESSAGE: &str =
+    "Two-factor authentication is required before tokens can be issued";
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
@@ -62,6 +69,43 @@ pub struct OpaqueLoginSession {
 pub struct OpaqueLoginStartChallenge {
     pub session_id: String,
     pub credential_response: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthFactorMethod {
+    Password,
+    WebAuthn,
+    Email,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MfaSession {
+    user_id: UserId,
+    first_factor: AuthFactorMethod,
+    brute_force_key: String,
+    expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MfaChallenge {
+    pub session_id: String,
+    pub available_methods: Vec<AuthFactorMethod>,
+    pub masked_email: Option<String>,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub enum AuthenticatedLogin {
+    Complete {
+        user: User,
+        access_token: String,
+        refresh_token: String,
+    },
+    MfaRequired {
+        user: User,
+        challenge: MfaChallenge,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +169,17 @@ pub trait OpaqueRegistrationSessionStore: Send + Sync {
     fn supports_cross_node_single_use(&self) -> bool;
 }
 
+#[async_trait::async_trait]
+pub trait MfaSessionStore: Send + Sync {
+    async fn store(&self, session_id: &str, session: &MfaSession, ttl: Duration) -> Result<()>;
+
+    async fn get(&self, session_id: &str) -> Result<Option<MfaSession>>;
+
+    async fn consume(&self, session_id: &str) -> Result<Option<MfaSession>>;
+
+    fn supports_cross_node_single_use(&self) -> bool;
+}
+
 #[must_use]
 pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
     Arc::new(InMemoryOpaqueLoginSessionStore::new())
@@ -133,6 +188,11 @@ pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
 #[must_use]
 pub fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
     Arc::new(InMemoryOpaqueRegistrationSessionStore::new())
+}
+
+#[must_use]
+pub fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
+    Arc::new(InMemoryMfaSessionStore::new())
 }
 
 #[must_use]
@@ -153,6 +213,14 @@ pub fn shared_opaque_registration_session_store(
     Arc::new(RedisOpaqueRegistrationSessionStore::from_runtime(
         runtime, key_prefix,
     ))
+}
+
+#[must_use]
+pub fn shared_mfa_session_store(
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: impl Into<String>,
+) -> Arc<dyn MfaSessionStore> {
+    Arc::new(RedisMfaSessionStore::from_runtime(runtime, key_prefix))
 }
 
 pub fn opaque_login_session_store_from_shared_state_profile(
@@ -199,6 +267,27 @@ pub fn opaque_registration_session_store_from_shared_state_profile(
     }
 }
 
+pub fn mfa_session_store_from_shared_state_profile(
+    profile: &SharedStateProfile,
+) -> Result<Arc<dyn MfaSessionStore>> {
+    match profile.state_mode() {
+        SharedStateMode::SharedRequired => {
+            let runtime = profile.require_shared_runtime("single-use MFA session storage")?;
+            Ok(shared_mfa_session_store(
+                runtime,
+                profile.key_prefix().to_string(),
+            ))
+        }
+        SharedStateMode::SharedBestEffort => Ok(shared_mfa_session_store(
+            profile
+                .shared_runtime()
+                .expect("shared state profile guarantees runtime in best-effort mode"),
+            profile.key_prefix().to_string(),
+        )),
+        SharedStateMode::LocalOnly => Ok(local_mfa_session_store()),
+    }
+}
+
 #[derive(Clone)]
 struct OpaqueLoginSessionEntry {
     session: OpaqueLoginSession,
@@ -208,6 +297,12 @@ struct OpaqueLoginSessionEntry {
 #[derive(Clone)]
 struct OpaqueRegistrationSessionEntry {
     session: OpaqueRegistrationSession,
+    ttl: Duration,
+}
+
+#[derive(Clone)]
+struct MfaSessionEntry {
+    session: MfaSession,
     ttl: Duration,
 }
 
@@ -237,12 +332,29 @@ impl moka::Expiry<String, OpaqueRegistrationSessionEntry> for OpaqueRegistration
     }
 }
 
+struct MfaSessionExpiry;
+
+impl moka::Expiry<String, MfaSessionEntry> for MfaSessionExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &MfaSessionEntry,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(value.ttl)
+    }
+}
+
 pub struct InMemoryOpaqueLoginSessionStore {
     entries: moka::sync::Cache<String, OpaqueLoginSessionEntry>,
 }
 
 pub struct InMemoryOpaqueRegistrationSessionStore {
     entries: moka::sync::Cache<String, OpaqueRegistrationSessionEntry>,
+}
+
+pub struct InMemoryMfaSessionStore {
+    entries: moka::sync::Cache<String, MfaSessionEntry>,
 }
 
 impl InMemoryOpaqueLoginSessionStore {
@@ -269,6 +381,18 @@ impl InMemoryOpaqueRegistrationSessionStore {
     }
 }
 
+impl InMemoryMfaSessionStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: moka::sync::Cache::builder()
+                .max_capacity(MFA_SESSION_CAPACITY)
+                .expire_after(MfaSessionExpiry)
+                .build(),
+        }
+    }
+}
+
 impl Default for InMemoryOpaqueLoginSessionStore {
     fn default() -> Self {
         Self::new()
@@ -276,6 +400,12 @@ impl Default for InMemoryOpaqueLoginSessionStore {
 }
 
 impl Default for InMemoryOpaqueRegistrationSessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for InMemoryMfaSessionStore {
     fn default() -> Self {
         Self::new()
     }
@@ -341,12 +471,46 @@ impl OpaqueRegistrationSessionStore for InMemoryOpaqueRegistrationSessionStore {
     }
 }
 
+#[async_trait::async_trait]
+impl MfaSessionStore for InMemoryMfaSessionStore {
+    async fn store(&self, session_id: &str, session: &MfaSession, ttl: Duration) -> Result<()> {
+        self.entries.insert(
+            session_id.to_string(),
+            MfaSessionEntry {
+                session: session.clone(),
+                ttl,
+            },
+        );
+        Ok(())
+    }
+
+    async fn get(&self, session_id: &str) -> Result<Option<MfaSession>> {
+        Ok(self.entries.get(session_id).map(|entry| entry.session))
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<MfaSession>> {
+        if self.entries.get(session_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(session_id).map(|entry| entry.session))
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        false
+    }
+}
+
 pub struct RedisOpaqueLoginSessionStore {
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
 }
 
 pub struct RedisOpaqueRegistrationSessionStore {
+    runtime: Arc<dyn RedisConnectionRuntime>,
+    key_prefix: String,
+}
+
+pub struct RedisMfaSessionStore {
     runtime: Arc<dyn RedisConnectionRuntime>,
     key_prefix: String,
 }
@@ -404,6 +568,39 @@ impl RedisOpaqueRegistrationSessionStore {
 
     fn redis_key(&self, session_id: &str) -> String {
         format!("{}auth:opaque:registration:{session_id}", self.key_prefix)
+    }
+
+    async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, redis::RedisError>>,
+    {
+        tokio::time::timeout(crate::resilience::timeout::REDIS_OPERATION_TIMEOUT, future)
+            .await
+            .map_err(|_| Error::Timeout(format!("Redis timeout: {operation}")))?
+            .internal_with_err(&format!("Failed to {operation}"))
+    }
+}
+
+impl RedisMfaSessionStore {
+    #[must_use]
+    pub fn from_runtime(
+        runtime: Arc<dyn RedisConnectionRuntime>,
+        key_prefix: impl Into<String>,
+    ) -> Self {
+        let key_prefix = key_prefix.into();
+        let key_prefix = if key_prefix.is_empty() || key_prefix.ends_with(':') {
+            key_prefix
+        } else {
+            format!("{key_prefix}:")
+        };
+        Self {
+            runtime,
+            key_prefix,
+        }
+    }
+
+    fn redis_key(&self, session_id: &str) -> String {
+        format!("{}auth:mfa:{session_id}", self.key_prefix)
     }
 
     async fn run_redis_op<T, F>(&self, operation: &'static str, future: F) -> Result<T>
@@ -523,6 +720,66 @@ impl OpaqueRegistrationSessionStore for RedisOpaqueRegistrationSessionStore {
     }
 }
 
+#[async_trait::async_trait]
+impl MfaSessionStore for RedisMfaSessionStore {
+    async fn store(&self, session_id: &str, session: &MfaSession, ttl: Duration) -> Result<()> {
+        let key = self.redis_key(session_id);
+        let value =
+            serde_json::to_string(session).internal_with_err("Failed to serialize MFA session")?;
+        let mut conn = self.runtime.snapshot().await;
+        let _: () = self
+            .run_redis_op(
+                "store MFA session in Redis",
+                conn.set_ex(key, value, ttl.as_secs()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn get(&self, session_id: &str) -> Result<Option<MfaSession>> {
+        let key = self.redis_key(session_id);
+        let mut conn = self.runtime.snapshot().await;
+        let value: Option<String> = self
+            .run_redis_op("get MFA session from Redis", conn.get(key))
+            .await?;
+        value
+            .map(|json| {
+                serde_json::from_str(&json).internal_with_err("Failed to deserialize MFA session")
+            })
+            .transpose()
+    }
+
+    async fn consume(&self, session_id: &str) -> Result<Option<MfaSession>> {
+        let key = self.redis_key(session_id);
+        let mut conn = self.runtime.snapshot().await;
+        let lua_script = redis::Script::new(
+            r#"
+            local value = redis.call("GET", KEYS[1])
+            if value then
+                redis.call("DEL", KEYS[1])
+            end
+            return value
+        "#,
+        );
+        let value: Option<String> = self
+            .run_redis_op(
+                "consume MFA session from Redis",
+                lua_script.key(key).invoke_async(&mut conn),
+            )
+            .await?;
+
+        value
+            .map(|json| {
+                serde_json::from_str(&json).internal_with_err("Failed to deserialize MFA session")
+            })
+            .transpose()
+    }
+
+    fn supports_cross_node_single_use(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RefreshRateLimitConfig {
     requests: u32,
@@ -580,6 +837,7 @@ struct UserOwnedRoomEntries {
 #[derive(Clone)]
 pub struct UserService {
     pub(crate) repository: UserRepository,
+    pub(crate) user_preferences_repository: UserPreferencesRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
@@ -605,6 +863,7 @@ pub struct UserService {
     opaque_password_service: Arc<OpaquePasswordService>,
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
+    mfa_session_store: Arc<dyn MfaSessionStore>,
 }
 
 #[derive(Default)]
@@ -617,6 +876,7 @@ pub struct UserServiceRuntimeOptions {
     pub opaque_password_service: Option<Arc<OpaquePasswordService>>,
     pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
+    pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
 }
 
 pub struct UserServiceDependencies {
@@ -692,10 +952,11 @@ impl UserService {
     async fn complete_authenticated_login_with_control(
         &self,
         user: User,
+        first_factor: AuthFactorMethod,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         if let Err(error) = self.validate_user_access(&user) {
             if let Err(bf_err) = self
                 .brute_force
@@ -707,6 +968,102 @@ impl UserService {
             return Err(error);
         }
 
+        let preferences = self
+            .user_preferences_repository
+            .get_or_default(&user.id)
+            .await?;
+        if preferences.two_factor_enabled {
+            let auth_factors = self
+                .user_preferences_repository
+                .auth_factors(&user.id)
+                .await?;
+            let available_methods = Self::available_mfa_methods(&auth_factors, first_factor);
+            if available_methods.is_empty() {
+                return Err(Error::Authentication(
+                    TWO_FACTOR_REQUIRED_MESSAGE.to_string(),
+                ));
+            }
+            let session_id = synctv_common::snanoid!(48);
+            let expires_at =
+                chrono::Utc::now().timestamp() + i64::try_from(MFA_SESSION_TTL_SECS).unwrap_or(300);
+            let session = MfaSession {
+                user_id: user.id,
+                first_factor,
+                brute_force_key: brute_force_key.to_string(),
+                expires_at,
+            };
+            self.mfa_session_store
+                .store(
+                    &session_id,
+                    &session,
+                    Duration::from_secs(MFA_SESSION_TTL_SECS),
+                )
+                .await?;
+            let challenge =
+                Self::mfa_challenge_from_session(&session_id, &session, &user, available_methods);
+            return Ok(AuthenticatedLogin::MfaRequired { user, challenge });
+        }
+
+        let (access_token, refresh_token) = self
+            .issue_tokens_after_successful_authentication(
+                &user,
+                brute_force_key,
+                client_ip,
+                None,
+                control,
+            )
+            .await?;
+
+        Ok(AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        })
+    }
+
+    fn available_mfa_methods(
+        auth_factors: &UserAuthFactors,
+        first_factor: AuthFactorMethod,
+    ) -> Vec<AuthFactorMethod> {
+        let mut methods = Vec::with_capacity(3);
+        if auth_factors.password && first_factor != AuthFactorMethod::Password {
+            methods.push(AuthFactorMethod::Password);
+        }
+        if auth_factors.webauthn && first_factor != AuthFactorMethod::WebAuthn {
+            methods.push(AuthFactorMethod::WebAuthn);
+        }
+        if auth_factors.email && first_factor != AuthFactorMethod::Email {
+            methods.push(AuthFactorMethod::Email);
+        }
+        methods
+    }
+
+    fn mfa_challenge_from_session(
+        session_id: &str,
+        session: &MfaSession,
+        user: &User,
+        available_methods: Vec<AuthFactorMethod>,
+    ) -> MfaChallenge {
+        let masked_email = available_methods
+            .contains(&AuthFactorMethod::Email)
+            .then(|| user.email.as_deref().map(crate::service::mask_email))
+            .flatten();
+        MfaChallenge {
+            session_id: session_id.to_string(),
+            available_methods,
+            masked_email,
+            expires_at: session.expires_at,
+        }
+    }
+
+    async fn issue_tokens_after_successful_authentication(
+        &self,
+        user: &User,
+        brute_force_key: &str,
+        client_ip: Option<std::net::IpAddr>,
+        token_auth_context: Option<TokenAuthContext>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<(String, String)> {
         if let Err(error) = self
             .brute_force
             .reset_with_control(brute_force_key, control)
@@ -720,14 +1077,20 @@ impl UserService {
             }
         }
 
-        let access_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let access_token = self.jwt_service.sign_token_with_auth_context(
+            &user.id,
+            TokenType::Access,
+            user.password_version,
+            token_auth_context,
+        )?;
+        let refresh_token = self.jwt_service.sign_token_with_auth_context(
+            &user.id,
+            TokenType::Refresh,
+            user.password_version,
+            token_auth_context,
+        )?;
 
-        Ok((user, access_token, refresh_token))
+        Ok((access_token, refresh_token))
     }
 
     pub async fn login_with_verified_email(
@@ -735,7 +1098,7 @@ impl UserService {
         user_id: &UserId,
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         self.login_with_verified_email_with_control(user_id, brute_force_key, client_ip, None)
             .await
     }
@@ -746,15 +1109,176 @@ impl UserService {
         brute_force_key: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         let user = self
             .repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        self.complete_authenticated_login_with_control(user, brute_force_key, client_ip, control)
-            .await
+        self.complete_authenticated_login_with_control(
+            user,
+            AuthFactorMethod::Email,
+            brute_force_key,
+            client_ip,
+            control,
+        )
+        .await
+    }
+
+    pub async fn get_mfa_challenge(&self, session_id: &str) -> Result<MfaChallenge> {
+        let session = self
+            .mfa_session_store
+            .get(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let user = self
+            .repository
+            .get_by_id(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        self.validate_user_access(&user)?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(&user.id)
+            .await?;
+        let available_methods = Self::available_mfa_methods(&auth_factors, session.first_factor);
+        if available_methods.is_empty() {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        Ok(Self::mfa_challenge_from_session(
+            session_id,
+            &session,
+            &user,
+            available_methods,
+        ))
+    }
+
+    pub async fn get_mfa_session_user_for_method(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+    ) -> Result<User> {
+        let (_session, user) = self
+            .get_mfa_session_and_user_for_method(session_id, method)
+            .await?;
+        Ok(user)
+    }
+
+    async fn get_mfa_session_and_user_for_method(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+    ) -> Result<(MfaSession, User)> {
+        let session = self
+            .mfa_session_store
+            .get(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let user = self
+            .repository
+            .get_by_id(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        self.ensure_mfa_method_available(&session, &user, method)
+            .await?;
+        Ok((session, user))
+    }
+
+    async fn ensure_mfa_method_available(
+        &self,
+        session: &MfaSession,
+        user: &User,
+        method: AuthFactorMethod,
+    ) -> Result<()> {
+        if session.first_factor == method {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        self.validate_user_access(user)?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(&user.id)
+            .await?;
+        let available_methods = Self::available_mfa_methods(&auth_factors, session.first_factor);
+        if !available_methods.contains(&method) {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        Ok(())
+    }
+
+    pub async fn complete_mfa_session_with_control(
+        &self,
+        session_id: &str,
+        method: AuthFactorMethod,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AuthenticatedLogin> {
+        let session = self
+            .mfa_session_store
+            .consume(session_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        let user = self
+            .repository
+            .get_by_id(&session.user_id)
+            .await?
+            .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
+        self.ensure_mfa_method_available(&session, &user, method)
+            .await?;
+        let (access_token, refresh_token) = self
+            .issue_tokens_after_successful_authentication(
+                &user,
+                &session.brute_force_key,
+                client_ip,
+                Some(TokenAuthContext::LocalTwoFactor),
+                control,
+            )
+            .await?;
+        Ok(AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        })
+    }
+
+    pub async fn verify_mfa_password_with_control(
+        &self,
+        session_id: &str,
+        password: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AuthenticatedLogin> {
+        let (session, user) = self
+            .get_mfa_session_and_user_for_method(session_id, AuthFactorMethod::Password)
+            .await?;
+        self.brute_force
+            .check_allowed_with_control(&session.brute_force_key, client_ip, control)
+            .await?;
+
+        let hash = if user.password_hash.is_empty() {
+            self.password_hasher.dummy_hash()
+        } else {
+            &user.password_hash
+        };
+        let valid = self.password_hasher.verify_password(password, hash).await?
+            && !user.password_hash.is_empty();
+        if !valid {
+            if let Err(error) = self
+                .brute_force
+                .record_failure_with_control(&session.brute_force_key, client_ip, control)
+                .await
+            {
+                tracing::warn!(error = %error, "Failed to record MFA password failure for brute-force tracking");
+            }
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+        self.complete_mfa_session_with_control(
+            session_id,
+            AuthFactorMethod::Password,
+            client_ip,
+            control,
+        )
+        .await
     }
 
     async fn query_owned_room_ids_in_tx(
@@ -1339,7 +1863,8 @@ impl UserService {
             .unwrap_or_else(|| Arc::new(RateLimiter::local_only("synctv:".to_string())));
 
         Self {
-            repository: UserRepository::new(pool),
+            repository: UserRepository::new(pool.clone()),
+            user_preferences_repository: UserPreferencesRepository::new(pool),
             jwt_service,
             username_cache,
             cache_invalidation: runtime.cache_invalidation,
@@ -1363,6 +1888,9 @@ impl UserService {
             opaque_registration_session_store: runtime
                 .opaque_registration_session_store
                 .unwrap_or_else(local_opaque_registration_session_store),
+            mfa_session_store: runtime
+                .mfa_session_store
+                .unwrap_or_else(local_mfa_session_store),
         }
     }
 
@@ -2261,7 +2789,7 @@ impl UserService {
         identifier: String,
         password: String,
         client_ip: Option<std::net::IpAddr>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         self.login_with_control(identifier, password, client_ip, None)
             .await
     }
@@ -2272,7 +2800,7 @@ impl UserService {
         password: String,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         let normalized_identifier = Self::normalize_login_identifier(&identifier);
 
         // Check brute-force lockout before expensive Argon2 verification.
@@ -2340,6 +2868,7 @@ impl UserService {
 
         self.complete_authenticated_login_with_control(
             user,
+            AuthFactorMethod::Password,
             &normalized_identifier,
             client_ip,
             control,
@@ -2449,15 +2978,21 @@ impl UserService {
         brute_force_key: &str,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         let user = self
             .repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        self.complete_authenticated_login_with_control(user, brute_force_key, client_ip, control)
-            .await
+        self.complete_authenticated_login_with_control(
+            user,
+            AuthFactorMethod::WebAuthn,
+            brute_force_key,
+            client_ip,
+            control,
+        )
+        .await
     }
 
     pub async fn finish_opaque_login_with_control(
@@ -2466,7 +3001,7 @@ impl UserService {
         credential_finalization: Vec<u8>,
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         let Some(session) = self.opaque_login_session_store.consume(session_id).await? else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
@@ -2499,6 +3034,7 @@ impl UserService {
 
         self.complete_authenticated_login_with_control(
             user,
+            AuthFactorMethod::Password,
             &session.brute_force_key,
             client_ip,
             control,
@@ -2511,6 +3047,8 @@ impl UserService {
     ///
     /// This method generates access and refresh tokens for a user who has been
     /// authenticated via `OAuth2`. Unlike `login()`, this skips password verification.
+    /// OAuth2 is outside the local 2FA factor set: it does not count as a
+    /// first or second factor, and it does not trigger a local MFA challenge.
     ///
     /// Per-IP brute-force protection is applied before token issuance. The provider
     /// user ID is used as the per-account key (instead of username) since `OAuth2` users
@@ -2520,7 +3058,7 @@ impl UserService {
         user_id: &UserId,
         provider_user_id: &str,
         client_ip: Option<std::net::IpAddr>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         self.login_oauth2_with_control(user_id, provider_user_id, client_ip, None)
             .await
     }
@@ -2531,7 +3069,7 @@ impl UserService {
         provider_user_id: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<AuthenticatedLogin> {
         // Check per-IP and per-account brute-force before token issuance.
         self.brute_force
             .check_allowed_with_control(provider_user_id, client_ip, control)
@@ -2544,8 +3082,31 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        self.complete_authenticated_login_with_control(user, provider_user_id, client_ip, control)
-            .await
+        if let Err(error) = self.validate_user_access(&user) {
+            if let Err(bf_err) = self
+                .brute_force
+                .record_failure_with_control(provider_user_id, client_ip, control)
+                .await
+            {
+                tracing::warn!(error = %bf_err, "Failed to record OAuth2 login failure for brute-force tracking");
+            }
+            return Err(error);
+        }
+
+        let (access_token, refresh_token) = self
+            .issue_tokens_after_successful_authentication(
+                &user,
+                provider_user_id,
+                client_ip,
+                Some(TokenAuthContext::OAuth2),
+                control,
+            )
+            .await?;
+        Ok(AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        })
     }
 
     /// Refresh access token with **Refresh Token Rotation**.
@@ -2602,6 +3163,19 @@ impl UserService {
 
         // Check user status and email verification (shared with login)
         self.validate_user_access(&user)?;
+        if self
+            .user_preferences_repository
+            .get_or_default(&user.id)
+            .await?
+            .two_factor_enabled
+        {
+            let refresh_auth_context = claims.amr.as_deref();
+            if !matches!(refresh_auth_context, Some("local_2fa" | "oauth2")) {
+                return Err(Error::Authentication(
+                    TWO_FACTOR_REQUIRED_MESSAGE.to_string(),
+                ));
+            }
+        }
 
         // Reject refresh tokens issued with an old password version
         if claims.pv < user.password_version {
@@ -2676,12 +3250,23 @@ impl UserService {
 
         // Generate new tokens (role will be fetched from DB on each request)
         // The old JTI is now atomically blacklisted, so concurrent replays will be detected.
-        let new_access_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let new_refresh_token =
-            self.jwt_service
-                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let token_auth_context = match claims.amr.as_deref() {
+            Some("local_2fa") => Some(TokenAuthContext::LocalTwoFactor),
+            Some("oauth2") => Some(TokenAuthContext::OAuth2),
+            _ => None,
+        };
+        let new_access_token = self.jwt_service.sign_token_with_auth_context(
+            &user.id,
+            TokenType::Access,
+            user.password_version,
+            token_auth_context,
+        )?;
+        let new_refresh_token = self.jwt_service.sign_token_with_auth_context(
+            &user.id,
+            TokenType::Refresh,
+            user.password_version,
+            token_auth_context,
+        )?;
 
         Ok((new_access_token, new_refresh_token))
     }
@@ -2702,6 +3287,74 @@ impl UserService {
         self.repository
             .has_opaque_password_credential(&user.id)
             .await
+    }
+
+    pub async fn get_user_preferences(
+        &self,
+        user_id: &UserId,
+    ) -> Result<(UserPreferences, UserAuthFactors)> {
+        self.get_user(user_id).await?;
+        let preferences = self
+            .user_preferences_repository
+            .get_or_default(user_id)
+            .await?;
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors(user_id)
+            .await?;
+        Ok((preferences, auth_factors))
+    }
+
+    pub async fn is_two_factor_enabled(&self, user_id: &UserId) -> Result<bool> {
+        Ok(self
+            .user_preferences_repository
+            .get_or_default(user_id)
+            .await?
+            .two_factor_enabled)
+    }
+
+    pub async fn set_two_factor_enabled(
+        &self,
+        user_id: &UserId,
+        enabled: bool,
+    ) -> Result<(UserPreferences, UserAuthFactors)> {
+        self.update_user_preferences(
+            user_id,
+            crate::models::UserPreferencesUpdate {
+                two_factor_enabled: Some(enabled),
+                ..crate::models::UserPreferencesUpdate::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn update_user_preferences(
+        &self,
+        user_id: &UserId,
+        update: crate::models::UserPreferencesUpdate,
+    ) -> Result<(UserPreferences, UserAuthFactors)> {
+        let mut tx: Transaction<'_, Postgres> = self.repository.pool().begin().await?;
+        self.repository
+            .get_by_id_for_update_with_executor(user_id, &mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
+
+        let auth_factors = self
+            .user_preferences_repository
+            .auth_factors_with_excluded_passkey(user_id, None, &mut *tx)
+            .await?;
+        if update.two_factor_enabled == Some(true) && !auth_factors.supports_two_factor() {
+            return Err(Error::InvalidInput(
+                "Two-factor authentication requires at least two usable verification methods: password, passkey, or verified email".to_string(),
+            ));
+        }
+
+        let preferences = self
+            .user_preferences_repository
+            .update_with_executor(user_id, &update, &mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok((preferences, auth_factors))
     }
 
     /// Get multiple users by IDs.

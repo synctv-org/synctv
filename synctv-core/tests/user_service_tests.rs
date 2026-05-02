@@ -19,12 +19,14 @@ use synctv_core::{
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
+        WebAuthnCredentialRepository,
     },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
-        InMemoryTokenBlacklistStore, UserService,
+        local_passkey_session_store, AuthFactorMethod, AuthenticatedLogin,
+        InMemoryTokenBlacklistStore, PasskeyService, SecurityPipeline, UserService,
     },
-    Error,
+    Config, Error,
 };
 use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
@@ -55,6 +57,33 @@ fn create_user_service(pool: PgPool) -> UserService {
     svc
 }
 
+fn create_user_service_with_security_pipeline(
+    pool: PgPool,
+) -> (Arc<UserService>, JwtService, SecurityPipeline) {
+    let jwt = create_jwt_service();
+    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
+    let password_config = PasswordComplexityConfig::default();
+    let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    let mut service = UserService::new(
+        pool,
+        jwt.clone(),
+        username_cache,
+        password_config,
+        Arc::clone(&token_blacklist),
+        key_builder.clone(),
+        brute_force,
+    );
+    service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    let service = Arc::new(service);
+    let pipeline = SecurityPipeline::new(Arc::clone(&service))
+        .with_token_blacklist(token_blacklist, key_builder);
+    (service, jwt, pipeline)
+}
+
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -77,6 +106,44 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+fn make_user_without_email(username: &str) -> User {
+    let mut user = make_user(username);
+    user.email = None;
+    user.email_verified = false;
+    user.signup_method = SignupMethod::Password;
+    user
+}
+
+async fn insert_dummy_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u8]) {
+    sqlx::query(
+        r"
+        INSERT INTO auth_webauthn_credentials (
+            user_id, credential_id, passkey, public_key, name
+        )
+        VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, 'test passkey')
+        ",
+    )
+    .bind(user_id)
+    .bind(credential_id)
+    .execute(pool)
+    .await
+    .expect("insert dummy passkey");
+}
+
+fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> PasskeyService {
+    let mut config = Config::default().webauthn;
+    config.enabled = true;
+    config.rp_id = "localhost".to_string();
+    config.rp_origin = "http://localhost".to_string();
+    PasskeyService::new(
+        &config,
+        WebAuthnCredentialRepository::new(pool),
+        user_service,
+        local_passkey_session_store(),
+    )
+    .expect("passkey service should build")
 }
 
 fn make_room(name: &str, owner_id: &UserId) -> Room {
@@ -847,6 +914,392 @@ async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPoo
     );
 }
 
+async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
+    let service = create_user_service(pool.clone());
+    let user_repo = UserRepository::new(pool.clone());
+
+    let password_only = user_repo
+        .create(&make_user_without_email("two_factor_password_only"))
+        .await
+        .expect("create password-only user");
+    let result = service
+        .set_two_factor_enabled(&password_only.id, true)
+        .await
+        .expect_err("single-method users must not enable two-factor authentication");
+    assert!(
+        matches!(&result, Error::InvalidInput(message) if message.contains("requires at least two")),
+        "expected InvalidInput for insufficient auth factors, got {result:?}"
+    );
+
+    let email_and_password = user_repo
+        .create(&make_user("two_factor_email_password"))
+        .await
+        .expect("create email+password user");
+    let (preferences, factors) = service
+        .set_two_factor_enabled(&email_and_password.id, true)
+        .await
+        .expect("email+password user can enable two-factor authentication");
+    assert!(preferences.two_factor_enabled);
+    assert!(factors.password);
+    assert!(factors.email);
+    assert_eq!(factors.eligible_count(), 2);
+}
+
+async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
+    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_repo = UserRepository::new(pool.clone());
+    let user = user_repo
+        .create(&make_user_without_email("two_factor_passkey_user"))
+        .await
+        .expect("create password+passkey user");
+    let credential_id = b"two-factor-required-passkey";
+    insert_dummy_passkey(&pool, &user.id, credential_id).await;
+
+    user_service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+passkey user can enable two-factor authentication");
+
+    let passkey_service = make_passkey_service(pool, user_service);
+    let result = passkey_service
+        .delete_credential(&user.id, credential_id)
+        .await
+        .expect_err("deleting the passkey would leave fewer than two auth methods");
+    assert!(
+        matches!(&result, Error::InvalidInput(message) if message.contains("remaining verification methods are insufficient")),
+        "expected InvalidInput for deleting required passkey, got {result:?}"
+    );
+}
+
+async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
+    let service = create_user_service(pool);
+    let (user, _, _) = service
+        .register(
+            "two_factor_login_blocked".to_string(),
+            Some("two_factor_login_blocked@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+
+    service
+        .set_email_verified(&user.id, true)
+        .await
+        .expect("verified email should count as second factor");
+    let refresh_token = match service
+        .login(
+            "two_factor_login_blocked".to_string(),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("single-factor login should work before 2FA is enabled")
+    {
+        AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("2FA is disabled, login should be complete")
+        }
+    };
+
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+verified email user can enable two-factor authentication");
+
+    let login_result = service
+        .login(
+            "two_factor_login_blocked".to_string(),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("first factor should return an MFA challenge after 2FA is enabled");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
+        panic!("single-factor login must not issue tokens after 2FA is enabled");
+    };
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Email),
+        "password first-factor login should expose email as a remaining factor"
+    );
+    assert!(
+        !challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Password),
+        "same password factor must not be offered twice"
+    );
+    let mfa_refresh_token = match service
+        .complete_mfa_session_with_control(
+            &challenge.session_id,
+            AuthFactorMethod::Email,
+            None,
+            None,
+        )
+        .await
+        .expect("verified second factor should complete MFA login")
+    {
+        AuthenticatedLogin::Complete { refresh_token, .. } => refresh_token,
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("completed MFA must issue tokens")
+        }
+    };
+    let (rotated_access, rotated_refresh) = service
+        .refresh_token(mfa_refresh_token)
+        .await
+        .expect("refresh token issued after MFA should rotate successfully");
+    assert!(!rotated_access.is_empty());
+    assert!(!rotated_refresh.is_empty());
+
+    let refresh_result = service
+        .refresh_token(refresh_token)
+        .await
+        .expect_err("refresh token rotation must not issue tokens after 2FA is enabled");
+    assert!(
+        matches!(&refresh_result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
+        "expected Authentication error requiring 2FA during refresh, got {refresh_result:?}"
+    );
+}
+
+async fn assert_mfa_password_failures_trigger_brute_force_lockout(pool: PgPool) {
+    let service = create_user_service(pool);
+    let (user, _, _) = service
+        .register(
+            "two_factor_mfa_password_lockout".to_string(),
+            Some("two_factor_mfa_password_lockout@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+
+    service
+        .set_email_verified(&user.id, true)
+        .await
+        .expect("verified email should count as second factor");
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+verified email user can enable two-factor authentication");
+
+    let client_ip: std::net::IpAddr = "192.168.1.150".parse().unwrap();
+    let mfa_brute_force_key = "mfa-password-lockout@example.com";
+    let login_result = service
+        .login_with_verified_email_with_control(
+            &user.id,
+            mfa_brute_force_key,
+            Some(client_ip),
+            None,
+        )
+        .await
+        .expect("email first factor should return MFA challenge");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
+        panic!("2FA-enabled email login should require another factor");
+    };
+    assert!(
+        challenge
+            .available_methods
+            .contains(&AuthFactorMethod::Password),
+        "email first-factor login should expose password as a remaining factor"
+    );
+
+    for _ in 0..5 {
+        let result = service
+            .verify_mfa_password_with_control(
+                &challenge.session_id,
+                "WrongPass1",
+                Some(client_ip),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Authentication(_))),
+            "wrong MFA password should fail authentication, got {result:?}"
+        );
+    }
+
+    let result = service
+        .verify_mfa_password_with_control(
+            &challenge.session_id,
+            "StrongPass1",
+            Some(client_ip),
+            None,
+        )
+        .await
+        .expect_err("MFA password should be locked after repeated failures");
+    assert!(
+        matches!(&result, Error::Authentication(message) if message.contains("Too many failed login attempts")),
+        "expected brute-force lockout after repeated MFA password failures, got {result:?}"
+    );
+}
+
+async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
+    let (service, jwt, pipeline) = create_user_service_with_security_pipeline(pool);
+    let (user, old_access_token, old_refresh_token) = service
+        .register(
+            "two_factor_access_context".to_string(),
+            Some("two_factor_access_context@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+    let old_access_token = old_access_token.expect("2FA-disabled registration issues access token");
+    let old_refresh_token =
+        old_refresh_token.expect("2FA-disabled registration issues refresh token");
+    let old_access_claims = jwt
+        .verify_access_token(&old_access_token)
+        .expect("old access token should be syntactically valid");
+    pipeline
+        .check(&old_access_claims)
+        .await
+        .expect("single-factor access token should work before 2FA is enabled");
+
+    service
+        .set_email_verified(&user.id, true)
+        .await
+        .expect("verified email should count as second factor");
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+verified email user can enable two-factor authentication");
+
+    let result = pipeline
+        .check(&old_access_claims)
+        .await
+        .expect_err("old single-factor access token must be rejected while 2FA is enabled");
+    assert!(
+        matches!(&result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
+        "expected old access token to require 2FA context, got {result:?}"
+    );
+    let refresh_result = service
+        .refresh_token(old_refresh_token)
+        .await
+        .expect_err("old single-factor refresh token must also be rejected while 2FA is enabled");
+    assert!(
+        matches!(&refresh_result, Error::Authentication(message) if message.contains("Two-factor authentication is required")),
+        "expected old refresh token to require 2FA context, got {refresh_result:?}"
+    );
+
+    let login_result = service
+        .login(
+            "two_factor_access_context".to_string(),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("password first factor should start MFA challenge");
+    let AuthenticatedLogin::MfaRequired { challenge, .. } = login_result else {
+        panic!("2FA-enabled password login should require email second factor");
+    };
+    let mfa_access_token = match service
+        .complete_mfa_session_with_control(
+            &challenge.session_id,
+            AuthFactorMethod::Email,
+            None,
+            None,
+        )
+        .await
+        .expect("verified email second factor should complete MFA login")
+    {
+        AuthenticatedLogin::Complete { access_token, .. } => access_token,
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("completed MFA must issue tokens")
+        }
+    };
+    let mfa_access_claims = jwt
+        .verify_access_token(&mfa_access_token)
+        .expect("MFA access token should be syntactically valid");
+    assert!(
+        mfa_access_claims.satisfies_two_factor_requirement(),
+        "MFA-completed token must carry a 2FA auth context"
+    );
+    pipeline
+        .check(&mfa_access_claims)
+        .await
+        .expect("MFA access token should work while 2FA is enabled");
+
+    let oauth_access_token = match service
+        .login_oauth2(&user.id, "oauth2-provider-user-id", None)
+        .await
+        .expect("OAuth2 login should stay independent from local 2FA")
+    {
+        AuthenticatedLogin::Complete { access_token, .. } => access_token,
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("OAuth2 login must not start a local MFA challenge")
+        }
+    };
+    let oauth_access_claims = jwt
+        .verify_access_token(&oauth_access_token)
+        .expect("OAuth2 access token should be syntactically valid");
+    assert!(
+        oauth_access_claims.satisfies_two_factor_requirement(),
+        "OAuth2 token must carry its independent auth context"
+    );
+    pipeline
+        .check(&oauth_access_claims)
+        .await
+        .expect("OAuth2 access token should work while 2FA is enabled");
+
+    service
+        .set_two_factor_enabled(&user.id, false)
+        .await
+        .expect("2FA can be disabled once the caller has a valid strong context");
+    pipeline
+        .check(&old_access_claims)
+        .await
+        .expect("single-factor access token should work again after 2FA is disabled");
+    pipeline
+        .check(&mfa_access_claims)
+        .await
+        .expect("MFA access token should remain valid after 2FA is disabled");
+}
+
+async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
+    let service = create_user_service(pool);
+    let (user, _, _) = service
+        .register(
+            "two_factor_oauth2_allowed".to_string(),
+            Some("two_factor_oauth2_allowed@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("create user with password");
+
+    service
+        .set_email_verified(&user.id, true)
+        .await
+        .expect("verified email should count as second factor");
+    service
+        .set_two_factor_enabled(&user.id, true)
+        .await
+        .expect("password+verified email user can enable two-factor authentication");
+
+    let (access_token, refresh_token) = match service
+        .login_oauth2(&user.id, "oauth2-provider-user-id", None)
+        .await
+        .expect("OAuth2 login should stay independent from local 2FA")
+    {
+        AuthenticatedLogin::Complete {
+            access_token,
+            refresh_token,
+            ..
+        } => (access_token, refresh_token),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("OAuth2 login must not start a local MFA challenge")
+        }
+    };
+    assert!(!access_token.is_empty());
+    let (rotated_access, rotated_refresh) = service
+        .refresh_token(refresh_token)
+        .await
+        .expect("OAuth2 refresh token should rotate for 2FA-enabled users");
+    assert!(!rotated_access.is_empty());
+    assert!(!rotated_refresh.is_empty());
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_user_service_registration_login_and_delete_flows() {
@@ -867,6 +1320,13 @@ async fn test_user_service_registration_login_and_delete_flows() {
     assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool.clone()).await;
 
     assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool.clone()).await;
+
+    assert_two_factor_requires_two_usable_methods(pool.clone()).await;
+    assert_two_factor_blocks_deleting_required_passkey(pool.clone()).await;
+    assert_two_factor_blocks_single_factor_token_issuance(pool.clone()).await;
+    assert_mfa_password_failures_trigger_brute_force_lockout(pool.clone()).await;
+    assert_two_factor_access_token_context_is_enforced(pool.clone()).await;
+    assert_two_factor_allows_oauth2_without_local_mfa(pool.clone()).await;
 
     assert_delete_user_concurrent_deletion_atomicity(pool).await;
 }

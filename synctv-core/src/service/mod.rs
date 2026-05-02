@@ -106,9 +106,12 @@ pub use settings_vars::{Setting, SettingsStorage};
 pub use stun_server::{resolve_external_ip, validate_external_addr, StunServer, StunServerConfig};
 pub use user::UserService;
 pub use user::{
-    local_opaque_login_session_store, opaque_login_session_store_from_shared_state_profile,
-    opaque_registration_session_store_from_shared_state_profile, shared_opaque_login_session_store,
-    shared_opaque_registration_session_store, OpaqueLoginSessionStore,
+    local_mfa_session_store, local_opaque_login_session_store,
+    mfa_session_store_from_shared_state_profile,
+    opaque_login_session_store_from_shared_state_profile,
+    opaque_registration_session_store_from_shared_state_profile, shared_mfa_session_store,
+    shared_opaque_login_session_store, shared_opaque_registration_session_store, AuthFactorMethod,
+    AuthenticatedLogin, MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore,
     OpaqueRegistrationSessionStore,
 };
 pub use user_notification::UserNotificationService;

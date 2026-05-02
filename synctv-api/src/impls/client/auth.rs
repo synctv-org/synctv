@@ -6,10 +6,55 @@ use crate::impls::ApiError;
 use std::future::Future;
 use std::net::IpAddr;
 use synctv_core::provider::ExecutionControl;
+use synctv_core::service::{AuthFactorMethod, AuthenticatedLogin};
 
 pub(crate) struct PasskeyAuthChallenge {
     pub session_id: String,
     pub options_json: Vec<u8>,
+}
+
+fn mfa_method_to_proto(method: AuthFactorMethod) -> crate::proto::client::MfaMethod {
+    match method {
+        AuthFactorMethod::Password => crate::proto::client::MfaMethod::Password,
+        AuthFactorMethod::WebAuthn => crate::proto::client::MfaMethod::Webauthn,
+        AuthFactorMethod::Email => crate::proto::client::MfaMethod::Email,
+    }
+}
+
+pub(crate) fn login_outcome_to_proto(
+    outcome: AuthenticatedLogin,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::LoginResponse {
+    match outcome {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => crate::proto::client::LoginResponse {
+            user: Some(user_to_proto(&user, public_id_codec)),
+            access_token,
+            refresh_token,
+            mfa: None,
+        },
+        AuthenticatedLogin::MfaRequired { user, challenge } => {
+            crate::proto::client::LoginResponse {
+                user: Some(user_to_proto(&user, public_id_codec)),
+                access_token: String::new(),
+                refresh_token: String::new(),
+                mfa: Some(crate::proto::client::MfaChallenge {
+                    required: true,
+                    session_id: challenge.session_id,
+                    available_methods: challenge
+                        .available_methods
+                        .into_iter()
+                        .map(|method| mfa_method_to_proto(method) as i32)
+                        .collect(),
+                    masked_email: challenge.masked_email.unwrap_or_default(),
+                    expires_at: challenge.expires_at,
+                }),
+            }
+        }
+    }
 }
 
 fn normalize_optional_email(email: &str) -> Result<Option<String>, ApiError> {
@@ -151,17 +196,13 @@ impl ClientApiImpl {
         };
 
         // Login user (returns tuple: (User, access_token, refresh_token))
-        let (user, access_token, refresh_token) = self
+        let outcome = self
             .user_service
             .login_with_control(identifier, req.password, client_ip, control)
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
-            access_token,
-            refresh_token,
-        })
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn start_opaque_login_with_control(
@@ -208,7 +249,7 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let (user, access_token, refresh_token) = self
+        let outcome = self
             .user_service
             .finish_opaque_login_with_control(
                 &req.session_id,
@@ -219,11 +260,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
-            access_token,
-            refresh_token,
-        })
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn start_opaque_registration_with_control(
@@ -417,16 +454,12 @@ impl ClientApiImpl {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::LoginResponse, ApiError> {
-        let (user, access_token, refresh_token) = self
+        let outcome = self
             .passkey_service()?
             .finish_login(session_id, credential_json, client_ip, control)
             .await
             .map_err(ApiError::from)?;
-        Ok(crate::proto::client::LoginResponse {
-            user: Some(user_to_proto(&user, &self.public_id_codec)),
-            access_token,
-            refresh_token,
-        })
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn finish_passkey_login_with_control(
@@ -443,6 +476,108 @@ impl ClientApiImpl {
             control,
         )
         .await
+    }
+
+    pub(crate) async fn start_mfa_passkey_challenge_with_control(
+        &self,
+        mfa_session_id: &str,
+    ) -> Result<PasskeyAuthChallenge, ApiError> {
+        let user = self
+            .user_service
+            .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::WebAuthn)
+            .await
+            .map_err(ApiError::from)?;
+        let challenge = self
+            .passkey_service()?
+            .start_user_verification(&user.id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(PasskeyAuthChallenge {
+            session_id: challenge.session_id,
+            options_json: challenge.options_json,
+        })
+    }
+
+    pub async fn start_mfa_passkey_with_control(
+        &self,
+        req: crate::proto::client::StartMfaPasskeyRequest,
+    ) -> Result<crate::proto::client::StartMfaPasskeyResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let challenge = self
+            .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
+            .await?;
+        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        Ok(crate::proto::client::StartMfaPasskeyResponse {
+            passkey_session_id: challenge.session_id,
+            options,
+        })
+    }
+
+    pub(crate) async fn finish_mfa_passkey_bytes_with_control(
+        &self,
+        mfa_session_id: &str,
+        passkey_session_id: &str,
+        credential_json: &[u8],
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        let user = self
+            .user_service
+            .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::WebAuthn)
+            .await
+            .map_err(ApiError::from)?;
+        self.passkey_service()?
+            .finish_user_verification(passkey_session_id, credential_json, &user.id)
+            .await
+            .map_err(ApiError::from)?;
+        let outcome = self
+            .user_service
+            .complete_mfa_session_with_control(
+                mfa_session_id,
+                AuthFactorMethod::WebAuthn,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
+    }
+
+    pub async fn finish_mfa_passkey_with_control(
+        &self,
+        req: crate::proto::client::FinishMfaPasskeyRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.finish_mfa_passkey_bytes_with_control(
+            &req.mfa_session_id,
+            &req.passkey_session_id,
+            req.credential.as_bytes(),
+            client_ip,
+            control,
+        )
+        .await
+    }
+
+    pub async fn verify_mfa_password_with_control(
+        &self,
+        req: crate::proto::client::VerifyMfaPasswordRequest,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::LoginResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let outcome = self
+            .user_service
+            .verify_mfa_password_with_control(
+                &req.mfa_session_id,
+                &req.password,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(login_outcome_to_proto(outcome, &self.public_id_codec))
     }
 
     pub async fn refresh_token(

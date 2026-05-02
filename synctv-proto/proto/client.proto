@@ -24,6 +24,11 @@ service AuthService {
     rpc StartPasskeyLogin(StartPasskeyLoginRequest) returns (StartPasskeyLoginResponse);
     rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (LoginResponse);
     rpc RequestEmailLogin(RequestEmailLoginRequest) returns (RequestEmailLoginResponse);
+    rpc RequestMfaEmailCode(RequestMfaEmailCodeRequest) returns (RequestMfaEmailCodeResponse);
+    rpc VerifyMfaEmailCode(VerifyMfaEmailCodeRequest) returns (LoginResponse);
+    rpc StartMfaPasskey(StartMfaPasskeyRequest) returns (StartMfaPasskeyResponse);
+    rpc FinishMfaPasskey(FinishMfaPasskeyRequest) returns (LoginResponse);
+    rpc VerifyMfaPassword(VerifyMfaPasswordRequest) returns (LoginResponse);
     rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 }
 
@@ -42,6 +47,8 @@ service UserService {
     rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredentialResponse);
     rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
     rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
+    rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+    rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
 
     // User-initiated room resource operations outside room-scoped context
     rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
@@ -329,6 +336,25 @@ message LoginResponse {
     User user = 1;
     string access_token = 2;
     string refresh_token = 3;
+    MfaChallenge mfa = 4;
+}
+
+enum MfaMethod {
+    MFA_METHOD_UNSPECIFIED = 0;
+    MFA_METHOD_PASSWORD = 1;
+    MFA_METHOD_WEBAUTHN = 2;
+    MFA_METHOD_EMAIL = 3;
+}
+
+message MfaChallenge {
+    bool required = 1;
+    string session_id = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    repeated MfaMethod available_methods = 3;
+    string masked_email = 4;
+    int64 expires_at = 5;
 }
 
 // Start a real OPAQUE password login. The server receives only the OPAQUE
@@ -507,12 +533,140 @@ message DeletePasskeyResponse {
     bool deleted = 1;
 }
 
+message UserAuthFactors {
+    bool password = 1;
+    bool webauthn = 2;
+    bool email = 3;
+    int32 eligible_count = 4;
+}
+
+message UserPreferences {
+    bool two_factor_enabled = 1;
+    UserNotificationPreferences notifications = 3;
+    UserProviderDefaults provider_defaults = 5;
+    // Low-priority extension payload; core preferences use typed fields.
+    bytes settings = 15;
+}
+
+message UserNotificationPreferences {
+    bool room_invitation_in_app = 1;
+    bool room_event_in_app = 2;
+    bool system_announcement_in_app = 3;
+    bool room_invitation_email = 4;
+    bool room_event_email = 5;
+    bool system_announcement_email = 6;
+}
+
+message UserProviderDefaults {
+    optional string alist_instance_name = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
+    optional string emby_instance_name = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
+    optional string bilibili_instance_name = 3 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^[A-Za-z0-9_-]+$"
+    }];
+}
+
+message GetUserPreferencesRequest {}
+
+message GetUserPreferencesResponse {
+    UserPreferences preferences = 1;
+    UserAuthFactors auth_factors = 2;
+}
+
+message UpdateUserPreferencesRequest {
+    optional bool two_factor_enabled = 1;
+    UserNotificationPreferences notifications = 3;
+    UserProviderDefaults provider_defaults = 5;
+}
+
+message UpdateUserPreferencesResponse {
+    UserPreferences preferences = 1;
+    UserAuthFactors auth_factors = 2;
+}
+
 message RequestEmailLoginRequest {
     string email = 1;
 }
 
 message RequestEmailLoginResponse {
     string message = 1;
+}
+
+message RequestMfaEmailCodeRequest {
+    string mfa_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+}
+
+message RequestMfaEmailCodeResponse {
+    string message = 1;
+    string masked_email = 2;
+}
+
+message VerifyMfaEmailCodeRequest {
+    string mfa_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string email_token = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 255
+    }];
+}
+
+message StartMfaPasskeyRequest {
+    string mfa_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+}
+
+message StartMfaPasskeyResponse {
+    string passkey_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    // WebAuthn PublicKeyCredentialRequestOptions JSON.
+    string options = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+message FinishMfaPasskeyRequest {
+    string mfa_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string passkey_session_id = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string credential = 3 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 65536
+    }];
+}
+
+message VerifyMfaPasswordRequest {
+    string mfa_session_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    string password = 2 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
 }
 
 message RefreshTokenRequest {

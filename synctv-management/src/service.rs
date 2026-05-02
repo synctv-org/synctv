@@ -26,9 +26,9 @@ use crate::proto::{
     EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
     GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
     GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
-    GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
-    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
-    ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+    GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
+    KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
+    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
     ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
     ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
     PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
@@ -39,8 +39,8 @@ use crate::proto::{
     StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
     UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
     UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-    UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
-    UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
+    UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
 };
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
@@ -997,6 +997,46 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .get_user(admin_proto::GetUserRequest { user_id })
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn get_user_preferences(
+        &self,
+        request: Request<GetUserPreferencesRequest>,
+    ) -> Result<Response<admin_proto::GetUserPreferencesResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let response = self
+            .admin_api
+            .get_user_preferences(admin_proto::GetUserPreferencesRequest { user_id })
+            .await
+            .map_err(|e| map_api_error(&e))?;
+        Ok(Self::proto_response(response))
+    }
+
+    async fn update_user_preferences(
+        &self,
+        request: Request<UpdateUserPreferencesRequest>,
+    ) -> Result<Response<admin_proto::UpdateUserPreferencesResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let response = self
+            .admin_api
+            .update_user_preferences(
+                admin_proto::UpdateUserPreferencesRequest {
+                    user_id,
+                    two_factor_enabled: req.two_factor_enabled,
+                    notifications: req.notifications,
+                    provider_defaults: req.provider_defaults,
+                },
+                &validated.user_id,
+                &ctx,
+            )
             .await
             .map_err(|e| map_api_error(&e))?;
         Ok(Self::proto_response(response))

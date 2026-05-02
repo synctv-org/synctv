@@ -340,7 +340,7 @@ impl OAuth2ApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let (user, access_token, refresh_token) = if let Some(user_id) = user_id {
+        let login = if let Some(user_id) = user_id {
             // User exists - generate tokens using OAuth2 login method
             // (user already authenticated by OAuth2 provider)
             self.user_service
@@ -373,14 +373,25 @@ impl OAuth2ApiImpl {
         // Get the actual access token duration from the JWT service
         let expires_in = self.user_service.access_token_duration_seconds();
 
-        Ok(ExchangeCodeResult {
-            access_token: Some(access_token),
-            refresh_token: Some(refresh_token),
-            expires_in,
-            user_info: Some(user_to_oauth2_user_info(&user, &self.public_id_codec)),
-            redirect_url: oauth_state.redirect_url,
-            is_bind: false,
-        })
+        match login {
+            synctv_core::service::AuthenticatedLogin::Complete {
+                user,
+                access_token,
+                refresh_token,
+            } => Ok(ExchangeCodeResult {
+                access_token: Some(access_token),
+                refresh_token: Some(refresh_token),
+                expires_in,
+                user_info: Some(user_to_oauth2_user_info(&user, &self.public_id_codec)),
+                redirect_url: oauth_state.redirect_url,
+                is_bind: false,
+            }),
+            synctv_core::service::AuthenticatedLogin::MfaRequired { .. } => {
+                Err(ApiError::Internal(
+                    "OAuth2 must not start a two-factor authentication session".to_string(),
+                ))
+            }
+        }
     }
 
     pub async fn exchange_authorization_code_response_with_control(

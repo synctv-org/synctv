@@ -27,7 +27,8 @@ use synctv_core::{
     repository::UserRepository,
     service::{
         auth::{jwt::JwtService, SecurityPipeline, TestPasswordHasher},
-        BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
+        AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore,
+        UserService,
     },
     Error, KeyBuilder,
 };
@@ -58,6 +59,19 @@ fn create_user_service(pool: PgPool) -> UserService {
     svc
 }
 
+fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::User, String, String) {
+    match login {
+        AuthenticatedLogin::Complete {
+            user,
+            access_token,
+            refresh_token,
+        } => (user, access_token, refresh_token),
+        AuthenticatedLogin::MfaRequired { .. } => {
+            panic!("expected complete login, got MFA challenge")
+        }
+    }
+}
+
 // Test 1: Password Change Invalidates Old Tokens
 
 async fn scenario_password_change_invalidates_old_tokens() {
@@ -79,10 +93,12 @@ async fn scenario_password_change_invalidates_old_tokens() {
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = user_service
-        .login(username.clone(), original_password.clone(), None)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = expect_complete_login(
+        user_service
+            .login(username.clone(), original_password.clone(), None)
+            .await
+            .expect("Failed to login"),
+    );
 
     let old_claims = jwt_service
         .verify_access_token(&access_token)
@@ -117,10 +133,12 @@ async fn scenario_password_change_invalidates_old_tokens() {
         "Error should mention password change, got: {err}"
     );
 
-    let (_user, new_access_token, _new_refresh_token) = user_service
-        .login(username, new_password.to_string(), None)
-        .await
-        .expect("Failed to login with new password");
+    let (_user, new_access_token, _new_refresh_token) = expect_complete_login(
+        user_service
+            .login(username, new_password.to_string(), None)
+            .await
+            .expect("Failed to login with new password"),
+    );
 
     let new_claims = jwt_service
         .verify_access_token(&new_access_token)
@@ -148,10 +166,12 @@ async fn scenario_ban_user_invalidates_tokens() {
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = user_service
-        .login(username.clone(), password, None)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = expect_complete_login(
+        user_service
+            .login(username.clone(), password, None)
+            .await
+            .expect("Failed to login"),
+    );
 
     let claims = jwt_service
         .verify_access_token(&access_token)
@@ -201,10 +221,12 @@ async fn scenario_blacklisted_access_token_rejected() {
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = user_service
-        .login(username, password, None)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = expect_complete_login(
+        user_service
+            .login(username, password, None)
+            .await
+            .expect("Failed to login"),
+    );
 
     let claims = jwt_service
         .verify_access_token(&access_token)
@@ -247,10 +269,12 @@ async fn scenario_refresh_token_validation() {
         .await
         .expect("Failed to register user");
 
-    let (_user, _access_token, refresh_token) = user_service
-        .login(username, password, None)
-        .await
-        .expect("Failed to login");
+    let (_user, _access_token, refresh_token) = expect_complete_login(
+        user_service
+            .login(username, password, None)
+            .await
+            .expect("Failed to login"),
+    );
 
     // Refresh token should work
     let refresh_result = user_service.refresh_token(refresh_token).await;
@@ -285,10 +309,12 @@ async fn scenario_complete_authentication_flow() {
     assert_eq!(user.username, username);
     assert_eq!(user.status, UserStatus::Active);
 
-    let (_user, access_token, refresh_token) = user_service
-        .login(username.clone(), password.clone(), None)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, refresh_token) = expect_complete_login(
+        user_service
+            .login(username.clone(), password.clone(), None)
+            .await
+            .expect("Failed to login"),
+    );
 
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
@@ -366,10 +392,12 @@ async fn scenario_deleted_user_cannot_authenticate() {
         .await
         .expect("Failed to register user");
 
-    let (_user, access_token, _refresh_token) = user_service
-        .login(username, password, None)
-        .await
-        .expect("Failed to login");
+    let (_user, access_token, _refresh_token) = expect_complete_login(
+        user_service
+            .login(username, password, None)
+            .await
+            .expect("Failed to login"),
+    );
 
     let claims = jwt_service
         .verify_access_token(&access_token)

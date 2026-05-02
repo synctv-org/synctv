@@ -570,14 +570,26 @@ impl PasskeyService {
             .notify_user_invalidation(&created_user.id)
             .await;
 
-        self.user_service
+        let login = self
+            .user_service
             .login_with_verified_external_credential_with_control(
                 &created_user.id,
                 &format!("passkey:{}", created_user.username),
                 client_ip,
                 control,
             )
-            .await
+            .await?;
+        match login {
+            crate::service::AuthenticatedLogin::Complete {
+                user,
+                access_token,
+                refresh_token,
+            } => Ok((user, access_token, refresh_token)),
+            crate::service::AuthenticatedLogin::MfaRequired { .. } => Err(Error::Internal(
+                "New passkey registrations must not require MFA during initial token issuance"
+                    .to_string(),
+            )),
+        }
     }
 
     pub async fn start_login(
@@ -675,7 +687,7 @@ impl PasskeyService {
         credential_json: &[u8],
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
-    ) -> Result<(User, String, String)> {
+    ) -> Result<crate::service::AuthenticatedLogin> {
         let Some(PasskeySession::Login {
             user_id,
             brute_force_key,
@@ -826,6 +838,23 @@ impl PasskeyService {
             .count_by_user_with_executor(user_id, &mut *tx)
             .await?;
         Self::validate_credential_delete_policy(user.signup_method, exists, count)?;
+        if self
+            .user_service
+            .user_preferences_repository
+            .two_factor_enabled_with_executor(user_id, &mut *tx)
+            .await?
+        {
+            let remaining_factors = self
+                .user_service
+                .user_preferences_repository
+                .auth_factors_with_excluded_passkey(user_id, Some(credential_id), &mut *tx)
+                .await?;
+            if !remaining_factors.supports_two_factor() {
+                return Err(Error::InvalidInput(
+                    "Cannot delete this passkey while two-factor authentication is enabled because the remaining verification methods are insufficient".to_string(),
+                ));
+            }
+        }
 
         let deleted = self
             .repository

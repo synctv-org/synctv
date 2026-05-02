@@ -12,7 +12,7 @@ pub use brute_force::{
     BruteForceProtectionService,
 };
 pub use guest_validator::GuestTokenValidator;
-pub use jwt::{Claims, GuestClaims, JwtService, TokenType};
+pub use jwt::{Claims, GuestClaims, JwtService, TokenAuthContext, TokenType};
 pub use opaque_password::{
     OpaquePasswordRecord, OpaquePasswordService, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
     OPAQUE_SERVER_SETUP_VERSION,

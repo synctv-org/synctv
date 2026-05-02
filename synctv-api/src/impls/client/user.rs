@@ -11,6 +11,82 @@ use super::ClientApiImpl;
 
 const USER_ROOM_DELETION_PAGE_SIZE: u32 = 100;
 
+fn auth_factors_to_proto(
+    factors: &synctv_core::models::UserAuthFactors,
+) -> crate::proto::client::UserAuthFactors {
+    crate::proto::client::UserAuthFactors {
+        password: factors.password,
+        webauthn: factors.webauthn,
+        email: factors.email,
+        eligible_count: i32::try_from(factors.eligible_count()).unwrap_or(i32::MAX),
+    }
+}
+
+fn user_preferences_to_proto(
+    preferences: &synctv_core::models::UserPreferences,
+) -> Result<crate::proto::client::UserPreferences, ApiError> {
+    Ok(crate::proto::client::UserPreferences {
+        two_factor_enabled: preferences.two_factor_enabled,
+        notifications: Some(user_notification_preferences_to_proto(
+            &preferences.notifications,
+        )),
+        provider_defaults: Some(user_provider_defaults_to_proto(
+            &preferences.provider_defaults,
+        )),
+        settings: serde_json::to_vec(&preferences.settings).map_err(|error| {
+            ApiError::Internal(format!("Failed to serialize settings: {error}"))
+        })?,
+    })
+}
+
+pub(crate) fn user_notification_preferences_to_proto(
+    preferences: &synctv_core::models::UserNotificationPreferences,
+) -> crate::proto::client::UserNotificationPreferences {
+    crate::proto::client::UserNotificationPreferences {
+        room_invitation_in_app: preferences.room_invitation_in_app,
+        room_event_in_app: preferences.room_event_in_app,
+        system_announcement_in_app: preferences.system_announcement_in_app,
+        room_invitation_email: preferences.room_invitation_email,
+        room_event_email: preferences.room_event_email,
+        system_announcement_email: preferences.system_announcement_email,
+    }
+}
+
+pub(crate) fn user_provider_defaults_to_proto(
+    defaults: &synctv_core::models::UserProviderDefaults,
+) -> crate::proto::client::UserProviderDefaults {
+    crate::proto::client::UserProviderDefaults {
+        alist_instance_name: defaults.alist_instance_name.clone(),
+        emby_instance_name: defaults.emby_instance_name.clone(),
+        bilibili_instance_name: defaults.bilibili_instance_name.clone(),
+    }
+}
+
+pub(crate) fn user_preferences_update_from_proto(
+    req: crate::proto::client::UpdateUserPreferencesRequest,
+) -> synctv_core::models::UserPreferencesUpdate {
+    synctv_core::models::UserPreferencesUpdate {
+        two_factor_enabled: req.two_factor_enabled,
+        notifications: req.notifications.map(|value| {
+            synctv_core::models::UserNotificationPreferences {
+                room_invitation_in_app: value.room_invitation_in_app,
+                room_event_in_app: value.room_event_in_app,
+                system_announcement_in_app: value.system_announcement_in_app,
+                room_invitation_email: value.room_invitation_email,
+                room_event_email: value.room_event_email,
+                system_announcement_email: value.system_announcement_email,
+            }
+        }),
+        provider_defaults: req.provider_defaults.map(|value| {
+            synctv_core::models::UserProviderDefaults {
+                alist_instance_name: value.alist_instance_name,
+                emby_instance_name: value.emby_instance_name,
+                bilibili_instance_name: value.bilibili_instance_name,
+            }
+        }),
+    }
+}
+
 async fn list_owned_room_ids(
     api: &ClientApiImpl,
     user_id: &UserId,
@@ -124,6 +200,46 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::GetProfileResponse {
             user: Some(user_to_proto(&user, &self.public_id_codec)),
+        })
+    }
+
+    pub async fn get_user_preferences(
+        &self,
+        user_id: &UserId,
+    ) -> Result<crate::proto::client::GetUserPreferencesResponse, ApiError> {
+        let (preferences, auth_factors) = self
+            .user_service
+            .get_user_preferences(user_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::GetUserPreferencesResponse {
+            preferences: Some(user_preferences_to_proto(&preferences)?),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+        })
+    }
+
+    pub async fn update_user_preferences(
+        &self,
+        user_id: &UserId,
+        req: crate::proto::client::UpdateUserPreferencesRequest,
+    ) -> Result<crate::proto::client::UpdateUserPreferencesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let update = user_preferences_update_from_proto(req);
+        if update.is_empty() {
+            return Err(ApiError::InvalidInput(
+                "No valid user preference fields provided".to_string(),
+            ));
+        }
+        let (preferences, auth_factors) = self
+            .user_service
+            .update_user_preferences(user_id, update)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::client::UpdateUserPreferencesResponse {
+            preferences: Some(user_preferences_to_proto(&preferences)?),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
         })
     }
 

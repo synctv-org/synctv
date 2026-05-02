@@ -1130,6 +1130,7 @@ mod response_format {
             }),
             access_token: "at_123".to_string(),
             refresh_token: "rt_456".to_string(),
+            mfa: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["user"].is_object());

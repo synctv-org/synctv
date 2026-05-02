@@ -28,29 +28,32 @@ use crate::proto::client::{
     CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
     DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
     DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
-    EditMediaResponse, FinishOpaqueLoginRequest, FinishOpaquePasswordUpdateRequest,
-    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
-    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
-    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
-    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
+    FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
+    FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest, FinishPasskeyLoginRequest,
+    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
+    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
+    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
+    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
+    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
-    KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
-    ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse, ListPlaylistItemsRequest,
-    ListPlaylistItemsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
-    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomStreamsRequest,
-    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
-    LogoutRequest, LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
-    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
-    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestPasswordResetRequest,
-    RequestPasswordResetResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse, ServerMessage, SetPasswordRequest,
-    SetPasswordResponse, SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest,
-    SetUsernameResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
-    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    GetRoomSettingsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
+    JoinRoomRequest, JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest,
+    LeaveRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
+    ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
+    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
+    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
+    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
+    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
+    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
+    SendVerificationEmailResponse, ServerMessage, SetPasswordRequest, SetPasswordResponse,
+    SetRoomPasswordRequest, SetRoomPasswordResponse, SetUsernameRequest, SetUsernameResponse,
+    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
+    StartOpaqueLoginResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
     StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, StartPasskeyBindRequest,
     StartPasskeyBindResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
     StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, StartPlaybackRequest,
@@ -58,6 +61,8 @@ use crate::proto::client::{
     TransferRoomOwnershipResponse, UnbanMemberRequest, UnbanMemberResponse,
     UpdateMemberPermissionsRequest, UpdateMemberPermissionsResponse, UpdatePlaylistRequest,
     UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, VerifyMfaEmailCodeRequest,
+    VerifyMfaPasswordRequest,
 };
 
 /// Buffer size for the outgoing message channel in `MessageStream` connections.
@@ -442,14 +447,10 @@ impl AuthService for ClientServiceImpl {
                 .await
                 .map_err(map_email_flow_error)?;
 
-            LoginResponse {
-                user: Some(crate::impls::client::user_to_proto(
-                    &result.user,
-                    &self.client_api.public_id_codec,
-                )),
-                access_token: result.access_token,
-                refresh_token: result.refresh_token,
-            }
+            crate::impls::client::login_outcome_to_proto(
+                result.login,
+                &self.client_api.public_id_codec,
+            )
         } else {
             return Err(Status::invalid_argument(
                 "Email token login requires email only and cannot be combined with username or password.",
@@ -635,6 +636,144 @@ impl AuthService for ClientServiceImpl {
         Ok(Response::new(RequestEmailLoginResponse {
             message: result.message,
         }))
+    }
+
+    async fn request_mfa_email_code(
+        &self,
+        request: Request<RequestMfaEmailCodeRequest>,
+    ) -> Result<Response<RequestMfaEmailCodeResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = email_api.clone();
+        let executor = self.client_api.clone();
+        let result = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    email_api
+                        .request_mfa_email_code_with_control(
+                            &req.mfa_session_id,
+                            Some(&request_control),
+                        )
+                        .await
+                },
+            )
+            .await
+            .map_err(map_email_flow_error)?;
+
+        Ok(Response::new(RequestMfaEmailCodeResponse {
+            message: result.message,
+            masked_email: result.masked_email,
+        }))
+    }
+
+    async fn verify_mfa_email_code(
+        &self,
+        request: Request<VerifyMfaEmailCodeRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = email_api.clone();
+        let public_id_codec = self.client_api.public_id_codec.clone();
+        let executor = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    crate::impls::validate_proto_request(&req)?;
+                    let outcome = email_api
+                        .verify_mfa_email_code_with_control(
+                            &req.mfa_session_id,
+                            &req.email_token,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await?;
+                    Ok::<_, crate::impls::ApiError>(crate::impls::client::login_outcome_to_proto(
+                        outcome,
+                        &public_id_codec,
+                    ))
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+
+        Ok(Response::new(response))
+    }
+
+    async fn start_mfa_passkey(
+        &self,
+        request: Request<StartMfaPasskeyRequest>,
+    ) -> Result<Response<StartMfaPasskeyResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |_request_control| async move {
+                    client_api.start_mfa_passkey_with_control(req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn finish_mfa_passkey(
+        &self,
+        request: Request<FinishMfaPasskeyRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .finish_mfa_passkey_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn verify_mfa_password(
+        &self,
+        request: Request<VerifyMfaPasswordRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let client_ip = metadata.client_ip;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .verify_mfa_password_with_control(req, client_ip, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 
     async fn refresh_token(
@@ -891,6 +1030,51 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
                     client_api.delete_passkey(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_user_preferences(
+        &self,
+        request: Request<GetUserPreferencesRequest>,
+    ) -> Result<Response<GetUserPreferencesResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .get_user_preferences(&authenticated.user_id)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_user_preferences(
+        &self,
+        request: Request<UpdateUserPreferencesRequest>,
+    ) -> Result<Response<UpdateUserPreferencesResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .update_user_preferences(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await

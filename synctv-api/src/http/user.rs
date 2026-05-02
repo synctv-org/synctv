@@ -22,6 +22,9 @@ use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
     StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
 };
+use crate::proto::client::{
+    GetUserPreferencesResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+};
 pub use crate::proto::client::{UpdateUserRequest, UpdateUserResponse};
 
 /// Get current user info
@@ -54,6 +57,49 @@ pub async fn get_me(
             &request_meta,
             EndpointRateLimitCategory::Read,
             |auth| async move { client_api.get_profile(&auth.user_id).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn get_user_preferences(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+) -> AppResult<Json<GetUserPreferencesResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.get_user_preferences(&auth.user_id).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn update_user_preferences(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateUserPreferencesRequest>,
+) -> AppResult<Json<UpdateUserPreferencesResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.client_api.clone();
+    let client_api = state.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.update_user_preferences(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

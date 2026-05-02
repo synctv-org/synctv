@@ -86,6 +86,7 @@ impl_with_string_field!(
     [
         crate::proto::client::UpdateMemberPermissionsRequest,
         crate::proto::admin::UpdateUserRoleRequest,
+        crate::proto::admin::UpdateUserPreferencesRequest,
         crate::proto::admin::UpdateUserPasswordRequest,
         crate::proto::admin::UpdateUserUsernameRequest,
         crate::proto::admin::BanUserRequest,
@@ -674,6 +675,26 @@ fn register_extracted_auth_routes() -> Router<AppState> {
             post(auth::finish_opaque_registration),
         )
         .route("/api/auth/email/request", post(auth::request_email_login))
+        .route(
+            "/api/auth/mfa/email/request",
+            post(auth::request_mfa_email_code),
+        )
+        .route(
+            "/api/auth/mfa/email/verify",
+            post(auth::verify_mfa_email_code),
+        )
+        .route(
+            "/api/auth/mfa/passkeys/start",
+            post(auth::start_mfa_passkey),
+        )
+        .route(
+            "/api/auth/mfa/passkeys/finish",
+            post(auth::finish_mfa_passkey),
+        )
+        .route(
+            "/api/auth/mfa/password/verify",
+            post(auth::verify_mfa_password),
+        )
         .route("/api/auth/refresh", post(auth::refresh_token))
         // Tighter body limit for authentication endpoints (64 KB)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
@@ -816,6 +837,10 @@ fn register_extracted_user_routes() -> Router<AppState> {
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::list_my_rooms))
         .route("/api/user", axum::routing::patch(user::update_user))
+        .route(
+            "/api/user/preferences",
+            get(user::get_user_preferences).patch(user::update_user_preferences),
+        )
         .route("/api/user/passkeys", get(user::list_passkeys))
         .route(
             "/api/user/passkeys/bind/start",
@@ -1736,6 +1761,12 @@ mod tests {
         let app = register_all_routes_for_test(&state).with_state(state);
 
         for (method, uri, body) in [
+            ("GET", "/api/user/preferences", None),
+            (
+                "PATCH",
+                "/api/user/preferences",
+                Some(r#"{"two_factor_enabled":true}"#),
+            ),
             ("GET", "/api/user/passkeys", None),
             (
                 "POST",

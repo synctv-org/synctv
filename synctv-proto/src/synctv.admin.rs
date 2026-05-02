@@ -462,6 +462,72 @@ pub struct GetUserResponse {
     #[prost(message, optional, tag = "1")]
     pub user: ::core::option::Option<AdminUser>,
 }
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.GetUserPreferencesRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetUserPreferencesRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetUserPreferencesRequest {
+    #[prost(string, tag = "1")]
+    pub user_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.GetUserPreferencesResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetUserPreferencesResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetUserPreferencesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<AdminUser>,
+    #[prost(message, optional, tag = "2")]
+    pub preferences: ::core::option::Option<super::client::UserPreferences>,
+    #[prost(message, optional, tag = "3")]
+    pub auth_factors: ::core::option::Option<super::client::UserAuthFactors>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.UpdateUserPreferencesRequest")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateUserPreferencesRequest))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateUserPreferencesRequest {
+    #[prost(string, tag = "1")]
+    #[serde(default)]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(bool, optional, tag = "2")]
+    #[serde(default)]
+    pub two_factor_enabled: ::core::option::Option<bool>,
+    #[prost(message, optional, tag = "4")]
+    pub notifications: ::core::option::Option<
+        super::client::UserNotificationPreferences,
+    >,
+    #[prost(message, optional, tag = "6")]
+    pub provider_defaults: ::core::option::Option<super::client::UserProviderDefaults>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.admin.UpdateUserPreferencesResponse")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateUserPreferencesResponse))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateUserPreferencesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<AdminUser>,
+    #[prost(message, optional, tag = "2")]
+    pub preferences: ::core::option::Option<super::client::UserPreferences>,
+    #[prost(message, optional, tag = "3")]
+    pub auth_factors: ::core::option::Option<super::client::UserAuthFactors>,
+}
 /// SECURITY: Admin password reset is a privileged operation. The reason field
 /// provides an audit trail for compliance.
 #[derive(::prost_reflect::ReflectMessage)]
@@ -2400,6 +2466,58 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("synctv.admin.AdminService", "GetUser"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/GetUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "GetUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn update_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/UpdateUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "UpdateUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn update_user_password(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdateUserPasswordRequest>,
@@ -3527,6 +3645,20 @@ pub mod admin_service_server {
             &self,
             request: tonic::Request<super::GetUserRequest>,
         ) -> std::result::Result<tonic::Response<super::GetUserResponse>, tonic::Status>;
+        async fn get_user_preferences(
+            &self,
+            request: tonic::Request<super::GetUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetUserPreferencesResponse>,
+            tonic::Status,
+        >;
+        async fn update_user_preferences(
+            &self,
+            request: tonic::Request<super::UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateUserPreferencesResponse>,
+            tonic::Status,
+        >;
         async fn update_user_password(
             &self,
             request: tonic::Request<super::UpdateUserPasswordRequest>,
@@ -4247,6 +4379,101 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetUserSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/GetUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetUserPreferencesSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::GetUserPreferencesRequest>
+                    for GetUserPreferencesSvc<T> {
+                        type Response = super::GetUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetUserPreferencesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::get_user_preferences(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetUserPreferencesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/UpdateUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateUserPreferencesSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::UpdateUserPreferencesRequest>
+                    for UpdateUserPreferencesSvc<T> {
+                        type Response = super::UpdateUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateUserPreferencesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::update_user_preferences(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateUserPreferencesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

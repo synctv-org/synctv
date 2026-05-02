@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -534,6 +535,8 @@ pub enum UserSubcommand {
     List(UserListArgs),
     /// Get a user by username or explicit user ID
     Get(UserGetArgs),
+    /// Inspect or update user preferences
+    Preferences(UserPreferencesCommand),
     /// Create a user
     Create(UserAddArgs),
     /// Delete a user
@@ -560,6 +563,20 @@ pub enum UserSubcommand {
 pub struct UserAdminCommand {
     #[command(subcommand)]
     pub command: UserAdminSubcommand,
+}
+
+#[derive(Debug, Args)]
+pub struct UserPreferencesCommand {
+    #[command(subcommand)]
+    pub command: UserPreferencesSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UserPreferencesSubcommand {
+    /// Get user preferences and available authentication factors
+    Get(UserPreferencesGetArgs),
+    /// Update user preferences
+    Set(Box<UserPreferencesSetArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -1502,6 +1519,36 @@ pub struct UserGetArgs {
 
     #[command(flatten)]
     pub user: UserRefArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UserPreferencesGetArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct UserPreferencesSetArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+
+    /// Enable or disable user-level two-factor authentication
+    #[arg(long)]
+    pub two_factor_enabled: Option<bool>,
+
+    /// Replace notification preferences with a full JSON object
+    #[arg(long)]
+    pub notifications_json: Option<String>,
+
+    /// Replace provider defaults with a full JSON object
+    #[arg(long)]
+    pub provider_defaults_json: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3675,6 +3722,14 @@ fn merge_user_command_globals(command: &mut UserCommand, root: &GlobalConfigArgs
         UserSubcommand::SetPassword(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::SetUsername(args) => merge_remote_access_args(&mut args.remote, root),
         UserSubcommand::Rooms(args) => merge_remote_access_args(&mut args.remote, root),
+        UserSubcommand::Preferences(command) => match &mut command.command {
+            UserPreferencesSubcommand::Get(args) => {
+                merge_remote_access_args(&mut args.remote, root);
+            }
+            UserPreferencesSubcommand::Set(args) => {
+                merge_remote_access_args(&mut args.remote, root);
+            }
+        },
         UserSubcommand::Admin(command) => match &mut command.command {
             UserAdminSubcommand::Grant(args) => merge_remote_access_args(&mut args.remote, root),
             UserAdminSubcommand::Revoke(args) => merge_remote_access_args(&mut args.remote, root),
@@ -4410,6 +4465,52 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        UserSubcommand::Preferences(preferences_command) => match preferences_command.command {
+            UserPreferencesSubcommand::Get(args) => {
+                let session = connect_remote_access(&args.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "get user preferences",
+                    get_user_preferences,
+                    management_proto::GetUserPreferencesRequest {
+                        user: Some(args.user.to_management_proto()),
+                    }
+                )?;
+                print_humanized_structured_output(args.remote.output, &response)
+            }
+            UserPreferencesSubcommand::Set(args) => {
+                let args = *args;
+                let notifications = parse_cli_optional_json(
+                    "notification preferences",
+                    args.notifications_json.as_deref(),
+                )?;
+                let provider_defaults = parse_cli_optional_json(
+                    "provider defaults",
+                    args.provider_defaults_json.as_deref(),
+                )?;
+
+                if args.two_factor_enabled.is_none()
+                    && notifications.is_none()
+                    && provider_defaults.is_none()
+                {
+                    bail!("No user preference fields provided");
+                }
+
+                let session = connect_remote_access(&args.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "update user preferences",
+                    update_user_preferences,
+                    management_proto::UpdateUserPreferencesRequest {
+                        user: Some(args.user.to_management_proto()),
+                        two_factor_enabled: args.two_factor_enabled,
+                        notifications,
+                        provider_defaults,
+                    }
+                )?;
+                print_humanized_structured_output(args.remote.output, &response)
+            }
+        },
         UserSubcommand::Create(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(
@@ -6463,6 +6564,20 @@ fn raw_optional_bytes(raw: Option<&str>) -> Vec<u8> {
         .map_or_else(Vec::new, ToOwned::to_owned)
 }
 
+fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(raw).with_context(|| format!("Invalid {label} JSON"))
+}
+
+fn parse_cli_optional_json<T>(label: &str, raw: Option<&str>) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    raw.map(|value| parse_cli_json(label, value)).transpose()
+}
+
 fn parse_setting_entries(entries: &[String]) -> Result<std::collections::HashMap<String, String>> {
     let mut settings = std::collections::HashMap::with_capacity(entries.len());
     for entry in entries {
@@ -6506,6 +6621,18 @@ where
         RemoteOutputFormat::Human => print_human(value),
         RemoteOutputFormat::Json => print_json(value),
         RemoteOutputFormat::Yaml => print_yaml(value),
+    }
+}
+
+fn print_humanized_structured_output<T>(format: RemoteOutputFormat, value: &T) -> Result<()>
+where
+    T: ?Sized + ToHuman,
+    T::Human: serde::Serialize,
+{
+    let human = value.to_human();
+    match format {
+        RemoteOutputFormat::Human | RemoteOutputFormat::Yaml => print_yaml(&human),
+        RemoteOutputFormat::Json => print_json(&human),
     }
 }
 
@@ -6994,6 +7121,47 @@ struct HumanListRoomStreamsResponse {
 #[derive(Debug, Clone, Serialize)]
 struct HumanUserResponse<T> {
     user: Option<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUserAuthFactors {
+    password: bool,
+    webauthn: bool,
+    email: bool,
+    eligible_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUserPreferences {
+    two_factor_enabled: bool,
+    notifications: Option<HumanUserNotificationPreferences>,
+    provider_defaults: Option<HumanUserProviderDefaults>,
+    settings: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUserNotificationPreferences {
+    room_invitation_in_app: bool,
+    room_event_in_app: bool,
+    system_announcement_in_app: bool,
+    room_invitation_email: bool,
+    room_event_email: bool,
+    system_announcement_email: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[allow(clippy::struct_field_names)]
+struct HumanUserProviderDefaults {
+    alist_instance_name: Option<String>,
+    emby_instance_name: Option<String>,
+    bilibili_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HumanUserPreferencesResponse<T> {
+    user: Option<T>,
+    preferences: Option<HumanUserPreferences>,
+    auth_factors: Option<HumanUserAuthFactors>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7754,6 +7922,71 @@ impl ToHuman for synctv_proto::admin::GetUserResponse {
     fn to_human(&self) -> Self::Human {
         HumanUserResponse {
             user: self.user.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::UserAuthFactors {
+    type Human = HumanUserAuthFactors;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUserAuthFactors {
+            password: self.password,
+            webauthn: self.webauthn,
+            email: self.email,
+            eligible_count: self.eligible_count,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::UserPreferences {
+    type Human = HumanUserPreferences;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUserPreferences {
+            two_factor_enabled: self.two_factor_enabled,
+            notifications: self.notifications.map(|notifications| {
+                HumanUserNotificationPreferences {
+                    room_invitation_in_app: notifications.room_invitation_in_app,
+                    room_event_in_app: notifications.room_event_in_app,
+                    system_announcement_in_app: notifications.system_announcement_in_app,
+                    room_invitation_email: notifications.room_invitation_email,
+                    room_event_email: notifications.room_event_email,
+                    system_announcement_email: notifications.system_announcement_email,
+                }
+            }),
+            provider_defaults: self.provider_defaults.as_ref().map(|provider_defaults| {
+                HumanUserProviderDefaults {
+                    alist_instance_name: provider_defaults.alist_instance_name.clone(),
+                    emby_instance_name: provider_defaults.emby_instance_name.clone(),
+                    bilibili_instance_name: provider_defaults.bilibili_instance_name.clone(),
+                }
+            }),
+            settings: parse_json_bytes(&self.settings),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::GetUserPreferencesResponse {
+    type Human = HumanUserPreferencesResponse<HumanAdminUser>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUserPreferencesResponse {
+            user: self.user.to_human(),
+            preferences: self.preferences.to_human(),
+            auth_factors: self.auth_factors.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::UpdateUserPreferencesResponse {
+    type Human = HumanUserPreferencesResponse<HumanAdminUser>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanUserPreferencesResponse {
+            user: self.user.to_human(),
+            preferences: self.preferences.to_human(),
+            auth_factors: self.auth_factors.to_human(),
         }
     }
 }

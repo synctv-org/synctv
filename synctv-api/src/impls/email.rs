@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
-    rate_limit::RateLimitError, EmailService, EmailTokenService, EmailTokenType,
-    RequestRateLimiterService, UserService,
+    rate_limit::RateLimitError, AuthFactorMethod, AuthenticatedLogin, EmailService,
+    EmailTokenService, EmailTokenType, RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
@@ -71,10 +71,13 @@ pub struct RequestEmailLoginResult {
 
 /// Confirm email login result
 pub struct ConfirmEmailLoginResult {
-    pub user: synctv_core::models::User,
     pub user_id: String,
-    pub access_token: String,
-    pub refresh_token: String,
+    pub login: AuthenticatedLogin,
+}
+
+pub struct RequestMfaEmailCodeResult {
+    pub message: String,
+    pub masked_email: String,
 }
 
 #[must_use]
@@ -589,7 +592,7 @@ impl EmailApiImpl {
         }
 
         let login_key = format!("email:{}", Self::normalize_rate_limited_email(email));
-        let (user, access_token, refresh_token) = self
+        let login = self
             .user_service
             .login_with_verified_email_with_control(&user.id, &login_key, client_ip, control)
             .await
@@ -597,10 +600,71 @@ impl EmailApiImpl {
 
         Ok(ConfirmEmailLoginResult {
             user_id: self.public_user_id(user.id),
-            user,
-            access_token,
-            refresh_token,
+            login,
         })
+    }
+
+    pub async fn request_mfa_email_code_with_control(
+        &self,
+        mfa_session_id: &str,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestMfaEmailCodeResult, ApiError> {
+        let user = self
+            .user_service
+            .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::Email)
+            .await
+            .map_err(ApiError::from)?;
+        let email = user
+            .email
+            .as_deref()
+            .ok_or_else(|| ApiError::Authentication("Authentication failed".to_string()))?;
+        self.check_email_rate_limit(email, control).await?;
+        let _token = self
+            .email_service
+            .send_email_login_email_with_control(
+                email,
+                &self.email_token_service,
+                &user.id,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        Ok(RequestMfaEmailCodeResult {
+            message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
+            masked_email: synctv_core::service::mask_email(email),
+        })
+    }
+
+    pub async fn verify_mfa_email_code_with_control(
+        &self,
+        mfa_session_id: &str,
+        token: &str,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AuthenticatedLogin, ApiError> {
+        let user = self
+            .user_service
+            .get_mfa_session_user_for_method(mfa_session_id, AuthFactorMethod::Email)
+            .await
+            .map_err(ApiError::from)?;
+        self.email_token_service
+            .validate_token_for_user_with_control(
+                token,
+                EmailTokenType::EmailLogin,
+                &user.id,
+                control,
+            )
+            .await
+            .map_err(|_| ApiError::Authentication("Invalid or expired login code".to_string()))?;
+        self.user_service
+            .complete_mfa_session_with_control(
+                mfa_session_id,
+                AuthFactorMethod::Email,
+                client_ip,
+                control,
+            )
+            .await
+            .map_err(ApiError::from)
     }
 }
 
@@ -613,6 +677,7 @@ mod tests {
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
+    use synctv_core::service::AuthenticatedLogin;
     use synctv_core::service::{
         auth::BruteForceProtection, EmailService, EmailTokenService, InMemoryTokenBlacklistStore,
         JwtService, RateLimiter, UserService,
@@ -750,8 +815,17 @@ mod tests {
             api.public_user_id(created.id),
             "first login code should authenticate the target user"
         );
-        assert!(!first_login.access_token.is_empty());
-        assert!(!first_login.refresh_token.is_empty());
+        assert!(
+            matches!(
+                first_login.login,
+                AuthenticatedLogin::Complete {
+                    access_token,
+                    refresh_token,
+                    ..
+                } if !access_token.is_empty() && !refresh_token.is_empty()
+            ),
+            "first login code should issue tokens"
+        );
 
         let second_login = api
             .confirm_email_login(&email, &second, None)
@@ -762,8 +836,89 @@ mod tests {
             api.public_user_id(created.id),
             "second outstanding login code should remain usable"
         );
-        assert!(!second_login.access_token.is_empty());
-        assert!(!second_login.refresh_token.is_empty());
+        assert!(
+            matches!(
+                second_login.login,
+                AuthenticatedLogin::Complete {
+                    access_token,
+                    refresh_token,
+                    ..
+                } if !access_token.is_empty() && !refresh_token.is_empty()
+            ),
+            "second login code should issue tokens"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
+    async fn mfa_email_code_flow_completes_password_first_factor_login() {
+        let (_container, pool) = synctv_core_testing::create_test_pool().await;
+        let api = build_test_email_api(pool);
+        let email = format!("mfa_{}@example.com", synctv_common::snanoid!(8));
+        let (user, _, _) = api
+            .user_service
+            .register(
+                "mfa_email_user".to_string(),
+                Some(email.clone()),
+                "StrongPass1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        api.user_service
+            .set_email_verified(&user.id, true)
+            .await
+            .unwrap();
+        api.user_service
+            .set_two_factor_enabled(&user.id, true)
+            .await
+            .unwrap();
+
+        let first_factor = api
+            .user_service
+            .login(
+                "mfa_email_user".to_string(),
+                "StrongPass1".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        let AuthenticatedLogin::MfaRequired { challenge, .. } = first_factor else {
+            panic!("password first factor should require MFA");
+        };
+        assert!(challenge
+            .available_methods
+            .contains(&synctv_core::service::AuthFactorMethod::Email));
+
+        let request = api
+            .request_mfa_email_code_with_control(&challenge.session_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            request.masked_email,
+            synctv_core::service::mask_email(&email)
+        );
+
+        let token = api
+            .email_token_service
+            .generate_token(&user.id, synctv_core::service::EmailTokenType::EmailLogin)
+            .await
+            .unwrap();
+        let completed = api
+            .verify_mfa_email_code_with_control(&challenge.session_id, &token, None, None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                completed,
+                AuthenticatedLogin::Complete {
+                    access_token,
+                    refresh_token,
+                    ..
+                } if !access_token.is_empty() && !refresh_token.is_empty()
+            ),
+            "email MFA verification should issue tokens"
+        );
     }
 
     #[tokio::test]

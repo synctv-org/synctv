@@ -87,6 +87,10 @@ pub fn create_admin_router() -> Router<AppState> {
         // User management
         .route("/users", get(list_users).post(create_user))
         .route("/users/{user_id}", get(get_user).delete(delete_user))
+        .route(
+            "/users/{user_id}/preferences",
+            get(get_user_preferences).patch(update_user_preferences),
+        )
         .route("/users/{user_id}/role", post(set_user_role))
         .route("/users/{user_id}/password", post(set_user_password))
         .route("/users/{user_id}/username", post(set_user_username))
@@ -633,6 +637,73 @@ pub(crate) async fn get_user(
         request_meta,
         require_admin_api,
         move |api, _, _| async move { api.get_user(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/users/{user_id}/preferences",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        responses(
+            (status = 200, description = "User preferences", body = admin::GetUserPreferencesResponse),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "User not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn get_user_preferences(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(req): Path<admin::GetUserPreferencesRequest>,
+) -> AppResult<Json<admin::GetUserPreferencesResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.get_user_preferences(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/admin/users/{user_id}/preferences",
+        tag = "Admin",
+        params(("user_id" = String, Path, description = "User ID")),
+        request_body = admin::UpdateUserPreferencesRequest,
+        responses(
+            (status = 200, description = "User preferences updated", body = admin::UpdateUserPreferencesResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "User not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_user_preferences(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<admin::UserPathRequest>,
+    Json(req): Json<admin::UpdateUserPreferencesRequest>,
+) -> AppResult<Json<admin::UpdateUserPreferencesResponse>> {
+    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.update_user_preferences(req, &validated.user_id, &rctx)
+                .await
+        },
     )
     .await?;
     Ok(Json(resp))

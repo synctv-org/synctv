@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.admin;
 
 import "proto/buf/validate/validate.proto";
+import "proto/client.proto";
 import "proto/common.proto";
 
 // Admin API for SyncTV - Requires admin or root permissions
@@ -26,6 +27,8 @@ service AdminService {
     rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
     rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
     rpc GetUser(GetUserRequest) returns (GetUserResponse);
+    rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+    rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
     rpc UpdateUserPassword(UpdateUserPasswordRequest) returns (UpdateUserPasswordResponse);
     rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (UpdateUserUsernameResponse);
     rpc UpdateUserRole(UpdateUserRoleRequest) returns (UpdateUserRoleResponse);
@@ -327,6 +330,37 @@ message UserPathRequest {
 
 message GetUserResponse {
     AdminUser user = 1;
+}
+
+message GetUserPreferencesRequest {
+    string user_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^usr_[A-Za-z0-9]+$"
+    }];
+}
+
+message GetUserPreferencesResponse {
+    AdminUser user = 1;
+    synctv.client.UserPreferences preferences = 2;
+    synctv.client.UserAuthFactors auth_factors = 3;
+}
+
+message UpdateUserPreferencesRequest {
+    string user_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^usr_[A-Za-z0-9]+$"
+    }];
+    optional bool two_factor_enabled = 2;
+    synctv.client.UserNotificationPreferences notifications = 4;
+    synctv.client.UserProviderDefaults provider_defaults = 6;
+}
+
+message UpdateUserPreferencesResponse {
+    AdminUser user = 1;
+    synctv.client.UserPreferences preferences = 2;
+    synctv.client.UserAuthFactors auth_factors = 3;
 }
 
 // SECURITY: Admin password reset is a privileged operation. The reason field

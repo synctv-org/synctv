@@ -117,7 +117,7 @@ pub enum PlayMode {
 }
 
 /// Auto-play settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoPlaySettings {
     /// Whether auto-play is enabled
     pub enabled: bool,

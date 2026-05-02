@@ -166,6 +166,7 @@ message ExchangeAuthorizationCodeResponse {
 
     // Whether this was a bind operation (true) or login operation (false)
     bool is_bind = 6;
+
 }
 
 // ==================== List Available Providers ====================

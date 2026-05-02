@@ -14,7 +14,8 @@ use synctv_core::models::{
     BanRecordId, MediaId, MediaListQuery as CoreMediaListQuery,
     MediaListSortBy as CoreMediaListSortBy, PlaylistId, PlaylistListQuery as CorePlaylistListQuery,
     PlaylistListSortBy as CorePlaylistListSortBy, ReviewRequestId, RoomId,
-    SortDirection as CoreSortDirection, UserId, UserRole, UserStatus,
+    SortDirection as CoreSortDirection, UserAuthFactors, UserId, UserPreferences, UserRole,
+    UserStatus,
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
@@ -31,6 +32,10 @@ use super::client::convert::{
     playback_state_to_proto, playlist_list_to_proto, playlist_path_node_to_proto,
     playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
     room_to_proto_basic, sign_local_bilibili_danmaku_urls, user_status_to_proto,
+};
+use super::client::{
+    user_notification_preferences_to_proto, user_preferences_update_from_proto,
+    user_provider_defaults_to_proto,
 };
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
@@ -144,6 +149,32 @@ fn map_batch_result_error(error: impl Into<ApiError>) -> String {
         }
         _ => error.message().to_string(),
     }
+}
+
+fn auth_factors_to_proto(factors: &UserAuthFactors) -> crate::proto::client::UserAuthFactors {
+    crate::proto::client::UserAuthFactors {
+        password: factors.password,
+        webauthn: factors.webauthn,
+        email: factors.email,
+        eligible_count: i32::try_from(factors.eligible_count()).unwrap_or(i32::MAX),
+    }
+}
+
+fn user_preferences_to_proto(
+    preferences: &UserPreferences,
+) -> Result<crate::proto::client::UserPreferences, ApiError> {
+    Ok(crate::proto::client::UserPreferences {
+        two_factor_enabled: preferences.two_factor_enabled,
+        notifications: Some(user_notification_preferences_to_proto(
+            &preferences.notifications,
+        )),
+        provider_defaults: Some(user_provider_defaults_to_proto(
+            &preferences.provider_defaults,
+        )),
+        settings: serde_json::to_vec(&preferences.settings).map_err(|error| {
+            ApiError::Internal(format!("Failed to serialize settings: {error}"))
+        })?,
+    })
 }
 
 fn live_streaming_unavailable_error() -> ApiError {
@@ -2482,6 +2513,90 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::GetUserResponse {
             user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+        })
+    }
+
+    pub async fn get_user_preferences(
+        &self,
+        req: crate::proto::admin::GetUserPreferencesRequest,
+    ) -> Result<crate::proto::admin::GetUserPreferencesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let user = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map_err(ApiError::from)?;
+        let (preferences, auth_factors) = self
+            .user_service
+            .get_user_preferences(&uid)
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(crate::proto::admin::GetUserPreferencesResponse {
+            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            preferences: Some(user_preferences_to_proto(&preferences)?),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
+        })
+    }
+
+    pub async fn update_user_preferences(
+        &self,
+        req: crate::proto::admin::UpdateUserPreferencesRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::UpdateUserPreferencesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let update = user_preferences_update_from_proto(
+            crate::proto::client::UpdateUserPreferencesRequest {
+                two_factor_enabled: req.two_factor_enabled,
+                notifications: req.notifications,
+                provider_defaults: req.provider_defaults,
+            },
+        );
+        if update.is_empty() {
+            return Err(ApiError::InvalidInput(
+                "No valid user preference fields provided".to_string(),
+            ));
+        }
+
+        let actor = self.require_admin_actor(admin_user_id).await?;
+        let user = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map_err(Self::map_target_user_lookup_error)?;
+        check_role_hierarchy(actor.role, user.role, "update preferences")?;
+
+        let (preferences, auth_factors) = self
+            .user_service
+            .update_user_preferences(&uid, update.clone())
+            .await
+            .map_err(ApiError::from)?;
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::service::AuditAction::UserPreferencesUpdated,
+            synctv_core::service::AuditTargetType::User,
+            Some(uid.to_string()),
+            serde_json::json!({
+                "target_user_id": uid.to_string(),
+                "target_username": user.username.clone(),
+                "updated_fields": {
+                    "two_factor_enabled": update.two_factor_enabled.is_some(),
+                    "notifications": update.notifications.is_some(),
+                    "provider_defaults": update.provider_defaults.is_some(),
+                },
+            }),
+            ctx,
+        )
+        .await;
+
+        Ok(crate::proto::admin::UpdateUserPreferencesResponse {
+            user: Some(admin_user_to_proto(&user, &self.public_id_codec)),
+            preferences: Some(user_preferences_to_proto(&preferences)?),
+            auth_factors: Some(auth_factors_to_proto(&auth_factors)),
         })
     }
 
@@ -8087,6 +8202,21 @@ mod tests {
         match result {
             Err(ApiError::Authorization(msg)) => {
                 assert!(msg.contains("root"), "Error should mention root: {msg}");
+            }
+            other => panic!("Expected Authorization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_role_hierarchy_admin_cannot_update_admin_preferences() {
+        let result = check_role_hierarchy(UserRole::Admin, UserRole::Admin, "update preferences");
+        assert!(
+            result.is_err(),
+            "Admin should not be able to update Admin user preferences"
+        );
+        match result {
+            Err(ApiError::Authorization(msg)) => {
+                assert!(msg.contains("admin"), "Error should mention admin: {msg}");
             }
             other => panic!("Expected Authorization error, got: {other:?}"),
         }

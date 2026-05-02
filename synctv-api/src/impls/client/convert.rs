@@ -141,7 +141,9 @@ pub(crate) fn playback_client_profile_from_proto(
                 }
             },
             max_streaming_bitrate: profile.max_streaming_bitrate,
-            max_audio_channels: profile.max_audio_channels,
+            max_audio_channels: profile
+                .max_audio_channels
+                .or(default_profile.max_audio_channels),
             supported_video_codecs: if profile.supported_video_codecs.is_empty() {
                 default_profile.supported_video_codecs.clone()
             } else {

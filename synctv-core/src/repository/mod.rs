@@ -13,6 +13,7 @@ pub mod room_settings;
 pub mod settings;
 pub mod user;
 pub mod user_oauth_provider;
+pub mod user_preferences;
 pub mod webauthn_credential;
 
 use sha2::{Digest, Sha256};
@@ -32,6 +33,7 @@ pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;
 pub use user::{PasswordCredentialMaterial, UserRepository};
 pub use user_oauth_provider::UserOAuthProviderRepository;
+pub use user_preferences::UserPreferencesRepository;
 pub use webauthn_credential::{WebAuthnCredential, WebAuthnCredentialRepository};
 
 #[must_use]

@@ -409,6 +409,144 @@ pub mod auth_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn request_mfa_email_code(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::RequestMfaEmailCodeRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RequestMfaEmailCodeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/RequestMfaEmailCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "RequestMfaEmailCode"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn verify_mfa_email_code(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::VerifyMfaEmailCodeRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/VerifyMfaEmailCode",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "VerifyMfaEmailCode"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn start_mfa_passkey(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::StartMfaPasskeyRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::StartMfaPasskeyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/StartMfaPasskey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.AuthService", "StartMfaPasskey"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn finish_mfa_passkey(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::FinishMfaPasskeyRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/FinishMfaPasskey",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "FinishMfaPasskey"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn verify_mfa_password(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::VerifyMfaPasswordRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/VerifyMfaPassword",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "VerifyMfaPassword"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn refresh_token(
             &mut self,
             request: impl tonic::IntoRequest<::synctv_proto::client::RefreshTokenRequest>,
@@ -531,6 +669,41 @@ pub mod auth_service_server {
             request: tonic::Request<::synctv_proto::client::RequestEmailLoginRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::RequestEmailLoginResponse>,
+            tonic::Status,
+        >;
+        async fn request_mfa_email_code(
+            &self,
+            request: tonic::Request<::synctv_proto::client::RequestMfaEmailCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::RequestMfaEmailCodeResponse>,
+            tonic::Status,
+        >;
+        async fn verify_mfa_email_code(
+            &self,
+            request: tonic::Request<::synctv_proto::client::VerifyMfaEmailCodeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        >;
+        async fn start_mfa_passkey(
+            &self,
+            request: tonic::Request<::synctv_proto::client::StartMfaPasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::StartMfaPasskeyResponse>,
+            tonic::Status,
+        >;
+        async fn finish_mfa_passkey(
+            &self,
+            request: tonic::Request<::synctv_proto::client::FinishMfaPasskeyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
+            tonic::Status,
+        >;
+        async fn verify_mfa_password(
+            &self,
+            request: tonic::Request<::synctv_proto::client::VerifyMfaPasswordRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::LoginResponse>,
             tonic::Status,
         >;
         async fn refresh_token(
@@ -1170,6 +1343,250 @@ pub mod auth_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/synctv.client.AuthService/RequestMfaEmailCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct RequestMfaEmailCodeSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::RequestMfaEmailCodeRequest,
+                    > for RequestMfaEmailCodeSvc<T> {
+                        type Response = ::synctv_proto::client::RequestMfaEmailCodeResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::RequestMfaEmailCodeRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::request_mfa_email_code(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = RequestMfaEmailCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/VerifyMfaEmailCode" => {
+                    #[allow(non_camel_case_types)]
+                    struct VerifyMfaEmailCodeSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::VerifyMfaEmailCodeRequest,
+                    > for VerifyMfaEmailCodeSvc<T> {
+                        type Response = ::synctv_proto::client::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::VerifyMfaEmailCodeRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::verify_mfa_email_code(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = VerifyMfaEmailCodeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/StartMfaPasskey" => {
+                    #[allow(non_camel_case_types)]
+                    struct StartMfaPasskeySvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::StartMfaPasskeyRequest,
+                    > for StartMfaPasskeySvc<T> {
+                        type Response = ::synctv_proto::client::StartMfaPasskeyResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::StartMfaPasskeyRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::start_mfa_passkey(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StartMfaPasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/FinishMfaPasskey" => {
+                    #[allow(non_camel_case_types)]
+                    struct FinishMfaPasskeySvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::FinishMfaPasskeyRequest,
+                    > for FinishMfaPasskeySvc<T> {
+                        type Response = ::synctv_proto::client::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::FinishMfaPasskeyRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::finish_mfa_passkey(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = FinishMfaPasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/VerifyMfaPassword" => {
+                    #[allow(non_camel_case_types)]
+                    struct VerifyMfaPasswordSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::VerifyMfaPasswordRequest,
+                    > for VerifyMfaPasswordSvc<T> {
+                        type Response = ::synctv_proto::client::LoginResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::VerifyMfaPasswordRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::verify_mfa_password(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = VerifyMfaPasswordSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/synctv.client.AuthService/RefreshToken" => {
                     #[allow(non_camel_case_types)]
                     struct RefreshTokenSvc<T: AuthService>(pub Arc<T>);
@@ -1617,6 +2034,62 @@ pub mod user_service_client {
                 .insert(GrpcMethod::new("synctv.client.UserService", "DeletePasskey"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::GetUserPreferencesRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::GetUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/GetUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.UserService", "GetUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn update_user_preferences(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::UpdateUserPreferencesRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::UpdateUserPreferencesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.UserService/UpdateUserPreferences",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.UserService", "UpdateUserPreferences"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// User-initiated room resource operations outside room-scoped context
         pub async fn create_room(
             &mut self,
@@ -1802,6 +2275,20 @@ pub mod user_service_server {
             request: tonic::Request<::synctv_proto::client::DeletePasskeyRequest>,
         ) -> std::result::Result<
             tonic::Response<::synctv_proto::client::DeletePasskeyResponse>,
+            tonic::Status,
+        >;
+        async fn get_user_preferences(
+            &self,
+            request: tonic::Request<::synctv_proto::client::GetUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::GetUserPreferencesResponse>,
+            tonic::Status,
+        >;
+        async fn update_user_preferences(
+            &self,
+            request: tonic::Request<::synctv_proto::client::UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::UpdateUserPreferencesResponse>,
             tonic::Status,
         >;
         /// User-initiated room resource operations outside room-scoped context
@@ -2387,6 +2874,104 @@ pub mod user_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeletePasskeySvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/GetUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetUserPreferencesSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::GetUserPreferencesRequest,
+                    > for GetUserPreferencesSvc<T> {
+                        type Response = ::synctv_proto::client::GetUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::GetUserPreferencesRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::get_user_preferences(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetUserPreferencesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.UserService/UpdateUserPreferences" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateUserPreferencesSvc<T: UserService>(pub Arc<T>);
+                    impl<
+                        T: UserService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::UpdateUserPreferencesRequest,
+                    > for UpdateUserPreferencesSvc<T> {
+                        type Response = ::synctv_proto::client::UpdateUserPreferencesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::UpdateUserPreferencesRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as UserService>::update_user_preferences(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateUserPreferencesSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

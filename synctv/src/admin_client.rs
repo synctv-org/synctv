@@ -358,11 +358,11 @@ mod tests {
         GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
         GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
         GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
-        GetSystemStatsRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
-        KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
-        ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
-        ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-        ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+        GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
+        KickMemberRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
+        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
         MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
@@ -370,8 +370,8 @@ mod tests {
         StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest, UnbanRoomRequest,
         UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
         UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserRoleRequest,
-        UpdateUserUsernameRequest,
+        UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
+        UpdateUserRoleRequest, UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_management::provider::common as provider_common_proto;
@@ -508,6 +508,20 @@ mod tests {
             &self,
             _: Request<GetUserRequest>,
         ) -> std::result::Result<Response<admin_proto::GetUserResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn get_user_preferences(
+            &self,
+            _: Request<GetUserPreferencesRequest>,
+        ) -> std::result::Result<Response<admin_proto::GetUserPreferencesResponse>, Status>
+        {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn update_user_preferences(
+            &self,
+            _: Request<UpdateUserPreferencesRequest>,
+        ) -> std::result::Result<Response<admin_proto::UpdateUserPreferencesResponse>, Status>
+        {
             Err(Status::unimplemented("test stub"))
         }
         async fn add_admin(

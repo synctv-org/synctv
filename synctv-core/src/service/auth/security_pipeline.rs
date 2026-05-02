@@ -5,7 +5,8 @@
 //! 1. **JWT verification** -- validate signature, expiration, and access token type
 //! 2. **Password invalidation** -- reject tokens issued before a password change
 //! 3. **User status** -- reject banned, pending, or soft-deleted users
-//! 4. **Access token blacklist** -- reject revoked access tokens (e.g., after logout)
+//! 4. **2FA context** -- reject local single-factor tokens while 2FA is enabled
+//! 5. **Access token blacklist** -- reject revoked access tokens (e.g., after logout)
 //!
 //! This module provides [`SecurityPipeline`] so all request execution paths can
 //! delegate to a single implementation, preventing divergence.
@@ -22,6 +23,8 @@ use crate::{
 use super::{Claims, TokenBlacklistStore};
 
 const AUTHENTICATION_FAILED_MESSAGE: &str = "Authentication failed";
+const TWO_FACTOR_REQUIRED_MESSAGE: &str =
+    "Two-factor authentication is required before tokens can be used";
 
 /// Configuration for access token blacklist enforcement.
 #[derive(Debug, Clone, Copy)]
@@ -236,6 +239,14 @@ impl SecurityPipeline {
         let is_banned = self.user_service.is_user_banned(&user_id).await?;
         if user.is_deleted() || is_banned {
             return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        if self.user_service.is_two_factor_enabled(&user_id).await?
+            && !claims.satisfies_two_factor_requirement()
+        {
+            return Err(Error::Authentication(
+                TWO_FACTOR_REQUIRED_MESSAGE.to_string(),
+            ));
         }
 
         // Check access token JTI blacklist (e.g. logout)
@@ -589,6 +600,7 @@ mod tests {
             iat: now.timestamp(),
             exp: (now + chrono::Duration::hours(1)).timestamp(),
             pv,
+            amr: None,
             iss: None,
             aud: None,
         }

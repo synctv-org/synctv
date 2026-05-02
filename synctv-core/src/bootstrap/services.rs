@@ -638,6 +638,11 @@ pub async fn init_services_with_options(
                     &shared_state_profile,
                 )?,
             ),
+            mfa_session_store: Some(
+                crate::service::user::mfa_session_store_from_shared_state_profile(
+                    &shared_state_profile,
+                )?,
+            ),
         },
     ));
     info!("UserService initialized with construction-time dependencies");

@@ -274,7 +274,7 @@ macro_rules! room_setting {
 
         // Auto-registration at program startup using ctor
         paste::paste! {
-            #[ctor::ctor]
+            #[ctor::ctor(unsafe)]
             fn [<_register_ $name:snake>]() {
                 let default_instance: $name = std::default::Default::default();
                 $crate::models::room_settings::RoomSettingsRegistry::register(
@@ -414,7 +414,7 @@ impl RoomSettingProvider for AutoPlay {
 }
 
 // Auto-registration at program startup using ctor for AutoPlay
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn _auto_play_register() {
     let default_instance: AutoPlay = std::default::Default::default();
     RoomSettingsRegistry::register("auto_play", std::sync::Arc::new(default_instance));

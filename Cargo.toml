@@ -56,7 +56,7 @@ needless_for_each = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "1.49", features = [
+tokio = { version = "1.52", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -106,7 +106,7 @@ tower-http = { version = "0.6", features = [
     "timeout",
     "cors",
 ] }
-hyper = { version = "1.8", default-features = false, features = [
+hyper = { version = "1.9", default-features = false, features = [
     "http1",
     "http2",
     "server",
@@ -131,7 +131,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "1.0", features = [
+redis = { version = "1.2", features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -145,7 +145,7 @@ argon2 = "0.5.3"
 opaque-ke = { version = "4.0.1", features = ["argon2"] }
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
-webauthn-rs = { version = "0.6.0-dev", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.6.1-dev", features = ["danger-allow-state-serialisation"] }
 aes-gcm = "0.10.3"
 ammonia = "4.1.2"
 http-acl = "0.11.0"
@@ -169,20 +169,20 @@ bincode = { version = "2.0.1", features = ["serde"] }
 # Caching
 moka = { version = "0.12.15", features = ["future", "sync"] }
 dashmap = "6.1.0"
-lru = "0.17.0"
+lru = "0.18.0"
 
 # IDs & Crypto
 nanoid = "0.5.0"
 uuid = { version = "1.23.1", features = ["v4", "v5", "serde"] }
 sqids = "0.4.2"
 rand = "0.10.1"
-rand_08 = { package = "rand", version = "0.8" }
-rand_chacha_08 = { package = "rand_chacha", version = "0.3" }
+rand_08 = { package = "rand", version = "0.8.6" }
+rand_chacha_08 = { package = "rand_chacha", version = "0.3.1" }
 base64 = "0.22.1"
 humantime = "2.3.0"
 hex = "0.4.3"
 chrono-tz = "0.10.4"
-sha2_010 = { package = "sha2", version = "0.10" }
+sha2_010 = { package = "sha2", version = "0.10.9" }
 iana-time-zone = "0.1.65"
 
 # WebRTC
@@ -192,7 +192,7 @@ webrtc = "0.17.1"
 synctv-xiu = { path = "synctv-xiu", default-features = false }
 
 # Object Storage
-opendal = { version = "0.55.0", default-features = false, features = [
+opendal = { version = "0.56.0", default-features = false, features = [
     "executors-tokio",
     "services-s3",
 ] }
@@ -204,13 +204,13 @@ tracing-subscriber = { version = "0.3", features = [
     "json",
     "fmt",
 ] }
-tracing-appender = "0.2.4"
+tracing-appender = "0.2.5"
 dotenvy = "0.15.7"
 
 # Configuration
 config = "0.15.22"
 clap = { version = "4.6.1", features = ["derive"] }
-clap_complete = "4.6.2"
+clap_complete = "4.6.3"
 
 # Utilities
 anyhow = "1.0.102"
@@ -243,7 +243,7 @@ k8s-openapi = { version = "0.27.1", features = ["v1_32"] }
 
 # TLS
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "tls12"] }
-rustls = { version = "0.23.38", default-features = false, features = ["std", "logging", "tls12"] }
+rustls = { version = "0.23.40", default-features = false, features = ["std", "logging", "tls12"] }
 rustls-pemfile = "2.2.0"
 hyper-util = { version = "0.1.20", features = ["client-legacy", "tokio", "http2"] }
 
@@ -263,7 +263,7 @@ lettre = { version = "0.11", default-features = false, features = [
 handlebars = "6.4.0"
 
 # Initialization
-ctor = "0.10.0"
+ctor = "0.13.1"
 
 # Compression
 flate2 = "1.1.9"
@@ -300,7 +300,7 @@ criterion = { version = "0.8.2", features = ["html_reports", "async_tokio"] }
 
 # Allocators
 tikv-jemallocator = "0.6.1"
-mimalloc = { version = "0.1.48", features = ["v3"] }
+mimalloc = { version = "0.1.50", features = ["v2"] }
 
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto", default-features = false }

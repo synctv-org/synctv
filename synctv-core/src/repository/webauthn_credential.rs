@@ -65,7 +65,7 @@ impl WebAuthnCredentialRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let credential_id = passkey.cred_id().as_ref().to_vec();
+        let credential_id = AsRef::<[u8]>::as_ref(passkey.cred_id()).to_vec();
         let passkey_json = serde_json::to_value(passkey)
             .internal_with_err("Failed to serialize WebAuthn passkey")?;
         let public_key_json = serde_json::to_value(passkey.get_public_key())

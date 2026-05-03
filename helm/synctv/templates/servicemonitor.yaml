@@ -13,6 +13,7 @@ spec:
   selector:
     matchLabels:
       {{- include "synctv.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}

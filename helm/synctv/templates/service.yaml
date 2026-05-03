@@ -4,6 +4,7 @@ metadata:
   name: {{ include "synctv.fullname" . }}
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
   {{- $annotations := dict }}
   {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations.enabled }}
   {{- $_ := set $annotations "prometheus.io/scrape" "true" }}
@@ -66,4 +67,28 @@ spec:
     {{- include "synctv.selectorLabels" . | nindent 4 }}
   {{- if .Values.service.sessionAffinity }}
   sessionAffinity: {{ .Values.service.sessionAffinity }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.grpcServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+  {{- with .Values.grpcService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.grpcService.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.grpcService.port | default .Values.config.server.port }}
+      targetPort: api
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "synctv.selectorLabels" . | nindent 4 }}
+  {{- if .Values.grpcService.sessionAffinity }}
+  sessionAffinity: {{ .Values.grpcService.sessionAffinity }}
   {{- end }}

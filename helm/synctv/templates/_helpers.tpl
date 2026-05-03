@@ -92,6 +92,13 @@ Return the ConfigMap name
 {{- end }}
 
 {{/*
+Return the gRPC service name
+*/}}
+{{- define "synctv.grpcServiceName" -}}
+{{- printf "%s-grpc" (include "synctv.fullname" .) }}
+{{- end }}
+
+{{/*
 Return the metrics TLS secret name
 */}}
 {{- define "synctv.metricsTlsSecretName" -}}

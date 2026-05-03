@@ -42,11 +42,13 @@ Prebuilt image deployment:
 ```bash
 export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
 export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
 export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 docker compose up -d
 ```
 
-This variant uses `synctvorg/synctv:v1` from [docker-compose.yml](./docker-compose.yml) and intentionally keeps the environment surface small.
+This variant uses `synctvorg/synctv:0.1.0` from [docker-compose.yml](./docker-compose.yml) and keeps all current required secrets explicit.
 
 Once the daemon is up, management CLI commands can run inside the container and use the
 default Unix socket without extra flags:
@@ -62,6 +64,8 @@ export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
 export SYNCTV_REDIS_URL="redis://localhost:6379"
 export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
 export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
 export SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true
 export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
 export SYNCTV_SERVER_PORT=8080
@@ -233,6 +237,7 @@ docker compose -f docker-compose.dev.yml up -d postgres redis
 SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
 SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
 SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
 SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
 cargo run -p synctv --bin synctv -- db migrate
 
@@ -362,6 +367,10 @@ redis:
 
 jwt:
   secret: ""  # REQUIRED: Set via SYNCTV_JWT_SECRET env var
+
+security:
+  credential_encryption_key: ""      # Recommended: set via SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+  opaque_server_setup_secret: ""     # REQUIRED: set via SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
 
 logging:
   level: "info"

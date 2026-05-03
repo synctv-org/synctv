@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
 
   synctv:
-    image: synctvorg/synctv:v1
+    image: synctvorg/synctv:0.1.0
     container_name: synctv-app
     ports:
       - "8080:8080"
@@ -47,10 +47,13 @@ services:
     environment:
       SYNCTV_DATABASE_URL: postgresql://synctv:${POSTGRES_PASSWORD:-synctv}@postgres:5432/synctv
       SYNCTV_REDIS_URL: redis://redis:6379
+      SYNCTV_DATA_DIR: /data
       SYNCTV_SERVER_HOST: 0.0.0.0
       SYNCTV_SERVER_PORT: 8080
       SYNCTV_JWT_SECRET: ${SYNCTV_JWT_SECRET:?SYNCTV_JWT_SECRET must be set (min 32 chars)}
       SYNCTV_SERVER_CLUSTER_SECRET: ${SYNCTV_SERVER_CLUSTER_SECRET:-changeme-generate-a-random-secret}
+      SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY: ${SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY:?SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY must be set (64 hex chars)}
+      SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET: ${SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET:?SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET must be set (min 32 chars)}
       SYNCTV_BOOTSTRAP_CREATE_ROOT_USER: "true"
       SYNCTV_BOOTSTRAP_ROOT_PASSWORD: ${SYNCTV_BOOTSTRAP_ROOT_PASSWORD:?SYNCTV_BOOTSTRAP_ROOT_PASSWORD
         must be set (min 12 chars, mixed case + digit)}
@@ -61,6 +64,8 @@ services:
         condition: service_healthy
     networks:
       - synctv
+    volumes:
+      - synctv_data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
@@ -73,6 +78,8 @@ volumes:
   postgres18_data:
     driver: local
   redis_data:
+    driver: local
+  synctv_data:
     driver: local
 
 networks:

@@ -218,8 +218,7 @@ database:
 #
 # Deployment Modes:
 #   - standalone: Single Redis instance (default, OK for development)
-#   - sentinel: Redis Sentinel for high availability (recommended for production)
-#   - cluster: Redis Cluster (not yet fully supported - requires refactoring)
+#   - sentinel: Redis Sentinel for high availability
 #
 # IMPORTANT: Standalone Redis is a single point of failure (SPOF). For production
 # deployments, use sentinel mode with 3+ sentinel nodes monitoring a master-replica setup.
@@ -243,7 +242,7 @@ redis:
   connect_timeout_seconds: 5
   key_prefix: "synctv:"
 
-  # Deployment mode: standalone, sentinel, or cluster
+  # Deployment mode: standalone or sentinel
   deployment_mode: "standalone"
   # --- Sentinel Mode Configuration (for high availability) ---
   # When deployment_mode is "sentinel", these fields are required:
@@ -252,14 +251,6 @@ redis:
   #   - "redis://sentinel1:26379"
   #   - "redis://sentinel2:26379"
   #   - "redis://sentinel3:26379"
-
-  # --- Cluster Mode Configuration (experimental) ---
-  # Cluster mode is not yet fully supported and will fail at startup.
-  # Future implementation will require switching from ConnectionManager to ClusterConnection.
-  # cluster_nodes:
-  #   - "redis://node1:6379"
-  #   - "redis://node2:6379"
-  #   - "redis://node3:6379"
 
 jwt:
   # REQUIRED in production. Generate with: openssl rand -base64 32
@@ -285,6 +276,17 @@ logging:
   # file_path: "/var/log/synctv/app.log"
 
 cache:
+  # User/room cache capacities and TTLs.
+  l1_capacity: 500
+  l1_ttl_seconds: 300
+  l2_ttl_seconds: 300
+  username_cache_capacity: 1000
+  username_cache_ttl_seconds: 3600
+  permission_cache_capacity: 1000
+  permission_cache_ttl_seconds: 300
+  # Enable range-based proxy slice caching at process startup.
+  # This is not dynamically toggled at runtime.
+  proxy_slice_cache_enabled: true
   # Enable persisted proxy slice files on local/shared storage.
   proxy_slice_file_backend_enabled: false
   # Relative proxy_slice_file_cache_dir values are resolved from data_dir.
@@ -309,16 +311,24 @@ livestream:
   # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
   # been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
   gop_cache_max_memory_mb: 100
+  # Maximum memory (in megabytes) for in-memory HLS segment storage.
+  # 0 means use the built-in default.
+  hls_memory_max_mb: 0
+  # Set true only when hls_storage_path points to storage shared by all replicas.
+  hls_shared_storage: false
   # Relative hls_storage_path values are resolved from data_dir.
   # This is runtime-owned storage, unlike *_file secrets or metrics TLS files.
   # hls_storage_path: "livestream/hls"
+  # Maximum HTTP-FLV connection duration and slow-client write timeout.
+  flv_max_connection_duration_seconds: 86400
+  flv_write_timeout_seconds: 30
 
-  # ============================================================================
-  # Email Configuration (SMTP)
-  # ============================================================================
-  #
-  # Configure SMTP to enable email features (verification, notifications).
-  # Leave smtp_host empty to disable email functionality.
+# ============================================================================
+# Email Configuration (SMTP)
+# ============================================================================
+#
+# Configure SMTP to enable email features (verification, notifications).
+# Leave smtp_host empty to disable email functionality.
 
 email:
   smtp_host: ""
@@ -392,6 +402,44 @@ messaging_rate_limits:
   window_seconds: 1
 
 # ============================================================================
+# HTTP API Rate Limits
+# ============================================================================
+
+http_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  streaming_max_requests: 200
+  streaming_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
+
+# ============================================================================
+# gRPC API Rate Limits
+# ============================================================================
+
+grpc_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  email_max_requests: 5
+  email_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+
+# ============================================================================
 # Bootstrap Configuration
 # ============================================================================
 #
@@ -402,6 +450,7 @@ bootstrap:
   # Whether to create root user on first startup
   create_root_user: true
   root_username: "root"
+  root_email: ""
   # REQUIRED for production: set a strong password (>= 12 chars, must contain
   # uppercase, lowercase, and digits). Do NOT use any default value in production.
   # Set via SYNCTV_BOOTSTRAP_ROOT_PASSWORD env var.
@@ -477,6 +526,10 @@ cluster:
 # Stores media provider configurations (Alist, Emby, Jellyfin, Bilibili, etc.)
 
 media_providers:
+  # Timeout for external provider HTTP requests.
+  request_timeout_seconds: 30
+  # Connection timeout for external provider HTTP requests.
+  connect_timeout_seconds: 10
   # Provider configurations as a dynamic JSON/YAML value.
   # Secret-like provider fields also support sibling *_file keys, for example
   # token_file / api_key_file / password_file / access_token_file.
@@ -496,8 +549,7 @@ media_providers:
 # OAuth2/OIDC Configuration
 # ============================================================================
 #
-# Providers are configured as a YAML string that is parsed separately
-# to support dynamic provider-specific fields.
+# Providers are configured as a YAML object with dynamic provider-specific fields.
 #
 # Supported Providers:
 #   - github:  GitHub OAuth2
@@ -545,7 +597,7 @@ oauth2:
   # When behind a reverse proxy terminating TLS, set to "https".
   redirect_scheme: "http"
   # Example configuration (uncomment and modify):
-  # providers: |
+  # providers:
   #   # Standard OAuth2 Providers
   #   github:
   #     client_id: "your_github_client_id"
@@ -584,7 +636,7 @@ oauth2:
   #     client_secret: "custom_client_secret"
   #     # client_secret_file: "/run/secrets/custom_oidc_client_secret"
   #     issuer: "https://custom.oidc.provider.com"
-  providers: ""
+  providers: {}
 
 # Environment Variables for OAuth2:
 #   Format: SYNCTV_OAUTH2_<FIELD>
@@ -642,6 +694,8 @@ webrtc:
   # the pod IP or service IP (e.g., via SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR).
   # If empty, falls back to advertise_host:stun_port.
   # stun_external_addr: ""
+  # Filter private/internal ICE candidates before sending them to clients.
+  filter_private_ice_candidates: true
   # --- External ICE Servers ---
   # Configured dynamically via the settings API (no restart required):
   #   "webrtc.external_ice_servers" - JSON array of ICE server objects, e.g.:
@@ -660,18 +714,13 @@ webrtc:
   #
   # Changes take effect immediately without restarting the server.
 
-  # ============================================================================
-  # Buffer Size Tuning
-  # ============================================================================
-  #
-  # Controls internal channel buffer sizes. Larger values provide more resilience
-  # during traffic spikes but use more memory. Defaults match the current
-  # built-in runtime values.
-  #
-  # Additional buffer sizes are configured in their respective sections:
-  #   - cluster.critical_channel_capacity (default: 1000)
-  #   - cluster.publish_channel_capacity (default: 10000)
-  #   - livestream.stream_hub_event_channel_capacity (default: 4096)
+# ============================================================================
+# Buffer Size Tuning
+# ============================================================================
+#
+# Controls internal channel buffer sizes. Larger values provide more resilience
+# during traffic spikes but use more memory. Defaults match the current
+# built-in runtime values.
 
 buffer_sizes:
   # Per-connection WebSocket outbound message queue.

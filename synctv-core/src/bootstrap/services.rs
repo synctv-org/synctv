@@ -450,7 +450,7 @@ pub async fn init_services_with_options(
         ))
     } else {
         warn!(
-            "Credential encryption key not configured (set SYNCTV_CREDENTIAL_ENCRYPTION_KEY). \
+            "Credential encryption key not configured (set SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY). \
              Existing encrypted credentials remain readable only when the key is configured, \
              and creating/updating provider credentials will be rejected."
         );
@@ -1043,7 +1043,7 @@ fn build_publish_key_service(
 ///
 /// Tries the following sources in order:
 /// 1. Secret file: `/run/secrets/credential_encryption_key`
-/// 2. Environment variable: `SYNCTV_CREDENTIAL_ENCRYPTION_KEY`
+/// 2. Environment variable: `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 ///
 /// The key must be a 64-character hex string (32 bytes).
 fn init_credential_encryption(
@@ -1058,7 +1058,7 @@ fn init_credential_encryption(
             SecretLoader::load_with_fallback(
                 "credential_encryption_key",
                 &SecretSource::File("/run/secrets/credential_encryption_key"),
-                &SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
+                &SecretSource::Env("SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY"),
             )
             .ok()?
         }

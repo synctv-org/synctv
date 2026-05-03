@@ -164,22 +164,18 @@ spec:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_EMAIL_SMTP_PASSWORD
             {{- end }}
-            {{- if .Values.secrets.credentialEncryptionKey }}
-            - name: SYNCTV_CREDENTIAL_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_CREDENTIAL_ENCRYPTION_KEY
-            {{- end }}
-            {{- if .Values.secrets.oauth2EncryptionKey }}
-            - name: SYNCTV_OAUTH2_ENCRYPTION_KEY
+                  key: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
+            - name: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_OAUTH2_ENCRYPTION_KEY
-            {{- end }}
+                  key: SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
             {{- if .Values.secrets.bootstrap }}
-            {{- if .Values.secrets.bootstrap.rootPassword }}
+            {{- if .Values.config.bootstrap.createRootUser }}
             - name: SYNCTV_BOOTSTRAP_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -241,6 +237,8 @@ spec:
               mountPath: /run/synctv
             - name: tmp
               mountPath: /tmp
+            - name: app-data
+              mountPath: /data
             {{- if .Values.config.livestream.hlsStoragePath }}
             - name: hls-storage
               mountPath: {{ .Values.config.livestream.hlsStoragePath | quote }}
@@ -257,6 +255,8 @@ spec:
         - name: management-run
           emptyDir: {}
         - name: tmp
+          emptyDir: {}
+        - name: app-data
           emptyDir: {}
         {{- if .Values.config.livestream.hlsStoragePath }}
         - name: hls-storage

@@ -3624,10 +3624,7 @@ impl Config {
 }
 
 fn is_cli_only_synctv_env_var(key: &str) -> bool {
-    matches!(
-        key,
-        "SYNCTV_MANAGEMENT_ENDPOINT" | "SYNCTV_CREDENTIAL_ENCRYPTION_KEY"
-    )
+    matches!(key, "SYNCTV_MANAGEMENT_ENDPOINT")
 }
 
 /// Connection limits configuration

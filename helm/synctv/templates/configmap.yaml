@@ -6,6 +6,13 @@ metadata:
     {{- include "synctv.labels" . | nindent 4 }}
 {{- $connectionLimits := .Values.config.connectionLimits | default dict }}
 {{- $messagingRateLimits := .Values.config.messagingRateLimits | default dict }}
+{{- $httpRateLimits := .Values.config.httpRateLimits | default dict }}
+{{- $grpcRateLimits := .Values.config.grpcRateLimits | default dict }}
+{{- $passwordComplexity := .Values.config.passwordComplexity | default dict }}
+{{- $bufferSizes := .Values.config.bufferSizes | default dict }}
+{{- $mediaProviders := .Values.config.mediaProviders | default dict }}
+{{- $webauthn := .Values.config.webauthn | default dict }}
+{{- $cache := .Values.config.cache | default dict }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -19,6 +26,8 @@ data:
       host: {{ .Values.config.server.host | quote }}
       port: {{ .Values.config.server.port }}
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
+      shutdown_drain_timeout_seconds: {{ .Values.config.server.shutdownDrainTimeoutSeconds | default 30 }}
+      grpc_max_message_size_bytes: {{ printf "%d" (int64 (.Values.config.server.grpcMaxMessageSizeBytes | default 16777216)) }}
       {{- if .Values.config.server.trustedProxies }}
       trusted_proxies:
         {{- range .Values.config.server.trustedProxies }}
@@ -31,6 +40,17 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+
+    {{- if and .Values.config.publicIds .Values.config.publicIds.sqids .Values.config.publicIds.sqids.enabled }}
+    public_ids:
+      sqids:
+        {{- if .Values.config.publicIds.sqids.alphabet }}
+        alphabet: {{ .Values.config.publicIds.sqids.alphabet | quote }}
+        {{- else }}
+        alphabet: null
+        {{- end }}
+        min_length: {{ .Values.config.publicIds.sqids.minLength | default 12 }}
+    {{- end }}
 
     metrics:
       enabled: {{ .Values.metrics.enabled | default false }}
@@ -89,7 +109,15 @@ data:
       backtrace: {{ .Values.config.logging.backtrace | default false }}
 
     cache:
-      proxy_slice_file_backend_enabled: {{ .Values.config.cache.proxySliceFileBackendEnabled | default false }}
+      l1_capacity: {{ $cache.l1Capacity | default 500 }}
+      l1_ttl_seconds: {{ $cache.l1TtlSeconds | default 300 }}
+      l2_ttl_seconds: {{ $cache.l2TtlSeconds | default 300 }}
+      username_cache_capacity: {{ $cache.usernameCacheCapacity | default 1000 }}
+      username_cache_ttl_seconds: {{ $cache.usernameCacheTtlSeconds | default 3600 }}
+      permission_cache_capacity: {{ $cache.permissionCacheCapacity | default 1000 }}
+      permission_cache_ttl_seconds: {{ $cache.permissionCacheTtlSeconds | default 300 }}
+      proxy_slice_cache_enabled: {{ if hasKey $cache "proxySliceCacheEnabled" }}{{ $cache.proxySliceCacheEnabled }}{{ else }}true{{ end }}
+      proxy_slice_file_backend_enabled: {{ $cache.proxySliceFileBackendEnabled | default false }}
       {{- if .Values.config.cache.proxySliceFileCacheDir }}
       proxy_slice_file_cache_dir: {{ .Values.config.cache.proxySliceFileCacheDir | quote }}
       {{- end }}
@@ -141,9 +169,52 @@ data:
       danmaku_per_second: {{ $messagingRateLimits.danmakuPerSecond | default 3 }}
       window_seconds: {{ $messagingRateLimits.windowSeconds | default 1 }}
 
+    http_rate_limits:
+      auth_max_requests: {{ $httpRateLimits.authMaxRequests | default 5 }}
+      auth_window_seconds: {{ $httpRateLimits.authWindowSeconds | default 60 }}
+      write_max_requests: {{ $httpRateLimits.writeMaxRequests | default 30 }}
+      write_window_seconds: {{ $httpRateLimits.writeWindowSeconds | default 60 }}
+      read_max_requests: {{ $httpRateLimits.readMaxRequests | default 100 }}
+      read_window_seconds: {{ $httpRateLimits.readWindowSeconds | default 60 }}
+      media_max_requests: {{ $httpRateLimits.mediaMaxRequests | default 20 }}
+      media_window_seconds: {{ $httpRateLimits.mediaWindowSeconds | default 60 }}
+      admin_max_requests: {{ $httpRateLimits.adminMaxRequests | default 30 }}
+      admin_window_seconds: {{ $httpRateLimits.adminWindowSeconds | default 60 }}
+      streaming_max_requests: {{ $httpRateLimits.streamingMaxRequests | default 200 }}
+      streaming_window_seconds: {{ $httpRateLimits.streamingWindowSeconds | default 60 }}
+      websocket_max_requests: {{ $httpRateLimits.websocketMaxRequests | default 10 }}
+      websocket_window_seconds: {{ $httpRateLimits.websocketWindowSeconds | default 60 }}
+
+    grpc_rate_limits:
+      auth_max_requests: {{ $grpcRateLimits.authMaxRequests | default 5 }}
+      auth_window_seconds: {{ $grpcRateLimits.authWindowSeconds | default 60 }}
+      email_max_requests: {{ $grpcRateLimits.emailMaxRequests | default 5 }}
+      email_window_seconds: {{ $grpcRateLimits.emailWindowSeconds | default 60 }}
+      media_max_requests: {{ $grpcRateLimits.mediaMaxRequests | default 20 }}
+      media_window_seconds: {{ $grpcRateLimits.mediaWindowSeconds | default 60 }}
+      write_max_requests: {{ $grpcRateLimits.writeMaxRequests | default 30 }}
+      write_window_seconds: {{ $grpcRateLimits.writeWindowSeconds | default 60 }}
+      admin_max_requests: {{ $grpcRateLimits.adminMaxRequests | default 30 }}
+      admin_window_seconds: {{ $grpcRateLimits.adminWindowSeconds | default 60 }}
+      read_max_requests: {{ $grpcRateLimits.readMaxRequests | default 100 }}
+      read_window_seconds: {{ $grpcRateLimits.readWindowSeconds | default 60 }}
+
+    password_complexity:
+      min_length: {{ $passwordComplexity.minLength | default 8 }}
+      require_uppercase: {{ if hasKey $passwordComplexity "requireUppercase" }}{{ $passwordComplexity.requireUppercase }}{{ else }}true{{ end }}
+      require_lowercase: {{ if hasKey $passwordComplexity "requireLowercase" }}{{ $passwordComplexity.requireLowercase }}{{ else }}true{{ end }}
+      require_digit: {{ if hasKey $passwordComplexity "requireDigit" }}{{ $passwordComplexity.requireDigit }}{{ else }}true{{ end }}
+      require_special: {{ $passwordComplexity.requireSpecial | default false }}
+      max_repeated_chars: {{ $passwordComplexity.maxRepeatedChars | default 3 }}
+
+    buffer_sizes:
+      websocket_outbound: {{ $bufferSizes.websocketOutbound | default 256 }}
+      audit_buffer: {{ $bufferSizes.auditBuffer | default 10000 }}
+
     bootstrap:
       create_root_user: {{ .Values.config.bootstrap.createRootUser | default false }}
       root_username: {{ .Values.config.bootstrap.rootUsername | default "root" | quote }}
+      root_email: {{ .Values.config.bootstrap.rootEmail | default "" | quote }}
 
     {{- if .Values.config.email.smtpHost }}
     email:
@@ -154,12 +225,23 @@ data:
       use_tls: {{ .Values.config.email.useTls }}
     {{- end }}
 
-    {{- if .Values.config.mediaProviders }}
     media_providers:
-      providers: {{ .Values.config.mediaProviders.providers | default "{}" | toJson }}
-    {{- end }}
+      request_timeout_seconds: {{ $mediaProviders.requestTimeoutSeconds | default 30 }}
+      connect_timeout_seconds: {{ $mediaProviders.connectTimeoutSeconds | default 10 }}
+      providers: {{ $mediaProviders.providers | default dict | toJson }}
 
     {{- if .Values.config.oauth2 }}
     oauth2:
       redirect_scheme: {{ .Values.config.oauth2.redirectScheme | default "https" | quote }}
+      providers: {{ .Values.config.oauth2.providers | default dict | toJson }}
     {{- end }}
+
+    webauthn:
+      enabled: {{ $webauthn.enabled | default false }}
+      rp_id: {{ $webauthn.rpId | default "" | quote }}
+      rp_origin: {{ $webauthn.rpOrigin | default "" | quote }}
+      rp_name: {{ $webauthn.rpName | default "SyncTV" | quote }}
+      allowed_origins: {{ $webauthn.allowedOrigins | default list | toJson }}
+      allow_subdomains: {{ $webauthn.allowSubdomains | default false }}
+      allow_any_port: {{ $webauthn.allowAnyPort | default false }}
+      timeout_seconds: {{ $webauthn.timeoutSeconds | default 300 }}

@@ -5738,7 +5738,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     let mut server_process = spawn_synctv_process(
         &["serve", "--config", &config_path_string, "--no-dotenv"],
         &[(
-            "SYNCTV_CREDENTIAL_ENCRYPTION_KEY",
+            "SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY",
             TEST_CREDENTIAL_ENCRYPTION_KEY,
         )],
         temp_dir.path(),

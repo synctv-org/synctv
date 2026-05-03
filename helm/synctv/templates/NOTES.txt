@@ -40,6 +40,7 @@ Ingress is enabled. Access the application at:
 ## Services
 
   - API:         port {{ .Values.config.server.port }}
+  - gRPC:        service {{ include "synctv.grpcServiceName" . }} port {{ .Values.grpcService.port | default .Values.config.server.port }}
   - RTMP Ingest: port {{ .Values.config.livestream.rtmpPort }}
 {{- if .Values.config.webrtc.enableBuiltinStun }}
   - STUN (UDP):  port {{ .Values.config.webrtc.stunPort }}

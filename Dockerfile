@@ -50,9 +50,9 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -m -u 1000 synctv
 
 # Create necessary directories
-RUN mkdir -p /app /app/keys /app/config /run/synctv
+RUN mkdir -p /app /app/keys /app/config /data /run/synctv
 
-RUN chown -R synctv:synctv /app /run/synctv
+RUN chown -R synctv:synctv /app /data /run/synctv
 
 # Set working directory
 WORKDIR /app

@@ -5,6 +5,7 @@ Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment an
 ## Features
 
 - Single-process deployment for HTTP, gRPC, RTMP, STUN, and the management endpoint
+- Independent HTTP and gRPC Kubernetes Services, even though both target the same process port
 - Built-in PostgreSQL and Redis by default, with no extra dependency chart required
 - Optional KubeBlocks-backed database mode
 - Built-in HPA, PDB, probes, anti-affinity, NetworkPolicy, and Ingress templates
@@ -56,6 +57,9 @@ secrets:
     secret: "replace-with-a-strong-random-secret"
   cluster:
     grpcSecret: "replace-me"
+  security:
+    credentialEncryptionKey: "64-hex-character-key"
+    opaqueServerSetupSecret: "stable-random-secret"
   bootstrap:
     rootPassword: "replace-me"
 ```
@@ -138,6 +142,7 @@ The application currently uses split database/Redis configuration rather than re
 | Section | Description |
 |---------|-------------|
 | `config.server` | API bind address, CORS, and proxy settings |
+| `config.publicIds` | Optional sqids settings for public API IDs |
 | `config.management` | Management endpoint settings |
 | `config.database` | Pool settings; actual host/port/user/password come from env vars |
 | `config.redis` | Base Redis settings; connection details come from env vars |
@@ -146,7 +151,36 @@ The application currently uses split database/Redis configuration rather than re
 | `config.bootstrap` | Bootstrap root-user settings |
 | `config.email` | SMTP base settings; credentials can come from a secret |
 | `config.livestream` | RTMP/HLS/pull timeout and cache settings |
-| `config.webrtc` | STUN/TURN/WebRTC settings |
+| `config.cache` | L1/L2 cache and startup-only proxy slice cache settings |
+| `config.mediaProviders` | Provider request timeouts and static provider instances |
+| `config.oauth2` | OAuth2/OIDC provider instances and redirect scheme |
+| `config.webauthn` | Passkey relying-party settings |
+| `config.webrtc` | Built-in STUN and WebRTC settings; external ICE servers are runtime settings |
+| `config.httpRateLimits` | HTTP API category rate limits |
+| `config.grpcRateLimits` | gRPC API category rate limits |
+| `config.passwordComplexity` | Password policy for account credentials |
+| `config.bufferSizes` | Internal queue sizes |
+
+The chart creates two separate Services for application traffic:
+
+- `{{ release-name }}` exposes HTTP/REST plus RTMP/STUN/metrics ports.
+- `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
+
+The default Ingress routes HTTP traffic to the HTTP Service. When `ingress.grpc.enabled=true`,
+the chart creates a second Ingress that routes to the gRPC Service and sets
+independent `ingress.grpc.annotations`, including
+`nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` by default.
+
+When using `existingSecret`, provide these keys with current names:
+
+- `SYNCTV_DATABASE_PASSWORD` unless PostgreSQL is in KubeBlocks mode
+- `SYNCTV_REDIS_PASSWORD` unless Redis is in KubeBlocks mode
+- `SYNCTV_JWT_SECRET`
+- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
+- `SYNCTV_MANAGEMENT_AUTH_TOKEN` when `config.management.transport=tcp`
 
 ## Verify the Deployment
 
@@ -186,6 +220,12 @@ openssl rand -base64 32
 
 # Generic secrets
 openssl rand -hex 32
+
+# Credential encryption key, exactly 64 hex characters
+openssl rand -hex 32
+
+# OPAQUE setup secret
+openssl rand -base64 48
 ```
 
 #### 2. Use External Secrets
@@ -344,6 +384,7 @@ You can then scrape through either Prometheus Operator (`ServiceMonitor`) or Vic
 ## Production Checklist
 
 - [ ] Change all default secrets in `secrets` section
+- [ ] Keep `secrets.security.opaqueServerSetupSecret` stable across upgrades
 - [ ] Enable TLS for ingress (cert-manager)
 - [ ] Set appropriate resource limits
 - [ ] Configure shared HLS storage before enabling cluster mode or autoscaling

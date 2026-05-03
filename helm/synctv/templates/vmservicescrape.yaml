@@ -16,6 +16,7 @@ spec:
   selector:
     matchLabels:
       {{- include "synctv.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
   endpoints:
     - port: metrics
       path: {{ .Values.metrics.path | default "/metrics" }}

@@ -1147,7 +1147,7 @@ fn test_aligned_range_last_slice_partial() {
     assert_eq!(end, 3 * 1024 * 1024 - 1);
 }
 
-// Enhancement 1: Non-range requests use upstream range support, not full-body cache.
+// Non-range requests use upstream range support and bypass when the origin rejects ranges.
 
 #[tokio::test]
 async fn test_no_range_request_streams_from_slice_cache_when_origin_supports_range() {

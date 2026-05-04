@@ -29,6 +29,35 @@ use crate::{
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationMode {
+    Password,
+    Email,
+    OAuth2,
+    WebAuthn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistrationPolicy {
+    pub enabled: bool,
+    pub need_review: bool,
+}
+
+impl RegistrationMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "Password",
+            Self::Email => "Email",
+            Self::OAuth2 => "OAuth2",
+            Self::WebAuthn => "WebAuthn",
+        }
+    }
+
+    const fn supports_review(self) -> bool {
+        matches!(self, Self::Password | Self::Email)
+    }
+}
+
 /// Default refresh token rate limit: 10 requests per minute per user
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
 const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
@@ -855,7 +884,7 @@ pub struct UserService {
     /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
     refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
     refresh_rate_limit_config: RefreshRateLimitConfig,
-    /// Optional settings registry for reading signup_need_review and email_whitelist
+    /// Optional settings registry for registration policy and email whitelist.
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
@@ -2246,11 +2275,52 @@ impl UserService {
         Ok(())
     }
 
-    pub(crate) fn signup_review_enabled(&self) -> bool {
-        self.settings_registry
-            .as_ref()
-            .and_then(|registry| registry.signup_need_review.get().ok())
-            .unwrap_or(false)
+    pub(crate) fn registration_policy(&self, mode: RegistrationMode) -> RegistrationPolicy {
+        let Some(registry) = self.settings_registry.as_ref() else {
+            return RegistrationPolicy {
+                enabled: false,
+                need_review: false,
+            };
+        };
+
+        match mode {
+            RegistrationMode::Password => RegistrationPolicy {
+                enabled: registry.enable_password_signup.get().unwrap_or(false),
+                need_review: registry.password_signup_need_review.get().unwrap_or(false),
+            },
+            RegistrationMode::Email => RegistrationPolicy {
+                enabled: registry.enable_email_signup.get().unwrap_or(false),
+                need_review: registry.email_signup_need_review.get().unwrap_or(false),
+            },
+            RegistrationMode::OAuth2 => RegistrationPolicy {
+                enabled: registry.enable_oauth2_signup.get().unwrap_or(false),
+                need_review: registry.oauth2_signup_need_review.get().unwrap_or(false),
+            },
+            RegistrationMode::WebAuthn => RegistrationPolicy {
+                enabled: registry.enable_webauthn_signup.get().unwrap_or(false),
+                need_review: registry.webauthn_signup_need_review.get().unwrap_or(false),
+            },
+        }
+    }
+
+    pub(crate) fn ensure_registration_review_supported(
+        &self,
+        mode: RegistrationMode,
+    ) -> Result<RegistrationPolicy> {
+        let policy = self.registration_policy(mode);
+        if !policy.enabled {
+            return Err(Error::Authorization(format!(
+                "{} registration is disabled",
+                mode.as_str()
+            )));
+        }
+        if policy.need_review && !mode.supports_review() {
+            return Err(Error::InvalidInput(format!(
+                "{} registration review is not supported yet",
+                mode.as_str()
+            )));
+        }
+        Ok(policy)
     }
 
     /// Register a new user
@@ -2284,6 +2354,9 @@ impl UserService {
         client_ip: Option<std::net::IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<(User, Option<String>, Option<String>)> {
+        let registration_policy =
+            self.ensure_registration_review_supported(RegistrationMode::Password)?;
+
         // Check per-IP brute-force before any processing. This throttles automated
         // mass-registration attempts (credential stuffing, spam account creation).
         // Use a fixed key instead of the attacker-controlled username to prevent
@@ -2414,13 +2487,7 @@ impl UserService {
         // create a `users` row until an admin approves them. Email verification
         // remains an account fact (`email_verified=false`) on an otherwise active
         // user so verification tokens can reference the user row.
-        let signup_need_review = self
-            .settings_registry
-            .as_ref()
-            .and_then(|r| r.signup_need_review.get().ok())
-            .unwrap_or(false);
-
-        if signup_need_review {
+        if registration_policy.need_review {
             let pending_user = self
                 .create_registration_request(
                     &username,
@@ -2511,6 +2578,8 @@ impl UserService {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
+        self.ensure_registration_review_supported(RegistrationMode::Password)?;
+
         self.validate_registration_identity_with_control(
             &username,
             email.as_deref(),
@@ -2573,13 +2642,10 @@ impl UserService {
             .opaque_password_service
             .finish_registration(session.credential_identifier, &registration_upload)?;
 
-        let signup_need_review = self
-            .settings_registry
-            .as_ref()
-            .and_then(|registry| registry.signup_need_review.get().ok())
-            .unwrap_or(false);
+        let registration_policy =
+            self.ensure_registration_review_supported(RegistrationMode::Password)?;
 
-        if signup_need_review {
+        if registration_policy.need_review {
             let pending_user = self
                 .create_registration_request(
                     &username,
@@ -5056,31 +5122,29 @@ mod tests {
         assert!(result.is_err(), "same identifier bucket should be checked");
     }
 
-    /// Verify that register_with_executor respects signup_need_review for Email signups.
+    /// Verify that password review uses the user registration review table.
     ///
     /// Review-required signup is represented by a review request, not by a user row status.
     #[test]
     fn test_signup_review_policy_uses_review_request_for_email() {
-        let signup_need_review = true;
-        let signup_method = SignupMethod::Email;
-        let creates_review_request = signup_need_review
-            && matches!(
-                signup_method,
-                SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown
-            );
+        let policy = RegistrationPolicy {
+            enabled: true,
+            need_review: true,
+        };
+        let signup_method = RegistrationMode::Password;
+        let creates_review_request = policy.need_review && signup_method.supports_review();
         assert!(creates_review_request);
     }
 
-    /// OAuth2 signup creates an active local account after external authentication.
+    /// OAuth2 signup review is rejected until OAuth2 pending identities are modeled.
     #[test]
     fn test_signup_review_policy_does_not_create_pending_oauth2_user() {
-        let signup_need_review = true;
-        let signup_method = SignupMethod::OAuth2;
-        let creates_review_request = signup_need_review
-            && matches!(
-                signup_method,
-                SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown
-            );
+        let policy = RegistrationPolicy {
+            enabled: true,
+            need_review: true,
+        };
+        let signup_method = RegistrationMode::OAuth2;
+        let creates_review_request = policy.need_review && signup_method.supports_review();
         assert!(!creates_review_request);
     }
 
@@ -5095,14 +5159,14 @@ mod tests {
         );
     }
 
-    /// Verify that OAuth2 signups are Active when signup_need_review is false.
+    /// Verify that OAuth2 signups are Active when OAuth2 signup review is false.
     #[test]
     fn test_register_with_executor_oauth2_active_when_no_review() {
         let initial_status = crate::models::UserStatus::Active;
         assert_eq!(
             initial_status,
             crate::models::UserStatus::Active,
-            "OAuth2 registration with signup_need_review=false should be Active"
+            "OAuth2 registration with oauth2_signup_need_review=false should be Active"
         );
     }
 }

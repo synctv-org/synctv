@@ -1,0 +1,18 @@
+<script is:inline>
+  (() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const links = document.querySelectorAll('a[href]');
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      if (!href.startsWith('http://') && !href.startsWith('https://') && !href.startsWith('#')) {
+        link.addEventListener('click', () => {
+          window.localStorage.setItem('synctv-docs-locale-selected', '1');
+        });
+      }
+    }
+
+    if (document.documentElement.lang === 'en') {
+      window.localStorage.setItem('synctv-docs-locale-selected', '1');
+    }
+  })();
+</script>

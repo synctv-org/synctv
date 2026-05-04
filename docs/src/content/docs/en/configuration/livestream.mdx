@@ -1,0 +1,108 @@
+---
+title: Livestream Configuration
+description: RTMP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
+---
+
+## What This Config Controls
+
+`livestream` controls RTMP push/pull, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
+
+If you only use on-demand media providers, most values can remain at their defaults.
+
+## RTMP
+
+`livestream.rtmp_port` default: `1935`.
+
+OBS push URLs usually look like:
+
+```text
+rtmp://your-domain:1935/live/<stream-key>
+```
+
+Change the port if another RTMP service already uses 1935.
+
+`livestream.public_rtmp_host` default: empty.
+
+Set it when the address returned to streamers must be a public domain or LoadBalancer address instead of an internal Pod or node address:
+
+```yaml
+livestream:
+  public_rtmp_host: "live.example.com"
+```
+
+If empty, SyncTV tries to fall back to `server.advertise_host`.
+
+## GOP Cache
+
+`livestream.gop_cache_size` default: `2`.
+
+GOP cache helps new viewers start playback sooner without waiting for the next keyframe.
+
+`livestream.gop_cache_max_memory_mb` default: `100`.
+
+Increase it when:
+
+- Many live streams run concurrently.
+- Bitrate is high.
+- New viewers join frequently.
+
+Decrease it when memory is limited.
+
+## Pull Retry Settings
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `livestream.stream_timeout_seconds` | `300` | Stop idle pull streams after this duration |
+| `livestream.pull_max_retries` | `10` | Maximum pull retry attempts |
+| `livestream.pull_initial_backoff_ms` | `1000` | Initial retry backoff |
+| `livestream.pull_max_backoff_ms` | `30000` | Maximum retry backoff |
+
+Backoff grows over time to avoid hammering unstable upstream sources.
+
+## FLV Safety
+
+`livestream.max_flv_tag_size_bytes` default: `10485760`, which is 10 MiB.
+
+This prevents abnormal streams from forcing excessive memory allocation. Do not increase it unless you know the upstream emits larger valid FLV tags.
+
+## HLS
+
+`livestream.hls_memory_max_mb` default: `0`, which means the built-in default is used.
+
+`livestream.hls_shared_storage` default: `false`.
+
+Single-replica deployments can keep it false. Multi-replica deployments need shared HLS storage; otherwise a segment written by one Pod may be requested from another Pod that does not have it.
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+The path must be shared by all replicas, for example through NFS, a shared PVC, or another shared filesystem.
+
+`livestream.hls_storage_path` default: empty.
+
+Relative paths are resolved under `data_dir`:
+
+```yaml
+data_dir: "/var/lib/synctv"
+livestream:
+  hls_storage_path: "livestream/hls"
+```
+
+Effective path:
+
+```text
+/var/lib/synctv/livestream/hls
+```
+
+## HTTP-FLV
+
+`livestream.flv_max_connection_duration_seconds` default: `86400`.
+
+This limits a single HTTP-FLV connection to 24 hours. Setting it to `0` disables the limit, but that is not recommended for production.
+
+`livestream.flv_write_timeout_seconds` default: `30`.
+
+If a client is too slow and writes remain blocked beyond this timeout, SyncTV disconnects the client to protect server resources.

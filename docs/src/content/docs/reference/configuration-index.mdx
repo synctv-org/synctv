@@ -1,0 +1,295 @@
+---
+title: 配置总索引
+description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类型、默认值和详细说明页面。
+---
+
+## 这页怎么用？
+
+这页是配置覆盖索引，用来快速确认某个 YAML 字段是否已经被文档覆盖。详细解释、风险和完整示例请进入对应配置页。
+
+字段默认值以源码默认配置为准。动态对象例如 `oauth2.providers` 和 `media_providers.providers` 的内部字段由具体 provider/backend 决定，因此这里只列出外层配置项。
+
+## 完整配置示例
+
+配置示例不直接塞进本页，避免索引过长。建议使用以下入口：
+
+- [完整配置示例](../../configuration/full-example/)：最小生产配置骨架、覆盖全部静态字段的全量 YAML 模板、URL/拆分配置示例。
+- `synctv config show --output yaml`：输出当前二进制支持的完整有效配置，并自动打码 secret。
+
+## 顶层配置
+
+| 字段 | 类型 | 默认值 | 详细说明 |
+| --- | --- | --- | --- |
+| `server` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| `time` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| `public_ids` | 对象 | 见下方 | [公开 ID](../../configuration/public-ids/) |
+| `security` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
+| `data_dir` | 字符串路径 | 平台相关 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| `metrics` | 对象 | 见下方 | [Metrics 监控](../../configuration/metrics/) |
+| `management` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| `database` | 对象 | 见下方 | [数据库与 Redis](../../configuration/database-and-redis/) |
+| `redis` | 对象 | 见下方 | [数据库与 Redis](../../configuration/database-and-redis/) |
+| `jwt` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
+| `logging` | 对象 | 见下方 | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| `livestream` | 对象 | 见下方 | [直播配置](../../configuration/livestream/) |
+| `oauth2` | 对象 | 见下方 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
+| `webauthn` | 对象 | 见下方 | [WebAuthn 配置](../../configuration/webauthn/) |
+| `email` | 对象 | 见下方 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
+| `media_providers` | 对象 | 见下方 | [媒体 Provider](../../configuration/media-providers/) |
+| `webrtc` | 对象 | 见下方 | [WebRTC 配置](../../configuration/webrtc/) |
+| `connection_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
+| `bootstrap` | 对象 | 见下方 | [初始化 root 用户](../../configuration/bootstrap/) |
+| `cluster` | 对象 | 见下方 | [集群配置](../../configuration/cluster/) |
+| `password_complexity` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
+| `buffer_sizes` | 对象 | 见下方 | [内部缓冲区](../../configuration/buffer-sizes/) |
+| `cache` | 对象 | 见下方 | [缓存与代理 slice cache](../../configuration/cache-and-proxy/) |
+| `messaging_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
+| `http_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
+| `grpc_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
+
+## `server`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `server.host` | IP/监听地址 | `0.0.0.0` | 主 API 监听地址 |
+| `server.port` | 端口 | `8080` | HTTP REST、公开 gRPC、健康检查端口 |
+| `server.enable_reflection` | 布尔值 | `true` | 是否开启公开 gRPC reflection |
+| `server.trusted_proxies` | 字符串数组 | `[]` | 可信反向代理 IP/CIDR |
+| `server.cors_allowed_origins` | 字符串数组 | `[]` | 允许跨域访问的前端 origin |
+| `server.cluster_secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
+| `server.advertise_host` | 字符串 | `""` | 其他节点连接本节点时使用的地址 |
+| `server.shutdown_drain_timeout_seconds` | 秒数 | `30` | 关闭时等待连接 drain 的时间 |
+| `server.grpc_max_message_size_bytes` | 字节数 | `16777216` | gRPC 消息最大大小 |
+
+## `time`、`public_ids`、`security`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `time.timezone` | IANA 时区名 | `""` | 人类可读时间显示和本地时间解析时区 |
+| `public_ids.sqids` | 对象或空 | `null` | 是否启用 sqids 公开 ID |
+| `public_ids.sqids.alphabet` | 字符串或空 | `null` | sqids alphabet |
+| `public_ids.sqids.min_length` | 整数 | `12` | sqids 最小长度 |
+| `security.credential_encryption_key` | 64 位 hex secret | `""` | Provider 凭据加密 key |
+| `security.opaque_server_setup_secret` | secret 字符串 | `""` | OPAQUE 密码认证服务端 setup secret |
+
+## `metrics`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `metrics.enabled` | 布尔值 | `false` | 是否启动 metrics 监听器 |
+| `metrics.host` | IP/监听地址 | `0.0.0.0` | metrics 监听地址 |
+| `metrics.port` | 端口 | `9090` | metrics 监听端口 |
+| `metrics.tls.enabled` | 布尔值 | `false` | metrics 是否启用 TLS |
+| `metrics.tls.cert_path` | 文件路径 | `""` | metrics TLS 证书 |
+| `metrics.tls.key_path` | 文件路径 | `""` | metrics TLS 私钥 |
+| `metrics.auth.mode` | `bearer_token`、`basic`、`kubernetes` | `bearer_token` | metrics 鉴权模式 |
+| `metrics.auth.bearer_token` | secret 字符串 | `""` | bearer token 模式 token |
+| `metrics.auth.basic_username` | 字符串 | `""` | basic 模式用户名 |
+| `metrics.auth.basic_password` | secret 字符串 | `""` | basic 模式密码 |
+| `metrics.auth.kubernetes.audience` | 字符串 | `""` | Kubernetes TokenReview audience |
+| `metrics.auth.kubernetes.authentication_cache_ttl_seconds` | 秒数 | `60` | TokenReview 结果缓存 |
+| `metrics.auth.kubernetes.authorization_cache_ttl_seconds` | 秒数 | `60` | SubjectAccessReview 结果缓存 |
+
+## `management`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `management.enabled` | 布尔值 | `true` | 是否启用管理端点 |
+| `management.transport` | `unix` 或 `tcp` | Unix 平台为 `unix`，其他平台为 `tcp` | 管理端点传输方式 |
+| `management.port` | 端口 | `50052` | TCP management 端口 |
+| `management.unix_socket_path` | 文件路径 | 平台相关 | Unix socket 路径 |
+| `management.auth_token` | secret 字符串 | `""` | TCP management bearer token |
+| `management.enable_reflection` | 布尔值 | `false` | 管理 gRPC reflection |
+
+## `database`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `database.url` | PostgreSQL URL | `postgresql://synctv:synctv@localhost:5432/synctv` | 完整数据库连接串 |
+| `database.host` | 字符串 | `""` | 拆分配置的数据库主机 |
+| `database.port` | 端口 | `0` | 拆分配置的数据库端口 |
+| `database.username` | 字符串 | `""` | 数据库用户 |
+| `database.password` | secret 字符串 | `""` | 数据库密码 |
+| `database.name` | 字符串 | `""` | 数据库名 |
+| `database.max_connections` | 整数 | `20` | 最大连接数 |
+| `database.min_connections` | 整数 | `5` | 最小空闲连接数 |
+| `database.connect_timeout_seconds` | 秒数 | `10` | 连接超时 |
+| `database.idle_timeout_seconds` | 秒数 | `600` | 空闲连接超时 |
+| `database.max_lifetime_seconds` | 秒数 | `1800` | 单个连接最大生命周期 |
+
+## `redis`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `redis.url` | Redis URL | `""` | 完整 Redis 连接串 |
+| `redis.host` | 字符串 | `""` | 拆分配置的 Redis 主机 |
+| `redis.port` | 端口 | `0` | 拆分配置的 Redis 端口 |
+| `redis.username` | 字符串 | `""` | Redis 用户 |
+| `redis.password` | secret 字符串 | `""` | Redis 密码 |
+| `redis.database` | 整数 | `0` | Redis database index |
+| `redis.connect_timeout_seconds` | 秒数 | `5` | Redis 连接超时 |
+| `redis.key_prefix` | 字符串 | `synctv:` | Redis key 前缀 |
+| `redis.deployment_mode` | `standalone` 或 `sentinel` | `standalone` | Redis 部署模式 |
+| `redis.sentinel_master_name` | 字符串或空 | `null` | Sentinel master 名称 |
+| `redis.sentinel_addresses` | 字符串数组 | `[]` | Sentinel 节点地址 |
+
+## `jwt` 和 `logging`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `jwt.secret` | secret 字符串 | `""` | token 签名密钥 |
+| `jwt.access_token_duration_hours` | 小时数 | `1` | access token 有效期 |
+| `jwt.refresh_token_duration_days` | 天数 | `30` | refresh token 有效期 |
+| `jwt.guest_token_duration_hours` | 小时数 | `4` | guest token 有效期 |
+| `jwt.clock_skew_leeway_secs` | 秒数 | `60` | token 时间误差容忍 |
+| `logging.level` | `error`、`warn`、`info`、`debug`、`trace` | `info` | 日志级别 |
+| `logging.format` | `pretty` 或 `json` | `pretty` | 日志格式 |
+| `logging.filter` | tracing filter 字符串或空 | `null` | 高级模块级日志过滤 |
+| `logging.backtrace` | 布尔值 | `false` | 是否输出 backtrace |
+| `logging.file_path` | 文件路径或空 | `null` | 日志文件路径 |
+
+## `livestream`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `livestream.rtmp_port` | 端口 | `1935` | RTMP 推流端口 |
+| `livestream.public_rtmp_host` | 字符串 | `""` | 返回给推流端的公网 RTMP host |
+| `livestream.gop_cache_size` | 整数 | `2` | 每路流 GOP 缓存数量 |
+| `livestream.stream_timeout_seconds` | 秒数 | `300` | 拉流空闲超时 |
+| `livestream.cleanup_check_interval_seconds` | 秒数 | `60` | 清理检查间隔 |
+| `livestream.pull_max_retries` | 整数 | `10` | 拉流最大重试次数 |
+| `livestream.pull_initial_backoff_ms` | 毫秒 | `1000` | 拉流初始退避 |
+| `livestream.pull_max_backoff_ms` | 毫秒 | `30000` | 拉流最大退避 |
+| `livestream.max_flv_tag_size_bytes` | 字节数 | `10485760` | 最大 FLV tag 大小 |
+| `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP 缓存最大内存 |
+| `livestream.hls_memory_max_mb` | MB | `0` | 内存 HLS 存储上限，0 表示内置默认 |
+| `livestream.hls_shared_storage` | 布尔值 | `false` | HLS 是否使用多副本共享存储 |
+| `livestream.hls_storage_path` | 路径 | `""` | HLS 文件存储路径 |
+| `livestream.flv_max_connection_duration_seconds` | 秒数 | `86400` | HTTP-FLV 最大连接时长 |
+| `livestream.flv_write_timeout_seconds` | 秒数 | `30` | HTTP-FLV 写超时 |
+
+## `oauth2`、`webauthn`、`email`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `oauth2.providers` | 动态对象 | `{}` | OAuth2/OIDC provider 配置 |
+| `oauth2.redirect_scheme` | `http` 或 `https` | `https` | OAuth2 redirect scheme |
+| `webauthn.enabled` | 布尔值 | `false` | 是否启用 passkey |
+| `webauthn.rp_id` | 域名 | `""` | WebAuthn relying party ID |
+| `webauthn.rp_origin` | origin | `""` | WebAuthn 主 origin |
+| `webauthn.rp_name` | 字符串 | `SyncTV` | 认证器显示名称 |
+| `webauthn.allowed_origins` | origin 数组 | `[]` | 额外允许 origin |
+| `webauthn.allow_subdomains` | 布尔值 | `false` | 是否允许子域 |
+| `webauthn.allow_any_port` | 布尔值 | `false` | 是否忽略端口 |
+| `webauthn.timeout_seconds` | 秒数 | `300` | challenge 超时 |
+| `email.smtp_host` | 字符串 | `""` | SMTP 主机 |
+| `email.smtp_port` | 端口 | `587` | SMTP 端口 |
+| `email.smtp_username` | 字符串 | `""` | SMTP 用户名 |
+| `email.smtp_password` | secret 字符串 | `""` | SMTP 密码 |
+| `email.from_email` | 邮箱 | `""` | 发件邮箱 |
+| `email.from_name` | 字符串 | `SyncTV` | 发件人显示名 |
+| `email.use_tls` | 布尔值 | `true` | 是否使用 TLS |
+
+## `media_providers` 和 `webrtc`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `media_providers.providers` | 动态对象 | `{}` | Alist、Emby、Bilibili 等 provider 实例配置 |
+| `media_providers.request_timeout_seconds` | 秒数 | `30` | Provider HTTP 请求总超时 |
+| `media_providers.connect_timeout_seconds` | 秒数 | `10` | Provider HTTP 建连超时 |
+| `webrtc.mode` | `signaling_only` 或 `peer_to_peer` | `peer_to_peer` | WebRTC 工作模式 |
+| `webrtc.enable_builtin_stun` | 布尔值 | `true` | 是否启用内置 STUN |
+| `webrtc.stun_port` | 端口 | `3478` | STUN 端口 |
+| `webrtc.stun_host` | IP/监听地址 | `0.0.0.0` | STUN 监听地址 |
+| `webrtc.stun_external_addr` | 字符串 | `""` | 对客户端公布的 STUN 外部地址 |
+| `webrtc.filter_private_ice_candidates` | 布尔值 | `true` | 是否过滤私网 ICE candidate |
+
+## `connection_limits`、`bootstrap`、`cluster`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `connection_limits.max_per_user` | 整数 | `5` | 每用户最大连接数 |
+| `connection_limits.max_per_room` | 整数 | `200` | 每房间最大连接数 |
+| `connection_limits.max_total` | 整数 | `10000` | 全服务最大连接数 |
+| `connection_limits.idle_timeout_seconds` | 秒数 | `300` | 空闲连接超时 |
+| `connection_limits.max_duration_seconds` | 秒数 | `86400` | 单连接最大时长 |
+| `connection_limits.ws_message_rate_limit_per_second` | 次/秒 | `50` | 每连接 WebSocket 消息速率 |
+| `bootstrap.create_root_user` | 布尔值 | `false` | 是否自动创建初始 root |
+| `bootstrap.root_username` | 字符串 | `root` | 初始 root 用户名 |
+| `bootstrap.root_email` | 邮箱或空 | `""` | 初始 root 邮箱 |
+| `bootstrap.root_password` | secret 字符串 | `""` | 初始 root 密码 |
+| `cluster.enabled` | 布尔值 | `false` | 是否启用集群模式 |
+| `cluster.critical_channel_capacity` | 整数 | `1000` | 高优先级集群事件队列容量 |
+| `cluster.publish_channel_capacity` | 整数 | `10000` | 普通集群发布队列容量 |
+| `cluster.discovery_mode` | `redis`、`static`、`k8s_dns` | `redis` | 节点发现模式 |
+| `cluster.leader_election_mode` | `redis` 或 `k8s_lease` | `redis` | leader election 模式 |
+| `cluster.peers` | 字符串数组 | `[]` | 静态 peer 地址 |
+| `cluster.catchup_window_secs` | 秒数 | `300` | Redis Stream catch-up 回放窗口 |
+| `cluster.stream_max_length` | 整数 | `10000` | Redis Stream 近似最大长度 |
+
+## `password_complexity`、`buffer_sizes`、`cache`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `password_complexity.min_length` | 整数 | `8` | 密码最小长度 |
+| `password_complexity.require_uppercase` | 布尔值 | `true` | 是否要求大写字母 |
+| `password_complexity.require_lowercase` | 布尔值 | `true` | 是否要求小写字母 |
+| `password_complexity.require_digit` | 布尔值 | `true` | 是否要求数字 |
+| `password_complexity.require_special` | 布尔值 | `false` | 是否要求特殊字符 |
+| `password_complexity.max_repeated_chars` | 整数 | `3` | 最大连续重复字符数，0 表示关闭 |
+| `buffer_sizes.websocket_outbound` | 整数 | `256` | 每连接 WebSocket 出站队列 |
+| `buffer_sizes.audit_buffer` | 整数 | `10000` | 审计事件缓冲容量 |
+| `cache.l1_capacity` | 整数 | `500` | L1 内存缓存容量 |
+| `cache.l1_ttl_seconds` | 秒数 | `300` | L1 内存缓存 TTL |
+| `cache.l2_ttl_seconds` | 秒数 | `300` | Redis L2 缓存 TTL |
+| `cache.username_cache_capacity` | 整数 | `1000` | 用户名缓存容量 |
+| `cache.username_cache_ttl_seconds` | 秒数 | `3600` | 用户名缓存 TTL |
+| `cache.permission_cache_capacity` | 整数 | `1000` | 权限缓存容量 |
+| `cache.permission_cache_ttl_seconds` | 秒数 | `300` | 权限缓存 TTL |
+| `cache.proxy_slice_cache_enabled` | 布尔值 | `true` | 是否启用代理 slice cache |
+| `cache.proxy_slice_file_backend_enabled` | 布尔值 | `false` | 是否启用文件后端 |
+| `cache.proxy_slice_file_cache_dir` | 路径 | `""` | slice cache 文件目录 |
+
+## `messaging_rate_limits`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `messaging_rate_limits.chat_per_second` | 整数 | `10` | 聊天消息窗口内最大数量 |
+| `messaging_rate_limits.danmaku_per_second` | 整数 | `3` | 弹幕消息窗口内最大数量 |
+| `messaging_rate_limits.window_seconds` | 秒数 | `1` | 聊天/弹幕限流窗口 |
+
+## `http_rate_limits`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `http_rate_limits.auth_max_requests` | 整数 | `5` | HTTP 认证接口窗口内最大请求数 |
+| `http_rate_limits.auth_window_seconds` | 秒数 | `60` | HTTP 认证接口限流窗口 |
+| `http_rate_limits.write_max_requests` | 整数 | `30` | HTTP 写接口窗口内最大请求数 |
+| `http_rate_limits.write_window_seconds` | 秒数 | `60` | HTTP 写接口限流窗口 |
+| `http_rate_limits.read_max_requests` | 整数 | `100` | HTTP 读接口窗口内最大请求数 |
+| `http_rate_limits.read_window_seconds` | 秒数 | `60` | HTTP 读接口限流窗口 |
+| `http_rate_limits.media_max_requests` | 整数 | `20` | HTTP 媒体接口窗口内最大请求数 |
+| `http_rate_limits.media_window_seconds` | 秒数 | `60` | HTTP 媒体接口限流窗口 |
+| `http_rate_limits.admin_max_requests` | 整数 | `30` | HTTP 管理接口窗口内最大请求数 |
+| `http_rate_limits.admin_window_seconds` | 秒数 | `60` | HTTP 管理接口限流窗口 |
+| `http_rate_limits.streaming_max_requests` | 整数 | `200` | HTTP streaming 接口窗口内最大请求数 |
+| `http_rate_limits.streaming_window_seconds` | 秒数 | `60` | HTTP streaming 接口限流窗口 |
+| `http_rate_limits.websocket_max_requests` | 整数 | `10` | WebSocket 建连窗口内最大请求数 |
+| `http_rate_limits.websocket_window_seconds` | 秒数 | `60` | WebSocket 建连限流窗口 |
+
+## `grpc_rate_limits`
+
+| 字段 | 类型/可选值 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `grpc_rate_limits.auth_max_requests` | 整数 | `5` | gRPC 认证接口窗口内最大请求数 |
+| `grpc_rate_limits.auth_window_seconds` | 秒数 | `60` | gRPC 认证接口限流窗口 |
+| `grpc_rate_limits.email_max_requests` | 整数 | `5` | gRPC 邮件接口窗口内最大请求数 |
+| `grpc_rate_limits.email_window_seconds` | 秒数 | `60` | gRPC 邮件接口限流窗口 |
+| `grpc_rate_limits.media_max_requests` | 整数 | `20` | gRPC 媒体接口窗口内最大请求数 |
+| `grpc_rate_limits.media_window_seconds` | 秒数 | `60` | gRPC 媒体接口限流窗口 |
+| `grpc_rate_limits.write_max_requests` | 整数 | `30` | gRPC 写接口窗口内最大请求数 |
+| `grpc_rate_limits.write_window_seconds` | 秒数 | `60` | gRPC 写接口限流窗口 |
+| `grpc_rate_limits.admin_max_requests` | 整数 | `30` | gRPC 管理接口窗口内最大请求数 |
+| `grpc_rate_limits.admin_window_seconds` | 秒数 | `60` | gRPC 管理接口限流窗口 |
+| `grpc_rate_limits.read_max_requests` | 整数 | `100` | gRPC 读接口窗口内最大请求数 |
+| `grpc_rate_limits.read_window_seconds` | 秒数 | `60` | gRPC 读接口限流窗口 |

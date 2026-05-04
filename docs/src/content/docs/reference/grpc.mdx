@@ -1,0 +1,79 @@
+---
+title: gRPC 调试
+description: 使用 reflection 或 checked-in protobuf 定义调试 SyncTV gRPC API。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## gRPC 入口
+
+SyncTV 的公开 gRPC 和 HTTP REST 共用 `server.port`，默认是 `8080`。
+
+默认配置中 `server.enable_reflection=true`，开发环境可以直接用 `grpcurl` 探索服务。生产环境建议显式关闭 reflection，改用仓库内 protobuf 文件调试。
+
+<Aside type="caution">
+gRPC reflection 会暴露服务和消息结构。它适合开发、内网调试和预发布环境，不建议在公网生产环境长期开启。
+</Aside>
+
+## 使用 `grpcurl`
+
+<Tabs>
+  <TabItem label="Reflection" icon="magnifier">
+
+启动服务：
+
+```bash
+SYNCTV_SERVER_ENABLE_REFLECTION=true \
+cargo run -p synctv --bin synctv -- serve
+```
+
+列出服务：
+
+```bash
+grpcurl -plaintext localhost:8080 list
+grpcurl -plaintext localhost:8080 list synctv.client.ClientService
+```
+
+  </TabItem>
+  <TabItem label="Protobuf 文件" icon="document">
+
+不依赖 reflection，直接使用仓库内 proto：
+
+```bash
+grpcurl -plaintext \
+  -import-path synctv-proto/proto \
+  -proto client.proto \
+  localhost:8080 \
+  synctv.client.ClientService/Login
+```
+
+  </TabItem>
+</Tabs>
+
+## 注册示例
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "email": "alice@example.com",
+  "password": "securepassword123"
+}' localhost:8080 synctv.client.ClientService/Register
+```
+
+## 登录示例
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "password": "securepassword123"
+}' localhost:8080 synctv.client.ClientService/Login
+```
+
+## 和 OpenAPI 的关系
+
+OpenAPI 只描述 HTTP API。gRPC 调试使用 reflection 或 protobuf 文件。HTTP API 的 Swagger UI 和 OpenAPI JSON 获取方式见 [OpenAPI 文档入口](../openapi/)。
+
+## 继续阅读
+
+- [客户端集成指南](../../guides/client-integration/)
+- [OpenAPI 文档入口](../openapi/)

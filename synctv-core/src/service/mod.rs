@@ -112,7 +112,7 @@ pub use user::{
     opaque_registration_session_store_from_shared_state_profile, shared_mfa_session_store,
     shared_opaque_login_session_store, shared_opaque_registration_session_store, AuthFactorMethod,
     AuthenticatedLogin, MfaChallenge, MfaSessionStore, OpaqueLoginSessionStore,
-    OpaqueRegistrationSessionStore,
+    OpaqueRegistrationSessionStore, RegistrationMode, RegistrationPolicy,
 };
 pub use user_notification::UserNotificationService;
 pub use ws_ticket::{

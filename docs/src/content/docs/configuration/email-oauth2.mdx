@@ -1,0 +1,209 @@
+---
+title: 邮件与 OAuth2
+description: SMTP 邮件、邮箱验证、OAuth2/OIDC 登录提供商配置说明。
+---
+
+## 邮件配置有什么用？
+
+`email` 配置用于 SMTP 发信。常见用途包括：
+
+- 邮箱验证。
+- 密码找回。
+- 两步验证中的邮箱验证码。
+- 系统通知。
+
+如果 `email.smtp_host` 为空，邮件功能会被视为未配置。
+
+## `email.smtp_host`
+
+SMTP 服务器地址。
+
+示例：
+
+```yaml
+email:
+  smtp_host: "smtp.example.com"
+```
+
+常见服务商会提供类似：
+
+- `smtp.gmail.com`
+- `smtp.office365.com`
+- 企业邮箱 SMTP 地址
+
+## `email.smtp_port`
+
+默认值：`587`。
+
+常见端口：
+
+| 端口 | 用途 |
+| --- | --- |
+| `587` | STARTTLS，最常见推荐 |
+| `465` | SMTPS |
+| `25` | 传统 SMTP，很多云服务器会封禁 |
+
+## `email.smtp_username`
+
+SMTP 用户名。通常是邮箱地址或服务商提供的账号。
+
+## `email.smtp_password`
+
+SMTP 密码或应用专用密码。
+
+生产建议：
+
+```yaml
+email:
+  smtp_password_file: "/run/secrets/smtp_password"
+```
+
+或：
+
+```bash
+SYNCTV_EMAIL_SMTP_PASSWORD_FILE=/run/secrets/smtp_password
+```
+
+不要把 SMTP 密码写进 Git。
+
+## `email.from_email`
+
+发件人邮箱。
+
+示例：
+
+```yaml
+email:
+  from_email: "noreply@example.com"
+```
+
+这个地址通常需要与 SMTP 账号或域名授权匹配，否则邮件可能被拒收或进入垃圾箱。
+
+## `email.from_name`
+
+发件人显示名称。
+
+默认值：
+
+```yaml
+email:
+  from_name: "SyncTV"
+```
+
+## `email.use_tls`
+
+默认值：`true`。
+
+生产环境不要关闭 TLS。只有在本地测试 SMTP 服务时才可能设置为 `false`。
+
+## OAuth2/OIDC 配置有什么用？
+
+`oauth2` 用于接入第三方登录，例如 GitHub、Google、Logto、Keycloak、Casdoor、Authelia 或其他 OIDC 服务。
+
+重要产品行为：
+
+- OAuth2 token 只用于登录交换，不长期保存。
+- SyncTV 保存的是“用户与第三方账号的绑定关系”。
+- OAuth2 不参与本地两步验证，但开启 2FA 的用户仍然可以使用 OAuth2 登录。
+
+## `oauth2.redirect_scheme`
+
+默认值通常是 `https`，本地配置示例可能是 `http`。
+
+作用：生成或校验 OAuth2 redirect 相关 URL 时使用的协议。
+
+生产环境必须使用 HTTPS：
+
+```yaml
+oauth2:
+  redirect_scheme: "https"
+```
+
+## `oauth2.providers`
+
+OAuth2 Provider 是一个动态对象。每个 key 是实例名。
+
+GitHub 示例：
+
+```yaml
+oauth2:
+  redirect_scheme: "https"
+  providers:
+    github:
+      client_id: "your_github_client_id"
+      client_secret_file: "/run/secrets/github_client_secret"
+      redirect_url: "https://app.example.com/oauth2/callback"
+```
+
+Google 示例：
+
+```yaml
+oauth2:
+  providers:
+    google:
+      client_id: "your_google_client_id"
+      client_secret_file: "/run/secrets/google_client_secret"
+      redirect_url: "https://app.example.com/oauth2/callback"
+```
+
+通用 OIDC 示例：
+
+```yaml
+oauth2:
+  providers:
+    keycloak:
+      type: oidc
+      client_id: "synctv"
+      client_secret_file: "/run/secrets/keycloak_client_secret"
+      issuer: "https://keycloak.example.com/realms/main"
+      redirect_url: "https://app.example.com/oauth2/callback"
+```
+
+Logto 示例：
+
+```yaml
+oauth2:
+  providers:
+    logto:
+      type: logto
+      client_id: "synctv"
+      client_secret_file: "/run/secrets/logto_client_secret"
+      endpoint: "https://logto.example.com"
+      redirect_url: "https://app.example.com/oauth2/callback"
+```
+
+## `client_id`
+
+第三方平台分配给 SyncTV 的应用 ID。通常不算 secret，但也不建议随意公开在无关场景。
+
+## `client_secret`
+
+第三方平台分配的应用密钥。必须当作 secret 保存。
+
+推荐：
+
+```yaml
+client_secret_file: "/run/secrets/provider_client_secret"
+```
+
+## `redirect_url`
+
+OAuth2 回调地址。
+
+SyncTV 的 OAuth2 流程是前端/客户端驱动：
+
+1. 第三方 Provider 跳转到前端或客户端回调地址，携带 `code` 和 `state`。
+2. 前端或客户端调用 SyncTV 的 exchange 接口完成登录。
+
+因此 `redirect_url` 通常是客户端 URL，而不一定是后端 API URL。
+
+示例：
+
+- Web 前端：`https://app.example.com/oauth2/callback`
+- 桌面/移动客户端：`synctv://oauth2/callback`
+
+## Redis 依赖
+
+OAuth2 登录过程需要临时保存 state。没有 Redis 时单机可以使用内存 store。
+
+多副本部署必须使用 Redis，否则用户发起登录的请求和回调 exchange 请求可能落到不同 Pod，导致 state 找不到。

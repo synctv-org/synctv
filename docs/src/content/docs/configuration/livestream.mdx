@@ -1,0 +1,170 @@
+---
+title: 直播与 HLS/FLV
+description: RTMP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
+---
+
+## 直播配置控制什么？
+
+`livestream` 控制 RTMP 推流/拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
+
+如果你只使用点播媒体 Provider，这一页大部分配置可以保持默认。
+
+## `livestream.rtmp_port`
+
+默认值：`1935`。
+
+作用：RTMP 推流端口。
+
+OBS 推流地址通常类似：
+
+```text
+rtmp://your-domain:1935/live/<stream-key>
+```
+
+如果服务器已经有其他 RTMP 服务占用 1935，可以改成别的端口。
+
+## `livestream.public_rtmp_host`
+
+默认值为空。
+
+作用：返回给推流客户端的公开 RTMP 主机名。
+
+什么时候需要设置：
+
+- 集群内部 `server.advertise_host` 是 Pod IP。
+- 真实用户需要通过公网域名或 LoadBalancer 推流。
+
+示例：
+
+```yaml
+livestream:
+  public_rtmp_host: "live.example.com"
+```
+
+如果为空，SyncTV 会尝试使用 `server.advertise_host`。
+
+## `livestream.gop_cache_size`
+
+默认值：`2`。
+
+GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快开始播放，不必等下一个关键帧。
+
+普通部署保持默认即可。
+
+## `livestream.gop_cache_max_memory_mb`
+
+默认值：`100`。
+
+作用：限制所有直播流 GOP 缓存占用的总内存。
+
+调大场景：
+
+- 同时直播流很多。
+- 视频码率高。
+- 新观众经常加入，想提升起播体验。
+
+调小场景：
+
+- 服务器内存有限。
+
+## `livestream.stream_timeout_seconds`
+
+默认值：`300`。
+
+作用：拉流空闲多久后自动停止。
+
+如果你有长时间无人观看但希望保持拉流的场景，可以调大。否则保持默认能节省上游和本机资源。
+
+## 拉流重试配置
+
+### `pull_max_retries`
+
+默认值：`10`。
+
+拉流失败最多重试多少次。
+
+### `pull_initial_backoff_ms`
+
+默认值：`1000`。
+
+第一次失败后等待多久再重试。
+
+### `pull_max_backoff_ms`
+
+默认值：`30000`。
+
+重试等待时间最多增长到多少。
+
+上游直播源短暂断线时，SyncTV 会自动重试。等待时间会逐步变长，避免持续高频请求上游。
+
+## `livestream.max_flv_tag_size_bytes`
+
+默认值：`10485760`，也就是 10 MB。
+
+作用：限制单个 FLV tag 最大大小，防止异常流导致内存占用过高。
+
+不建议随意调大。除非你明确知道上游会产生更大的合法 tag。
+
+## HLS 配置
+
+### `livestream.hls_memory_max_mb`
+
+默认值：`0`，表示使用内置默认。
+
+作用：限制内存 HLS 分片存储占用。
+
+### `livestream.hls_shared_storage`
+
+默认值：`false`。
+
+作用：声明 HLS 存储路径是否所有副本都能访问。
+
+单副本部署保持 `false`。
+
+多副本部署时，如果 HLS 文件写在本地磁盘，一个用户可能请求到另一个没有该文件的 Pod，导致播放失败。因此多副本需要：
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+并确保这个路径是 NFS、共享 PVC、对象存储挂载等所有副本可见的共享存储。
+
+### `livestream.hls_storage_path`
+
+默认值为空。
+
+作用：HLS 分片存储路径。相对路径会相对 `data_dir`。
+
+示例：
+
+```yaml
+data_dir: "/var/lib/synctv"
+livestream:
+  hls_storage_path: "livestream/hls"
+```
+
+实际路径：
+
+```text
+/var/lib/synctv/livestream/hls
+```
+
+## HTTP-FLV 配置
+
+### `livestream.flv_max_connection_duration_seconds`
+
+默认值：`86400`，也就是 24 小时。
+
+作用：单个 HTTP-FLV 连接最长保持多久。
+
+设置为 `0` 可以关闭限制，但不推荐。长时间连接如果永不限制，异常客户端可能长期占用资源。
+
+### `livestream.flv_write_timeout_seconds`
+
+默认值：`30`。
+
+作用：向客户端写数据时最多等待多久。
+
+如果客户端网络很慢，写入一直阻塞，SyncTV 会在超时后断开连接，避免慢客户端拖垮服务。

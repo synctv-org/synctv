@@ -1,0 +1,209 @@
+---
+title: Server Listener and Runtime Paths
+description: server, time, data_dir, logging, and management configuration.
+---
+
+## What This Page Covers
+
+These settings control where SyncTV listens, how other systems reach it, where runtime files are written, how logs are emitted, and how the management CLI connects.
+
+Review these early in any deployment:
+
+- `server.host`
+- `server.port`
+- `server.cors_allowed_origins`
+- `server.trusted_proxies`
+- `data_dir`
+- `logging`
+- `management`
+
+## `server`
+
+HTTP REST and public gRPC use the same `server.port`.
+
+### `server.host`
+
+Default:
+
+```yaml
+server:
+  host: "0.0.0.0"
+```
+
+Common values:
+
+| Value | Meaning | Use case |
+| --- | --- | --- |
+| `0.0.0.0` | Listen on all IPv4 interfaces | Docker, Kubernetes, servers |
+| `127.0.0.1` | Localhost only | Local dev or reverse-proxy-only access |
+| `::` | Listen on all IPv6 interfaces | IPv6 environments |
+
+### `server.port`
+
+Default:
+
+```yaml
+server:
+  port: 8080
+```
+
+HTTP REST API, public gRPC API, and health checks use this port. In Helm, HTTP and gRPC are exposed through separate Services, but both target the same container port.
+
+### `server.enable_reflection`
+
+Default: `true`.
+
+Enables public gRPC reflection. Keep it on for local development and controlled internal debugging. Disable it in public production environments.
+
+### `server.grpc_max_message_size_bytes`
+
+Default: `16777216`, which is 16 MiB.
+
+This limits gRPC request and response message sizes. Increase only when large batch operations require it. Avoid very high values on public endpoints.
+
+### `server.trusted_proxies`
+
+Default: `[]`.
+
+Controls which reverse proxies may provide trusted client IP headers such as `X-Forwarded-For`.
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+```
+
+Do not use `0.0.0.0/0` or `::/0`. If unsure, keep the list empty so SyncTV uses the socket peer address.
+
+### `server.cors_allowed_origins`
+
+Default: `[]`.
+
+Allowed browser origins for cross-origin API access:
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+    - "https://admin.example.com"
+```
+
+Values must be origins only: scheme, host, and optional port. Do not include paths, query strings, or fragments.
+
+Environment variable form:
+
+```bash
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+### `server.cluster_secret`
+
+Shared secret for internal cluster gRPC calls. Required when `cluster.enabled=true`.
+
+Generate:
+
+```bash
+openssl rand -hex 32
+```
+
+Recommended:
+
+```yaml
+server:
+  cluster_secret_file: "/run/secrets/cluster_secret"
+```
+
+### `server.advertise_host`
+
+Address that other nodes should use to reach this node.
+
+Common cases:
+
+- Kubernetes: set through `SYNCTV_SERVER_ADVERTISE_HOST` or downward API using Pod IP.
+- Static multi-node: set an internal IP or DNS name.
+- Single-node: usually leave empty.
+
+When empty, SyncTV tries `POD_IP`, then system hostname.
+
+### `server.shutdown_drain_timeout_seconds`
+
+Default: `30`.
+
+How long shutdown waits for existing connections to drain. Increase it for many long-lived connections or smoother Kubernetes rolling updates.
+
+## Timezone
+
+`time.timezone` defaults to automatic detection.
+
+Resolution order:
+
+1. `time.timezone`
+2. `SYNCTV_TIME_TIMEZONE`
+3. `TZ`
+4. System timezone
+5. UTC
+
+Example:
+
+```yaml
+time:
+  timezone: "Asia/Shanghai"
+```
+
+## `data_dir`
+
+`data_dir` is the root for runtime-owned local files:
+
+- Management Unix socket.
+- File logs.
+- HLS livestream segments.
+- Proxy slice cache files.
+
+Examples:
+
+```yaml
+data_dir: "/var/lib/synctv"
+```
+
+Container deployments usually use `/data` and mount it as a volume.
+
+`data_dir` does not affect `*_file` secret paths or metrics TLS cert/key paths.
+
+## Logging
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `logging.level` | `info` | Log level |
+| `logging.format` | `pretty` | Human-readable or JSON logs |
+| `logging.filter` | `null` | Advanced tracing filter |
+| `logging.backtrace` | `false` | Include backtraces when useful |
+| `logging.file_path` | `null` | Optional file output |
+
+Use `json` in Kubernetes or log aggregation systems:
+
+```yaml
+logging:
+  level: "info"
+  format: "json"
+```
+
+Relative `logging.file_path` values are resolved under `data_dir`. Containers usually should log to stdout instead of files.
+
+## Management Endpoint
+
+The management endpoint is used by the `synctv` CLI for controlled administrative operations. It is not a client-facing business API.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `management.enabled` | `true` | Enable management endpoint |
+| `management.transport` | Unix on Unix-like systems, TCP elsewhere | Transport mode |
+| `management.port` | `50052` | TCP management port |
+| `management.unix_socket_path` | platform-specific under `data_dir` | Unix socket path |
+| `management.auth_token` | `""` | Bearer token for TCP management |
+| `management.enable_reflection` | `false` | Management gRPC reflection |
+
+TCP management requires a strong auth token and should not be exposed publicly.
+
+Unix socket paths can be relative to `data_dir`. TCP mode is useful for Windows or controlled remote management networks.

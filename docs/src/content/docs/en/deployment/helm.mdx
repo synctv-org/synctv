@@ -1,0 +1,207 @@
+---
+title: Helm Deployment
+description: Kubernetes Helm chart configuration, HTTP/gRPC Services, Ingress, secrets, metrics, and KubeBlocks.
+---
+
+## Chart Location
+
+The Helm chart lives at:
+
+```text
+helm/synctv
+```
+
+By default, it can create:
+
+- SyncTV Deployment.
+- HTTP/API Service.
+- gRPC Service.
+- PostgreSQL.
+- Redis.
+- ConfigMap.
+- Secret.
+- Ingress.
+- Optional metrics, ServiceMonitor, VMServiceScrape, NetworkPolicy, HPA, and PDB.
+
+## Install
+
+```bash
+helm install synctv ./helm/synctv \
+  --namespace synctv \
+  --create-namespace
+```
+
+Production deployments should use a values file:
+
+```bash
+helm install synctv ./helm/synctv \
+  --namespace synctv \
+  --create-namespace \
+  --values my-values.yaml
+```
+
+## HTTP and gRPC Services
+
+The SyncTV process serves HTTP REST and gRPC on the same container port. The Helm chart exposes them through separate Services:
+
+| Service | Purpose | Port name |
+| --- | --- | --- |
+| `synctv` | HTTP/REST plus RTMP, STUN, metrics-related ports | `api` |
+| `synctv-grpc` | Dedicated gRPC entry | `grpc` |
+
+Why split them:
+
+- Ingress controllers usually need protocol-specific gRPC backend settings.
+- Kubernetes Service/Ingress semantics differ even if the container port is the same.
+- Metrics selectors can target the HTTP/API Service without accidentally scraping the gRPC Service.
+
+## Ingress
+
+HTTP Ingress:
+
+```yaml
+ingress:
+  enabled: true
+  hosts:
+    - host: synctv.example.com
+```
+
+gRPC Ingress is configured separately:
+
+```yaml
+ingress:
+  grpc:
+    enabled: true
+    hosts:
+      - host: grpc.synctv.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```
+
+`ingress.grpc.annotations` is independent from HTTP Ingress annotations.
+
+## Secrets
+
+The chart can generate and store a Secret, but production should explicitly provide strong values:
+
+```yaml
+secrets:
+  jwt:
+    secret: "replace-with-strong-secret"
+  cluster:
+    grpcSecret: "replace-with-cluster-secret"
+  security:
+    credentialEncryptionKey: "64-hex-character-key"
+    opaqueServerSetupSecret: "stable-random-secret"
+  bootstrap:
+    rootPassword: "StrongRootPass12345"
+```
+
+With an external Secret:
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+```
+
+Required keys include:
+
+- `SYNCTV_DATABASE_PASSWORD`
+- `SYNCTV_REDIS_PASSWORD`
+- `SYNCTV_JWT_SECRET`
+- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- `SYNCTV_MANAGEMENT_AUTH_TOKEN` when management uses TCP
+
+## PostgreSQL and Redis Modes
+
+`standard` mode creates chart-managed StatefulSet and Service resources:
+
+```yaml
+postgresql:
+  mode: standard
+
+redis:
+  mode: standard
+```
+
+`kubeblocks` mode creates KubeBlocks Cluster resources if KubeBlocks is installed:
+
+```yaml
+postgresql:
+  mode: kubeblocks
+
+redis:
+  mode: kubeblocks
+```
+
+In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
+
+## `config.dataDir`
+
+Default:
+
+```yaml
+config:
+  dataDir: "/data"
+```
+
+The Deployment mounts `/data`. The default storage is appropriate for runtime temporary files. If you need persistent HLS or proxy slice cache, use a PVC or shared storage.
+
+## HLS With Multiple Replicas
+
+If `replicaCount > 1` or HPA is enabled and HLS is used, configure shared storage:
+
+```yaml
+config:
+  livestream:
+    hlsSharedStorage: true
+    hlsStoragePath: "/var/lib/synctv/hls"
+```
+
+Mount the path as storage shared by every replica.
+
+## Metrics
+
+Enable metrics:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: bearer_token
+```
+
+Prometheus Operator:
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+```
+
+VictoriaMetrics:
+
+```yaml
+metrics:
+  vmServiceScrape:
+    enabled: true
+```
+
+The metrics selector should target the API component Service and avoid the gRPC Service.
+
+## Render Validation
+
+Temporary checks:
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+helm template synctv ./helm/synctv --set ingress.grpc.enabled=true
+```
+
+Successful rendering only proves the manifests are syntactically valid. You still need runtime config validation and startup logs.

@@ -1,0 +1,150 @@
+---
+title: 备份与恢复
+description: SyncTV 生产环境的 PostgreSQL、secret、运行时文件、Redis 状态和恢复演练建议。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 备份范围
+
+生产环境必须备份两类数据：
+
+| 数据 | 是否必须 | 原因 |
+| --- | --- | --- |
+| PostgreSQL | 必须 | 用户、房间、权限、Provider 实例、用户偏好、审计和业务数据都在数据库中 |
+| 生产 secret | 必须 | JWT、OPAQUE、Provider 凭据加密 key、cluster secret、management token 等影响登录和数据解密 |
+| 配置文件 | 强烈建议 | 恢复时需要精确还原监听、域名、依赖、路径和功能开关 |
+| HLS 共享存储 | 按需 | 如果你需要保留直播 HLS 文件或多副本共享片段 |
+| proxy slice cache | 通常不必 | 这是可再生缓存，丢失后只会降低缓存命中率 |
+| Redis | 通常不必长期备份 | Redis 保存短期状态和协调状态，清空会影响正在进行的登录、验证码、限流窗口和集群短期状态 |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 不能丢。前者影响 OPAQUE 密码记录验证，后者影响已加密 Provider 凭据读取。
+</Aside>
+
+## 备份 PostgreSQL
+
+<Tabs syncKey="postgres-backup">
+  <TabItem label="pg_dump" icon="seti:db">
+
+适合中小规模部署和人工备份：
+
+```bash
+pg_dump \
+  --format=custom \
+  --file=synctv-$(date +%Y%m%d-%H%M%S).dump \
+  "$DATABASE_URL"
+```
+
+恢复：
+
+```bash
+createdb synctv_restore
+pg_restore \
+  --dbname=postgresql://synctv:password@localhost:5432/synctv_restore \
+  --clean \
+  --if-exists \
+  synctv-20260504-120000.dump
+```
+
+  </TabItem>
+  <TabItem label="plain SQL" icon="document">
+
+适合需要可读 SQL 或接入现有备份系统：
+
+```bash
+pg_dump "$DATABASE_URL" > synctv-$(date +%Y%m%d-%H%M%S).sql
+```
+
+恢复：
+
+```bash
+psql "$DATABASE_URL" < synctv-20260504-120000.sql
+```
+
+  </TabItem>
+  <TabItem label="Kubernetes" icon="seti:kubernetes">
+
+如果 PostgreSQL 在集群内，可以临时 port-forward 后从本地备份：
+
+```bash
+kubectl -n synctv port-forward svc/postgres 5432:5432
+pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
+```
+
+也可以使用你所在平台的数据库备份能力，例如云数据库快照、Operator 备份任务或对象存储归档。
+
+  </TabItem>
+</Tabs>
+
+## 备份 secret
+
+至少保存这些值：
+
+| 配置 | 建议保存位置 |
+| --- | --- |
+| `jwt.secret` | Secret Manager、Kubernetes Secret、密码管理器 |
+| `security.opaque_server_setup_secret` | Secret Manager、离线加密备份 |
+| `security.credential_encryption_key` | Secret Manager、离线加密备份 |
+| `server.cluster_secret` | Kubernetes Secret 或 Secret Manager |
+| `management.auth_token` | Secret Manager |
+| `metrics.auth.*` | 监控系统 secret |
+| `email.smtp_password` | Secret Manager |
+| Provider token/API key/cookie | Secret Manager 或数据库内加密存储 |
+
+如果你使用 `_file` 配置，把文件内容备份，而不是只备份路径。
+
+## 恢复顺序
+
+<Steps>
+1. 停止 SyncTV 服务，避免恢复过程中继续写入。
+2. 恢复生产 secret，确保所有 key 与备份时一致。
+3. 恢复配置文件或部署 values。
+4. 恢复 PostgreSQL。
+5. 按需要恢复 HLS 共享存储。
+6. 启动同版本 SyncTV，执行 `synctv db status`。
+7. 如果需要升级，先按 [升级与迁移](../upgrades/) 的流程完成配置、镜像和回滚风险检查。
+8. 启动服务。服务启动阶段会自动执行 embedded SQLx migrations，然后检查 `/health/ready`、登录、Provider 访问、WebSocket 和 metrics。
+</Steps>
+
+## 恢复校验
+
+恢复后至少验证：
+
+```bash
+synctv db status
+synctv config validate
+curl -fsS http://localhost:8080/health/ready
+```
+
+业务层验证：
+
+- root/admin 能登录。
+- 开启 2FA 的用户仍能完成登录。
+- 已保存的 Provider 凭据能解密并访问上游。
+- 房间列表、成员、播放列表和权限正常。
+- 如果启用 WebAuthn，passkey challenge 和 origin 配置正常。
+- 如果启用 OAuth2，redirect state 能在 Redis 正常读写。
+
+## 恢复演练频率
+
+建议：
+
+- 每次大版本升级前做一次恢复演练。
+- 每次调整 secret 管理方式后做一次恢复演练。
+- 至少定期确认备份文件可读、可解密、可导入。
+
+不要只检查“备份任务成功”。真正有价值的是确认备份能恢复成可登录、可播放、可管理的 SyncTV 实例。
+
+## Redis 丢失后的影响
+
+Redis 丢失通常不破坏持久业务数据，但会造成短期行为变化：
+
+- OAuth2 state 失效，用户需要重新开始 OAuth2 登录。
+- WebAuthn challenge 失效，用户需要重新发起认证。
+- 邮箱验证码失效，需要重新发送。
+- token blacklist 丢失，被拉黑的旧 token 可能直到 JWT 自身过期才失效。
+- 限流计数重置。
+- 集群节点需要重新注册和 catch-up。
+
+如果你依赖强 token 吊销语义，Redis 应使用高可用部署，并把 token 有效期设置得足够短。

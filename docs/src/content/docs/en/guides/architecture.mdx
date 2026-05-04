@@ -1,0 +1,150 @@
+---
+title: Architecture Overview
+description: SyncTV process boundaries, dependencies, network surfaces, storage layers, cache layers, and scaling model.
+---
+
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Mental Model
+
+SyncTV is a single-binary service that combines HTTP APIs, public gRPC, management gRPC, realtime room state, media providers, media proxying, livestreaming, and cluster coordination. Durable state lives in PostgreSQL. Shared ephemeral state and distributed coordination use Redis. Local runtime files live under `data_dir`.
+
+## Major Components
+
+<CardGrid>
+  <Card title="API and Realtime" icon="document">
+    HTTP REST, public gRPC, WebSocket, and room realtime events share the same service and permission model.
+  </Card>
+  <Card title="Authentication" icon="approve-check-circle">
+    Password, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
+  </Card>
+  <Card title="Media" icon="puzzle">
+    Providers resolve external media, the proxy performs controlled forwarding, and slice cache stores Range slices only.
+  </Card>
+  <Card title="Horizontal Scaling" icon="cloud-download">
+    Multi-node deployments use Redis pub/sub, Redis Streams, discovery, and leader election for coordination.
+  </Card>
+</CardGrid>
+
+## Runtime Surfaces
+
+| Surface | Default port or path | Purpose | Production guidance |
+| --- | --- | --- | --- |
+| HTTP REST | `server.port=8080` | Client API, health checks, OpenAPI UI | Expose through a reverse proxy or Ingress |
+| Public gRPC | `server.port=8080` | gRPC API for clients or SDKs | Use a separate Kubernetes Service and Ingress |
+| WebSocket | `server.port=8080` | Room realtime events, playback sync, chat | Configure connection limits and shutdown drain |
+| Management gRPC | Unix socket or `management.port=50052` | CLI, administration, operational control plane | Prefer Unix socket; TCP requires a token |
+| Metrics | `metrics.port=9090` | Prometheus metrics | Keep private and authenticated |
+| RTMP | `livestream.rtmp_port=1935` | Livestream publishing | Expose only when livestreaming is used |
+| STUN UDP | `webrtc.stun_port=3478` | WebRTC NAT assistance | Expose only when the built-in STUN server is used |
+
+HTTP REST and public gRPC share the main port, but Kubernetes deployments should still use separate Services and Ingresses. This lets the gRPC Ingress set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` independently.
+
+## State and Storage
+
+<Tabs syncKey="state-layer">
+  <TabItem label="PostgreSQL" icon="seti:db">
+
+PostgreSQL is the durable system of record. Users, rooms, permissions, provider instances, user preferences, audit data, and business records live there.
+
+Production requirements: startup runs embedded SQLx migrations automatically; maintain backup and restore procedures; keep connection pool sizing within database capacity; treat database migrations as rollback-sensitive.
+
+  </TabItem>
+  <TabItem label="Redis" icon="seti:redis">
+
+Redis stores shared ephemeral state and distributed coordination data. Single-node deployments can run without Redis, but production and multi-replica deployments should configure it.
+
+Redis affects rate limits and brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, email verification short-lived state, L2 cache, cluster pub/sub, node registration, and event catch-up.
+
+Redis is usually not a long-term backup target, but restarting or clearing it affects in-flight authentication, rate windows, and cluster short-term state.
+
+  </TabItem>
+  <TabItem label="data_dir" icon="folder">
+
+`data_dir` is the root directory for runtime-owned local files.
+
+Common contents include the management Unix socket, file logs, HLS files, and file-backed proxy slice cache.
+
+Static input files such as `*_file` secrets and TLS certificates are not rebased under `data_dir`.
+
+  </TabItem>
+</Tabs>
+
+## Request Flows
+
+### API Requests
+
+<Steps>
+1. A client calls SyncTV through HTTP or gRPC.
+2. The API layer performs authentication, rate limiting, permission checks, and request parsing.
+3. Services read and write PostgreSQL, using Redis and L1 caches when configured.
+4. Realtime changes are pushed over WebSocket; in cluster mode, Redis distributes them to other nodes.
+</Steps>
+
+### Media Provider and Proxy Requests
+
+<Steps>
+1. A provider resolves a media URL and decides whether the client should fetch directly or through the proxy.
+2. The provider explicitly selects upstream headers such as `User-Agent`, `Referer`, `Range`, or authentication headers.
+3. The proxy layer uses provider-supplied headers only. It does not forward raw client headers by itself.
+4. Slice cache handles Range-capable upstreams only. If an upstream does not support Range, the proxy bypasses caching and does not store full-body responses.
+</Steps>
+
+<Aside type="note">
+Provider-owned headers are an intentional boundary. They keep proxy behavior predictable and avoid leaking arbitrary client headers to upstream services.
+</Aside>
+
+## Cluster Model
+
+Cluster mode is for multi-replica deployments. When `cluster.enabled=true`, Redis and `server.cluster_secret` are required.
+
+Key settings:
+
+| Setting | Purpose |
+| --- | --- |
+| `cluster.discovery_mode` | Node discovery: `redis`, `static`, or `k8s_dns` |
+| `cluster.leader_election_mode` | Background task leader election: `redis` or `k8s_lease` |
+| `server.advertise_host` | Address other nodes use to reach this node |
+| `server.cluster_secret` | Authentication for inter-node gRPC calls |
+| `cluster.catchup_window_secs` | Redis Stream event catch-up window after short disconnects |
+
+For multi-replica deployments, also confirm:
+
+- All replicas share the same PostgreSQL database.
+- All replicas share the same Redis and `redis.key_prefix`.
+- HLS uses shared storage if clients may read segments through different pods.
+- Kubernetes termination grace period is longer than `server.shutdown_drain_timeout_seconds`.
+
+## Production Topologies
+
+Minimal production topology:
+
+```text
+Client
+  -> TLS reverse proxy / Ingress
+  -> SyncTV
+  -> PostgreSQL
+  -> Redis
+```
+
+Kubernetes multi-replica topology:
+
+```text
+Client
+  -> HTTP Ingress -> HTTP Service -> SyncTV pods
+  -> gRPC Ingress -> gRPC Service -> SyncTV pods
+
+SyncTV pods
+  -> PostgreSQL
+  -> Redis
+  -> optional shared HLS storage
+  -> optional external media providers
+```
+
+## Next Pages
+
+- [Configuration Index](../../reference/configuration-index/)
+- [Production Checklist](../../deployment/production-checklist/)
+- [Backup and Restore](../../operations/backup-restore/)
+- [Upgrades and Migrations](../../operations/upgrades/)
+- [Observability Runbook](../../operations/observability/)

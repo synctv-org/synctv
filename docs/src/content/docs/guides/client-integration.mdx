@@ -1,0 +1,156 @@
+---
+title: 客户端集成指南
+description: 面向客户端、SDK 和第三方集成的 HTTP、gRPC、WebSocket、认证、MFA、OAuth2 和实时连接约定。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## 这页解决什么问题
+
+OpenAPI 和 protobuf 告诉你“接口长什么样”，这页说明“客户端应该如何组合这些接口”。如果你在实现 Web、桌面、移动端、CLI、机器人或第三方 SDK，建议先读这页，再分别进入 [OpenAPI 文档入口](../../reference/openapi/) 和 [gRPC 调试](../../reference/grpc/)。
+
+## 选择哪种接口
+
+| 场景 | 推荐接口 | 说明 |
+| --- | --- | --- |
+| 普通业务操作 | HTTP/OpenAPI 或公开 gRPC | 用户、房间、播放列表、通知、Provider 等业务都可以按客户端技术栈选择。 |
+| 生成 SDK | HTTP/OpenAPI | 通过 `/api-docs/openapi.json` 生成 TypeScript、Kotlin、Swift、Go 等客户端。 |
+| 强类型内部客户端 | gRPC | 直接使用 `synctv-proto/proto/client.proto`、`oauth2.proto` 和 provider proto。 |
+| 房间实时状态 | WebSocket 或 gRPC stream | 需要收发实时播放、聊天、弹幕、WebRTC 信令时使用。 |
+| 运维管理 | management gRPC/CLI | 不要把 management 端点暴露给普通客户端。CLI 是推荐入口。 |
+| 媒体播放 | Provider 返回的直连 URL 或 SyncTV proxy URL | Provider 决定 header、代理策略和 Range 行为。客户端不要猜测底层上游规则。 |
+
+## 传输安全
+
+生产环境必须用 TLS。`client.proto` 中密码相关 RPC 明确会在 protobuf payload 中携带密码或新密码字段；服务端不强制 HTTPS，是为了允许本机、内网或测试环境，但公网部署不能明文暴露这些接口。
+
+要求：
+
+- 登录、注册、改密码、密码找回、MFA password 都必须走 HTTPS 或受信任的加密隧道。
+- access token 和 refresh token 只通过 `Authorization: Bearer <token>` 或受控的客户端存储使用。
+- 不要把 token、OAuth2 code、邮箱验证码、Provider token、Cookie 写入日志。
+- WebSocket 使用 `wss://`，除非是本机开发环境。
+
+## Token 使用
+
+业务接口使用 Bearer token：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+客户端建议：
+
+- access token 只用于短期 API 调用。
+- refresh token 只用于刷新会话，不要传给 WebSocket query、媒体 URL 或第三方服务。
+- refresh token 刷新后应按服务端返回结果更新本地保存的 token；不要继续使用旧 refresh token 做并发刷新。
+- 用户开启 2FA 后，本地登录必须完成 MFA 后才能拿到满足策略的 token。OAuth2 登录不参与本地 2FA，但 OAuth2 登录签发的 token 可用于该登录路径。
+
+## 本地登录和 MFA
+
+`LoginResponse` 永远是同一个结构：可能直接返回 token，也可能返回 `mfa.required=true` 的挑战。
+
+客户端处理逻辑：
+
+<Steps>
+1. 发起第一因素登录，例如密码、OPAQUE、passkey 或邮箱验证码登录。
+2. 读取 `LoginResponse.mfa.required`。
+3. 如果 `required=false`，保存 `access_token` 和 `refresh_token`，登录结束。
+4. 如果 `required=true`，保存短期 `mfa.session_id`，展示 `available_methods`。
+5. 如果可用方式包含 `MFA_METHOD_EMAIL`，客户端可以直接调用 `RequestMfaEmailCode` 发送第二步验证码。
+6. 如果可用方式包含 `MFA_METHOD_WEBAUTHN`，先调用 `StartMfaPasskey` 获取 WebAuthn options，再调用 `FinishMfaPasskey`。
+7. 如果可用方式包含 `MFA_METHOD_PASSWORD`，调用 `VerifyMfaPassword`。失败会计入暴力破解保护。
+8. 第二因素成功后，最终响应会返回可用 token。
+</Steps>
+
+`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式；OAuth2 不计入本地 2FA 因素。
+
+<Aside type="note">
+OPAQUE 是密码登录协议，但客户端不能自行推断它是否可作为 password MFA。只有服务端在 `available_methods` 中返回 `MFA_METHOD_PASSWORD` 时，客户端才展示 password 第二因素。
+</Aside>
+
+## 邮箱验证码
+
+邮箱验证码可以用于登录、MFA、邮箱验证和密码找回，具体接口以 OpenAPI/protobuf 为准。客户端应区分用途，不要复用不同流程的验证码输入框状态。
+
+建议：
+
+- 发送验证码后启用倒计时，避免用户连续点击触发限流。
+- 接口返回限流错误时，按服务端错误展示，不要本地无限重试。
+- MFA 邮箱验证码使用 `mfa_session_id`，不是普通邮箱登录 token。
+
+## OAuth2
+
+OAuth2/OIDC 是前端驱动流程：
+
+<Steps>
+1. 调用 `GetAuthorizationUrl` 获取第三方授权 URL 和 state。
+2. 把用户跳转到第三方授权页面。
+3. 第三方回调到客户端 URL，带回 `code` 和 `state`。
+4. 客户端调用 `ExchangeAuthorizationCode`。
+5. 服务端校验 state、换取用户信息，并返回 SyncTV token。
+</Steps>
+
+绑定已有账号时使用 `GetAuthorizationUrlForBind`，这类请求需要当前用户认证上下文。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
+
+## WebSocket
+
+WebSocket 地址格式：
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+认证有两种方式：
+
+| 方式 | 适用客户端 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <token>` | 原生客户端、CLI、服务端 SDK | 推荐方式，不把 token 放进 URL。 |
+| `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先调用 `POST /api/tickets` 获取短期一次性 ticket，再连接。 |
+
+浏览器推荐流程：
+
+<Steps>
+1. 使用普通 Bearer token 调用 `POST /api/tickets`，传入目标 `room_id`。
+2. 得到 `ticket` 和过期时间。
+3. 连接 `wss://<host>/ws/rooms/<room_id>?ticket=<ticket>`。
+4. 连接成功后不要复用 ticket；失败也应重新申请。
+</Steps>
+
+## gRPC 房间上下文
+
+公开 gRPC 的房间内服务使用两类 metadata：
+
+- `Authorization: Bearer <access_token>`：用户身份。
+- `x-room-id: <room_id>`：房间上下文。
+
+不要把 room id 只放在请求 body 里然后期待服务端推断。`client.proto` 中标注 `x-room-id metadata` 的 RPC 都应显式传 metadata。
+
+## 媒体 URL 与请求头
+
+Provider 返回的媒体播放结果可能包含 URL、代理模式、直连模式和必须使用的 header。客户端规则：
+
+- 使用 Provider 返回的 header，不要自行拼接 `User-Agent`、`Referer`、`Range`。
+- 如果 Provider 返回直连 URL 且要求 header，客户端必须确认自身运行环境可以设置这些 header。
+- 如果客户端不能设置必要 header，应使用 Provider 返回的代理 URL 或请求代理模式。
+- Range 播放是否可用由 Provider 和上游共同决定；SyncTV proxy 不会自动转发原始客户端 header。
+
+更多 Provider 行为见 [媒体 Provider](../../configuration/media-providers/) 和 [缓存与代理 slice cache](../../configuration/cache-and-proxy/)。
+
+## 错误处理建议
+
+客户端应该按错误类别处理，而不是只判断文本：
+
+- `401`：token 过期、ticket 无效、未登录，进入登录或刷新流程。
+- `403`：身份有效但无权限，展示权限不足。
+- `409`：状态冲突，例如并发修改或业务状态不允许。
+- `429`：限流，按服务端提示退避。
+- `5xx`：服务端或依赖异常，展示重试入口并收集 request id、时间、路径。
+
+## 开发入口
+
+- [OpenAPI 文档入口](../../reference/openapi/)：Swagger UI 和 `/api-docs/openapi.json`。
+- [gRPC 调试](../../reference/grpc/)：reflection、grpcurl 和 protobuf 文件位置。
+- [认证与安全模型](../security-model/)：2FA、OAuth2、token 上下文和 Provider header 边界。
+- [房间、权限与用户偏好](../rooms-permissions/)：角色、权限位、room settings 和用户偏好。
+- [排障入口](../../operations/troubleshooting/)：按现象定位 CORS、WebSocket、登录、Provider 和 Range 问题。

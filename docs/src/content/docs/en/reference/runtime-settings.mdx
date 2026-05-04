@@ -1,0 +1,195 @@
+---
+title: Runtime Settings Reference
+description: Hot-reload database settings, semantics, defaults, validation, scope, and CLI examples.
+---
+
+import { Aside, Card, CardGrid, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## What Runtime Settings Are
+
+Runtime settings are hot-reload settings stored in PostgreSQL. They are mainly for changing product policy while the service is running. They are different from YAML/env/CLI startup configuration:
+
+| Type | Storage | Hot reload | Suitable for |
+| --- | --- | --- | --- |
+| Startup configuration | YAML, env, secret files, CLI flags | No; usually requires restart | Ports, database, Redis, secrets, TLS, data_dir, cache enablement |
+| Runtime settings | PostgreSQL `settings` table | Yes; replicas sync through LISTEN/NOTIFY | Registration, room creation, permission defaults, proxy switches, CORS, chat retention |
+
+<Aside type="caution">
+Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-cache enablement into runtime settings. Those belong to startup configuration.
+</Aside>
+
+## CLI Usage
+
+```bash
+synctv settings list
+synctv settings get user.enable_password_signup
+synctv settings update user.enable_password_signup --value true
+```
+
+If the command supports grouped `--set` form:
+
+```bash
+synctv settings update email --set whitelist_enabled=true --set whitelist=example.com
+```
+
+Check the current binary with `synctv settings --help`.
+
+## Sync and Consistency
+
+Runtime settings are written to PostgreSQL and propagated to other replicas through PostgreSQL LISTEN/NOTIFY.
+
+Semantics:
+
+- Each setting key has a registered typed provider.
+- Writes are type-checked and value-validated before persistence.
+- Cross-key invariants use transactional validation, for example `room.room_must_need_pwd` and `room.room_must_no_need_pwd` cannot both be true.
+- If a replica misses notifications, it refreshes from a full snapshot.
+
+## Keys
+
+### Server
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `server.allow_room_creation` | bool | `true` | bool | Whether users can create rooms |
+| `server.max_rooms_per_user` | i64 | `10` | `1..=1000` | Maximum rooms per user |
+| `server.max_members_per_room` | i64 | `100` | `1..=10000` | Maximum members per room |
+| `server.max_chat_messages` | u64 | `500` | `<=10000`; `0` means unlimited | Service-level public chat message cap policy; cleanup uses `chat.max_messages_per_room` |
+
+### Permissions
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `permissions.admin_default` | u64 bitmask | `1073741823` | Global default permissions for room admin |
+| `permissions.member_default` | u64 bitmask | `262143` | Global default permissions for room member |
+| `permissions.guest_default` | u64 bitmask | `511` | Global default permissions for room guest |
+
+Permission bitmask semantics are described in [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/).
+
+### Room
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `room.disable_create_room` | bool | `false` | bool | Disable room creation |
+| `room.create_room_need_review` | bool | `false` | bool | Require review for room creation |
+| `room.room_ttl` | i64 seconds | `172800` | `>=0`; `0` means never expire | Room auto-expiration time |
+| `room.room_must_need_pwd` | bool | `false` | Mutually exclusive with `room.room_must_no_need_pwd` | Force rooms to require passwords |
+| `room.room_must_no_need_pwd` | bool | `false` | Mutually exclusive with `room.room_must_need_pwd` | Force rooms to not require passwords |
+
+### User
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `user.enable_password_signup` | bool | `false` | Allow password signup, including legacy password and OPAQUE password registration |
+| `user.password_signup_need_review` | bool | `false` | Require review for password signup |
+| `user.enable_email_signup` | bool | `false` | Allow email signup. Current email login only serves existing accounts; this switch is reserved for a future passwordless email account-creation endpoint |
+| `user.email_signup_need_review` | bool | `false` | Require review for email signup |
+| `user.enable_oauth2_signup` | bool | `false` | Allow first OAuth2 login to create a local account automatically; existing linked OAuth2 logins are not affected |
+| `user.oauth2_signup_need_review` | bool | `false` | Require review for OAuth2 signup. The current review table does not store temporary OAuth2 identities, so enabling this rejects new OAuth2 registrations |
+| `user.enable_webauthn_signup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
+| `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup. The current review table does not store temporary WebAuthn credentials, so enabling this rejects new WebAuthn registrations |
+| `user.enable_guest` | bool | `true` | Allow guest capability |
+
+All registration modes are disabled by default. Production deployments should enable only the intended entry points and configure review independently for each mode.
+
+User-level 2FA, notification preferences, and provider defaults are user preferences, not runtime settings. See [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/).
+
+### Proxy
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `proxy.movie_proxy` | bool | `true` | Allow media proxy paths |
+| `proxy.live_proxy` | bool | `true` | Allow livestream proxy paths |
+| `proxy.allow_proxy_to_local` | bool | `true` | Allow proxying to local or private targets |
+
+These are business proxy policy switches, not startup setting `cache.proxy_slice_cache_enabled`. Slice-cache enablement is startup-only.
+
+### RTMP
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `rtmp.custom_publish_host` | string | `""` | Custom publish host returned to stream publishers |
+| `rtmp.ts_disguised_as_png` | bool | `false` | Disguise TS segments as PNG paths or responses |
+
+### Email
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `email.whitelist_enabled` | bool | `false` | Enable email allowlist |
+| `email.whitelist` | string | `""` | Email allowlist content; parsed by business logic |
+
+SMTP host, password, and sender configuration remain startup settings. See [Email and OAuth2](../../configuration/email-oauth2/).
+
+### WebRTC
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `webrtc.external_ice_servers` | JSON/string structure | `[]` | External ICE servers returned to native clients |
+
+Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
+
+### Chat
+
+| Key | Type | Default | Validation | Meaning |
+| --- | --- | --- | --- | --- |
+| `chat.max_messages_per_room` | u64 | `500` | `<=100000`; `0` means unlimited | Maximum retained chat messages per room |
+| `chat.message_retention_days` | i64 days | `90` | `1..=3650` | Maximum chat message retention age |
+
+### CORS
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `cors.allowed_origins` | JSON/string structure | `[]` | Runtime CORS allowed origins for proxy-related paths |
+
+Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for policy that can change while the service runs.
+
+## Examples
+
+<Tabs syncKey="runtime-settings-examples">
+  <TabItem label="Enable password signup" icon="setting">
+
+```bash
+synctv settings update user.enable_password_signup --value true
+```
+
+  </TabItem>
+  <TabItem label="Review password signup" icon="approve-check-circle">
+
+```bash
+synctv settings update user.password_signup_need_review --value true
+```
+
+  </TabItem>
+  <TabItem label="Limit room count" icon="document">
+
+```bash
+synctv settings update server.max_rooms_per_user --value 20
+```
+
+  </TabItem>
+  <TabItem label="Chat retention" icon="delete">
+
+```bash
+synctv settings update chat.max_messages_per_room --value 1000
+synctv settings update chat.message_retention_days --value 180
+```
+
+  </TabItem>
+</Tabs>
+
+## Before Changing Values
+
+<CardGrid>
+  <Card title="Confirm Hot-Reload Scope" icon="setting">
+    Ports, secrets, database, Redis, TLS, and cache enablement are startup configuration, not runtime settings.
+  </Card>
+  <Card title="Read Current Value" icon="magnifier">
+    Run `synctv settings get <key>` before changing a value and keep it for rollback.
+  </Card>
+  <Card title="Watch Replicas" icon="cloud-download">
+    Multi-replica sync depends on PostgreSQL notifications; observe all replicas after changes.
+  </Card>
+  <Card title="Record Reason" icon="document">
+    Keep reasons for registration, room creation, proxy, and permission-default policy changes.
+  </Card>
+</CardGrid>

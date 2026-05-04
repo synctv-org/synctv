@@ -4517,7 +4517,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let settings_get_body: Value = serde_json::from_slice(&settings_get.stdout)
         .expect("CLI settings get output should be JSON");
     assert_eq!(settings_get_body["name"], "server");
-    assert_eq!(settings_get_body["settings"]["signup_enabled"], true);
+    assert_eq!(settings_get_body["settings"]["allow_room_creation"], true);
 
     let settings_update = run_synctv_remote_cli(
         &server,
@@ -4525,8 +4525,6 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
             "settings",
             "update",
             "server",
-            "--set",
-            "signup_enabled=false",
             "--set",
             "max_rooms_per_user=42",
         ],
@@ -4541,7 +4539,6 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let settings_update_body: Value = serde_json::from_slice(&settings_update.stdout)
         .expect("CLI settings update output should be JSON");
     assert_eq!(settings_update_body["name"], "server");
-    assert_eq!(settings_update_body["settings"]["signup_enabled"], false);
     assert_eq!(settings_update_body["settings"]["max_rooms_per_user"], 42);
 
     let mut management_client =
@@ -4563,7 +4560,6 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
         .expect("server settings group");
     let server_group_settings: Value = serde_json::from_slice(&server_group.settings)
         .expect("server settings group payload should decode");
-    assert_eq!(server_group_settings["signup_enabled"], false);
     assert_eq!(server_group_settings["max_rooms_per_user"], 42);
 
     let system_stats = run_synctv_remote_cli(&server, &["system", "stats"]).await;

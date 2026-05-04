@@ -1,0 +1,149 @@
+---
+title: How Configuration Works
+description: Understand SyncTV configuration precedence, environment variables, secret files, and data_dir path resolution.
+---
+
+## Configuration Sources and Precedence
+
+SyncTV builds the effective runtime configuration by merging several sources. The precedence order from lowest to highest is:
+
+1. Built-in defaults from the Rust configuration structs.
+2. A configuration file such as `synctv.yaml` or `/config/synctv.yaml`.
+3. Environment variables such as `SYNCTV_SERVER_PORT=8080`.
+4. CLI flags for a small set of startup-level overrides such as `--config` and `--data-dir`.
+
+When the same value is defined in multiple places, the higher-precedence source wins. This is important in containers and Kubernetes because an environment variable can silently override a YAML value that looks correct.
+
+## Config File Search Paths
+
+If `--config` is not provided, SyncTV searches common locations:
+
+- Current directory: `./synctv.yaml`
+- Linux user config: `$XDG_CONFIG_HOME/synctv/synctv.yaml` or `~/.config/synctv/synctv.yaml`
+- Linux system config: `/etc/synctv/synctv.yaml`
+- macOS user config: `~/.synctv/synctv.yaml`
+- Container-friendly path: `/config/synctv.yaml`
+
+Use an explicit path in production scripts:
+
+```bash
+synctv serve --config /etc/synctv/synctv.yaml
+```
+
+## Environment Variable Naming
+
+Runtime environment variables use the `SYNCTV_` prefix and convert the configuration path to uppercase underscores.
+
+| Config field | Environment variable |
+| --- | --- |
+| `server.host` | `SYNCTV_SERVER_HOST` |
+| `server.port` | `SYNCTV_SERVER_PORT` |
+| `database.url` | `SYNCTV_DATABASE_URL` |
+| `redis.password` | `SYNCTV_REDIS_PASSWORD` |
+| `jwt.secret` | `SYNCTV_JWT_SECRET` |
+| `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
+| `cache.proxy_slice_cache_enabled` | `SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED` |
+
+Boolean values accept:
+
+- `true` / `false`
+- `1` / `0`
+- `yes` / `no`
+
+List values usually accept JSON or comma-separated strings. Prefer JSON for complex values because it avoids ambiguity:
+
+```bash
+export SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+See [Environment Variables](../../reference/environment-variables/) for the full runtime environment variable list.
+
+## Secret Files
+
+Sensitive fields support loading values from files. This works well with Docker Secrets, Kubernetes Secrets, Vault Agent, External Secrets, and similar systems.
+
+YAML form:
+
+```yaml
+jwt:
+  secret_file: "/run/secrets/jwt_secret"
+```
+
+Environment variable form:
+
+```bash
+export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
+```
+
+Common fields that support file references include:
+
+- `server.cluster_secret`
+- `security.credential_encryption_key`
+- `security.opaque_server_setup_secret`
+- `management.auth_token`
+- `database.url`
+- `database.password`
+- `redis.url`
+- `redis.password`
+- `jwt.secret`
+- `email.smtp_password`
+- `bootstrap.root_password`
+- OAuth2 provider `client_secret`
+- Media provider secret-like fields such as `token`, `api_key`, `password`, `access_token`, and `refresh_token`
+
+Relative `*_file` paths are resolved relative to the configuration file directory, not `data_dir`.
+
+## What `data_dir` Controls
+
+`data_dir` is the root for runtime-owned local files written by SyncTV. It is not the configuration directory and it is not the database directory.
+
+Paths affected by `data_dir`:
+
+- `management.unix_socket_path`
+- `logging.file_path`
+- `livestream.hls_storage_path`
+- `cache.proxy_slice_file_cache_dir`
+
+Paths not affected by `data_dir`:
+
+- `*_file` secret paths
+- `metrics.tls.cert_path`
+- `metrics.tls.key_path`
+
+Example:
+
+```yaml
+data_dir: "/var/lib/synctv"
+
+cache:
+  proxy_slice_file_cache_dir: "cache/proxy-slice"
+```
+
+The actual slice cache path becomes:
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+But this secret file remains relative to the configuration file location:
+
+```yaml
+jwt:
+  secret_file: "./secrets/jwt"
+```
+
+## Inspect and Validate the Effective Config
+
+Use `config show` to inspect the final merged configuration. Secrets are redacted.
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+```
+
+Validate before deployment:
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+Validation checks required secrets, unsafe placeholder values, CORS origins, WebAuthn origins, cluster dependencies, gRPC size limits, and path resolution constraints.

@@ -1,0 +1,217 @@
+---
+title: 排障入口
+description: 按现象定位 SyncTV 启动、配置、部署、认证、代理、直播和集群问题。
+---
+
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 先判断问题层级
+
+不要一开始就翻所有配置项。先把问题归到一个层级，再进入对应页面。
+
+<CardGrid>
+  <Card title="进程没起来" icon="rocket">
+    先看配置校验、必填 secret、数据库连接、Redis 依赖和端口占用。
+  </Card>
+  <Card title="服务起来但访问异常" icon="setting">
+    先看反向代理、CORS、可信代理、Ingress、HTTP/gRPC 协议和端口映射。
+  </Card>
+  <Card title="登录或账号异常" icon="approve-check-circle">
+    先看 SMTP、OAuth2 redirect、WebAuthn origin、2FA 可用验证方式和限流。
+  </Card>
+  <Card title="媒体播放异常" icon="puzzle">
+    先看 Provider 请求头、Range、slice cache、HLS 存储、RTMP/FLV/STUN 端口。
+  </Card>
+</CardGrid>
+
+## 最短排查路径
+
+<Tabs syncKey="runtime">
+  <TabItem label="本机/二进制" icon="laptop">
+
+<Steps>
+1. 查看最终配置：
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml config show --output yaml
+   ```
+
+2. 校验配置：
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml config validate
+   ```
+
+3. 前台启动并看日志：
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml serve
+   ```
+
+4. 检查管理端点：
+
+   ```bash
+   synctv system stats
+   ```
+</Steps>
+
+  </TabItem>
+  <TabItem label="Docker Compose" icon="seti:docker">
+
+<Steps>
+1. 查看渲染后的 Compose 配置：
+
+   ```bash
+   docker compose config
+   ```
+
+2. 查看容器状态和日志：
+
+   ```bash
+   docker compose ps
+   docker compose logs -f synctv
+   ```
+
+3. 在容器内检查管理命令：
+
+   ```bash
+   docker compose exec synctv synctv system stats
+   ```
+
+4. 如果生产 Compose 报 required variable missing，先补齐 secret 环境变量，再重新 `docker compose up -d`。
+</Steps>
+
+  </TabItem>
+  <TabItem label="Kubernetes/Helm" icon="cloud-download">
+
+<Steps>
+1. 渲染 chart：
+
+   ```bash
+   helm lint ./helm/synctv
+   helm template synctv ./helm/synctv --values my-values.yaml
+   ```
+
+2. 查看 Pod 与事件：
+
+   ```bash
+   kubectl get pods -n synctv
+   kubectl describe pod -n synctv -l app.kubernetes.io/name=synctv
+   kubectl logs -n synctv deploy/synctv -f
+   ```
+
+3. 检查 ConfigMap 和 Secret key：
+
+   ```bash
+   kubectl get configmap -n synctv
+   kubectl get secret -n synctv
+   ```
+
+4. 分别测试 HTTP Service、gRPC Service 和 Ingress。gRPC Ingress 必须使用 gRPC backend protocol。
+</Steps>
+
+  </TabItem>
+</Tabs>
+
+## 常见现象
+
+| 现象 | 优先检查 | 入口 |
+| --- | --- | --- |
+| 启动时报 JWT secret、OPAQUE secret 或 credential key 错误 | secret 是否为空、是否占位值、格式是否正确、是否每次部署重新生成 | [安全与密钥](../../configuration/security/) |
+| 开启 `cluster.enabled=true` 后启动失败 | Redis 是否配置、`server.cluster_secret` 是否配置、节点是否能互访 | [集群配置](../../configuration/cluster/) |
+| `synctv system stats` 连不上 | `management.enabled`、`management.transport`、Unix socket 路径、TCP token、`SYNCTV_MANAGEMENT_ENDPOINT` | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| 浏览器跨域失败 | `server.cors_allowed_origins` 是否是 origin，不能带 path；反向代理是否处理 OPTIONS/HEAD | [服务监听与运行时路径](../../configuration/server-and-runtime/) |
+| gRPC 经 Ingress 失败但 HTTP 正常 | 是否使用独立 gRPC Service/Ingress，Nginx 是否设置 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` | [Helm 部署](../../deployment/helm/) |
+| Swagger UI 或 OpenAPI JSON 不存在 | 二进制是否启用 `openapi` feature，反向代理是否放行 `/swagger-ui/` 和 `/api-docs/openapi.json` | [OpenAPI 文档入口](../../reference/openapi/) |
+| WebAuthn/passkey 注册或登录失败 | `rp_id` 是否为可注册域，`rp_origin` 是否精确匹配客户端 origin，是否 HTTPS | [WebAuthn 配置](../../configuration/webauthn/) |
+| OAuth2 登录出现 state 或 callback 问题 | `oauth2.redirect_scheme`、provider `redirect_url`、多副本 Redis、客户端 callback URI | [邮件与 OAuth2](../../configuration/email-oauth2/) |
+| 邮件验证码、密码找回或邮箱 2FA 不工作 | SMTP host、port、TLS、用户名、密码、from_email，邮件限流 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
+| 登录、验证码或管理接口被频繁拒绝 | HTTP/gRPC rate limit、brute-force 保护、客户端重试策略 | [限流与连接限制](../../configuration/rate-limits/) |
+| Provider 直连可用但代理不可用，或反过来 | Provider 返回给客户端的 header 与代理上游 header 是否一致，特别是 UA、Referer、Range | [媒体 Provider](../../configuration/media-providers/) |
+| Range 播放、seek 或 HLS byterange 异常 | Provider 是否提供 Range header、上游是否支持 Range、slice cache 是否启用 | [缓存与代理 slice cache](../../configuration/cache-and-proxy/) |
+| HLS 多副本播放偶发 404 或不连续 | `hls_shared_storage`、`hls_storage_path` 是否所有副本共享 | [直播配置](../../configuration/livestream/) |
+| RTMP 推流或 HTTP-FLV 拉流失败 | 端口暴露、LoadBalancer/NodePort、反向代理超时、FLV 写超时 | [直播配置](../../configuration/livestream/) |
+| STUN/WebRTC 连接失败 | `webrtc.mode`、`stun_external_addr`、UDP 3478 暴露、私网 candidate 过滤 | [WebRTC 配置](../../configuration/webrtc/) |
+
+## 配置类问题
+
+配置问题优先用命令确认最终值，不要只看 YAML 文件。环境变量和 CLI 参数可能覆盖 YAML。
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+如果最终配置和你预期不一致，按顺序检查：
+
+- 是否加载了正确的配置文件。
+- `.env` 是否被加载，或者是否用了 `--no-dotenv`。
+- 环境变量是否覆盖了 YAML。
+- `*_file` secret 路径是否相对配置文件目录，而不是 `data_dir`。
+- `data_dir` 是否只影响运行时输出路径。
+
+详细规则见 [配置文件如何工作](../../configuration/how-configuration-works/)。
+
+## 部署类问题
+
+### Docker Compose
+
+生产 Compose 会要求显式 secret，这是预期行为。不要为了让服务启动而把弱 secret 写入 compose 文件。
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+docker compose up -d
+```
+
+更多内容见 [Docker Compose 部署](../../deployment/docker-compose/)。
+
+### Helm
+
+Helm 渲染成功只代表 Kubernetes manifest 语法成立，不代表业务配置安全。生产上线前仍要看启动日志，确认配置校验通过。
+
+重点检查：
+
+- HTTP 和 gRPC 是否是两个独立 Service。
+- HTTP 和 gRPC 是否是两个独立 Ingress。
+- gRPC Ingress 是否有独立 annotation。
+- metrics ServiceMonitor/VMServiceScrape 是否抓对 Service。
+- 多副本 HLS 是否使用共享存储。
+- `existingSecret` 是否包含 chart 需要的全部 key。
+
+更多内容见 [Helm 部署](../../deployment/helm/)。
+
+## 认证与账号问题
+
+本地两步验证只在 password、webauthn/passkey、verified email 这些本地验证方式之间生效。OAuth2 不参与本地 2FA，但开启 2FA 的用户仍然可以使用 OAuth2 登录。
+
+如果用户开启 2FA 后登录异常，检查：
+
+- 用户是否仍有至少两种可用本地验证方式。
+- 邮箱作为第二因素时，SMTP 是否可用。
+- passkey 作为第二因素时，WebAuthn origin 是否正确。
+- 刷新 token 是否来自满足当前 2FA 策略的登录上下文。
+
+相关页面：
+
+- [安全与密钥](../../configuration/security/)
+- [邮件与 OAuth2](../../configuration/email-oauth2/)
+- [WebAuthn 配置](../../configuration/webauthn/)
+- [限流与连接限制](../../configuration/rate-limits/)
+
+## 需要收集哪些信息
+
+提交问题或内部排查时，建议收集：
+
+- SyncTV 版本和部署方式。
+- `synctv config show --output yaml` 的输出。提交前删除敏感值，即使命令会打码，也要复查。
+- `synctv config validate` 的完整错误。
+- Compose/Helm 渲染结果中相关 Service、Ingress、ConfigMap 和 Secret key 名称。
+- 服务日志中第一个错误，而不是最后一个级联错误。
+- 触发问题的客户端请求路径、方法、状态码和必要 header。不要提交 token、cookie、密码、SMTP 密码或 provider 凭据。
+
+<Aside type="caution">
+不要把 Secret 值、JWT、OAuth2 code、Cookie、Provider token、SMTP 密码或数据库 URL 明文贴到 issue、聊天窗口或日志系统。
+</Aside>

@@ -1,0 +1,129 @@
+---
+title: Docker Compose Deployment
+description: Deploy SyncTV with docker-compose.yml and docker-compose.dev.yml.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Two Compose Files
+
+The repository provides two Compose files:
+
+| File | Purpose | Behavior |
+| --- | --- | --- |
+| `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes development secrets |
+| `docker-compose.yml` | Image-based deployment | Uses prebuilt image and requires explicit production secrets |
+
+## Startup Modes
+
+<Tabs syncKey="compose-mode">
+  <TabItem label="Development Compose" icon="rocket">
+
+Start:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+This starts:
+
+- PostgreSQL 18.
+- Redis 8.
+- SyncTV built from the local Dockerfile.
+
+It includes development-only JWT, cluster, credential encryption, OPAQUE, and root password values.
+
+  </TabItem>
+  <TabItem label="Production Compose" icon="approve-check-circle">
+
+Set secrets before startup:
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+
+docker compose up -d
+```
+
+If a required variable is missing, Compose refuses to render the final config.
+
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+Do not copy development Compose secrets into production. Production Compose requires explicit secrets by design.
+</Aside>
+
+## Volumes
+
+Compose uses volumes for:
+
+- PostgreSQL data.
+- Redis data.
+- SyncTV `/data` runtime directory.
+
+`/data` corresponds to:
+
+```bash
+SYNCTV_DATA_DIR=/data
+```
+
+This directory may contain:
+
+- Management socket runtime files.
+- HLS files.
+- Proxy slice cache files.
+- Other runtime-owned outputs.
+
+## Ports
+
+Default exposed ports:
+
+| Host port | Container port | Purpose |
+| --- | --- | --- |
+| `8080` | `8080` | HTTP REST + gRPC + health checks |
+| `1935` | `1935` | RTMP |
+| `3478/udp` | `3478/udp` | STUN |
+
+If a host port conflicts, edit the Compose port mapping.
+
+## Health Check
+
+Compose checks:
+
+```text
+http://localhost:8080/health/ready
+```
+
+If health checks fail, inspect logs:
+
+```bash
+docker compose logs -f synctv
+```
+
+## Common Questions
+
+### Why does production Compose require secrets?
+
+Because weak automatic defaults are unsafe. The service should not accidentally start in production with known secrets.
+
+### Users cannot log in after changing `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+
+That secret must remain stable. Changing it can make existing OPAQUE password records unverifiable.
+
+### What should be backed up?
+
+At minimum:
+
+- PostgreSQL volume.
+- Production secrets.
+
+Depending on enabled features:
+
+- `/data` HLS files.
+- Proxy slice cache.
+
+Redis is usually short-lived shared state, but losing it can affect OAuth2 state, token blacklist, and rate-limit counters.

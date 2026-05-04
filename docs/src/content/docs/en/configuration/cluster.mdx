@@ -1,0 +1,121 @@
+---
+title: Cluster Configuration
+description: Multi-replica coordination, Redis discovery, static peers, Kubernetes DNS, leader election, and stream catch-up.
+---
+
+## When to Enable Cluster Mode
+
+Single-process deployments usually do not need cluster mode.
+
+Enable it when:
+
+- Multiple SyncTV replicas serve the same instance.
+- Multiple servers share one PostgreSQL and Redis backend.
+- Cross-node room sync, kicks, cache invalidation, livestream coordination, or leader election are required.
+
+```yaml
+cluster:
+  enabled: true
+```
+
+Redis and `server.cluster_secret` become required.
+
+## Requirements
+
+All nodes must:
+
+- Connect to the same PostgreSQL database.
+- Connect to the same Redis deployment.
+- Use the same `server.cluster_secret`.
+- Be able to reach each other's API/gRPC address.
+
+## Channel Capacity
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `cluster.critical_channel_capacity` | `1000` | High-priority events such as kicks and permission changes |
+| `cluster.publish_channel_capacity` | `10000` | Normal Redis publish events |
+
+Critical events apply backpressure when full. Normal events may be dropped under extreme pressure with a warning to protect the main flow.
+
+## Discovery Modes
+
+### `redis`
+
+Default mode. Nodes register and discover each other through Redis.
+
+Use it for most deployments because it works in Docker, servers, and Kubernetes.
+
+### `static`
+
+Use explicit peer addresses:
+
+```yaml
+cluster:
+  discovery_mode: "static"
+  peers:
+    - "node2.example.com:8080"
+    - "node3.example.com"
+```
+
+This works for small fixed-size clusters. If a peer omits the port, SyncTV tries `server.port`.
+
+### `k8s_dns`
+
+Uses Kubernetes headless service DNS to discover Pods.
+
+Required environment variables:
+
+- `HEADLESS_SERVICE_NAME`
+- `POD_NAMESPACE`
+
+Kubernetes DNS does not replace Redis. Redis is still required for health monitoring, load balancing state, pub/sub, and catch-up.
+
+## Leader Election
+
+| Mode | Use case |
+| --- | --- |
+| `redis` | Default; works across Docker, servers, and Kubernetes |
+| `k8s_lease` | Kubernetes-native Lease resource |
+
+`k8s_lease` requires:
+
+- `POD_NAME`
+- `POD_NAMESPACE`
+- RBAC permissions for `coordination.k8s.io/v1` Lease resources
+
+The Helm chart can render the required Kubernetes resources when configured.
+
+## Stream Catch-Up
+
+`cluster.catchup_window_secs` default: `300`.
+
+When a node joins or reconnects, it replays recent Redis Stream events within this window. Increase it if startup is slow or you want more conservative replay. Decrease it if event volume is high and fast startup matters more.
+
+`cluster.stream_max_length` default: `10000`.
+
+This controls approximate Redis Stream retention. If traffic is high and nodes disconnect, too small a value can trim events before a node catches up. Larger values use more Redis memory.
+
+## HLS and Multi-Replica Deployments
+
+Cluster mode does not automatically make HLS files shared.
+
+If multiple replicas serve HLS, configure shared storage:
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+All replicas must read and write the same path.
+
+## Helm Checklist
+
+Before scaling replicas:
+
+- Redis is configured and reachable.
+- `server.cluster_secret` is stable and shared by every replica.
+- HLS storage is shared, or HLS is not used.
+- HTTP and gRPC Services/Ingresses match your network design.
+- Leader election mode matches your platform.

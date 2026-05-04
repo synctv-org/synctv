@@ -1,0 +1,176 @@
+---
+title: WebAuthn 与 Passkey
+description: passkey 登录、WebAuthn RP ID、Origin、安全域名和集群依赖配置。
+---
+
+## WebAuthn 是什么？
+
+WebAuthn 是浏览器、操作系统和硬件安全密钥支持的无密码/多因素认证标准。用户看到的产品形态通常叫：
+
+- passkey
+- 通行密钥
+- 安全密钥
+- 指纹/面容/系统解锁登录
+
+SyncTV 的配置字段使用标准名 `webauthn`，产品文案可以叫 passkey。
+
+## 开启前需要什么？
+
+生产环境必须满足：
+
+- 使用 HTTPS。
+- 有稳定域名。
+- `rp_id` 与 `rp_origin` 的域名关系正确。
+- 多副本部署必须使用 Redis 保存 challenge 状态。
+
+## `webauthn.enabled`
+
+默认值：
+
+```yaml
+webauthn:
+  enabled: false
+```
+
+开启后，passkey 注册和登录接口可用。
+
+## `webauthn.rp_id`
+
+Relying Party ID。可以理解为“认证器认为这是哪个网站”。
+
+通常填写主域名，不带协议、不带端口、不带路径。
+
+示例：
+
+```yaml
+webauthn:
+  rp_id: "example.com"
+```
+
+如果前端是：
+
+```text
+https://app.example.com
+```
+
+`rp_id` 可以是：
+
+```text
+example.com
+```
+
+或在某些场景中是：
+
+```text
+app.example.com
+```
+
+不要填写：
+
+- `https://example.com`
+- `example.com/login`
+- `localhost:8080`
+
+## `webauthn.rp_origin`
+
+用户实际访问的前端 origin。
+
+示例：
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+```
+
+origin 只能包含：
+
+- 协议
+- 域名
+- 可选端口
+
+不能包含路径、query、fragment。
+
+正确：
+
+```text
+https://app.example.com
+```
+
+错误：
+
+```text
+https://app.example.com/login
+```
+
+## `webauthn.rp_name`
+
+显示给用户的服务名称。
+
+默认：
+
+```yaml
+webauthn:
+  rp_name: "SyncTV"
+```
+
+用户在系统 passkey 管理界面可能会看到这个名称。
+
+## `webauthn.allowed_origins`
+
+额外允许的 origin。
+
+例如你同时有 Web 前端和桌面客户端开发地址：
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+  allowed_origins:
+    - "https://admin.example.com"
+```
+
+保持最小集合，不要随便添加不使用的域名。
+
+## `webauthn.allow_subdomains`
+
+默认值：`false`。
+
+作用：是否允许配置域名的子域名也通过验证。
+
+普通部署保持 `false` 更安全。
+
+## `webauthn.allow_any_port`
+
+默认值：`false`。
+
+作用：验证 origin 时是否忽略端口。
+
+只建议本地开发使用。例如前端开发服务器端口经常变化。
+
+生产环境不要开启。
+
+## `webauthn.timeout_seconds`
+
+默认值：`300`。
+
+作用：passkey 注册或登录 challenge 的有效时间。
+
+用户需要在这个时间内完成系统弹窗确认。
+
+## 与两步验证的关系
+
+Passkey 可以作为本地验证方式之一。用户开启两步验证时，至少需要两种本地验证方式，常见组合：
+
+- password + email
+- password + webauthn
+- email + webauthn
+
+OAuth2 不参与本地两步验证。
+
+## Redis 依赖
+
+WebAuthn challenge 必须一次性使用。多副本部署时，如果 challenge 保存在某个 Pod 内存里，用户下一步请求打到另一个 Pod 就会失败。
+
+因此：
+
+- 单机：可以不用 Redis。
+- 多副本或 `cluster.enabled=true`：必须配置 Redis。

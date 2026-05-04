@@ -1,0 +1,164 @@
+---
+title: SyncTV 文档
+description: 面向部署者、管理员和开发者的 SyncTV 官方文档。
+template: splash
+hero:
+  tagline: 多人同步观影、直播、媒体聚合与可横向扩展的实时协作平台。
+  actions:
+    - text: 快速开始
+      link: guides/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: 架构总览
+      link: guides/architecture/
+      icon: puzzle
+    - text: 配置参考
+      link: reference/configuration-index/
+      icon: document
+    - text: 客户端集成
+      link: guides/client-integration/
+      icon: puzzle
+---
+
+import { Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import LocaleRedirect from '../../components/LocaleRedirect.astro';
+import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
+
+<LocaleRedirect />
+<LocaleChoiceTracker />
+
+## 文档结构
+
+SyncTV 可以作为个人自托管服务，也可以部署成多节点集群。文档按四类任务组织：
+
+- **部署路径**：Docker Compose、Helm、生产部署清单，重点覆盖 secret、域名、端口、存储和 Ingress。
+- **配置参考**：Redis、PostgreSQL、CORS、限流、监控、WebAuthn、OAuth2、集群、缓存和 Provider。
+- **运维手册**：备份恢复、升级迁移、观测指标、日志、排障入口和事故信息收集。
+- **开发参考**：配置优先级、环境变量规则、CLI、OpenAPI、gRPC、Provider 配置和部署模板约定。
+
+<CardGrid>
+  <Card title="从快速开始部署" icon="rocket">
+    用 Docker Compose 启动 PostgreSQL、Redis 和 SyncTV，并理解最少必须配置的 secret。
+  </Card>
+  <Card title="先理解架构边界" icon="puzzle">
+    明确 HTTP/gRPC、management、metrics、Redis、PostgreSQL、Provider proxy 和集群的职责。
+  </Card>
+  <Card title="逐项理解配置" icon="setting">
+    配置文档不会只列字段名，会解释“这个配置控制什么、什么时候需要改、填错会怎样”。
+  </Card>
+  <Card title="生产部署建议" icon="rocket">
+    了解 Helm、Ingress、HTTP/gRPC Service、metrics、Redis、HLS 存储和多副本限制。
+  </Card>
+  <Card title="安全默认值" icon="approve-check-circle">
+    JWT、OPAQUE、Provider 凭据加密、CORS、可信代理、限流和 WebAuthn 都有单独说明。
+  </Card>
+</CardGrid>
+
+<Aside type="tip">
+如果你只是想把服务跑起来，直接从快速开始进入；如果你在准备生产上线，先看生产部署清单，再按配置总索引逐项确认。
+</Aside>
+
+## 最重要的配置原则
+
+SyncTV 的配置目标是：**把必须稳定的内容写清楚，把敏感内容交给 secret，把运行时数据放到可持久化目录。**
+
+你至少应该理解这些概念：
+
+- `jwt.secret`：用来签发登录 token。泄露后需要轮换，并会影响用户登录状态。
+- `security.opaque_server_setup_secret`：用于 OPAQUE 密码认证。必须长期稳定，随便改会导致 OPAQUE 密码记录不可用。
+- `security.credential_encryption_key`：用于加密媒体 Provider 凭据。启用后要妥善保存，丢失会影响已加密凭据读取。
+- `data_dir`：SyncTV 自己写入运行时文件的位置，例如管理 socket、日志文件、HLS 文件、slice cache 文件。
+- `server.cors_allowed_origins`：浏览器或 Web 客户端跨域访问白名单。生产环境不能随意放开。
+- `cluster.enabled`：是否启用多节点集群模式。开启后 Redis 和 cluster secret 都是必需项。
+
+## 推荐阅读顺序
+
+1. 先看 [快速开始](guides/quick-start/)，确认服务能启动。
+2. 需要写配置时，看 [完整配置示例](configuration/full-example/) 和 [配置总索引](reference/configuration-index/)。
+3. 再看 [配置文件如何工作](configuration/how-configuration-works/)，理解配置优先级和环境变量命名。
+4. 如果部署到服务器，阅读 [安全与密钥配置](configuration/security/)。
+5. 如果使用 Docker 或 Kubernetes，阅读 [Docker Compose 部署](deployment/docker-compose/) 或 [Helm 部署](deployment/helm/)。
+6. 生产上线前补读 [备份与恢复](operations/backup-restore/)、[升级与迁移](operations/upgrades/) 和 [观测与运行手册](operations/observability/)。
+7. 管理用户、房间、权限或 Provider 前，阅读 [管理员操作手册](guides/administration/) 和 [房间、权限与用户偏好](guides/rooms-permissions/)。
+8. 开发客户端或 SDK 前，阅读 [客户端集成指南](guides/client-integration/)。
+9. 准备生产数据治理时，阅读 [数据、隐私与保留策略](operations/data-retention/)。
+10. 遇到启动、Ingress、认证或媒体播放问题时，从 [排障入口](operations/troubleshooting/) 进入。
+
+## 常用入口
+
+<CardGrid>
+  <LinkCard
+    title="文档导览"
+    href="guides/documentation-map/"
+    description="按部署、配置、运维、开发和排障任务快速定位该读哪一页。"
+  />
+  <LinkCard
+    title="配置总索引"
+    href="reference/configuration-index/"
+    description="按源码配置结构列出所有字段、类型、默认值和详细说明入口。"
+  />
+  <LinkCard
+    title="架构总览"
+    href="guides/architecture/"
+    description="解释单二进制服务、网络入口、状态层、Provider/proxy、slice cache 和集群模型。"
+  />
+  <LinkCard
+    title="认证与安全模型"
+    href="guides/security-model/"
+    description="说明本地登录、OAuth2、用户 2FA、token 上下文、management 控制面和 Provider header 边界。"
+  />
+  <LinkCard
+    title="管理员操作手册"
+    href="guides/administration/"
+    description="解释用户、房间、审核、Provider、runtime settings、system 和 slice cache 的管理边界。"
+  />
+  <LinkCard
+    title="房间、权限与用户偏好"
+    href="guides/rooms-permissions/"
+    description="解释全局角色、房间角色、权限位、房间设置、成员覆盖和用户偏好。"
+  />
+  <LinkCard
+    title="客户端集成指南"
+    href="guides/client-integration/"
+    description="说明 HTTP、gRPC、WebSocket、登录、MFA、OAuth2、token 和媒体 header 集成方式。"
+  />
+  <LinkCard
+    title="生产部署清单"
+    href="deployment/production-checklist/"
+    description="上线前逐项确认 secret、数据库、Redis、Ingress、监控、备份和升级。"
+  />
+  <LinkCard
+    title="数据、隐私与保留策略"
+    href="operations/data-retention/"
+    description="说明 PostgreSQL、Redis、日志、备份、PII、Provider 凭据和后台清理策略。"
+  />
+  <LinkCard
+    title="观测与运行手册"
+    href="operations/observability/"
+    description="覆盖健康检查、metrics、日志、关键告警和事故信息收集。"
+  />
+  <LinkCard
+    title="排障入口"
+    href="operations/troubleshooting/"
+    description="按现象定位启动、配置、Ingress、认证、Provider、缓存、直播和集群问题。"
+  />
+  <LinkCard
+    title="CLI 参考"
+    href="reference/cli/"
+    description="管理用户、房间、Provider、settings、system 和 slice cache 的命令入口。"
+  />
+  <LinkCard
+    title="Runtime settings 参考"
+    href="reference/runtime-settings/"
+    description="列出数据库热更新设置的 key、默认值、校验规则和适用范围。"
+  />
+  <LinkCard
+    title="OpenAPI 文档入口"
+    href="reference/openapi/"
+    description="启用 openapi feature 后访问 Swagger UI 和 OpenAPI JSON。"
+  />
+</CardGrid>
+
+## 许可证
+
+SyncTV 使用 MIT 许可证。完整条款见仓库根目录的 `LICENSE` 文件。

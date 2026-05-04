@@ -1,0 +1,165 @@
+---
+title: 缓存与代理 slice cache
+description: L1/L2 缓存、用户名缓存、权限缓存、range-based proxy slice cache 配置说明。
+---
+
+## SyncTV 有哪些缓存？
+
+SyncTV 的缓存分两类：
+
+- **业务缓存**：用户、房间、用户名、权限等小数据，目的是减少数据库查询。
+- **代理 slice cache**：媒体代理时按 Range 分片缓存上游视频片段，目的是减少重复拉取媒体数据。
+
+它们都在 `cache` 配置下，但作用完全不同。
+
+## 业务缓存
+
+### `cache.l1_capacity`
+
+默认值：`500`。
+
+作用：内存 L1 缓存最多保留多少条用户/房间对象。
+
+这是进程内内存缓存的容量上限。容量越大，命中率可能越高，但内存占用也会增加。
+
+低并发部署通常保持默认即可。
+
+### `cache.l1_ttl_seconds`
+
+默认值：`300`。
+
+作用：L1 内存缓存中一条数据最多保留多久。
+
+默认 5 分钟是比较稳妥的选择。调太长可能让变更不够及时，调太短会增加数据库压力。
+
+### `cache.l2_ttl_seconds`
+
+默认值：`300`。
+
+作用：Redis L2 缓存保留多久。
+
+如果没有配置 Redis，L2 不生效。
+
+### `cache.username_cache_capacity`
+
+默认值：`1000`。
+
+作用：用户名查找缓存容量。登录、展示、成员列表等场景可能频繁按用户名查询。
+
+### `cache.username_cache_ttl_seconds`
+
+默认值：`3600`。
+
+作用：用户名缓存保留时间，默认 1 小时。
+
+### `cache.permission_cache_capacity`
+
+默认值：`1000`。
+
+作用：权限缓存容量。当前作为权限相关缓存预留和统一配置项。
+
+### `cache.permission_cache_ttl_seconds`
+
+默认值：`300`。
+
+作用：权限缓存保留时间。
+
+## 代理 slice cache 是什么？
+
+SyncTV 代理媒体文件时，客户端经常使用 HTTP Range 请求，例如：
+
+```http
+Range: bytes=1048576-2097151
+```
+
+slice cache 会把上游视频按固定大小切片缓存。下一次其他用户请求相同片段时，可以直接从缓存返回，减少对上游 Provider 的压力。
+
+当前设计要点：
+
+- 只缓存支持 Range 的上游响应。
+- 不做 full-body cache。
+- 如果上游不支持 Range，请求会 bypass，不会把整个大文件下载到缓存。
+- 是否启用只在进程启动时读取配置，不支持运行时动态开关。
+
+## `cache.proxy_slice_cache_enabled`
+
+默认值：`true`。
+
+作用：是否启用代理 slice cache 的主开关。
+
+建议：
+
+- 有媒体代理需求时保持开启。
+- 如果磁盘或内存非常紧张，或者你希望所有请求都直接透传上游，可以关闭。
+
+环境变量：
+
+```bash
+SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED=true
+```
+
+## `cache.proxy_slice_file_backend_enabled`
+
+默认值：`false`。
+
+作用：是否把 slice cache 持久化到文件系统。
+
+关闭时，缓存主要是进程内或临时状态。进程重启后缓存会丢失。
+
+开启时，slice 数据可以写入磁盘目录。
+
+什么时候开启：
+
+- 视频内容重复访问多。
+- 上游 Provider 带宽有限。
+- 本机或共享存储空间充足。
+
+什么时候不要开启：
+
+- 磁盘很小。
+- 容器没有持久化 volume。
+- 上游内容变化频繁且你不希望缓存占用空间。
+
+## `cache.proxy_slice_file_cache_dir`
+
+默认值为空，启用文件后使用内置默认路径。
+
+相对路径会相对 `data_dir`。
+
+示例：
+
+```yaml
+data_dir: "/var/lib/synctv"
+cache:
+  proxy_slice_file_backend_enabled: true
+  proxy_slice_file_cache_dir: "cache/proxy-slice"
+```
+
+实际路径：
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+Docker/Helm 建议：
+
+- 把 `data_dir` 或 cache 目录挂载到持久化 volume。
+- 如果多副本共享 slice cache，需要使用所有副本都能访问的共享文件系统。
+
+## 常见问题
+
+### 客户端不带 Range 时会缓存吗？
+
+会尝试使用 Range 请求上游。如果上游支持 Range，SyncTV 可以走 slice cache。如果上游拒绝或不支持 Range，SyncTV 会 bypass。
+
+### 如果上游不支持 Range，会不会下载整个大文件？
+
+不会。当前设计不需要 full-body cache。大文件情况下，full-body cache 会非常慢且消耗大量磁盘/带宽，所以已经不采用。
+
+### `bytes=-N` 这种 suffix range 怎么办？
+
+如果已有元数据能知道文件总大小，可以换算成具体范围并使用 slice cache。没有足够元数据时，不会为了它额外强制 HEAD 探测，而是选择安全 bypass，让上游原生处理。
+
+### 缓存会不会返回旧文件？
+
+SyncTV 会尽量使用 ETag、Content-Range 等信息判断一致性。流式返回过程中如果发现后续 slice 与前面缓存不一致，会主动中断连接，而不是继续拼接混合版本的数据。

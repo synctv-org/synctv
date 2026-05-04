@@ -1,0 +1,191 @@
+---
+title: Documentation Map
+description: Task-oriented entry points for SyncTV deployment, configuration, operations, development, and troubleshooting.
+---
+
+import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+This page organizes the documentation by task. It does not replace the configuration reference; it helps you decide which page to read first and what each section is meant to answer.
+
+<Aside type="tip">
+For a first deployment, follow the deployment path. For an existing service, jump directly to the task cards below.
+</Aside>
+
+## Reader Paths
+
+<Tabs syncKey="reader-path">
+  <TabItem label="Deployer" icon="rocket">
+    <Steps>
+      1. Start with [Quick Start](../quick-start/) and confirm the minimal Compose stack can boot.
+      2. Read [Architecture Overview](../architecture/) to understand the main service, management, metrics, Redis, PostgreSQL, and provider proxy boundaries.
+      3. Read [How Configuration Works](../../configuration/how-configuration-works/) to understand defaults, config files, environment variables, and CLI overrides.
+      4. Start from the [Full Configuration Example](../../configuration/full-example/) minimal production skeleton, then copy feature sections from the full template as needed.
+      5. Read [Security and Secrets](../../configuration/security/) to replace example secrets and keep long-lived keys stable across restarts and upgrades.
+      6. Use [Docker Compose Deployment](../../deployment/docker-compose/) or [Helm Deployment](../../deployment/helm/) depending on your runtime.
+      7. Before launch, run through the [Production Checklist](../../deployment/production-checklist/).
+      8. Complete [Backup and Restore](../../operations/backup-restore/), [Upgrades and Migrations](../../operations/upgrades/), and [Observability Runbook](../../operations/observability/).
+      9. If you are building a client, SDK, or third-party integration, read the [Client Integration Guide](../client-integration/).
+      10. If you are designing data governance, privacy, or retention policy docs, read [Data, Privacy, and Retention](../../operations/data-retention/).
+      11. For startup, Ingress, authentication, or media playback failures, start from [Troubleshooting](../../operations/troubleshooting/).
+    </Steps>
+  </TabItem>
+  <TabItem label="Administrator" icon="setting">
+    <Steps>
+      1. Read the [CLI Reference](../../reference/cli/) for users, rooms, providers, system state, and configuration validation.
+      2. Read [Administration Runbook](../administration/) to understand operational boundaries for users, rooms, reviews, providers, runtime settings, and system operations.
+      3. Read [Rooms, Permissions, and Preferences](../rooms-permissions/) to understand global roles, room roles, permission bits, room settings, and user preferences.
+      4. Read [Authentication and Security Model](../security-model/) to understand local login, OAuth2, 2FA, tokens, and the management control plane.
+      5. Read [Runtime Settings Reference](../../reference/runtime-settings/) to know which policies are hot-reloadable and which require startup configuration.
+      6. Read [Email and OAuth2](../../configuration/email-oauth2/) and [WebAuthn and Passkeys](../../configuration/webauthn/) for login, email codes, and MFA dependencies.
+      7. Read [Rate Limits and Connection Limits](../../configuration/rate-limits/) to understand protections for login, verification codes, WebSocket, and API requests.
+      8. Read [Metrics Monitoring](../../configuration/metrics/) and [Observability Runbook](../../operations/observability/) before integrating Prometheus-compatible monitoring.
+    </Steps>
+  </TabItem>
+  <TabItem label="Developer" icon="puzzle">
+    <Steps>
+      1. Read the [Development Guide](../development/) to prepare Rust, Node.js, PostgreSQL, Redis, SQLx, and the docs site.
+      2. Read [OpenAPI Access](../../reference/openapi/) for Swagger UI and OpenAPI JSON locations.
+      3. Read [gRPC Debugging](../../reference/grpc/) for cluster, admin, service protobuf, and reflection workflows.
+      4. Read the [Client Integration Guide](../client-integration/) for login, MFA, WebSocket, OAuth2, and media header composition.
+      5. Use the [Configuration Index](../../reference/configuration-index/) when changing configuration structs.
+    </Steps>
+  </TabItem>
+</Tabs>
+
+## Common Tasks
+
+<CardGrid>
+  <LinkCard
+    title="Run the service"
+    href="../quick-start/"
+    description="Start PostgreSQL, Redis, and SyncTV, then verify that the service is reachable."
+  />
+  <LinkCard
+    title="Prepare production"
+    href="../../deployment/production-checklist/"
+    description="Review secrets, database, Redis, reverse proxy, Ingress, storage, monitoring, backups, and upgrades."
+  />
+  <LinkCard
+    title="Understand architecture"
+    href="../architecture/"
+    description="Single-binary service, network surfaces, state layers, media proxying, slice cache, and cluster model."
+  />
+  <LinkCard
+    title="Understand authentication"
+    href="../security-model/"
+    description="Password, WebAuthn, email, OAuth2, user 2FA, token context, and management control-plane boundaries."
+  />
+  <LinkCard
+    title="Administer production"
+    href="../administration/"
+    description="Operational boundaries for users, rooms, reviews, providers, runtime settings, system state, and slice cache."
+  />
+  <LinkCard
+    title="Understand permissions"
+    href="../rooms-permissions/"
+    description="Global roles, room roles, permission bits, room settings, member overrides, and user preferences."
+  />
+  <LinkCard
+    title="Troubleshoot failures"
+    href="../../operations/troubleshooting/"
+    description="Diagnose startup, configuration, deployment, authentication, proxy, livestream, and cluster issues by symptom."
+  />
+  <LinkCard
+    title="Plan backups"
+    href="../../operations/backup-restore/"
+    description="PostgreSQL, secrets, config files, HLS, Redis state, and restore drills."
+  />
+  <LinkCard
+    title="Document data retention"
+    href="../../operations/data-retention/"
+    description="Personal data, provider credentials, audit logs, notifications, chat, backups, and background cleanup behavior."
+  />
+  <LinkCard
+    title="Plan upgrades"
+    href="../../operations/upgrades/"
+    description="Migrations, Compose/Helm releases, rolling updates, config snapshots, and rollback risk."
+  />
+  <LinkCard
+    title="Set up observability"
+    href="../../operations/observability/"
+    description="Health checks, metrics, logs, key alerts, and incident data collection."
+  />
+  <LinkCard
+    title="Find a setting"
+    href="../../reference/configuration-index/"
+    description="Browse fields, types, defaults, environment variables, and links to detailed pages."
+  />
+  <LinkCard
+    title="Find a runtime setting"
+    href="../../reference/runtime-settings/"
+    description="Runtime setting keys, defaults, validation rules, sync semantics, and CLI examples."
+  />
+  <LinkCard
+    title="Use a config template"
+    href="../../configuration/full-example/"
+    description="Use the minimal production skeleton and the full YAML example covering all static fields."
+  />
+  <LinkCard
+    title="Understand config loading"
+    href="../../configuration/how-configuration-works/"
+    description="Learn defaults, files, environment variables, secret files, CLI overrides, and data_dir path resolution."
+  />
+  <LinkCard
+    title="Deploy on Kubernetes"
+    href="../../deployment/helm/"
+    description="Review Helm values, separate HTTP/gRPC Services, separate Ingresses, metrics, and external dependencies."
+  />
+  <LinkCard
+    title="Connect media sources"
+    href="../../configuration/media-providers/"
+    description="Configure Alist, Emby, Bilibili, direct URLs, provider instances, headers, and credential encryption."
+  />
+  <LinkCard
+    title="Troubleshoot proxy cache"
+    href="../../configuration/cache-and-proxy/"
+    description="Understand business caches, proxy slice cache, Range behavior, storage, TTL, and capacity controls."
+  />
+  <LinkCard
+    title="Integrate with the API"
+    href="../../reference/openapi/"
+    description="Enable the openapi feature and access Swagger UI or the OpenAPI JSON document."
+  />
+  <LinkCard
+    title="Write a Client or SDK"
+    href="../client-integration/"
+    description="Login, MFA, OAuth2, WebSocket, gRPC room metadata, media headers, and token handling guidance."
+  />
+</CardGrid>
+
+## Configuration Reading Order
+
+The configuration pages are detailed. Read them by dependency and enabled feature, not as a single linear manual.
+
+<CardGrid>
+  <Card title="Core Runtime" icon="setting">
+    <Badge text="Required" variant="tip" /> Start with server listener, runtime paths, security secrets, database, and Redis.
+  </Card>
+  <Card title="Access Control" icon="setting">
+    Continue with CORS, trusted proxies, rate limits, email, OAuth2, WebAuthn, and user security settings.
+  </Card>
+  <Card title="Media Features" icon="puzzle">
+    If media providers or proxy cache are enabled, read provider, cache/proxy, livestream, and WebRTC pages.
+  </Card>
+  <Card title="Horizontal Scaling" icon="cloud-download">
+    For multi-replica deployments, read cluster, Redis, Helm, Ingress, HLS storage, and metrics pages.
+  </Card>
+</CardGrid>
+
+## Documentation Maintenance Checklist
+
+- When adding a configuration field, update the [Configuration Index](../../reference/configuration-index/), the [Full Configuration Example](../../configuration/full-example/), and the matching configuration topic.
+- When adding a CLI command, update the [CLI Reference](../../reference/cli/).
+- When changing deployment templates, update [Docker Compose Deployment](../../deployment/docker-compose/) or [Helm Deployment](../../deployment/helm/).
+- When changing common errors, ports, Ingress behavior, authentication, or proxy behavior, update [Troubleshooting](../../operations/troubleshooting/).
+- When changing runtime surfaces, dependencies, provider/proxy boundaries, or cluster behavior, update [Architecture Overview](../architecture/).
+- When changing login, 2FA, OAuth2, token, management, or permission boundaries, update [Authentication and Security Model](../security-model/).
+- When changing users, rooms, reviews, providers, runtime settings, or management CLI semantics, update [Administration Runbook](../administration/).
+- When changing room roles, permission bits, room settings, member overrides, or user preferences, update [Rooms, Permissions, and Preferences](../rooms-permissions/).
+- When changing hot-reload fields registered in `SettingsRegistry`, update [Runtime Settings Reference](../../reference/runtime-settings/).
+- When changing the OpenAPI feature, Swagger UI path, or OpenAPI JSON path, update [OpenAPI Access](../../reference/openapi/).
+- When changing cluster, admin, or service protobuf files, update [gRPC Debugging](../../reference/grpc/).

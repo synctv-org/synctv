@@ -3639,8 +3639,6 @@ pub struct GetPublicSettingsRequest {}
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetPublicSettingsResponse))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPublicSettingsResponse {
-    #[prost(bool, tag = "1")]
-    pub signup_enabled: bool,
     #[prost(bool, tag = "2")]
     pub allow_room_creation: bool,
     #[prost(int64, tag = "3")]
@@ -3657,12 +3655,24 @@ pub struct GetPublicSettingsResponse {
     #[prost(bool, tag = "8")]
     pub room_must_need_pwd: bool,
     /// User settings
-    #[prost(bool, tag = "9")]
-    pub signup_need_review: bool,
     #[prost(bool, tag = "10")]
     pub enable_password_signup: bool,
+    #[prost(bool, tag = "16")]
+    pub password_signup_need_review: bool,
+    #[prost(bool, tag = "17")]
+    pub enable_email_signup: bool,
     #[prost(bool, tag = "18")]
     pub enable_guest: bool,
+    #[prost(bool, tag = "19")]
+    pub email_signup_need_review: bool,
+    #[prost(bool, tag = "20")]
+    pub enable_oauth2_signup: bool,
+    #[prost(bool, tag = "21")]
+    pub oauth2_signup_need_review: bool,
+    #[prost(bool, tag = "22")]
+    pub enable_webauthn_signup: bool,
+    #[prost(bool, tag = "23")]
+    pub webauthn_signup_need_review: bool,
     /// Proxy settings
     #[prost(bool, tag = "11")]
     pub movie_proxy: bool,

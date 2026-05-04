@@ -1,0 +1,137 @@
+---
+title: 配置校验与排错
+description: 使用 config validate、日志和渲染结果定位配置问题。
+---
+
+## 首选命令
+
+本地配置文件：
+
+```bash
+synctv config --config synctv.yaml validate
+```
+
+开发环境使用 cargo：
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+```
+
+## 常见错误
+
+这页只覆盖配置校验错误。如果服务已经启动但访问、认证、媒体播放或 Ingress 行为异常，优先看 [排障入口](../troubleshooting/)。
+
+### OPAQUE secret 为空
+
+错误含义：`security.opaque_server_setup_secret` 没有设置。
+
+修复：
+
+```bash
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+```
+
+生产环境要保存这个值，不要每次重新生成。
+
+### credential key 格式错误
+
+`security.credential_encryption_key` 必须是 64 位十六进制。
+
+正确生成：
+
+```bash
+openssl rand -hex 32
+```
+
+错误示例：
+
+- base64 字符串。
+- 普通密码。
+- 长度不是 64。
+
+### CORS origin 不合法
+
+正确：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+错误：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com/path"
+```
+
+origin 不能包含路径。
+
+### WebAuthn origin 不合法
+
+`webauthn.rp_origin` 也必须是 origin，不包含路径。
+
+### 集群开启但 Redis 为空
+
+`cluster.enabled=true` 时 Redis 必须配置。
+
+修复：
+
+```yaml
+redis:
+  url: "redis://redis:6379"
+```
+
+### 集群开启但 cluster secret 为空
+
+修复：
+
+```bash
+export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
+```
+
+## Compose 排错
+
+查看最终 Compose 配置：
+
+```bash
+docker compose config
+```
+
+查看日志：
+
+```bash
+docker compose logs -f synctv
+```
+
+如果 Compose 报 required variable missing，说明生产 compose 需要显式设置 secret。
+
+## Helm 排错
+
+渲染：
+
+```bash
+helm template synctv ./helm/synctv --values my-values.yaml
+```
+
+检查：
+
+```bash
+helm lint ./helm/synctv
+```
+
+查看运行时配置：
+
+```bash
+kubectl get configmap synctv-config -n synctv -o yaml
+```
+
+查看 Secret key 是否存在：
+
+```bash
+kubectl get secret synctv-secrets -n synctv -o jsonpath='{.data}' | jq 'keys'
+```
+
+不要把 Secret 值直接贴到 issue 或聊天窗口。

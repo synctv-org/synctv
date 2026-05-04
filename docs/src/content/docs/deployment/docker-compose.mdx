@@ -1,0 +1,133 @@
+---
+title: Docker Compose 部署
+description: 使用 docker-compose.yml 和 docker-compose.dev.yml 部署 SyncTV。
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 两个 Compose 文件的区别
+
+仓库提供两个 Compose 文件：
+
+| 文件 | 用途 | 特点 |
+| --- | --- | --- |
+| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
+| `docker-compose.yml` | 预构建镜像部署 | 使用镜像，需要显式提供生产 secret |
+
+## 开发 Compose
+
+<Tabs syncKey="compose-mode">
+  <TabItem label="开发 Compose" icon="rocket">
+
+启动：
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+这个文件会启动：
+
+- PostgreSQL 18
+- Redis 8
+- SyncTV 本地构建镜像
+
+它内置了开发用：
+
+- JWT secret
+- cluster secret
+- credential encryption key
+- OPAQUE setup secret
+- root 密码
+
+这些值只适合开发，不适合生产。
+
+  </TabItem>
+  <TabItem label="生产 Compose" icon="approve-check-circle">
+
+启动前设置：
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="请使用强密码"
+
+docker compose up -d
+```
+
+如果漏掉必填变量，Compose 会报错并拒绝生成配置。
+
+  </TabItem>
+</Tabs>
+
+<Aside type="caution">
+不要把开发 Compose 内置的 secret 复制到生产环境。生产 Compose 要求显式 secret 是刻意设计，用来避免默认弱密钥上线。
+</Aside>
+
+## 数据卷
+
+Compose 使用 volume 保存数据：
+
+- PostgreSQL 数据。
+- Redis 数据。
+- SyncTV `/data` 运行时目录。
+
+`/data` 对应：
+
+```bash
+SYNCTV_DATA_DIR=/data
+```
+
+这个目录可能包含：
+
+- 管理 socket 相关运行时文件。
+- HLS 文件。
+- proxy slice cache 文件。
+- 其他运行时输出。
+
+## 端口
+
+默认暴露：
+
+| 宿主端口 | 容器端口 | 用途 |
+| --- | --- | --- |
+| `8080` | `8080` | HTTP REST + gRPC + 健康检查 |
+| `1935` | `1935` | RTMP |
+| `3478/udp` | `3478/udp` | STUN |
+
+如果宿主机端口冲突，可以修改 Compose ports。
+
+## 健康检查
+
+Compose 使用：
+
+```text
+http://localhost:8080/health/ready
+```
+
+如果健康检查失败，先看日志：
+
+```bash
+docker compose logs -f synctv
+```
+
+## 常见问题
+
+### 为什么生产 Compose 强制要求 secret？
+
+因为这些值如果自动用默认弱值，服务可能看起来能跑，但安全性不可接受。
+
+### 我改了 `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 后用户不能登录？
+
+这是预期风险。这个 secret 必须长期稳定。不要在每次部署时重新生成。
+
+### 如何备份？
+
+至少备份：
+
+- PostgreSQL volume。
+- 生产 secret。
+- 如果启用了持久化 slice cache 或 HLS 文件，也按需求备份 `/data`。
+
+Redis 通常是缓存和共享状态，但如果你依赖 token blacklist、OAuth2 state 等短期状态，重启影响也要考虑。

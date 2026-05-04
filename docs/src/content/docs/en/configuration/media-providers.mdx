@@ -1,0 +1,122 @@
+---
+title: Media Providers
+description: General configuration model for Alist, Emby, Jellyfin, Bilibili, and other media providers.
+---
+
+## What Providers Are
+
+Media providers are SyncTV's integration points for external media sources, including:
+
+- Alist.
+- Emby.
+- Jellyfin.
+- Bilibili.
+- Direct URLs and other provider backends.
+
+Provider-specific fields are dynamic and live under:
+
+```yaml
+media_providers:
+  providers: {}
+```
+
+## Common Timeout Fields
+
+`media_providers.request_timeout_seconds` default: `30`.
+
+This is the total timeout for a provider HTTP request. Setting it to `0` disables the request timeout, which is not recommended in production.
+
+`media_providers.connect_timeout_seconds` default: `10`.
+
+This is the TCP connection timeout. Validation reports an unreasonable config if it is larger than the total request timeout.
+
+## Provider Instances
+
+Each key under `media_providers.providers` is a provider instance name.
+
+Alist:
+
+```yaml
+media_providers:
+  providers:
+    alist:
+      base_url: "https://alist.example.com"
+      token_file: "/run/secrets/alist_token"
+```
+
+Emby:
+
+```yaml
+media_providers:
+  providers:
+    emby:
+      base_url: "https://emby.example.com"
+      api_key_file: "/run/secrets/emby_api_key"
+```
+
+Bilibili instance fields depend on the current provider implementation and account mode. They commonly involve cookies, credentials, user agent, and proxy behavior.
+
+## Secret-Like Fields
+
+Provider objects support `_file` for secret-like fields, including:
+
+- `token_file`
+- `api_key_file`
+- `password_file`
+- `access_token_file`
+- `refresh_token_file`
+- `client_secret_file`
+
+Example:
+
+```yaml
+media_providers:
+  providers:
+    demo:
+      access_token_file: "/run/secrets/demo_access_token"
+```
+
+Relative paths are resolved relative to the configuration file directory, not `data_dir`.
+
+## Header Ownership
+
+The low-level proxy layer should not guess which raw client headers to forward. Providers decide which upstream request headers are required, for example:
+
+- `User-Agent`
+- `Referer`
+- `Range`
+- Provider-specific authentication headers
+
+This keeps behavior predictable, avoids leaking arbitrary client headers upstream, and lets each provider match direct-play and proxy-play semantics.
+
+## Alist Notes
+
+Alist may return URLs that are bound to a specific User-Agent. SyncTV should keep these aligned:
+
+- Headers used by provider-originated requests.
+- Headers returned to clients for direct playback.
+- Headers used by proxy mode when requesting the upstream URL.
+
+If a client cannot set required headers, use proxy mode instead of direct mode.
+
+## Bilibili Notes
+
+Bilibili is sensitive to request headers, especially:
+
+- `User-Agent`
+- `Referer`
+- Cookie or authentication headers
+- Range requests
+
+If direct mode works but proxy mode fails, or the reverse, first compare the headers returned to clients with the headers used by proxy upstream requests.
+
+## Credential Encryption
+
+If provider credentials are stored, production should configure:
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+Without a stable credential encryption key, creating or updating encrypted provider credentials may fail, and previously encrypted credentials may become unreadable if the key is lost.

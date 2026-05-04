@@ -1,0 +1,188 @@
+---
+title: 房间、权限与用户偏好
+description: SyncTV 的全局用户角色、房间角色、权限位、房间设置、成员权限覆盖和用户偏好语义。
+---
+
+import { Aside, Card, CardGrid, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 两层角色模型
+
+SyncTV 有两层角色，不能混为一谈。
+
+| 层级 | 角色 | 作用范围 |
+| --- | --- | --- |
+| 全局用户角色 | `root`、`admin`、`user` | 平台管理、用户管理、房间管理、系统设置 |
+| 房间角色 | `creator`、`admin`、`member`、`guest` | 单个房间内的播放、成员、媒体、聊天和设置权限 |
+
+全局 `admin` 不自动等于某个房间的 `admin`。房间 `admin` 也不等于平台管理员。
+
+## 全局用户角色
+
+| 角色 | 能力边界 |
+| --- | --- |
+| `root` | 超级管理员，可以管理 root/admin/user、全局设置和所有房间 |
+| `admin` | 平台管理员，可以管理普通用户和房间，但不能越权管理 root 或同级管理员的敏感设置 |
+| `user` | 普通用户，按房间和业务权限使用功能 |
+
+用户状态是从封禁记录派生的有效状态：
+
+| 状态 | 影响 |
+| --- | --- |
+| `active` | 可以登录、创建房间、加入房间 |
+| `banned` | 不能登录、创建房间或加入房间 |
+
+## 房间角色
+
+| 房间角色 | 默认语义 |
+| --- | --- |
+| `creator` | 房间创建者，拥有全部房间权限，不能通过房间设置削弱 |
+| `admin` | 房间管理员，默认拥有成员管理、播放控制、媒体管理、房间设置等权限 |
+| `member` | 普通成员，默认可以聊天、添加/编辑/删除自己的媒体、查看播放列表和成员信息 |
+| `guest` | 游客，默认只读，只能查看播放列表 |
+
+房间角色提供基础权限，房间设置和成员权限覆盖会在基础权限上继续做加减。
+
+## 权限计算顺序
+
+有效权限按三层计算：
+
+```text
+全局角色默认权限
+  -> 房间设置 added/removed 权限
+  -> 成员个人 added/removed 权限
+```
+
+规则：
+
+- `creator` 始终拥有全部房间权限。
+- add 先增加权限，remove 再移除权限；同一个权限同时 add 和 remove 时，remove 生效。
+- `member_added_permissions` 不能超过 admin 级别上限。
+- `guest_added_permissions` 不能超过 member 级别上限。
+- `DELETE_ROOM` 不属于房间内可委派权限，房间删除应由创建者或平台管理面处理。
+
+## 主要权限位
+
+| 权限 | 含义 |
+| --- | --- |
+| `SEND_CHAT` | 发送聊天和弹幕消息 |
+| `ADD_MEDIA` | 添加媒体 |
+| `DELETE_MEDIA_SELF` / `DELETE_MEDIA_ANY` | 删除自己添加的媒体 / 删除任意媒体 |
+| `EDIT_MEDIA_SELF` / `EDIT_MEDIA_ANY` | 编辑自己添加的媒体 / 编辑任意媒体 |
+| `REORDER_PLAYLIST` | 调整播放列表顺序 |
+| `CLEAR_PLAYLIST` | 清空播放列表 |
+| `START_LIVE` | 开始直播推流 |
+| `PLAY_CONTROL` | 播放、暂停、seek |
+| `CHANGE_CURRENT_MEDIA` | 切换当前播放媒体 |
+| `CHANGE_PLAYBACK_RATE` | 修改播放速度 |
+| `APPROVE_MEMBER` | 审批加入房间请求 |
+| `KICK_MEMBER` | 踢出成员 |
+| `BAN_MEMBER` | 封禁或解封成员 |
+| `SET_MEMBER_PERMISSIONS` | 修改成员权限 |
+| `ADD_MEMBER` | 主动添加成员 |
+| `SET_ROOM_SETTINGS` | 修改房间设置 |
+| `DELETE_CHAT` | 删除聊天消息 |
+| `DELETE_ROOM` | 删除房间，不可作为普通房间内委派权限 |
+| `VIEW_PLAYLIST` | 查看播放列表 |
+| `VIEW_MEMBER_LIST` | 查看成员列表 |
+| `VIEW_CHAT_HISTORY` | 查看聊天历史 |
+| `USE_WEBRTC` | 使用 WebRTC 语音/视频能力 |
+
+权限值在 API/CLI 中通常以 `u64` bitmask 表达。修改 bitmask 前应先确认目标角色和当前有效权限。
+
+## 房间设置
+
+房间设置控制加入策略、显示能力、默认权限和 RTMP 播放能力。
+
+| 设置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `require_password` | `false` | 是否要求房间密码 |
+| `allow_guest_join` | `false` | 是否允许游客加入 |
+| `max_members` | `100` | 房间最大成员数，上限 `10000` |
+| `require_approval` | `false` | 加入房间是否需要审核 |
+| `allow_auto_join` | `true` | 是否允许符合条件的用户自动加入 |
+| `chat_enabled` | `true` | 是否启用聊天 |
+| `danmaku_enabled` | `true` | 是否启用弹幕 |
+| `auto_play` | `{}` | 自动播放策略，JSON 结构 |
+| `admin_added_permissions` / `admin_removed_permissions` | `0` | 房间 admin 默认权限增减 |
+| `member_added_permissions` / `member_removed_permissions` | `0` | 房间 member 默认权限增减 |
+| `guest_added_permissions` / `guest_removed_permissions` | `0` | 房间 guest 默认权限增减 |
+| `rtmp_player` | `false` | 是否允许 RTMP 播放，默认关闭 |
+
+示例：
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
+```
+
+<Aside type="caution">
+`rtmp_player` 默认关闭，因为 RTMP 播放没有同等认证语义。普通观看路径优先使用 HTTP-FLV、HLS 或客户端支持的安全播放路径。
+</Aside>
+
+## 成员权限覆盖
+
+成员级覆盖用于处理例外，例如临时禁言、给某个成员播放控制、撤销某个管理员的封禁能力。
+
+语义：
+
+- 成员基础权限来自房间角色。
+- `added_permissions` 增加该成员的普通权限。
+- `removed_permissions` 移除该成员的普通权限。
+- 管理员还可以有 `admin_added_permissions` 和 `admin_removed_permissions`。
+- 对 `creator` 的权限削弱不生效。
+
+建议：
+
+- 优先用角色解决长期权限，用成员覆盖解决例外。
+- 成员覆盖越多，排障越难；定期清理不再需要的覆盖。
+- 对管理员撤权时，优先考虑是否应该直接调整角色，而不是堆叠大量 deny 位。
+
+## 用户偏好
+
+用户偏好是数据库中的用户级设置，不是 YAML 配置。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `two_factor_enabled` | `false` | 是否开启用户级 2FA |
+| `notifications.room_invitation_in_app` | `true` | 房间邀请站内通知 |
+| `notifications.room_event_in_app` | `true` | 房间事件站内通知 |
+| `notifications.system_announcement_in_app` | `true` | 系统公告站内通知 |
+| `notifications.room_invitation_email` | `false` | 房间邀请邮件通知 |
+| `notifications.room_event_email` | `false` | 房间事件邮件通知 |
+| `notifications.system_announcement_email` | `true` | 系统公告邮件通知 |
+| `provider_defaults.alist_instance_name` | `null` | 默认 Alist 实例 |
+| `provider_defaults.emby_instance_name` | `null` | 默认 Emby 实例 |
+| `provider_defaults.bilibili_instance_name` | `null` | 默认 Bilibili 实例 |
+
+数据库表还有一个 `settings` JSONB 扩展载荷，只用于低优先级实验性偏好。稳定的产品偏好应该优先设计成明确字段，不能把 secret、token、Cookie、密码或 Provider 凭据放进去。
+
+2FA 约束：
+
+- 开启 2FA 必须有至少两种本地验证方式：password、webauthn/passkey、verified email。
+- OAuth2 不计入本地 2FA 因素，但 2FA 用户可以使用 OAuth2 登录。
+- 删除验证方式时，如果用户开启了 2FA，删除后仍必须保留至少两种可用本地方式。
+
+## 推荐管理策略
+
+<CardGrid>
+  <Card title="少用 bitmask 直改" icon="setting">
+    能用角色表达的权限不要直接改 bitmask。必须改 bitmask 时，先记录当前值和变更原因。
+  </Card>
+  <Card title="区分全局和房间" icon="puzzle">
+    平台 admin 和房间 admin 是两套概念，排查权限问题时先确认操作发生在哪一层。
+  </Card>
+  <Card title="偏好不是启动配置" icon="document">
+    用户偏好可以通过 API/CLI 修改，不应该写进 YAML 或 Helm values。
+  </Card>
+  <Card title="变更后验证路径" icon="rocket">
+    修改加入规则、权限或 2FA 后，用真实登录、加入房间和播放操作验证。
+  </Card>
+</CardGrid>
+
+## 继续阅读
+
+- [管理员操作手册](../administration/)
+- [认证与安全模型](../security-model/)
+- [数据、隐私与保留策略](../../operations/data-retention/)
+- [Runtime settings 参考](../../reference/runtime-settings/)
+- [CLI 参考](../../reference/cli/)

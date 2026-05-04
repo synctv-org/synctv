@@ -1,0 +1,271 @@
+---
+title: Production Checklist
+description: Security, storage, networking, monitoring, backup, and upgrade checks before launching SyncTV.
+---
+
+## Why Use a Checklist
+
+SyncTV is not just one HTTP server. It may involve PostgreSQL, Redis, RTMP, STUN, gRPC, metrics, provider credentials, HLS storage, slice cache, WebAuthn, OAuth2, and email. Confirm these items before production launch.
+
+If you have not reviewed the component boundaries yet, start with [Architecture Overview](../../guides/architecture/). If you are designing login, 2FA, OAuth2, or management control-plane policy, read [Authentication and Security Model](../../guides/security-model/).
+
+For day-to-day production administration, also read [Administration Runbook](../../guides/administration/), [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/), and [Runtime Settings Reference](../../reference/runtime-settings/).
+
+If you need to document stored data, PII, backups, and cleanup defaults, also read [Data, Privacy, and Retention](../../operations/data-retention/).
+
+## Required Secrets
+
+Prepare at least:
+
+| Secret | Purpose | Generation |
+| --- | --- | --- |
+| `jwt.secret` | Signs access, refresh, and guest tokens | `openssl rand -base64 32` |
+| `security.opaque_server_setup_secret` | OPAQUE password authentication | `openssl rand -base64 48` |
+| `security.credential_encryption_key` | Encrypts provider credentials; 64 hex chars | `openssl rand -hex 32` |
+| `server.cluster_secret` | Inter-node auth; required in cluster mode | `openssl rand -hex 32` |
+| `bootstrap.root_password` | Initial root user password | Password manager |
+
+Rules:
+
+- Do not use example values.
+- Do not commit secrets.
+- Do not regenerate stable secrets on every deployment.
+- Back them up in a password manager, secret manager, or encrypted backup.
+
+## Database
+
+PostgreSQL must be persistent.
+
+Check:
+
+- `database.url` or split fields point to production PostgreSQL.
+- `database.max_connections` does not exceed database capacity.
+- Startup runs embedded SQLx migrations automatically.
+- `synctv db migrate` is an optional preflight command that can surface dirty migrations, checksum drift, or database privilege issues before serving traffic.
+- Backups exist.
+- Restore steps are known or tested.
+
+Commands:
+
+```bash
+synctv db status
+```
+
+## Redis
+
+Redis is optional for simple single-node mode but recommended in production. It is required for multi-replica and cluster mode.
+
+Check:
+
+- `redis.url` or split fields are correct.
+- All replicas share the same Redis.
+- `redis.key_prefix` does not collide with another environment.
+- Sentinel mode has `sentinel_master_name` and `sentinel_addresses`.
+
+Redis affects rate limits, brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, cluster pub/sub, node registry, and stream catch-up.
+
+## HTTP, gRPC, and Ingress
+
+The process uses one `server.port` for HTTP REST and public gRPC. In Kubernetes, expose them through two Services and two Ingresses.
+
+Helm model:
+
+- HTTP/API Service: `synctv`.
+- gRPC Service: `synctv-grpc`.
+- HTTP Ingress: default `ingress`.
+- gRPC Ingress: `ingress.grpc`.
+
+For Nginx Ingress:
+
+```yaml
+ingress:
+  grpc:
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```
+
+If HTTP and gRPC use different domains, configure DNS and TLS for each.
+
+## CORS and Trusted Proxies
+
+For a web frontend:
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+Use origins only, no paths.
+
+If SyncTV is behind a reverse proxy:
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+```
+
+Only trust networks you control.
+
+## WebAuthn/passkeys
+
+If passkeys are enabled:
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "example.com"
+  rp_origin: "https://app.example.com"
+```
+
+Check:
+
+- `rp_origin` is the actual HTTPS origin.
+- `rp_id` is the same domain or a valid parent domain.
+- Local development port relaxation is not enabled in production.
+
+## Email
+
+Required for email verification, password reset, email MFA, and notifications:
+
+```yaml
+email:
+  smtp_host: "smtp.example.com"
+  smtp_port: 587
+  smtp_username: "noreply@example.com"
+  smtp_password_file: "/run/secrets/smtp_password"
+  from_email: "noreply@example.com"
+  from_name: "SyncTV"
+  use_tls: true
+```
+
+Test:
+
+```bash
+synctv settings test-email --to admin@example.com
+```
+
+## OAuth2
+
+Check:
+
+- Each provider has correct `client_id` and `client_secret`.
+- `redirect_url` matches the provider registration.
+- `oauth2.redirect_scheme` is `https` in production.
+- Multi-replica deployments use Redis for OAuth2 state.
+
+## HLS, RTMP, and STUN
+
+RTMP default port: `1935`.
+
+STUN default UDP port: `3478`.
+
+If livestreaming is used:
+
+- Open the RTMP port.
+- Open UDP STUN if WebRTC uses built-in STUN.
+- Use shared HLS storage in multi-replica deployments.
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+## Proxy Slice Cache
+
+File-backed cache:
+
+```yaml
+cache:
+  proxy_slice_cache_enabled: true
+  proxy_slice_file_backend_enabled: true
+  proxy_slice_file_cache_dir: "cache/proxy-slice"
+```
+
+Check:
+
+- Enough disk space.
+- Container volume is mounted.
+- Shared filesystem is used if multiple replicas share cache.
+- Upstreams that do not support Range are bypassed; full-body cache is not used.
+
+## Metrics
+
+Recommended:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+Do not expose `/metrics` publicly. In Kubernetes, combine it with ServiceMonitor, VMServiceScrape, or NetworkPolicy.
+
+## Validation
+
+Before launch:
+
+```bash
+synctv config validate
+synctv db status
+```
+
+Container and Helm checks:
+
+```bash
+docker compose config
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+```
+
+After startup:
+
+```bash
+curl -fsS http://localhost:8080/health/ready
+```
+
+## Backups
+
+Must back up:
+
+- PostgreSQL.
+- Production secrets.
+
+Back up as needed:
+
+- HLS shared storage.
+- Proxy slice cache.
+- Custom configuration files.
+
+Redis is usually short-lived shared state, but losing it can affect OAuth2 state, token blacklist, and rate-limit counters.
+
+For restore order and restore drills, see [Backup and Restore](../../operations/backup-restore/).
+
+## Upgrades
+
+Before upgrade:
+
+- Back up PostgreSQL.
+- Preserve all secrets.
+- Start the target version in a test environment first and verify automatic migrations plus business reads/writes.
+- Check [Configuration Index](../../reference/configuration-index/), [Full Configuration Example](../../configuration/full-example/), Compose, and Helm values for new fields.
+- If OpenAPI is enabled, confirm generated clients are compatible with API changes.
+
+For Kubernetes rolling updates, configure readiness, termination grace period, and `server.shutdown_drain_timeout_seconds` so long-lived connections are not cut abruptly.
+
+For migrations, Helm/Compose releases, rolling updates, and rollback strategy, see [Upgrades and Migrations](../../operations/upgrades/).
+
+## Observability
+
+After launch, have at least:
+
+- `/health/ready` readiness checks.
+- Authenticated metrics scraping.
+- JSON logs or another format your logging system can parse reliably.
+- Basic alerts for PostgreSQL, Redis, login failures, MFA failures, WebSocket, providers, proxy, livestream, and cluster behavior.
+
+For monitoring signals and incident data collection, see [Observability Runbook](../../operations/observability/).

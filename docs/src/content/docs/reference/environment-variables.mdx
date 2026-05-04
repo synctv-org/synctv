@@ -1,0 +1,275 @@
+---
+title: 常用环境变量
+description: 常用 SYNCTV_ 环境变量速查。
+---
+
+## 基础服务
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_CONFIG_PATH` | 配置文件路径 |
+| `SYNCTV_DATA_DIR` | `data_dir` |
+| `SYNCTV_SERVER_HOST` | `server.host` |
+| `SYNCTV_SERVER_PORT` | `server.port` |
+| `SYNCTV_SERVER_ENABLE_REFLECTION` | `server.enable_reflection` |
+| `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS` | `server.cors_allowed_origins` |
+| `SYNCTV_SERVER_TRUSTED_PROXIES` | `server.trusted_proxies` |
+| `SYNCTV_SERVER_CLUSTER_SECRET` | `server.cluster_secret` |
+| `SYNCTV_SERVER_CLUSTER_SECRET_FILE` | `server.cluster_secret` 文件 |
+| `SYNCTV_SERVER_ADVERTISE_HOST` | `server.advertise_host` |
+| `SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS` | `server.shutdown_drain_timeout_seconds` |
+| `SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES` | `server.grpc_max_message_size_bytes` |
+| `SYNCTV_TIME_TIMEZONE` | `time.timezone` |
+
+## 公开 ID
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET` | `public_ids.sqids.alphabet` |
+| `SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH` | `public_ids.sqids.min_length` |
+
+## 初始化 root 用户
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_BOOTSTRAP_CREATE_ROOT_USER` | `bootstrap.create_root_user` |
+| `SYNCTV_BOOTSTRAP_ROOT_USERNAME` | `bootstrap.root_username` |
+| `SYNCTV_BOOTSTRAP_ROOT_EMAIL` | `bootstrap.root_email` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE` | `bootstrap.root_password` 文件 |
+
+## 数据库和 Redis
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_DATABASE_URL` | `database.url` |
+| `SYNCTV_DATABASE_URL_FILE` | `database.url` 文件 |
+| `SYNCTV_DATABASE_HOST` | `database.host` |
+| `SYNCTV_DATABASE_PORT` | `database.port` |
+| `SYNCTV_DATABASE_USER` | `database.username` |
+| `SYNCTV_DATABASE_USERNAME` | `database.username` |
+| `SYNCTV_DATABASE_PASSWORD` | `database.password` |
+| `SYNCTV_DATABASE_PASSWORD_FILE` | `database.password` 文件 |
+| `SYNCTV_DATABASE_NAME` | `database.name` |
+| `SYNCTV_DATABASE_MAX_CONNECTIONS` | `database.max_connections` |
+| `SYNCTV_DATABASE_MIN_CONNECTIONS` | `database.min_connections` |
+| `SYNCTV_DATABASE_CONNECT_TIMEOUT_SECONDS` | `database.connect_timeout_seconds` |
+| `SYNCTV_DATABASE_IDLE_TIMEOUT_SECONDS` | `database.idle_timeout_seconds` |
+| `SYNCTV_DATABASE_MAX_LIFETIME_SECONDS` | `database.max_lifetime_seconds` |
+| `SYNCTV_REDIS_URL` | `redis.url` |
+| `SYNCTV_REDIS_URL_FILE` | `redis.url` 文件 |
+| `SYNCTV_REDIS_HOST` | `redis.host` |
+| `SYNCTV_REDIS_PORT` | `redis.port` |
+| `SYNCTV_REDIS_USER` | `redis.username` |
+| `SYNCTV_REDIS_USERNAME` | `redis.username` |
+| `SYNCTV_REDIS_PASSWORD` | `redis.password` |
+| `SYNCTV_REDIS_PASSWORD_FILE` | `redis.password` 文件 |
+| `SYNCTV_REDIS_DATABASE` | `redis.database` |
+| `SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS` | `redis.connect_timeout_seconds` |
+| `SYNCTV_REDIS_KEY_PREFIX` | `redis.key_prefix` |
+| `SYNCTV_REDIS_DEPLOYMENT_MODE` | `redis.deployment_mode` |
+| `SYNCTV_REDIS_SENTINEL_MASTER_NAME` | `redis.sentinel_master_name` |
+| `SYNCTV_REDIS_SENTINEL_ADDRESSES` | `redis.sentinel_addresses` |
+
+## 安全
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_JWT_SECRET` | `jwt.secret` |
+| `SYNCTV_JWT_SECRET_FILE` | `jwt.secret` 文件 |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE` | `security.credential_encryption_key` 文件 |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | `security.opaque_server_setup_secret` |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE` | `security.opaque_server_setup_secret` 文件 |
+| `SYNCTV_JWT_ACCESS_TOKEN_DURATION_HOURS` | `jwt.access_token_duration_hours` |
+| `SYNCTV_JWT_REFRESH_TOKEN_DURATION_DAYS` | `jwt.refresh_token_duration_days` |
+| `SYNCTV_JWT_GUEST_TOKEN_DURATION_HOURS` | `jwt.guest_token_duration_hours` |
+| `SYNCTV_JWT_CLOCK_SKEW_LEEWAY_SECS` | `jwt.clock_skew_leeway_secs` |
+| `SYNCTV_PASSWORD_COMPLEXITY_MIN_LENGTH` | `password_complexity.min_length` |
+| `SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_UPPERCASE` | `password_complexity.require_uppercase` |
+| `SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_LOWERCASE` | `password_complexity.require_lowercase` |
+| `SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_DIGIT` | `password_complexity.require_digit` |
+| `SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_SPECIAL` | `password_complexity.require_special` |
+| `SYNCTV_PASSWORD_COMPLEXITY_MAX_REPEATED_CHARS` | `password_complexity.max_repeated_chars` |
+
+## 日志
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_LOGGING_LEVEL` | `logging.level` |
+| `SYNCTV_LOGGING_FORMAT` | `logging.format` |
+| `SYNCTV_LOGGING_FILTER` | `logging.filter` |
+| `SYNCTV_LOGGING_BACKTRACE` | `logging.backtrace` |
+| `SYNCTV_LOGGING_FILE_PATH` | `logging.file_path` |
+
+## 管理端点
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_MANAGEMENT_ENABLED` | `management.enabled` |
+| `SYNCTV_MANAGEMENT_TRANSPORT` | `management.transport` |
+| `SYNCTV_MANAGEMENT_PORT` | `management.port` |
+| `SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH` | `management.unix_socket_path` |
+| `SYNCTV_MANAGEMENT_AUTH_TOKEN` | `management.auth_token` |
+| `SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE` | `management.auth_token` 文件 |
+| `SYNCTV_MANAGEMENT_ENABLE_REFLECTION` | `management.enable_reflection` |
+
+## Metrics
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_METRICS_ENABLED` | `metrics.enabled` |
+| `SYNCTV_METRICS_HOST` | `metrics.host` |
+| `SYNCTV_METRICS_PORT` | `metrics.port` |
+| `SYNCTV_METRICS_TLS_ENABLED` | `metrics.tls.enabled` |
+| `SYNCTV_METRICS_TLS_CERT_PATH` | `metrics.tls.cert_path` |
+| `SYNCTV_METRICS_TLS_KEY_PATH` | `metrics.tls.key_path` |
+| `SYNCTV_METRICS_AUTH_MODE` | `metrics.auth.mode` |
+| `SYNCTV_METRICS_AUTH_BEARER_TOKEN` | `metrics.auth.bearer_token` |
+| `SYNCTV_METRICS_AUTH_BEARER_TOKEN_FILE` | `metrics.auth.bearer_token` 文件 |
+| `SYNCTV_METRICS_AUTH_BASIC_USERNAME` | `metrics.auth.basic_username` |
+| `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` | `metrics.auth.basic_password` |
+| `SYNCTV_METRICS_AUTH_BASIC_PASSWORD_FILE` | `metrics.auth.basic_password` 文件 |
+| `SYNCTV_METRICS_AUTH_KUBERNETES_AUDIENCE` | `metrics.auth.kubernetes.audience` |
+| `SYNCTV_METRICS_AUTH_KUBERNETES_AUTHENTICATION_CACHE_TTL_SECONDS` | `metrics.auth.kubernetes.authentication_cache_ttl_seconds` |
+| `SYNCTV_METRICS_AUTH_KUBERNETES_AUTHORIZATION_CACHE_TTL_SECONDS` | `metrics.auth.kubernetes.authorization_cache_ttl_seconds` |
+
+## WebRTC 和 WebAuthn
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_WEBRTC_MODE` | `webrtc.mode` |
+| `SYNCTV_WEBRTC_ENABLE_BUILTIN_STUN` | `webrtc.enable_builtin_stun` |
+| `SYNCTV_WEBRTC_STUN_PORT` | `webrtc.stun_port` |
+| `SYNCTV_WEBRTC_STUN_HOST` | `webrtc.stun_host` |
+| `SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR` | `webrtc.stun_external_addr` |
+| `SYNCTV_WEBRTC_FILTER_PRIVATE_ICE_CANDIDATES` | `webrtc.filter_private_ice_candidates` |
+| `SYNCTV_WEBAUTHN_ENABLED` | `webauthn.enabled` |
+| `SYNCTV_WEBAUTHN_RP_ID` | `webauthn.rp_id` |
+| `SYNCTV_WEBAUTHN_RP_ORIGIN` | `webauthn.rp_origin` |
+| `SYNCTV_WEBAUTHN_RP_NAME` | `webauthn.rp_name` |
+| `SYNCTV_WEBAUTHN_ALLOWED_ORIGINS` | `webauthn.allowed_origins` |
+| `SYNCTV_WEBAUTHN_ALLOW_SUBDOMAINS` | `webauthn.allow_subdomains` |
+| `SYNCTV_WEBAUTHN_ALLOW_ANY_PORT` | `webauthn.allow_any_port` |
+| `SYNCTV_WEBAUTHN_TIMEOUT_SECONDS` | `webauthn.timeout_seconds` |
+
+## 缓存
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_CACHE_L1_CAPACITY` | `cache.l1_capacity` |
+| `SYNCTV_CACHE_L1_TTL_SECONDS` | `cache.l1_ttl_seconds` |
+| `SYNCTV_CACHE_L2_TTL_SECONDS` | `cache.l2_ttl_seconds` |
+| `SYNCTV_CACHE_USERNAME_CACHE_CAPACITY` | `cache.username_cache_capacity` |
+| `SYNCTV_CACHE_USERNAME_CACHE_TTL_SECONDS` | `cache.username_cache_ttl_seconds` |
+| `SYNCTV_CACHE_PERMISSION_CACHE_CAPACITY` | `cache.permission_cache_capacity` |
+| `SYNCTV_CACHE_PERMISSION_CACHE_TTL_SECONDS` | `cache.permission_cache_ttl_seconds` |
+| `SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED` | `cache.proxy_slice_cache_enabled` |
+| `SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED` | `cache.proxy_slice_file_backend_enabled` |
+| `SYNCTV_CACHE_PROXY_SLICE_FILE_CACHE_DIR` | `cache.proxy_slice_file_cache_dir` |
+
+## 邮件、OAuth2 和 Provider
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_EMAIL_SMTP_HOST` | `email.smtp_host` |
+| `SYNCTV_EMAIL_SMTP_PORT` | `email.smtp_port` |
+| `SYNCTV_EMAIL_SMTP_USERNAME` | `email.smtp_username` |
+| `SYNCTV_EMAIL_SMTP_PASSWORD` | `email.smtp_password` |
+| `SYNCTV_EMAIL_SMTP_PASSWORD_FILE` | `email.smtp_password` 文件 |
+| `SYNCTV_EMAIL_FROM_EMAIL` | `email.from_email` |
+| `SYNCTV_EMAIL_FROM_NAME` | `email.from_name` |
+| `SYNCTV_EMAIL_USE_TLS` | `email.use_tls` |
+| `SYNCTV_OAUTH2_REDIRECT_SCHEME` | `oauth2.redirect_scheme` |
+| `SYNCTV_MEDIA_PROVIDERS_REQUEST_TIMEOUT_SECONDS` | `media_providers.request_timeout_seconds` |
+| `SYNCTV_MEDIA_PROVIDERS_CONNECT_TIMEOUT_SECONDS` | `media_providers.connect_timeout_seconds` |
+
+## 直播
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_LIVESTREAM_RTMP_PORT` | `livestream.rtmp_port` |
+| `SYNCTV_LIVESTREAM_PUBLIC_RTMP_HOST` | `livestream.public_rtmp_host` |
+| `SYNCTV_LIVESTREAM_GOP_CACHE_SIZE` | `livestream.gop_cache_size` |
+| `SYNCTV_LIVESTREAM_STREAM_TIMEOUT_SECONDS` | `livestream.stream_timeout_seconds` |
+| `SYNCTV_LIVESTREAM_CLEANUP_CHECK_INTERVAL_SECONDS` | `livestream.cleanup_check_interval_seconds` |
+| `SYNCTV_LIVESTREAM_PULL_MAX_RETRIES` | `livestream.pull_max_retries` |
+| `SYNCTV_LIVESTREAM_PULL_INITIAL_BACKOFF_MS` | `livestream.pull_initial_backoff_ms` |
+| `SYNCTV_LIVESTREAM_PULL_MAX_BACKOFF_MS` | `livestream.pull_max_backoff_ms` |
+| `SYNCTV_LIVESTREAM_MAX_FLV_TAG_SIZE_BYTES` | `livestream.max_flv_tag_size_bytes` |
+| `SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB` | `livestream.gop_cache_max_memory_mb` |
+| `SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB` | `livestream.hls_memory_max_mb` |
+| `SYNCTV_LIVESTREAM_HLS_SHARED_STORAGE` | `livestream.hls_shared_storage` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_PATH` | `livestream.hls_storage_path` |
+| `SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS` | `livestream.flv_max_connection_duration_seconds` |
+| `SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS` | `livestream.flv_write_timeout_seconds` |
+
+## 集群
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_CLUSTER_ENABLED` | `cluster.enabled` |
+| `SYNCTV_CLUSTER_CRITICAL_CHANNEL_CAPACITY` | `cluster.critical_channel_capacity` |
+| `SYNCTV_CLUSTER_PUBLISH_CHANNEL_CAPACITY` | `cluster.publish_channel_capacity` |
+| `SYNCTV_CLUSTER_DISCOVERY_MODE` | `cluster.discovery_mode` |
+| `SYNCTV_CLUSTER_LEADER_ELECTION_MODE` | `cluster.leader_election_mode` |
+| `SYNCTV_CLUSTER_PEERS` | `cluster.peers` |
+| `SYNCTV_CLUSTER_CATCHUP_WINDOW_SECS` | `cluster.catchup_window_secs` |
+| `SYNCTV_CLUSTER_STREAM_MAX_LENGTH` | `cluster.stream_max_length` |
+
+## 内部缓冲区
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_BUFFER_SIZES_WEBSOCKET_OUTBOUND` | `buffer_sizes.websocket_outbound` |
+| `SYNCTV_BUFFER_SIZES_AUDIT_BUFFER` | `buffer_sizes.audit_buffer` |
+
+## 限流
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_MESSAGING_RATE_LIMITS_CHAT_PER_SECOND` | `messaging_rate_limits.chat_per_second` |
+| `SYNCTV_MESSAGING_RATE_LIMITS_DANMAKU_PER_SECOND` | `messaging_rate_limits.danmaku_per_second` |
+| `SYNCTV_MESSAGING_RATE_LIMITS_WINDOW_SECONDS` | `messaging_rate_limits.window_seconds` |
+| `SYNCTV_CONNECTION_LIMITS_MAX_PER_USER` | `connection_limits.max_per_user` |
+| `SYNCTV_CONNECTION_LIMITS_MAX_PER_ROOM` | `connection_limits.max_per_room` |
+| `SYNCTV_CONNECTION_LIMITS_MAX_TOTAL` | `connection_limits.max_total` |
+| `SYNCTV_CONNECTION_LIMITS_IDLE_TIMEOUT_SECONDS` | `connection_limits.idle_timeout_seconds` |
+| `SYNCTV_CONNECTION_LIMITS_MAX_DURATION_SECONDS` | `connection_limits.max_duration_seconds` |
+| `SYNCTV_CONNECTION_LIMITS_WS_MESSAGE_RATE_LIMIT_PER_SECOND` | `connection_limits.ws_message_rate_limit_per_second` |
+
+## HTTP 限流
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS` | `http_rate_limits.auth_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_AUTH_WINDOW_SECONDS` | `http_rate_limits.auth_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_WRITE_MAX_REQUESTS` | `http_rate_limits.write_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_WRITE_WINDOW_SECONDS` | `http_rate_limits.write_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_READ_MAX_REQUESTS` | `http_rate_limits.read_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_READ_WINDOW_SECONDS` | `http_rate_limits.read_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_MEDIA_MAX_REQUESTS` | `http_rate_limits.media_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_MEDIA_WINDOW_SECONDS` | `http_rate_limits.media_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_ADMIN_MAX_REQUESTS` | `http_rate_limits.admin_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_ADMIN_WINDOW_SECONDS` | `http_rate_limits.admin_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_STREAMING_MAX_REQUESTS` | `http_rate_limits.streaming_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_STREAMING_WINDOW_SECONDS` | `http_rate_limits.streaming_window_seconds` |
+| `SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS` | `http_rate_limits.websocket_max_requests` |
+| `SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS` | `http_rate_limits.websocket_window_seconds` |
+
+## gRPC 限流
+
+| 环境变量 | 对应配置 |
+| --- | --- |
+| `SYNCTV_GRPC_RATE_LIMITS_AUTH_MAX_REQUESTS` | `grpc_rate_limits.auth_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_AUTH_WINDOW_SECONDS` | `grpc_rate_limits.auth_window_seconds` |
+| `SYNCTV_GRPC_RATE_LIMITS_EMAIL_MAX_REQUESTS` | `grpc_rate_limits.email_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_EMAIL_WINDOW_SECONDS` | `grpc_rate_limits.email_window_seconds` |
+| `SYNCTV_GRPC_RATE_LIMITS_MEDIA_MAX_REQUESTS` | `grpc_rate_limits.media_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_MEDIA_WINDOW_SECONDS` | `grpc_rate_limits.media_window_seconds` |
+| `SYNCTV_GRPC_RATE_LIMITS_WRITE_MAX_REQUESTS` | `grpc_rate_limits.write_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_WRITE_WINDOW_SECONDS` | `grpc_rate_limits.write_window_seconds` |
+| `SYNCTV_GRPC_RATE_LIMITS_ADMIN_MAX_REQUESTS` | `grpc_rate_limits.admin_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_ADMIN_WINDOW_SECONDS` | `grpc_rate_limits.admin_window_seconds` |
+| `SYNCTV_GRPC_RATE_LIMITS_READ_MAX_REQUESTS` | `grpc_rate_limits.read_max_requests` |
+| `SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS` | `grpc_rate_limits.read_window_seconds` |

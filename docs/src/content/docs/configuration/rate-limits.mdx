@@ -1,0 +1,383 @@
+---
+title: 限流与连接限制
+description: HTTP/gRPC 请求限流、聊天弹幕限流、WebSocket 和 streaming 连接限制。
+---
+
+## 为什么需要限流？
+
+限流不是只为了防攻击，也能保护小服务器不被误操作拖垮。例如：
+
+- 登录接口被暴力猜密码。
+- 客户端 bug 每秒重复请求。
+- 用户频繁发送聊天或弹幕。
+- HLS/FLV/代理请求过多导致上游或本机压力过大。
+
+SyncTV 把限流分成几类配置。
+
+## `connection_limits`
+
+控制长连接和 WebSocket 的并发数量。
+
+### `max_per_user`
+
+默认值：`5`。
+
+每个用户最多同时保持多少个连接。
+
+如果用户可能同时用手机、电脑、电视等多个设备，可以适当调大。
+
+### `max_per_room`
+
+默认值：`200`。
+
+每个房间最多多少连接。
+
+私有低并发部署可以保持默认或调小。公开服务需要根据服务器性能评估。
+
+### `max_total`
+
+默认值：`10000`。
+
+整个服务最多多少连接。
+
+这个值不能只看软件，还要看：
+
+- CPU
+- 内存
+- 文件描述符限制
+- 反向代理配置
+- Kubernetes Pod 资源限制
+
+### `idle_timeout_seconds`
+
+默认值：`300`。
+
+连接多久没有活动后断开。
+
+### `max_duration_seconds`
+
+默认值：`86400`。
+
+连接最长保持多久。默认 24 小时。
+
+### `ws_message_rate_limit_per_second`
+
+默认值：`50`。
+
+每个 WebSocket 连接每秒最多处理多少消息。
+
+## `messaging_rate_limits`
+
+控制业务层聊天和弹幕发送频率。
+
+```yaml
+messaging_rate_limits:
+  chat_per_second: 10
+  danmaku_per_second: 3
+  window_seconds: 1
+```
+
+### `chat_per_second`
+
+每个窗口最多多少条聊天消息。
+
+### `danmaku_per_second`
+
+每个窗口最多多少条弹幕。
+
+弹幕更容易造成屏幕和网络压力，所以默认比聊天严格。
+
+### `window_seconds`
+
+统计窗口大小。
+
+默认 `1` 表示“每秒最多多少条”。
+
+## `http_rate_limits`
+
+HTTP API 按接口类别限流。
+
+默认值：
+
+```yaml
+http_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  streaming_max_requests: 200
+  streaming_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
+```
+
+每一组都由两个字段组成：
+
+- `*_max_requests`：一个窗口内最多允许多少次请求。
+- `*_window_seconds`：窗口长度，单位秒。
+
+例如：
+
+```yaml
+http_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+```
+
+表示同一个限流主体在 60 秒内最多 5 次认证类 HTTP 请求。
+
+### `http_rate_limits.auth_max_requests`
+
+默认值：`5`。
+
+作用：认证类 HTTP 接口每个窗口最多请求次数。
+
+包括登录、注册、刷新 token 等容易被爆破的接口。
+
+建议：公网保持默认或更低；内网测试可以临时调高。
+
+### `http_rate_limits.auth_window_seconds`
+
+默认值：`60`。
+
+作用：认证类 HTTP 限流窗口长度。
+
+调大表示限制更保守，调小表示恢复更快。
+
+### `http_rate_limits.write_max_requests`
+
+默认值：`30`。
+
+作用：创建、修改、删除等写操作每个窗口最多请求次数。
+
+调大场景：可信客户端批量操作较多。
+
+调小场景：公开服务希望限制误操作或脚本滥用。
+
+### `http_rate_limits.write_window_seconds`
+
+默认值：`60`。
+
+作用：写操作限流窗口长度。
+
+### `http_rate_limits.read_max_requests`
+
+默认值：`100`。
+
+作用：列表、详情、状态查询等读取操作每个窗口最多请求次数。
+
+读取接口通常比写接口更宽松。
+
+### `http_rate_limits.read_window_seconds`
+
+默认值：`60`。
+
+作用：读取操作限流窗口长度。
+
+### `http_rate_limits.media_max_requests`
+
+默认值：`20`。
+
+作用：添加媒体、删除媒体、解析媒体、批量媒体操作等每个窗口最多请求次数。
+
+媒体操作可能触发 Provider 请求或数据库写入，因此比普通读取更严格。
+
+### `http_rate_limits.media_window_seconds`
+
+默认值：`60`。
+
+作用：媒体操作限流窗口长度。
+
+### `http_rate_limits.admin_max_requests`
+
+默认值：`30`。
+
+作用：管理接口每个窗口最多请求次数。
+
+管理接口权限高，默认不应过大。
+
+### `http_rate_limits.admin_window_seconds`
+
+默认值：`60`。
+
+作用：管理接口限流窗口长度。
+
+### `http_rate_limits.streaming_max_requests`
+
+默认值：`200`。
+
+作用：HLS、FLV、代理等流媒体 HTTP 请求每个窗口最多请求次数。
+
+流媒体播放会产生更多请求，例如 HLS playlist 和 segment，所以默认比普通 API 高。
+
+如果客户端播放经常出现片段请求被限流，可以适当调高，但要同步观察带宽和上游 Provider 压力。
+
+### `http_rate_limits.streaming_window_seconds`
+
+默认值：`60`。
+
+作用：流媒体请求限流窗口长度。
+
+### `http_rate_limits.websocket_max_requests`
+
+默认值：`10`。
+
+作用：WebSocket 建连尝试每个窗口最多次数。
+
+这个限制主要防止客户端频繁断开重连。
+
+### `http_rate_limits.websocket_window_seconds`
+
+默认值：`60`。
+
+作用：WebSocket 建连限流窗口长度。
+
+## HTTP 类别速查
+
+### `auth`
+
+登录、注册、刷新 token 等认证接口。
+
+默认很严格，因为这些接口最容易被爆破。
+
+### `write`
+
+创建、修改、删除等写操作。
+
+### `read`
+
+列表、详情等读取操作。
+
+### `media`
+
+添加、删除、批量添加媒体等操作。
+
+### `admin`
+
+管理接口。
+
+### `streaming`
+
+HLS/FLV/代理等流媒体相关请求。
+
+流媒体请求通常比普通 API 更频繁，所以默认较高。
+
+### `websocket`
+
+WebSocket 建连尝试。
+
+如果恶意客户端频繁建立断开连接，这个限制会降低影响。
+
+## `grpc_rate_limits`
+
+gRPC API 也有独立限流。默认比 HTTP 更保守，因为 gRPC 客户端往往是程序或 SDK，不一定有人类操作节奏。
+
+```yaml
+grpc_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  email_max_requests: 5
+  email_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+```
+
+### `grpc_rate_limits.auth_max_requests`
+
+默认值：`5`。
+
+作用：gRPC 认证接口每个窗口最多请求次数，例如 Login、Register、RefreshToken。
+
+### `grpc_rate_limits.auth_window_seconds`
+
+默认值：`60`。
+
+作用：gRPC 认证接口限流窗口长度。
+
+### `grpc_rate_limits.email_max_requests`
+
+默认值：`5`。
+
+作用：邮箱相关 gRPC 接口每个窗口最多请求次数，例如发送验证码、密码重置邮件、邮箱 2FA 验证码。
+
+邮件接口必须严格限流，因为它既容易被滥用，也可能产生实际邮件成本。
+
+### `grpc_rate_limits.email_window_seconds`
+
+默认值：`60`。
+
+作用：邮箱相关 gRPC 限流窗口长度。
+
+### `grpc_rate_limits.media_max_requests`
+
+默认值：`20`。
+
+作用：gRPC 媒体变更接口每个窗口最多请求次数，例如 AddMedia、RemoveMedia、BatchAdd。
+
+### `grpc_rate_limits.media_window_seconds`
+
+默认值：`60`。
+
+作用：gRPC 媒体接口限流窗口长度。
+
+### `grpc_rate_limits.write_max_requests`
+
+默认值：`30`。
+
+作用：gRPC 写操作每个窗口最多请求次数，例如 CreateRoom、UpdateRoom、JoinRoom、SendChat。
+
+### `grpc_rate_limits.write_window_seconds`
+
+默认值：`60`。
+
+作用：gRPC 写操作限流窗口长度。
+
+### `grpc_rate_limits.admin_max_requests`
+
+默认值：`30`。
+
+作用：gRPC 管理接口每个窗口最多请求次数。
+
+### `grpc_rate_limits.admin_window_seconds`
+
+默认值：`60`。
+
+作用：gRPC 管理接口限流窗口长度。
+
+### `grpc_rate_limits.read_max_requests`
+
+默认值：`100`。
+
+作用：gRPC 读取接口每个窗口最多请求次数，例如 GetRoom、ListRooms、GetUser、GetPlaylist。
+
+### `grpc_rate_limits.read_window_seconds`
+
+默认值：`60`。
+
+作用：gRPC 读取接口限流窗口长度。
+
+## Redis 对限流的影响
+
+单机无 Redis 时，限流状态在本进程内存中。
+
+多副本时必须使用 Redis，否则每个副本都会各算各的，实际限流效果会被副本数放大。
+
+例如 3 个副本，每个副本允许每分钟 5 次登录尝试，如果没有共享状态，攻击者可能实际获得每分钟 15 次尝试机会。
+
+因此：
+
+- 单机测试：Redis 可选。
+- 生产单机：建议 Redis。
+- 多副本：必须 Redis。

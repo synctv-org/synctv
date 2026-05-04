@@ -1,0 +1,125 @@
+---
+title: Rate Limits and Connection Limits
+description: HTTP/gRPC request limits, chat and danmaku limits, WebSocket limits, and streaming protection.
+---
+
+## Why Rate Limits Matter
+
+Rate limits protect SyncTV from both attacks and accidental client loops:
+
+- Password guessing on login endpoints.
+- Buggy clients retrying every second.
+- Users spamming chat or danmaku.
+- HLS/FLV/proxy requests overloading upstream providers or the SyncTV node.
+
+## `connection_limits`
+
+These fields control long-lived and WebSocket-style connections.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `connection_limits.max_per_user` | `5` | Maximum concurrent connections per user |
+| `connection_limits.max_per_room` | `200` | Maximum concurrent connections per room |
+| `connection_limits.max_total` | `10000` | Maximum concurrent connections globally |
+| `connection_limits.idle_timeout_seconds` | `300` | Disconnect idle connections |
+| `connection_limits.max_duration_seconds` | `86400` | Maximum connection lifetime |
+| `connection_limits.ws_message_rate_limit_per_second` | `50` | Per-connection WebSocket message rate |
+
+When sizing these values, consider CPU, memory, file descriptor limits, reverse proxy limits, and Kubernetes resource limits.
+
+## `messaging_rate_limits`
+
+Business-layer chat and danmaku limits:
+
+```yaml
+messaging_rate_limits:
+  chat_per_second: 10
+  danmaku_per_second: 3
+  window_seconds: 1
+```
+
+Danmaku defaults are stricter because it can produce more UI and network pressure.
+
+## HTTP Rate Limits
+
+HTTP limits are grouped by endpoint class:
+
+```yaml
+http_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  streaming_max_requests: 200
+  streaming_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
+```
+
+Each group uses:
+
+- `*_max_requests`: maximum allowed requests in one window.
+- `*_window_seconds`: window length in seconds.
+
+Categories:
+
+| Category | Purpose |
+| --- | --- |
+| `auth` | Login, registration, refresh, and other auth endpoints |
+| `write` | Create, update, delete operations |
+| `read` | List, detail, and status queries |
+| `media` | Add, remove, parse, and batch media operations |
+| `admin` | Administrative endpoints |
+| `streaming` | HLS, FLV, media proxy, and similar streaming HTTP paths |
+| `websocket` | WebSocket connection attempts |
+
+Auth limits should remain strict on public deployments. Streaming limits are higher because HLS playback can generate many playlist and segment requests.
+
+## gRPC Rate Limits
+
+gRPC has separate limits because gRPC clients are often SDKs or automated clients.
+
+```yaml
+grpc_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  email_max_requests: 5
+  email_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+```
+
+| Category | Purpose |
+| --- | --- |
+| `auth` | Login, Register, RefreshToken |
+| `email` | Verification codes, password reset, email MFA |
+| `media` | AddMedia, RemoveMedia, BatchAdd |
+| `write` | CreateRoom, UpdateRoom, JoinRoom, SendChat |
+| `admin` | Administrative RPCs |
+| `read` | GetRoom, ListRooms, GetUser, GetPlaylist |
+
+Email limits should stay strict because email endpoints can create real delivery cost and are easy to abuse.
+
+## Redis and Multi-Replica Behavior
+
+Without Redis, rate limit state is stored in process memory.
+
+For multi-replica deployments, Redis is required for meaningful global limits. Otherwise each replica counts separately. With three replicas and an auth limit of 5 per minute, a client could effectively get 15 attempts per minute if requests are distributed across all replicas.
+
+Guidance:
+
+- Local single-node testing: Redis optional.
+- Production single-node: Redis recommended.
+- Multi-replica: Redis required.

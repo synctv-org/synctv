@@ -1,0 +1,159 @@
+---
+title: Metrics Monitoring
+description: Prometheus metrics listener, TLS, static authentication, and Kubernetes TokenReview authentication.
+---
+
+## What Metrics Are
+
+`metrics` config controls the Prometheus-compatible `/metrics` endpoint. It is not a client API. It is intended for Prometheus, VictoriaMetrics, Grafana Agent, OpenTelemetry Collector, or similar systems.
+
+Metrics are disabled by default:
+
+```yaml
+metrics:
+  enabled: false
+```
+
+Production deployments should enable metrics but avoid exposing them publicly.
+
+## Common Examples
+
+Bearer token:
+
+```yaml
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+Basic auth:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "basic"
+    basic_username: "prometheus"
+    basic_password_file: "/run/secrets/metrics_basic_password"
+```
+
+Kubernetes TokenReview and SubjectAccessReview:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "kubernetes"
+    kubernetes:
+      audience: "synctv-metrics"
+      authentication_cache_ttl_seconds: 60
+      authorization_cache_ttl_seconds: 60
+```
+
+## Listener Fields
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `metrics.enabled` | `false` | Start a dedicated metrics listener |
+| `metrics.host` | `0.0.0.0` | Listen address |
+| `metrics.port` | `9090` | Listen port |
+
+Common host values:
+
+| Value | Meaning |
+| --- | --- |
+| `0.0.0.0` | Listen on all IPv4 interfaces; common in containers |
+| `127.0.0.1` | Localhost only; useful with a local agent |
+| `::` | Listen on all IPv6 interfaces |
+
+The metrics port is separate from the main `server.port`.
+
+## TLS
+
+`metrics.tls.enabled` default: `false`.
+
+Kubernetes-internal scraping usually leaves this off and relies on NetworkPolicy, service account auth, and cluster networking. For cross-network scraping, enable TLS or terminate TLS at a reverse proxy.
+
+```yaml
+metrics:
+  tls:
+    enabled: true
+    cert_path: "/etc/synctv/metrics/tls.crt"
+    key_path: "/etc/synctv/metrics/tls.key"
+```
+
+`metrics.tls.cert_path` and `metrics.tls.key_path` are input files. Relative paths are not rebased through `data_dir`.
+
+## Authentication Modes
+
+| Mode | Meaning | Best fit |
+| --- | --- | --- |
+| `bearer_token` | Static bearer token | Compose, single-node, simple Prometheus |
+| `basic` | HTTP Basic Auth | Legacy scraping systems |
+| `kubernetes` | TokenReview and SubjectAccessReview | Kubernetes-native deployments |
+
+### Bearer Token
+
+When `metrics.auth.mode=bearer_token`, scrapers must send:
+
+```http
+Authorization: Bearer <token>
+```
+
+Use a file:
+
+```yaml
+metrics:
+  auth:
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+Generate:
+
+```bash
+openssl rand -base64 32
+```
+
+### Basic Auth
+
+```yaml
+metrics:
+  auth:
+    mode: "basic"
+    basic_username: "prometheus"
+    basic_password_file: "/run/secrets/metrics_basic_password"
+```
+
+### Kubernetes Auth
+
+`metrics.auth.kubernetes.audience` is passed to TokenReview. Use a stable audience such as `synctv-metrics` when your Prometheus setup supports projected service account token audiences.
+
+`authentication_cache_ttl_seconds` and `authorization_cache_ttl_seconds` default to `60`. Higher values reduce API Server load but make permission changes take longer to apply.
+
+## Helm Integration
+
+Prometheus Operator:
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: bearer_token
+  serviceMonitor:
+    enabled: true
+```
+
+VictoriaMetrics:
+
+```yaml
+metrics:
+  enabled: true
+  vmServiceScrape:
+    enabled: true
+```
+
+The Helm chart exposes HTTP and gRPC through separate Services. Metrics scraping should target the API/metrics Service, not the gRPC Service.

@@ -402,4 +402,4 @@ You can then scrape through either Prometheus Operator (`ServiceMonitor`) or Vic
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT. See the repository [LICENSE](../../LICENSE) file for details.

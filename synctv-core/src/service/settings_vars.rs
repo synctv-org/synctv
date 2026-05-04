@@ -65,7 +65,7 @@ pub trait SettingProvider: Send + Sync {
 /// # Example
 ///
 /// ```text
-/// let signup_enabled = setting!(bool, "server.signup_enabled", storage, true);
+/// let enable_password_signup = setting!(bool, "user.enable_password_signup", storage, false);
 /// let max_rooms = setting!(i64, "server.max_rooms", storage, 10);
 /// let max_rooms_with_validator = setting!(i64, "server.max_rooms", storage, 10, |v| {
 ///     if *v > 0 && *v <= 1000 {
@@ -329,7 +329,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `key` - Setting key in format "group.name" (e.g., "`server.signup_enabled`")
+    /// * `key` - Setting key in format "group.name" (e.g., "`user.enable_password_signup`")
     /// * `storage` - Shared settings storage
     /// * `default_value` - Default value if setting doesn't exist
     pub fn new(key: &'static str, storage: Arc<SettingsStorage>, default_value: T) -> Self {

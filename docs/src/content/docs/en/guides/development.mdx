@@ -1,0 +1,284 @@
+---
+title: Development Guide
+description: Local dependencies, database services, migrations, tests, OpenAPI, SQLx offline metadata, and docs commands.
+---
+
+import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+SyncTV is a Rust workspace. Local development usually needs:
+
+- Rust stable toolchain.
+- PostgreSQL.
+- Redis.
+- Node.js and npm for the `docs/` site.
+- Docker and Docker Compose for quickly starting dependencies.
+- Protobuf/gRPC build dependencies depending on platform and crate build requirements.
+
+Check versions:
+
+```bash
+rustc --version
+cargo --version
+docker --version
+docker compose version
+node --version
+npm --version
+```
+
+## Repository Layout
+
+<FileTree>
+
+- synctv application binary and CLI
+- synctv-core business logic, configuration, services, repositories
+- synctv-api HTTP/gRPC API
+- synctv-livestream RTMP/HLS/HTTP-FLV
+- synctv-cluster cluster coordination
+- synctv-proxy media proxy and slice cache
+- synctv-proto protobuf definitions
+- helm
+  - synctv Helm chart
+- docs Astro Starlight documentation site
+
+</FileTree>
+
+## Start Development Dependencies
+
+Start PostgreSQL and Redis:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d postgres redis
+```
+
+Start the whole development stack:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Development Compose builds from the local Dockerfile and includes development secrets. It is not for production.
+
+## Run Locally
+
+<Steps>
+1. Start dependencies:
+
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d postgres redis
+   ```
+
+2. Validate configuration:
+
+   ```bash
+   cargo run -p synctv --bin synctv -- config validate
+   ```
+
+3. Start the service:
+
+   ```bash
+   cargo run -p synctv --bin synctv -- serve
+   ```
+</Steps>
+
+With a config file:
+
+```bash
+cargo run -p synctv --bin synctv -- serve --config synctv.yaml
+```
+
+Dry-run startup:
+
+```bash
+cargo run -p synctv --bin synctv -- serve --config synctv.yaml --dry-run
+```
+
+## Configuration Validation
+
+After changing configuration structures:
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+```
+
+Inspect effective config with secrets redacted:
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml show
+cargo run -p synctv --bin synctv -- config --config synctv.yaml show --output json
+```
+
+See [How Configuration Works](../../configuration/how-configuration-works/) for precedence and environment variable naming.
+
+## Database Migrations
+
+Service startup runs embedded SQLx migrations automatically. To preflight database state without starting the service, run:
+
+```bash
+cargo run -p synctv --bin synctv -- db migrate
+```
+
+Check database and migration state:
+
+```bash
+cargo run -p synctv --bin synctv -- db status
+```
+
+If database state looks wrong, check:
+
+- `SYNCTV_DATABASE_URL` or `database.url`.
+- PostgreSQL container health.
+- Migration files.
+- Whether the current branch changed schema or SQL queries.
+
+## Tests and Checks
+
+Whole workspace:
+
+```bash
+cargo test --workspace --all-targets
+```
+
+One crate:
+
+```bash
+cargo test -p synctv-api
+```
+
+One test:
+
+```bash
+cargo test -p synctv-api test_name
+```
+
+Format:
+
+```bash
+cargo fmt --all --check
+```
+
+Clippy:
+
+```bash
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+Run focused tests first for the area you changed, then broader checks.
+
+## SQLx Offline Metadata
+
+SQLx macros validate SQL at compile time and use `.sqlx/` metadata for offline builds. Refresh metadata after changing SQL, migrations, or query return types.
+
+<Aside type="tip">
+CI can build with `SQLX_OFFLINE=true` without connecting to a database if `.sqlx/` metadata is current.
+</Aside>
+
+Refresh flow:
+
+```bash
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d postgres redis
+
+SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
+SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
+SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
+cargo run -p synctv --bin synctv -- db migrate
+
+DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
+cargo sqlx prepare --workspace
+
+SQLX_OFFLINE=true cargo check --workspace --all-targets
+```
+
+## OpenAPI Feature
+
+Built-in OpenAPI docs require the `openapi` feature.
+
+Check:
+
+```bash
+cargo check --workspace --all-targets --features openapi
+```
+
+Run with Swagger UI:
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve
+```
+
+See [OpenAPI Access](../../reference/openapi/) for URLs.
+
+## Documentation Site
+
+The docs site is an Astro Starlight project under `docs/`.
+
+Install dependencies:
+
+```bash
+cd docs
+npm install
+```
+
+Local preview:
+
+```bash
+cd docs
+npm run dev
+```
+
+Build:
+
+```bash
+cd docs
+npm run build
+```
+
+Validate:
+
+```bash
+cd docs
+npm run validate
+```
+
+If deploying under a subpath, set `SYNCTV_DOCS_BASE`. Set `SYNCTV_DOCS_SITE` for canonical URLs and sitemap output.
+
+```bash
+cd docs
+SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
+```
+
+`SYNCTV_DOCS_BASE` is only the path prefix, such as `/synctv` or `/docs`. Build output is `docs/dist` and should not be committed.
+
+## When Changing CLI
+
+CLI definitions live in `synctv/src/cli.rs`. After changing commands or arguments, check:
+
+```bash
+cargo run -p synctv --bin synctv -- --help
+cargo run -p synctv --bin synctv -- user --help
+cargo run -p synctv --bin synctv -- provider --help
+```
+
+Update [CLI Reference](../../reference/cli/) for new commands.
+
+## When Changing Helm or Compose
+
+Helm:
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+helm template synctv ./helm/synctv --set ingress.grpc.enabled=true
+```
+
+Compose:
+
+```bash
+docker compose -f docker-compose.dev.yml config
+docker compose config
+```
+
+Rendering only proves syntax and templates are valid. Still run SyncTV config validation or an actual startup check.

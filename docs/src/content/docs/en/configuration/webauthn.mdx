@@ -1,0 +1,121 @@
+---
+title: WebAuthn and Passkeys
+description: Passkey login, WebAuthn RP ID, origins, secure domains, and cluster dependencies.
+---
+
+## What WebAuthn Is
+
+WebAuthn is the standard behind passkeys, security keys, and platform biometric unlock flows. SyncTV uses the configuration section name `webauthn`; product UI may call the feature passkeys.
+
+## Production Requirements
+
+Before enabling WebAuthn in production:
+
+- Use HTTPS.
+- Use a stable domain.
+- Configure `rp_id` and `rp_origin` correctly.
+- Use Redis in multi-replica deployments so challenge state is shared.
+
+## `webauthn.enabled`
+
+Default:
+
+```yaml
+webauthn:
+  enabled: false
+```
+
+When enabled, passkey registration and login endpoints become available.
+
+## `webauthn.rp_id`
+
+Relying Party ID. This is the site identity seen by authenticators.
+
+Usually this is the main domain without scheme, port, or path:
+
+```yaml
+webauthn:
+  rp_id: "example.com"
+```
+
+If the frontend is `https://app.example.com`, valid choices may include `example.com` or `app.example.com` depending on your product domain model.
+
+Do not use:
+
+- `https://example.com`
+- `example.com/login`
+- `localhost:8080`
+
+## `webauthn.rp_origin`
+
+The exact frontend origin users access:
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+```
+
+Origins include scheme, host, and optional port only. They do not include paths, query strings, or fragments.
+
+## `webauthn.rp_name`
+
+Display name shown by the authenticator or operating system passkey UI.
+
+Default:
+
+```yaml
+webauthn:
+  rp_name: "SyncTV"
+```
+
+## `webauthn.allowed_origins`
+
+Additional allowed origins:
+
+```yaml
+webauthn:
+  rp_origin: "https://app.example.com"
+  allowed_origins:
+    - "https://admin.example.com"
+```
+
+Keep this list minimal.
+
+## `webauthn.allow_subdomains`
+
+Default: `false`.
+
+Allows subdomains of configured domains. Most deployments should keep this disabled.
+
+## `webauthn.allow_any_port`
+
+Default: `false`.
+
+Ignores origin port during validation. Use only for local development where frontend dev server ports change.
+
+Do not enable it in production.
+
+## `webauthn.timeout_seconds`
+
+Default: `300`.
+
+How long passkey registration or login challenges remain valid.
+
+## Relationship With 2FA
+
+Passkeys can be one local verification method. To enable user-level 2FA, a user must have at least two local verification methods, commonly:
+
+- password + email
+- password + webauthn
+- email + webauthn
+
+OAuth2 does not participate in local 2FA.
+
+## Redis Dependency
+
+WebAuthn challenges are single-use. In multi-replica deployments, challenge state must be shared across Pods.
+
+Guidance:
+
+- Single-node: Redis optional.
+- Multi-replica or `cluster.enabled=true`: Redis required.

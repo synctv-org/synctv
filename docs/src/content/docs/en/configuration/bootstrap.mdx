@@ -1,0 +1,122 @@
+---
+title: Bootstrap Root User
+description: bootstrap controls first-start root user creation.
+---
+
+## Scope
+
+`bootstrap` controls initialization behavior at startup. It is currently used to create the initial root user automatically.
+
+This configuration should be used for first deployment or unattended initialization. After initialization, production deployments should disable `bootstrap.create_root_user` to avoid confusion from stale or accidentally changed root password settings.
+
+## Complete Example
+
+```yaml
+bootstrap:
+  create_root_user: true
+  root_username: "root"
+  root_email: "admin@example.com"
+  root_password_file: "/run/secrets/root_password"
+```
+
+## `bootstrap.create_root_user`
+
+Type: boolean.
+
+Default: `false`.
+
+Purpose: checks at startup whether the initial root user should be created.
+
+Enable it when:
+
+- This is the first deployment and an administrator must be created automatically.
+- Docker Compose or Helm production deployment needs unattended initialization.
+- Tests or prepared environments need a fixed initialization flow.
+
+Disable it when:
+
+- Initialization is already complete.
+- Root user creation is handled by a separate management process.
+- The environment does not need a root user.
+
+## `bootstrap.root_username`
+
+Type: string.
+
+Default: `root`.
+
+Purpose: username for the initial root user.
+
+Example:
+
+```yaml
+bootstrap:
+  root_username: "admin"
+```
+
+The username is not a secret, but it can appear in audit records, admin UI, and log context. Avoid personal real names.
+
+## `bootstrap.root_email`
+
+Type: string.
+
+Default: empty string.
+
+Purpose: email address for the initial root user.
+
+Example:
+
+```yaml
+bootstrap:
+  root_email: "admin@example.com"
+```
+
+Set it when:
+
+- Email verification, password recovery, or email 2FA is enabled.
+- The root account should receive system emails.
+- Your operational process requires administrator accounts to have traceable emails.
+
+If SMTP is not configured yet, leave it empty and add it later in the user profile.
+
+## `bootstrap.root_password`
+
+Type: secret string.
+
+Default: empty string.
+
+Purpose: password for the initial root user.
+
+Use a strong password in production, preferably injected from a file or secret:
+
+```bash
+SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE=/run/secrets/root_password
+```
+
+Generate at least a 16-character random password with a password manager.
+
+Do not use:
+
+- `admin`
+- `password`
+- `root`
+- Project or domain names
+- Fixed values from documentation examples
+
+## Environment Variables
+
+| Environment variable | Configuration field |
+| --- | --- |
+| `SYNCTV_BOOTSTRAP_CREATE_ROOT_USER` | `bootstrap.create_root_user` |
+| `SYNCTV_BOOTSTRAP_ROOT_USERNAME` | `bootstrap.root_username` |
+| `SYNCTV_BOOTSTRAP_ROOT_EMAIL` | `bootstrap.root_email` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE` | `bootstrap.root_password` file |
+
+## Related Pages
+
+- [How Configuration Works](../how-configuration-works/)
+- [Security and Secrets](../security/)
+- [Production Checklist](../../deployment/production-checklist/)
+- [Docker Compose Deployment](../../deployment/docker-compose/)
+- [Helm Deployment](../../deployment/helm/)

@@ -1,0 +1,79 @@
+---
+title: gRPC Debugging
+description: Debug SyncTV gRPC APIs with reflection or checked-in protobuf definitions.
+---
+
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## gRPC Entry Point
+
+SyncTV public gRPC and HTTP REST share `server.port`, default `8080`.
+
+`server.enable_reflection=true` by default, so development environments can explore services with `grpcurl`. Production should usually disable reflection and use checked-in protobuf files.
+
+<Aside type="caution">
+gRPC reflection exposes service and message structure. It is useful for development, internal debugging, and staging, but should not be left enabled on public production endpoints.
+</Aside>
+
+## Use `grpcurl`
+
+<Tabs>
+  <TabItem label="Reflection" icon="magnifier">
+
+Start with reflection:
+
+```bash
+SYNCTV_SERVER_ENABLE_REFLECTION=true \
+cargo run -p synctv --bin synctv -- serve
+```
+
+List services:
+
+```bash
+grpcurl -plaintext localhost:8080 list
+grpcurl -plaintext localhost:8080 list synctv.client.ClientService
+```
+
+  </TabItem>
+  <TabItem label="Protobuf Files" icon="document">
+
+Use repository protobuf files without reflection:
+
+```bash
+grpcurl -plaintext \
+  -import-path synctv-proto/proto \
+  -proto client.proto \
+  localhost:8080 \
+  synctv.client.ClientService/Login
+```
+
+  </TabItem>
+</Tabs>
+
+## Register Example
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "email": "alice@example.com",
+  "password": "securepassword123"
+}' localhost:8080 synctv.client.ClientService/Register
+```
+
+## Login Example
+
+```bash
+grpcurl -plaintext -d '{
+  "username": "alice",
+  "password": "securepassword123"
+}' localhost:8080 synctv.client.ClientService/Login
+```
+
+## Relationship With OpenAPI
+
+OpenAPI documents HTTP APIs only. gRPC debugging uses reflection or protobuf files. See [OpenAPI Access](../openapi/) for Swagger UI and OpenAPI JSON.
+
+## Next Pages
+
+- [Client Integration Guide](../../guides/client-integration/)
+- [OpenAPI Access](../openapi/)

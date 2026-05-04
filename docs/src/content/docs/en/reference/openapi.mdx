@@ -1,0 +1,97 @@
+---
+title: OpenAPI Access
+description: How to enable, access, and export the built-in OpenAPI JSON and Swagger UI.
+---
+
+## What This Page Answers
+
+SyncTV includes built-in OpenAPI documentation, but it is only available when the binary is built with the `openapi` feature.
+
+Use this page to find where Swagger UI and the OpenAPI JSON are served. It does not claim that every endpoint is complete or stable.
+
+## Enable OpenAPI
+
+Run locally with OpenAPI:
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve
+```
+
+With an explicit config file:
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
+```
+
+Build check:
+
+```bash
+cargo check --workspace --all-targets --features openapi
+```
+
+## Swagger UI
+
+After startup:
+
+```text
+http://localhost:8080/swagger-ui/
+```
+
+If `server.port` is changed, replace `8080`.
+
+Production example:
+
+```text
+https://api.example.com/swagger-ui/
+```
+
+## OpenAPI JSON
+
+JSON document:
+
+```text
+http://localhost:8080/api-docs/openapi.json
+```
+
+Export:
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+Authenticated business APIs use Bearer Token security in the OpenAPI document. Public APIs are marked accordingly.
+
+## Generate Clients
+
+TypeScript types:
+
+```bash
+npx openapi-typescript http://localhost:8080/api-docs/openapi.json -o synctv-api.d.ts
+```
+
+OpenAPI Generator:
+
+```bash
+openapi-generator-cli generate \
+  -i http://localhost:8080/api-docs/openapi.json \
+  -g typescript-fetch \
+  -o ./generated/synctv-client
+```
+
+Other compatible tools include orval and Kiota.
+
+## Deployment Notes
+
+If production should expose Swagger UI:
+
+- Build the binary with the `openapi` feature.
+- Allow `/swagger-ui/` through the reverse proxy.
+- Allow `/api-docs/openapi.json` through the reverse proxy.
+- Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.
+
+If you do not want to expose API structure in production, build without the `openapi` feature and enable it only in development or staging.
+
+## Next Pages
+
+- [Client Integration Guide](../../guides/client-integration/)
+- [gRPC Debugging](../grpc/)

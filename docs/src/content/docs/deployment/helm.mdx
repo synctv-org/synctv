@@ -1,0 +1,211 @@
+---
+title: Helm 部署
+description: Kubernetes Helm chart 配置、HTTP/gRPC Service、Ingress、Secret、metrics 和 KubeBlocks。
+---
+
+## Chart 结构
+
+Helm chart 位于：
+
+```text
+helm/synctv
+```
+
+默认会创建：
+
+- SyncTV Deployment。
+- HTTP/API Service。
+- gRPC Service。
+- PostgreSQL。
+- Redis。
+- ConfigMap。
+- Secret。
+- Ingress。
+- 可选 metrics、ServiceMonitor、VMServiceScrape、NetworkPolicy、HPA、PDB。
+
+## 安装
+
+```bash
+helm install synctv ./helm/synctv \
+  --namespace synctv \
+  --create-namespace
+```
+
+生产环境建议使用自己的 values 文件：
+
+```bash
+helm install synctv ./helm/synctv \
+  --namespace synctv \
+  --create-namespace \
+  --values my-values.yaml
+```
+
+## HTTP 和 gRPC Service
+
+SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm chart 会创建两个独立 Service：
+
+| Service | 用途 | 端口名 |
+| --- | --- | --- |
+| `synctv` | HTTP/REST，同时包含 RTMP、STUN、metrics 等端口 | `api` |
+| `synctv-grpc` | gRPC 专用入口 | `grpc` |
+
+为什么拆开：
+
+- Ingress controller 通常需要对 gRPC backend 使用独立协议配置。
+- HTTP 和 gRPC 虽然同端口，但 Kubernetes Service/Ingress 层需要不同语义。
+- metrics selector 也能只匹配 HTTP/API Service，避免误抓 gRPC Service。
+
+## Ingress
+
+默认 HTTP Ingress 使用：
+
+```yaml
+ingress:
+  enabled: true
+  hosts:
+    - host: synctv.example.com
+```
+
+gRPC Ingress 独立配置：
+
+```yaml
+ingress:
+  grpc:
+    enabled: true
+    hosts:
+      - host: grpc.synctv.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```
+
+注意：gRPC annotations 是独立的 `ingress.grpc.annotations`，不会复用 HTTP Ingress annotations。
+
+## Secret
+
+Chart 默认会生成并保存 Secret。生产环境建议显式配置：
+
+```yaml
+secrets:
+  jwt:
+    secret: "replace-with-strong-secret"
+  cluster:
+    grpcSecret: "replace-with-cluster-secret"
+  security:
+    credentialEncryptionKey: "64-hex-character-key"
+    opaqueServerSetupSecret: "stable-random-secret"
+  bootstrap:
+    rootPassword: "StrongRootPass12345"
+```
+
+如果使用外部 Secret：
+
+```yaml
+existingSecret: "my-external-synctv-secret"
+```
+
+需要提供这些 key：
+
+- `SYNCTV_DATABASE_PASSWORD`
+- `SYNCTV_REDIS_PASSWORD`
+- `SYNCTV_JWT_SECRET`
+- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
+- `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- `SYNCTV_MANAGEMENT_AUTH_TOKEN`，如果 management 使用 TCP。
+
+## PostgreSQL 和 Redis 模式
+
+### standard
+
+默认模式。Chart 自己创建 StatefulSet/Service。
+
+```yaml
+postgresql:
+  mode: standard
+
+redis:
+  mode: standard
+```
+
+### kubeblocks
+
+如果集群安装了 KubeBlocks，可以让 chart 创建 KubeBlocks Cluster。
+
+```yaml
+postgresql:
+  mode: kubeblocks
+
+redis:
+  mode: kubeblocks
+```
+
+KubeBlocks 模式下，数据库账号密码来自 KubeBlocks 生成的 Secret。
+
+## `config.dataDir`
+
+Helm 默认：
+
+```yaml
+config:
+  dataDir: "/data"
+```
+
+Deployment 会挂载 `/data`。当前默认是 `emptyDir`，适合运行时临时文件。如果你需要持久化 HLS 或 slice cache，应该改成 PVC 或共享存储。
+
+## HLS 多副本注意事项
+
+如果 `replicaCount > 1` 或启用 HPA，并且使用 HLS，必须确认：
+
+```yaml
+config:
+  livestream:
+    hlsSharedStorage: true
+    hlsStoragePath: "/var/lib/synctv/hls"
+```
+
+并把该路径挂载为所有副本共享的存储。
+
+## Metrics
+
+开启 metrics：
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: bearer_token
+```
+
+ServiceMonitor：
+
+```yaml
+metrics:
+  serviceMonitor:
+    enabled: true
+```
+
+VMServiceScrape：
+
+```yaml
+metrics:
+  vmServiceScrape:
+    enabled: true
+```
+
+metrics Service selector 会只匹配 `app.kubernetes.io/component: api` 的 Service，避免抓到 gRPC Service。
+
+## 验证渲染
+
+临时检查：
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+helm template synctv ./helm/synctv --set ingress.grpc.enabled=true
+```
+
+如果模板能渲染，不代表业务配置一定安全。还要在实际容器中运行配置校验或检查启动日志。

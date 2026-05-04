@@ -18,8 +18,6 @@ pub mod groups {
 
 /// Server settings key constants
 pub mod server {
-    pub const ALLOW_REGISTRATION: &str = "allow_registration";
-    pub const SIGNUP_ENABLED: &str = "signup_enabled";
     pub const ALLOW_ROOM_CREATION: &str = "allow_room_creation";
     pub const MAX_ROOMS_PER_USER: &str = "max_rooms_per_user";
     pub const MAX_MEMBERS_PER_ROOM: &str = "max_members_per_room";
@@ -131,7 +129,6 @@ pub enum SettingsError {
 #[must_use]
 pub fn default_server_settings() -> JsonValue {
     serde_json::json!({
-        "allow_registration": true,
         "allow_room_creation": true,
         "max_rooms_per_user": 10,
         "max_members_per_room": 100,
@@ -319,8 +316,6 @@ mod tests {
 
     #[test]
     fn test_server_key_constants() {
-        assert_eq!(server::ALLOW_REGISTRATION, "allow_registration");
-        assert_eq!(server::SIGNUP_ENABLED, "signup_enabled");
         assert_eq!(server::ALLOW_ROOM_CREATION, "allow_room_creation");
     }
 }

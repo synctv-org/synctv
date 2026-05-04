@@ -1,0 +1,179 @@
+---
+title: 快速开始
+description: 用最少步骤启动 SyncTV，并理解启动前必须准备的配置。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 你需要准备什么？
+
+本地开发或单机部署建议使用 Docker Compose。它会启动：
+
+- `postgres`：SyncTV 的主数据库。
+- `redis`：缓存、限流、OAuth2 state、集群协调等共享状态。
+- `synctv`：主服务进程，HTTP、gRPC、RTMP、STUN 都在同一个二进制里。
+
+生产环境至少需要准备四类 secret：
+
+| 名称 | 用途 | 推荐生成方式 |
+| --- | --- | --- |
+| `SYNCTV_JWT_SECRET` | 签发访问 token 和刷新 token | `openssl rand -base64 32` |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | OPAQUE 密码认证的稳定服务端 secret | `openssl rand -base64 48` |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据，必须是 64 位十六进制 | `openssl rand -hex 32` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 第一次启动时创建 root 用户的密码 | 使用密码管理器生成强密码 |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 不是一次性启动密码。它们必须长期稳定保存，不能每次部署重新生成。
+</Aside>
+
+## 选择启动方式
+
+<Tabs syncKey="deploy-mode">
+  <TabItem label="开发 Compose" icon="rocket">
+
+<Steps>
+
+1. 启动开发 Compose：
+
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d
+   ```
+
+2. 查看服务状态：
+
+   ```bash
+   docker compose -f docker-compose.dev.yml ps
+   docker compose -f docker-compose.dev.yml logs -f synctv
+   ```
+
+3. 进入容器执行管理命令：
+
+   ```bash
+   docker compose -f docker-compose.dev.yml exec synctv synctv system stats
+   ```
+
+</Steps>
+
+  </TabItem>
+  <TabItem label="生产 Compose" icon="seti:docker">
+
+<Steps>
+
+1. 准备生产 secret：
+
+   ```bash
+   export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+   export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+   export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+   export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="请换成强密码"
+   ```
+
+2. 启动服务：
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. 检查健康状态：
+
+   ```bash
+   docker compose ps
+   docker compose logs -f synctv
+   ```
+
+</Steps>
+
+  </TabItem>
+  <TabItem label="本机运行" icon="laptop">
+
+<Steps>
+
+1. 启动 PostgreSQL 和 Redis：
+
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d postgres redis
+   ```
+
+2. 校验配置：
+
+   ```bash
+   cargo run -p synctv --bin synctv -- config validate
+   ```
+
+3. 启动服务。服务启动阶段会自动执行 embedded SQLx migrations：
+
+   ```bash
+   cargo run -p synctv --bin synctv -- serve
+   ```
+
+</Steps>
+
+  </TabItem>
+</Tabs>
+
+## 本地开发启动
+
+如果只是本地试用：
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+开发 compose 已经内置可工作的开发 secret。不要把这些值用于生产环境。
+
+查看服务状态：
+
+```bash
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs -f synctv
+```
+
+## 生产 Compose 启动
+
+生产 compose 不会默默使用弱 secret。你需要显式设置：
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="请换成强密码"
+
+docker compose up -d
+```
+
+如果漏掉必填项，`docker compose config` 或 `docker compose up` 会直接报错。这是预期行为，目的是避免生产环境用默认弱密码启动。
+
+## 验证配置
+
+如果使用本地 `synctv.yaml`：
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+```
+
+这个命令会检查：
+
+- YAML 是否能解析。
+- JWT secret 是否足够强。
+- OPAQUE secret 是否存在且不是占位值。
+- Redis、OAuth2、WebAuthn、集群等依赖关系是否合理。
+- 端口、路径、超时、限流等数值是否在合理范围内。
+
+## 第一次登录
+
+当 `bootstrap.create_root_user=true` 时，SyncTV 会在数据库还没有 root 用户时创建一个 root 账号。
+
+默认用户名来自：
+
+```yaml
+bootstrap:
+  root_username: "root"
+```
+
+密码来自：
+
+- 配置文件里的 `bootstrap.root_password`
+- 或环境变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- 或文件变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`
+
+生产环境建议只用环境变量或 secret 文件，不要把 root 密码写进公开仓库。

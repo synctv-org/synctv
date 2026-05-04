@@ -2274,7 +2274,6 @@ message RoomWithStats {
 message GetPublicSettingsRequest {}
 
 message GetPublicSettingsResponse {
-    bool signup_enabled = 1;
     bool allow_room_creation = 2;
     int64 max_rooms_per_user = 3;
     int64 max_members_per_room = 4;
@@ -2286,9 +2285,15 @@ message GetPublicSettingsResponse {
     bool room_must_need_pwd = 8;
 
     // User settings
-    bool signup_need_review = 9;
     bool enable_password_signup = 10;
+    bool password_signup_need_review = 16;
+    bool enable_email_signup = 17;
     bool enable_guest = 18;
+    bool email_signup_need_review = 19;
+    bool enable_oauth2_signup = 20;
+    bool oauth2_signup_need_review = 21;
+    bool enable_webauthn_signup = 22;
+    bool webauthn_signup_need_review = 23;
 
     // Proxy settings
     bool movie_proxy = 11;

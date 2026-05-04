@@ -1,0 +1,119 @@
+---
+title: 认证与安全模型
+description: SyncTV 的登录方式、2FA 语义、token 上下文、管理权限和安全边界。
+---
+
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
+## 安全边界
+
+SyncTV 把安全边界拆成几层：
+
+- **用户认证**：密码、OPAQUE、WebAuthn/passkey、邮箱验证码和 OAuth2。
+- **用户 2FA**：用户可选开启，必须拥有至少两种本地验证方式。
+- **访问 token**：登录完成后签发，用于 HTTP/gRPC 业务 API。
+- **management 控制面**：CLI 使用的管理端点，独立于普通用户 token。
+- **Provider 上游访问**：Provider 自己决定上游 header 和凭据，不由 proxy 猜测客户端 header。
+- **集群内部认证**：节点间 gRPC 使用 `server.cluster_secret`。
+
+## 登录方式与 2FA
+
+| 登录方式 | 可作为第一因素 | 可作为第二因素 | 说明 |
+| --- | --- | --- | --- |
+| 密码/OPAQUE | 是 | 仅当服务端返回 `MFA_METHOD_PASSWORD` 时可用 | OPAQUE 登录不等同于 password MFA verifier |
+| WebAuthn/passkey | 是 | 是 | 需要启用 WebAuthn 配置并完成绑定 |
+| 邮箱验证码 | 是 | 是 | 依赖 SMTP 和验证码发送能力 |
+| OAuth2 | 是 | 否 | OAuth2 不参与本地 2FA，但 2FA 用户可以直接用 OAuth2 登录 |
+
+用户开启 2FA 前，系统会确认至少有两种可用的本地验证方式。开启后，使用本地单因素方式登录会进入 MFA 会话，客户端需要根据返回的剩余验证方式完成第二步。
+
+<Aside type="note">
+OAuth2 是独立登录信任来源，不作为本地 2FA 的第一步或第二步。开启 2FA 的用户仍然可以用 OAuth2 登录，OAuth2 登录签发的 token 被视为满足该登录路径的认证上下文。
+</Aside>
+
+## Token 上下文
+
+开启 2FA 后，系统不应该接受旧的单因素 refresh token 继续刷新会话。满足 2FA 或 OAuth2 登录路径后签发的 token 会带有可接受的认证上下文。
+
+实际语义：
+
+- 用户未开启 2FA：普通本地登录、MFA 后登录、OAuth2 登录签发的 token 都可按正常规则使用。
+- 用户开启 2FA：本地登录必须完成第二因素；refresh token 必须来自 MFA 后或 OAuth2 上下文。
+- 用户关闭 2FA：普通单因素和 MFA/OAuth2 上下文都可继续使用，直到 token 自身过期或被吊销。
+
+## MFA 会话
+
+本地第一因素成功后，如果需要第二因素，服务端不会直接签发最终 token，而是创建一个短期 MFA 会话。
+
+客户端需要：
+
+<Steps>
+1. 完成第一因素登录请求。
+2. 如果响应要求 MFA，读取可用的剩余验证方式。
+3. 如果剩余方式包含邮箱验证码，直接调用发送验证码接口。
+4. 使用 MFA 会话 ID 和第二因素证明完成登录。
+5. 保存最终 access/refresh token。
+</Steps>
+
+失败的 MFA password 尝试会记录到暴力破解保护中，不能绕过普通密码登录的失败计数和锁定策略。
+
+## 用户偏好与安全设置
+
+用户偏好用于用户级配置，其中 `two_factor_enabled` 是安全敏感字段。
+
+约束：
+
+- 开启 2FA 前必须有至少两种可用本地验证方式。
+- 删除绑定的验证方式时，如果 2FA 已开启，删除后仍必须保留至少两种可用方式。
+- 管理员修改用户偏好时必须遵守角色层级，普通 admin 不能越权修改 root 或同级高权限用户。
+
+## 管理控制面
+
+management gRPC 是 CLI 和运维命令使用的控制面。
+
+生产建议：
+
+- 优先使用 Unix socket。
+- 如果使用 TCP，必须设置 `management.auth_token`。
+- 不要把 management TCP 端点暴露到公网。
+- 通过文件或 secret manager 注入 token。
+- `management.enable_reflection` 生产默认关闭。
+
+management token 不是普通用户 access token。它代表运维控制面权限，应按基础设施 secret 管理。
+
+## Provider 与代理安全
+
+Provider 负责决定上游请求 header。proxy 层只执行 Provider 给出的配置。
+
+这意味着：
+
+- 原始客户端 `Range`、`Accept`、`User-Agent` 等 header 不会被 proxy 自动转发。
+- 如果上游需要 `Range`，Provider 必须显式选择。
+- 如果直连 URL 绑定了 `User-Agent`，Provider 返回给客户端的 header 应与服务端代理 header 保持一致。
+- 客户端无法设置所需 header 时，应使用代理模式。
+
+## 必读配置
+
+<CardGrid>
+  <Card title="安全与密钥" icon="approve-check-circle">
+    配置 JWT、OPAQUE、Provider 凭据加密、密码复杂度、CORS 和可信代理。
+  </Card>
+  <Card title="邮件与 OAuth2" icon="document">
+    配置邮箱验证码、SMTP、OAuth2 provider 和 redirect scheme。
+  </Card>
+  <Card title="WebAuthn" icon="puzzle">
+    配置 passkey 的 RP ID、origin、允许 origin 和 challenge 超时。
+  </Card>
+  <Card title="限流" icon="setting">
+    配置 HTTP、gRPC、聊天、弹幕、WebSocket 和认证相关限流。
+  </Card>
+</CardGrid>
+
+## 继续阅读
+
+- [客户端集成指南](../client-integration/)
+- [数据、隐私与保留策略](../../operations/data-retention/)
+- [安全与密钥](../../configuration/security/)
+- [邮件与 OAuth2](../../configuration/email-oauth2/)
+- [WebAuthn 配置](../../configuration/webauthn/)
+- [限流与连接限制](../../configuration/rate-limits/)

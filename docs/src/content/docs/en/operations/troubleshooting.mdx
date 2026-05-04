@@ -1,0 +1,217 @@
+---
+title: Troubleshooting
+description: Diagnose SyncTV startup, configuration, deployment, authentication, proxy, livestream, and cluster issues by symptom.
+---
+
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Classify the Problem First
+
+Do not start by reading every configuration field. Classify the failure, then jump to the matching page.
+
+<CardGrid>
+  <Card title="Process Does Not Start" icon="rocket">
+    Check validation errors, required secrets, database connectivity, Redis dependencies, and port conflicts.
+  </Card>
+  <Card title="Service Starts but Access Fails" icon="setting">
+    Check reverse proxy behavior, CORS, trusted proxies, Ingress, HTTP/gRPC protocol handling, and port mappings.
+  </Card>
+  <Card title="Login or Account Issues" icon="approve-check-circle">
+    Check SMTP, OAuth2 redirects, WebAuthn origins, MFA factors, and rate limits.
+  </Card>
+  <Card title="Media Playback Issues" icon="puzzle">
+    Check provider headers, Range behavior, slice cache, HLS storage, and RTMP/FLV/STUN ports.
+  </Card>
+</CardGrid>
+
+## Fast Diagnosis Path
+
+<Tabs syncKey="runtime">
+  <TabItem label="Local Binary" icon="laptop">
+
+<Steps>
+1. Inspect the effective configuration:
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml config show --output yaml
+   ```
+
+2. Validate configuration:
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml config validate
+   ```
+
+3. Start in the foreground and inspect logs:
+
+   ```bash
+   synctv --config /etc/synctv/synctv.yaml serve
+   ```
+
+4. Check the management endpoint:
+
+   ```bash
+   synctv system stats
+   ```
+</Steps>
+
+  </TabItem>
+  <TabItem label="Docker Compose" icon="seti:docker">
+
+<Steps>
+1. Inspect the rendered Compose config:
+
+   ```bash
+   docker compose config
+   ```
+
+2. Check container status and logs:
+
+   ```bash
+   docker compose ps
+   docker compose logs -f synctv
+   ```
+
+3. Run a management command inside the container:
+
+   ```bash
+   docker compose exec synctv synctv system stats
+   ```
+
+4. If production Compose reports a missing required variable, set the required secrets and run `docker compose up -d` again.
+</Steps>
+
+  </TabItem>
+  <TabItem label="Kubernetes/Helm" icon="cloud-download">
+
+<Steps>
+1. Render the chart:
+
+   ```bash
+   helm lint ./helm/synctv
+   helm template synctv ./helm/synctv --values my-values.yaml
+   ```
+
+2. Inspect Pods and events:
+
+   ```bash
+   kubectl get pods -n synctv
+   kubectl describe pod -n synctv -l app.kubernetes.io/name=synctv
+   kubectl logs -n synctv deploy/synctv -f
+   ```
+
+3. Check ConfigMaps and Secret keys:
+
+   ```bash
+   kubectl get configmap -n synctv
+   kubectl get secret -n synctv
+   ```
+
+4. Test the HTTP Service, gRPC Service, and Ingress separately. gRPC Ingress must use a gRPC backend protocol.
+</Steps>
+
+  </TabItem>
+</Tabs>
+
+## Common Symptoms
+
+| Symptom | Check First | Entry |
+| --- | --- | --- |
+| Startup reports JWT secret, OPAQUE secret, or credential key errors | Empty values, placeholders, wrong format, or regenerated stable secrets | [Security and Secrets](../../configuration/security/) |
+| Startup fails after `cluster.enabled=true` | Redis configuration, `server.cluster_secret`, and node reachability | [Cluster Configuration](../../configuration/cluster/) |
+| `synctv system stats` cannot connect | `management.enabled`, `management.transport`, Unix socket path, TCP token, `SYNCTV_MANAGEMENT_ENDPOINT` | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| Browser CORS requests fail | `server.cors_allowed_origins` must be origins without paths; proxy must handle OPTIONS/HEAD | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| gRPC fails through Ingress while HTTP works | Separate gRPC Service/Ingress and `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` | [Helm Deployment](../../deployment/helm/) |
+| Swagger UI or OpenAPI JSON is missing | Binary built with `openapi` feature; proxy allows `/swagger-ui/` and `/api-docs/openapi.json` | [OpenAPI Access](../../reference/openapi/) |
+| WebAuthn/passkey registration or login fails | `rp_id`, exact `rp_origin`, HTTPS, allowed origins | [WebAuthn and Passkeys](../../configuration/webauthn/) |
+| OAuth2 login has state or callback problems | `oauth2.redirect_scheme`, provider `redirect_url`, Redis in multi-replica mode, client callback URI | [Email and OAuth2](../../configuration/email-oauth2/) |
+| Email codes, password reset, or email MFA do not work | SMTP host, port, TLS, username, password, from address, email rate limits | [Email and OAuth2](../../configuration/email-oauth2/) |
+| Login, email, or admin APIs are rejected frequently | HTTP/gRPC rate limits, brute-force protection, client retry behavior | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| Provider direct mode works but proxy mode fails, or the reverse | Client-facing headers and proxy upstream headers, especially UA, Referer, and Range | [Media Providers](../../configuration/media-providers/) |
+| Range playback, seeking, or HLS byterange fails | Provider Range headers, upstream Range support, slice cache state | [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) |
+| HLS multi-replica playback returns intermittent 404 or discontinuities | `hls_shared_storage` and a storage path shared by all replicas | [Livestream Configuration](../../configuration/livestream/) |
+| RTMP push or HTTP-FLV pull fails | Exposed ports, LoadBalancer/NodePort, proxy timeouts, FLV write timeout | [Livestream Configuration](../../configuration/livestream/) |
+| STUN/WebRTC connectivity fails | `webrtc.mode`, `stun_external_addr`, UDP 3478 exposure, private candidate filtering | [WebRTC Configuration](../../configuration/webrtc/) |
+
+## Configuration Problems
+
+Use commands to inspect the effective configuration. Do not rely only on the YAML file because environment variables and CLI flags may override it.
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+If the effective config is not what you expect, check:
+
+- Whether the intended config file is loaded.
+- Whether `.env` is loaded, or whether `--no-dotenv` is used.
+- Whether environment variables override YAML values.
+- Whether `*_file` secret paths are relative to the config file directory, not `data_dir`.
+- Whether `data_dir` only affects runtime-owned output paths.
+
+See [How Configuration Works](../../configuration/how-configuration-works/) for the full model.
+
+## Deployment Problems
+
+### Docker Compose
+
+Production Compose intentionally requires explicit secrets. Do not write weak secrets into the compose file just to make the service start.
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+docker compose up -d
+```
+
+See [Docker Compose Deployment](../../deployment/docker-compose/) for details.
+
+### Helm
+
+A successful Helm render only proves that Kubernetes manifests are syntactically valid. It does not prove that the SyncTV runtime configuration is safe. Check startup logs and validation behavior.
+
+Important checks:
+
+- HTTP and gRPC use separate Services.
+- HTTP and gRPC use separate Ingresses.
+- gRPC Ingress has its own annotations.
+- ServiceMonitor or VMServiceScrape targets the intended Service.
+- Multi-replica HLS uses shared storage.
+- `existingSecret` contains all required chart keys.
+
+See [Helm Deployment](../../deployment/helm/) for details.
+
+## Authentication and Account Problems
+
+Local MFA only applies to local factors: password, WebAuthn/passkey, and verified email. OAuth2 does not participate in local MFA, but users with MFA enabled may still log in through OAuth2.
+
+If MFA-enabled users cannot log in, check:
+
+- The user still has at least two usable local verification methods.
+- SMTP is available when email is used as a second factor.
+- WebAuthn origin is correct when passkey is used as a second factor.
+- Refresh tokens come from an authentication context accepted by the current MFA policy.
+
+Related pages:
+
+- [Security and Secrets](../../configuration/security/)
+- [Email and OAuth2](../../configuration/email-oauth2/)
+- [WebAuthn and Passkeys](../../configuration/webauthn/)
+- [Rate Limits and Connection Limits](../../configuration/rate-limits/)
+
+## Information to Collect
+
+For issue reports or internal debugging, collect:
+
+- SyncTV version and deployment method.
+- Output of `synctv config show --output yaml`. Review it before sharing, even though secrets are redacted.
+- Full `synctv config validate` error.
+- Relevant Compose or Helm rendered Service, Ingress, ConfigMap, and Secret key names.
+- The first service log error, not only the final cascading error.
+- Request path, method, status code, and necessary headers. Do not share tokens, cookies, passwords, SMTP secrets, or provider credentials.
+
+<Aside type="caution">
+Never paste Secret values, JWTs, OAuth2 codes, cookies, provider tokens, SMTP passwords, or database URLs into issues, chat, or log systems.
+</Aside>

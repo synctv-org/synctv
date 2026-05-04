@@ -1,445 +1,142 @@
-# SyncTV - Rust Implementation
+# SyncTV
 
-A production-grade real-time synchronized video watching platform built in Rust.
+[简体中文](./README.zh-CN.md)
 
-## Features
+![Rust](https://img.shields.io/badge/Rust-2021-b7410e?logo=rust&logoColor=white)
+![Tokio](https://img.shields.io/badge/runtime-Tokio-2f80ed)
+![Axum](https://img.shields.io/badge/HTTP-Axum-00a8a8)
+![gRPC](https://img.shields.io/badge/API-gRPC-244c5a?logo=grpc&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/database-PostgreSQL-4169e1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/cache%20%26%20coordination-Redis-dc382d?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/deploy-Docker-2496ed?logo=docker&logoColor=white)
+![Helm](https://img.shields.io/badge/deploy-Helm-0f1689?logo=helm&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/orchestration-Kubernetes-326ce5?logo=kubernetes&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/docs-OpenAPI-6ba539?logo=openapiinitiative&logoColor=white)
+![Astro Starlight](https://img.shields.io/badge/docs-Astro%20Starlight-bc52ee?logo=astro&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-- **Real-time Synchronization**: Watch videos together with friends in perfect sync
-- **Multi-Provider Support**: Bilibili, Alist, Emby, and direct URLs
-- **Live Streaming**: RTMP push/pull with HLS and FLV support
-- **Horizontal Scalability**: Kubernetes-ready multi-replica deployment
-- **High Performance**: Built with Rust for maximum efficiency
-- **Type Safety**: Compile-time guarantees and zero-cost abstractions
+SyncTV is a Rust implementation of a real-time synchronized video watching platform with media provider integration, livestreaming, HTTP/gRPC APIs, and Kubernetes-ready horizontal scaling.
 
-## Architecture
+## Highlights
 
-- **synctv-core**: Core business logic library
-- **synctv-api**: gRPC + HTTP API service
-- **synctv-livestream**: Live streaming service (RTMP/HLS/FLV)
-- **synctv-cluster**: Cluster coordination library
-- **synctv-xiu**: Consolidated streaming library (RTMP/HLS/HTTP-FLV protocols)
+- Synchronized room playback with real-time state updates.
+- Media providers including Bilibili, Alist, Emby, Jellyfin, and direct URLs.
+- RTMP push/pull, HLS, and HTTP-FLV livestream support.
+- HTTP REST, public gRPC, WebSocket, management gRPC, metrics, RTMP, and STUN runtime surfaces.
+- PostgreSQL-backed durable storage with optional Redis shared state, cache, rate limiting, and cluster coordination.
+- Docker Compose and Helm deployment templates.
+- Built-in management CLI and optional OpenAPI/Swagger UI.
+- Astro Starlight documentation site with English and Simplified Chinese content.
 
 ## Quick Start
 
-### Prerequisites
-
-- Rust 1.75+ (2021 edition)
-- PostgreSQL 14+
-- Redis 7+
-
-### 1. Start with Docker Compose
-
-Development build from the local source tree:
+Development environment:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-This variant builds with the local [Dockerfile](./Dockerfile) and ships fixed working development defaults for JWT and cluster secrets.
-
-Prebuilt image deployment:
+Production Compose requires explicit secrets:
 
 ```bash
-export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
-export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
 export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+
 docker compose up -d
 ```
 
-This variant uses `synctvorg/synctv:0.1.0` from [docker-compose.yml](./docker-compose.yml) and keeps all current required secrets explicit.
-
-Once the daemon is up, management CLI commands can run inside the container and use the
-default Unix socket without extra flags:
+Validate configuration:
 
 ```bash
-docker compose exec synctv synctv system stats
+cargo run -p synctv --bin synctv -- config validate
 ```
 
-### 2. Manual Environment Variables
+Optional migration preflight. The server also runs embedded SQLx migrations automatically during startup:
 
 ```bash
-export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
-export SYNCTV_REDIS_URL="redis://localhost:6379"
-export SYNCTV_JWT_SECRET="your-secure-RANDOM-string-WITH-mixed-CASE-123-and-SPECIAL!@#$%"
-export SYNCTV_SERVER_CLUSTER_SECRET="your-secure-random-cluster-secret"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
-export SYNCTV_SERVER_PORT=8080
-```
-
-### 3. Validate Configuration (Optional but Recommended)
-
-```bash
-# Validate your configuration before deployment
-cargo run --bin synctv -- config validate
-
-# Validate a specific config file
-cargo run --bin synctv -- config --config /path/to/synctv.yaml validate
-```
-
-### 4. Run Database Migrations
-
-```bash
-# Run embedded migrations with the same config resolution as the server
-cargo run --bin synctv -- db migrate
-```
-
-### 5. Start the Server
-
-```bash
-# Set JWT secret (required for production, min 32 chars)
-export SYNCTV_JWT_SECRET="your-secure-random-string-at-least-32-chars"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="StrongRootPass12345"
-
-cargo run --bin synctv -- serve
-```
-
-HTTP/REST and public gRPC share a single API port, defaulting to `0.0.0.0:8080`.
-The management daemon default endpoint is platform-specific:
-- Linux / other Unix: `unix://$XDG_STATE_HOME/synctv/run/synctv.sock` when `XDG_STATE_HOME` is set, otherwise `unix://$HOME/.local/state/synctv/run/synctv.sock`
-- macOS: `unix://$HOME/.synctv/run/synctv.sock`
-- Windows: `http://127.0.0.1:50052`
-
-Runtime-owned local files can be relocated with `--data-dir`, `SYNCTV_DATA_DIR`, or
-top-level config `data_dir`.
-
-`data_dir` applies to runtime-owned local paths:
-- default management Unix socket path and relative `management.unix_socket_path`
-- relative `logging.file_path`
-- relative `livestream.hls_storage_path`
-- relative `cache.proxy_slice_file_cache_dir`
-
-`data_dir` does not rebase static input files:
-- `*_file` secret references such as `jwt.secret_file`, `management.auth_token_file`,
-  `oauth2.providers.*.client_secret_file`, or provider credential `_file` fields
-- `metrics.tls.cert_path` and `metrics.tls.key_path`
-
-Absolute paths are always used as-is. Relative `data_dir` from config files is resolved
-relative to the config file directory; `--data-dir` and `SYNCTV_DATA_DIR` are resolved
-relative to the current working directory.
-
-Secret-like settings can also be loaded from environment file variables, for example
-`SYNCTV_JWT_SECRET_FILE`, `SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE`,
-`SYNCTV_DATABASE_URL_FILE`, and `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`.
-Relative env file paths are resolved from the current working directory.
-
-PostgreSQL and Redis can be configured either by URL or by split fields. For
-PostgreSQL, use `database.url` / `SYNCTV_DATABASE_URL` or
-`database.host`, `database.port`, `database.username`, `database.password`,
-`database.name` with matching `SYNCTV_DATABASE_*` env vars. For Redis, use
-`redis.url` / `SYNCTV_REDIS_URL` or `redis.host`, `redis.port`,
-`redis.username`, `redis.password`, `redis.database` with matching
-`SYNCTV_REDIS_*` env vars. Passwords and URLs support `*_file` config keys and
-`*_FILE` env vars.
-
-On platforms without Unix Domain Socket support, `management.transport: unix` is rejected during
-configuration validation instead of silently falling back.
-
-When a Unix socket is not available, the CLI can be pointed at an explicit endpoint with
-`--endpoint` or `SYNCTV_MANAGEMENT_ENDPOINT`, and the server can be configured to listen on
-TCP at `127.0.0.1:50052`. In TCP mode the management listener is always forced to loopback;
-there is no configurable management host.
-
-### 6. Remote CLI Operations
-
-All operational CLI commands talk to a running SyncTV server. There is no offline admin mode.
-
-```bash
-# List users through the local management daemon endpoint
-cargo run --bin synctv -- user list
-
-# Inspect effective runtime settings
-cargo run --bin synctv -- settings get server
-
-# Update runtime settings through the management daemon
-cargo run --bin synctv -- settings update server \
-  --set signup_enabled=false \
-  --set max_rooms_per_user=42
-
-# Inspect cluster/system stats
-cargo run --bin synctv -- system stats
-
-# Inspect or manage remote provider instances
-cargo run --bin synctv -- provider list
-
-# List playlists inside a room
-cargo run --bin synctv -- playlist list --room-id room-123
-
-# Add a direct media URL into a room playlist
-cargo run --bin synctv -- media add-url 'https://cdn.example.com/video.mp4' \
-  --room-id room-123 \
-  --playlist-id playlist-123
-```
-
-The management daemon executes local CLI requests with built-in god-mode privileges. The compose
-files and development scripts create a bootstrap administrator automatically; for manual
-deployments, set
-`SYNCTV_BOOTSTRAP_CREATE_ROOT_USER=true` together with a strong
-`SYNCTV_BOOTSTRAP_ROOT_PASSWORD` before first startup.
-
-Remote CLI commands may load SyncTV config files to resolve the management endpoint
-and management bearer token. Explicit CLI flags still take precedence. Endpoint
-resolution is:
-1. `--endpoint`
-2. `SYNCTV_MANAGEMENT_ENDPOINT`
-3. `management.*` from `--config`, `SYNCTV_CONFIG_PATH`, or an auto-discovered config file
-4. platform default Unix socket path
-5. default TCP endpoint `http://127.0.0.1:50052`
-
-Management authentication resolution is:
-1. `--auth-token`
-2. `--auth-token-file`
-3. `SYNCTV_MANAGEMENT_AUTH_TOKEN`
-4. `SYNCTV_MANAGEMENT_AUTH_TOKEN_FILE`
-5. `management.auth_token` or `management.auth_token_file` from config
-
-When `--endpoint` or `SYNCTV_MANAGEMENT_ENDPOINT` is used, config-file auth is
-only used if a config source is explicitly selected with `--config` or
-`SYNCTV_CONFIG_PATH`. This avoids accidentally sending an auto-discovered local
-management token to an unrelated endpoint.
-
-In containerized deployments, `docker compose exec synctv synctv ...` uses the same default
-Unix socket path inside the container. Use `--endpoint` only when intentionally targeting a
-non-default TCP or Unix socket listener.
-
-## Development
-
-### Docker Compose
-
-```bash
-# Local development build with fixed working defaults
-docker compose -f docker-compose.dev.yml up -d
-
-# Prebuilt image deployment
-docker compose up -d
-```
-
-### Run Tests
-
-```bash
-cargo nextest run --workspace
-```
-
-### SQLx Offline Metadata
-
-Database queries that use SQLx macros are checked at compile time and cached in
-`.sqlx/` so CI can build without a live database. Refresh the cache after changing
-SQL, migrations, or query result types:
-
-```bash
-docker compose -f docker-compose.dev.yml down -v
-docker compose -f docker-compose.dev.yml up -d postgres redis
-
-SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
-SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
-SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
-SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
-SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
 cargo run -p synctv --bin synctv -- db migrate
-
-DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
-cargo sqlx prepare --workspace
-
-SQLX_OFFLINE=true cargo check --workspace --all-targets
 ```
 
-### Run with Logging
+Start locally:
 
 ```bash
-SYNCTV_LOGGING_LEVEL=debug cargo run --bin synctv -- serve
+cargo run -p synctv --bin synctv -- serve
 ```
 
-For advanced tracing filters, prefer setting `logging.filter` in `synctv.yaml` or exporting
-`SYNCTV_LOGGING_FILTER` only for one-off diagnostics.
+## Documentation
 
-### Build Release
+The main documentation site lives in [`docs/`](./docs). It contains detailed configuration reference, deployment guides, operations runbooks, CLI reference, development guide, and OpenAPI access instructions.
 
 ```bash
-cargo build --release --workspace
+cd docs
+npm install
+npm run dev
 ```
 
-## API
-
-### gRPC API
-
-By default, public gRPC reflection is disabled. Enable it when you want to explore the API interactively with `grpcurl`:
+Build the static docs site:
 
 ```bash
-export SYNCTV_SERVER_ENABLE_REFLECTION=true
-cargo run --bin synctv -- serve
-
-grpcurl -plaintext localhost:8080 list
-grpcurl -plaintext localhost:8080 list synctv.client.ClientService
+cd docs
+npm run build
 ```
 
-If you keep reflection disabled, use the checked-in protobuf definitions instead:
+If the generated site is deployed below a subpath, set `SYNCTV_DOCS_BASE` at build time. Set `SYNCTV_DOCS_SITE` to the public origin used for canonical URLs and sitemaps.
 
 ```bash
-grpcurl -plaintext \
-  -import-path synctv-proto/proto \
-  -proto client.proto \
-  localhost:8080 \
-  synctv.client.ClientService/Login
+cd docs
+SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 ```
 
-### Example: Register User
+Important entry points:
 
-```bash
-grpcurl -plaintext -d '{
-  "username": "alice",
-  "email": "alice@example.com",
-  "password": "securepassword123"
-}' localhost:8080 synctv.client.ClientService/Register
-```
+- [Quick Start](./docs/src/content/docs/en/guides/quick-start.mdx)
+- [Documentation Map](./docs/src/content/docs/en/guides/documentation-map.mdx)
+- [Architecture Overview](./docs/src/content/docs/en/guides/architecture.mdx)
+- [Authentication and Security Model](./docs/src/content/docs/en/guides/security-model.mdx)
+- [Administration Runbook](./docs/src/content/docs/en/guides/administration.mdx)
+- [Rooms, Permissions, and Preferences](./docs/src/content/docs/en/guides/rooms-permissions.mdx)
+- [Client Integration Guide](./docs/src/content/docs/en/guides/client-integration.mdx)
+- [How Configuration Works](./docs/src/content/docs/en/configuration/how-configuration-works.mdx)
+- [Full Configuration Example](./docs/src/content/docs/en/configuration/full-example.mdx)
+- [Configuration Index](./docs/src/content/docs/en/reference/configuration-index.mdx)
+- [Environment Variables](./docs/src/content/docs/en/reference/environment-variables.mdx)
+- [Runtime Settings Reference](./docs/src/content/docs/en/reference/runtime-settings.mdx)
+- [Docker Compose Deployment](./docs/src/content/docs/en/deployment/docker-compose.mdx)
+- [Helm Deployment](./docs/src/content/docs/en/deployment/helm.mdx)
+- [Production Checklist](./docs/src/content/docs/en/deployment/production-checklist.mdx)
+- [Backup and Restore](./docs/src/content/docs/en/operations/backup-restore.mdx)
+- [Upgrades and Migrations](./docs/src/content/docs/en/operations/upgrades.mdx)
+- [Data, Privacy, and Retention](./docs/src/content/docs/en/operations/data-retention.mdx)
+- [Observability Runbook](./docs/src/content/docs/en/operations/observability.mdx)
+- [Troubleshooting](./docs/src/content/docs/en/operations/troubleshooting.mdx)
+- [CLI Reference](./docs/src/content/docs/en/reference/cli.mdx)
+- [OpenAPI Access](./docs/src/content/docs/en/reference/openapi.mdx)
+- [gRPC Debugging](./docs/src/content/docs/en/reference/grpc.mdx)
+- [Development Guide](./docs/src/content/docs/en/guides/development.mdx)
 
-### Example: Login
+Repository process documents:
 
-```bash
-grpcurl -plaintext -d '{
-  "username": "alice",
-  "password": "securepassword123"
-}' localhost:8080 synctv.client.ClientService/Login
-```
+- [Security Policy](./SECURITY.md)
+- [Contributing Guide](./CONTRIBUTING.md)
 
-## Configuration
+## Workspace Layout
 
-Configuration can be provided via:
-1. Environment variables (highest priority): `SYNCTV_SECTION_KEY`
-2. Config file (`.yaml`, `.yml`, `.json`, `.toml`), searched in platform-aware default locations such as:
-   `./synctv.yaml`, Linux `$XDG_CONFIG_HOME/synctv/synctv.yaml` or `~/.config/synctv/synctv.yaml`,
-   macOS `~/.synctv/synctv.yaml`, Linux `/etc/synctv/synctv.yaml`,
-   `/config/synctv.yaml`
-3. Defaults (lowest priority)
-
-`data_dir` can also be set via CLI `--data-dir`, environment `SYNCTV_DATA_DIR`, or
-top-level config `data_dir`.
-
-It affects only runtime-owned local paths:
-- `management.unix_socket_path`
-- `logging.file_path`
-- `livestream.hls_storage_path`
-- `cache.proxy_slice_file_cache_dir`
-
-It does not affect static config inputs:
-- `*_file` secrets remain relative to the config file directory
-- `metrics.tls.cert_path` and `metrics.tls.key_path` remain relative to the config file directory
-
-Absolute paths are preserved. Relative runtime-owned paths are resolved against the
-effective data directory.
-
-**Comprehensive Configuration File**
-
-A complete example config with documented options is provided in the repository. It includes:
-- All server, database, and Redis settings
-- WebRTC configuration for audio/video calls
-- OAuth2 provider examples (GitHub, Google, OIDC)
-- Livestream RTMP/HLS/FLV settings
-- Connection limits and security options
-- Production vs development guidance
-- Hundreds of lines of documented configuration
-
-View the complete file: [`synctv.example.yaml`](./synctv.example.yaml)
-
-**Quick Example** (minimal configuration):
-
-```yaml
-data_dir: "/var/lib/synctv"
-
-server:
-  host: "0.0.0.0"
-  port: 8080
-
-management:
-  enabled: true
-  transport: "unix"
-  unix_socket_path: "/run/synctv/synctv.sock"  # Linux/container example
-
-database:
-  url: "postgresql://synctv:synctv@localhost:5432/synctv"
-  max_connections: 100  # Increased for better performance
-
-redis:
-  url: "redis://localhost:6379"
-
-jwt:
-  secret: ""  # REQUIRED: Set via SYNCTV_JWT_SECRET env var
-
-security:
-  credential_encryption_key: ""      # Recommended: set via SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
-  opaque_server_setup_secret: ""     # REQUIRED: set via SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET
-
-logging:
-  level: "info"
-  format: "pretty"  # Use "json" in production
-  # filter: "info,synctv=debug"
-  backtrace: false
-```
-
-### Configuration Validation
-
-Use the built-in validation tool to catch configuration errors before deployment:
-
-```bash
-# Validate synctv.yaml
-cargo run --bin synctv -- config validate
-
-# Validate specific file
-cargo run --bin synctv -- config --config /path/to/synctv.yaml validate
-```
-
-**What gets validated:**
-- Syntax and structure (YAML parsing)
-- Required fields presence
-- JWT secret strength (minimum 256-bit entropy)
-- OAuth2 + Redis dependency
-- WebRTC cluster mode requirements
-- Permission hierarchy correctness
-- Network configuration validity
-
-**Use in CI/CD:**
-```yaml
-# GitHub Actions example
-- name: Validate Configuration
-  run: cargo run --bin synctv -- config validate
-```
-
-See [docs/config-validation.md](docs/config-validation.md) for detailed documentation.
-
-## Security
-
-- **Password Hashing**: Argon2id (PHC 2023 winner)
-- **JWT**: HS256 symmetric HMAC
-- **Permissions**: 64-bit bitmask system
-- **TLS**: Recommended for production
+- `synctv`: application binary and CLI.
+- `synctv-core`: core business logic, configuration, services, and repositories.
+- `synctv-api`: HTTP/gRPC API layer.
+- `synctv-livestream`: RTMP/HLS/HTTP-FLV livestream support.
+- `synctv-cluster`: cluster coordination.
+- `synctv-proxy`: media proxy and slice cache.
+- `synctv-proto`: protobuf definitions.
+- `synctv-media-providers`: provider integration support.
+- `synctv-management`: management client/control-plane support.
+- `synctv-common`: shared utilities.
+- `synctv-xiu`: consolidated livestreaming components.
+- `helm/synctv`: Kubernetes Helm chart.
+- `docs`: Astro Starlight documentation site.
 
 ## License
 
-MIT OR Apache-2.0
-
-## Contributing
-
-Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
-
-## Status
-
-**Current Status**: Production-ready core features
-
-### Completed Features
-- [x] User authentication (registration, login, JWT tokens)
-- [x] Room management and real-time synchronization
-- [x] Multi-provider media support (Bilibili, Alist, Emby)
-- [x] Live streaming (RTMP push, HLS/FLV playback)
-- [x] Multi-replica cluster support
-- [x] OAuth2 integration (GitHub, Google, OIDC)
-- [x] Permission system with 64-bit bitmask
-- [x] WebSocket real-time communication
-
-### Completed Infrastructure
-- [x] Cross-replica cache invalidation via Redis Streams (durable delivery with catch-up on reconnection)
-- [x] Configuration validation tool with CI/CD integration
-
-**Next Milestone**: Production hardening and performance optimization
+MIT. See [LICENSE](./LICENSE).

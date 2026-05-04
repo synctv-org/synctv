@@ -1,0 +1,173 @@
+---
+title: Quick Start
+description: Start SyncTV with minimal steps and understand the required production configuration.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Requirements
+
+For local development or single-node deployment, Docker Compose is the fastest path. It starts:
+
+- `postgres`: the primary SyncTV database.
+- `redis`: shared state for cache, rate limits, OAuth2 state, and cluster coordination.
+- `synctv`: the main service process. HTTP, gRPC, RTMP, and STUN are served by the same binary.
+
+Production needs at least these secrets:
+
+| Name | Purpose | Recommended generation |
+| --- | --- | --- |
+| `SYNCTV_JWT_SECRET` | Signs access and refresh tokens | `openssl rand -base64 32` |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | Stable OPAQUE password-auth secret | `openssl rand -base64 48` |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts provider credentials; must be 64 hex chars | `openssl rand -hex 32` |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | Initial root account password | Generate with a password manager |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret` and `security.credential_encryption_key` are long-lived secrets. Do not regenerate them on every deployment.
+</Aside>
+
+## Choose a Startup Mode
+
+<Tabs syncKey="deploy-mode">
+  <TabItem label="Dev Compose" icon="rocket">
+
+<Steps>
+1. Start development Compose:
+
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d
+   ```
+
+2. Check service status:
+
+   ```bash
+   docker compose -f docker-compose.dev.yml ps
+   docker compose -f docker-compose.dev.yml logs -f synctv
+   ```
+
+3. Run a management command inside the container:
+
+   ```bash
+   docker compose -f docker-compose.dev.yml exec synctv synctv system stats
+   ```
+</Steps>
+
+  </TabItem>
+  <TabItem label="Production Compose" icon="seti:docker">
+
+<Steps>
+1. Prepare production secrets:
+
+   ```bash
+   export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+   export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+   export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+   export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+   ```
+
+2. Start services:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Check health:
+
+   ```bash
+   docker compose ps
+   docker compose logs -f synctv
+   ```
+</Steps>
+
+  </TabItem>
+  <TabItem label="Local Binary" icon="laptop">
+
+<Steps>
+1. Start PostgreSQL and Redis:
+
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d postgres redis
+   ```
+
+2. Validate configuration:
+
+   ```bash
+   cargo run -p synctv --bin synctv -- config validate
+   ```
+
+3. Start the service. Startup runs embedded SQLx migrations automatically:
+
+   ```bash
+   cargo run -p synctv --bin synctv -- serve
+   ```
+</Steps>
+
+  </TabItem>
+</Tabs>
+
+## Development Compose
+
+For local testing:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Development Compose includes working development secrets. Do not use those values in production.
+
+Check logs:
+
+```bash
+docker compose -f docker-compose.dev.yml ps
+docker compose -f docker-compose.dev.yml logs -f synctv
+```
+
+## Production Compose
+
+Production Compose intentionally refuses to start without explicit secrets:
+
+```bash
+export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+
+docker compose up -d
+```
+
+If a required variable is missing, `docker compose config` or `docker compose up` fails. This prevents weak default secrets from reaching production.
+
+## Validate Configuration
+
+With a local config file:
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+```
+
+Validation checks:
+
+- YAML parsing.
+- JWT secret strength.
+- OPAQUE secret presence and placeholder detection.
+- Redis, OAuth2, WebAuthn, and cluster dependency consistency.
+- Ports, paths, timeouts, and rate-limit ranges.
+
+## First Login
+
+When `bootstrap.create_root_user=true`, SyncTV creates a root user if the database does not already contain one.
+
+Default username:
+
+```yaml
+bootstrap:
+  root_username: "root"
+```
+
+Password sources:
+
+- `bootstrap.root_password` in the config file.
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`.
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`.
+
+Use environment variables or secret files in production. Do not commit the root password.

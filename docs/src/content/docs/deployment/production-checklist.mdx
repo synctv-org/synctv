@@ -1,0 +1,280 @@
+---
+title: 生产部署清单
+description: 上线 SyncTV 前需要确认的安全、存储、网络、监控、备份和升级事项。
+---
+
+## 为什么需要清单？
+
+SyncTV 不是只有一个 HTTP 服务。它还涉及 PostgreSQL、Redis、RTMP、STUN、gRPC、metrics、Provider 凭据、HLS 存储、slice cache、WebAuthn、OAuth2 和邮件。生产上线前建议按清单逐项确认。
+
+如果你还没有理解整体组件边界，先读 [架构总览](../../guides/architecture/)。如果你正在设计登录、2FA、OAuth2 或管理控制面策略，先读 [认证与安全模型](../../guides/security-model/)。
+
+如果你要准备生产管理员日常操作，补读 [管理员操作手册](../../guides/administration/)、[房间、权限与用户偏好](../../guides/rooms-permissions/) 和 [Runtime settings 参考](../../reference/runtime-settings/)。
+
+如果你需要对外说明数据存储、PII、备份和默认清理策略，补读 [数据、隐私与保留策略](../../operations/data-retention/)。
+
+## 必填 secret
+
+生产环境至少准备：
+
+| Secret | 用途 | 生成方式 |
+| --- | --- | --- |
+| `jwt.secret` | 签发 access/refresh/guest token | `openssl rand -base64 32` |
+| `security.opaque_server_setup_secret` | OPAQUE 密码认证 | `openssl rand -base64 48` |
+| `security.credential_encryption_key` | 加密 Provider 凭据，64 位 hex | `openssl rand -hex 32` |
+| `server.cluster_secret` | 集群节点间认证，集群模式必需 | `openssl rand -hex 32` |
+| `bootstrap.root_password` | 首次 root 用户密码 | 密码管理器生成 |
+
+要求：
+
+- 不要使用示例值。
+- 不要提交到 Git。
+- 不要每次部署随机变化。
+- 备份到密码管理器、Secret Manager 或加密备份中。
+
+## 数据库
+
+PostgreSQL 必须持久化。
+
+上线前确认：
+
+- `database.url` 或拆分字段指向生产 PostgreSQL。
+- `database.max_connections` 不超过数据库允许连接数。
+- 服务启动阶段会自动执行 embedded SQLx migrations。
+- `synctv db migrate` 作为可选预检命令能提前暴露 dirty migration、checksum drift 或数据库权限问题。
+- 有备份策略。
+- 有恢复演练或至少知道如何恢复。
+
+常用检查：
+
+```bash
+synctv db status
+```
+
+## Redis
+
+Redis 在单机时可以没有，但生产建议配置。多副本和集群模式必须配置。
+
+上线前确认：
+
+- `redis.url` 或拆分字段正确。
+- 多副本共享同一个 Redis。
+- `redis.key_prefix` 不和其他环境冲突。
+- 如果使用 Sentinel，`sentinel_master_name` 和 `sentinel_addresses` 完整。
+
+Redis 影响：
+
+- 限流。
+- 暴力破解防护。
+- token blacklist。
+- OAuth2 state。
+- WebAuthn challenge。
+- 集群 pub/sub、节点注册和 stream catch-up。
+
+## HTTP/gRPC/Ingress
+
+主进程的 HTTP REST 和公开 gRPC 使用同一个 `server.port`，但 Kubernetes 中建议拆成两个 Service 和两个 Ingress。
+
+Helm chart 当前设计：
+
+- HTTP/API Service：`synctv`。
+- gRPC Service：`synctv-grpc`。
+- HTTP Ingress：默认 `ingress`。
+- gRPC Ingress：`ingress.grpc`。
+
+Nginx Ingress 的 gRPC Ingress 应设置：
+
+```yaml
+ingress:
+  grpc:
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```
+
+如果 gRPC 和 HTTP 使用不同域名，要分别配置 TLS 证书和 DNS。
+
+## CORS 和可信代理
+
+如果有 Web 前端：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+只填写真实前端 origin，不要填写路径。
+
+如果前面有反向代理：
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+```
+
+只信任你控制的代理网段，不要信任全网。
+
+## WebAuthn/passkey
+
+如果开启 passkey：
+
+```yaml
+webauthn:
+  enabled: true
+  rp_id: "example.com"
+  rp_origin: "https://app.example.com"
+```
+
+上线前确认：
+
+- `rp_origin` 是用户实际访问的 HTTPS origin。
+- `rp_id` 是该 origin 的有效父域或同域。
+- 本地开发的端口放宽不会带到生产。
+
+## 邮件
+
+如果你需要邮箱验证、密码找回、邮箱 2FA 或系统通知，必须配置 SMTP：
+
+```yaml
+email:
+  smtp_host: "smtp.example.com"
+  smtp_port: 587
+  smtp_username: "noreply@example.com"
+  smtp_password_file: "/run/secrets/smtp_password"
+  from_email: "noreply@example.com"
+  from_name: "SyncTV"
+  use_tls: true
+```
+
+上线前测试：
+
+```bash
+synctv settings test-email --to admin@example.com
+```
+
+## OAuth2
+
+上线前确认：
+
+- 每个 provider 的 `client_id` 和 `client_secret` 正确。
+- `redirect_url` 与第三方平台登记的一致。
+- `oauth2.redirect_scheme` 在生产为 `https`。
+- 多副本部署使用 Redis，否则 OAuth2 state 可能落到不同节点。
+
+## HLS、RTMP 和 STUN
+
+RTMP 默认端口 `1935`，STUN 默认 UDP `3478`。
+
+如果使用直播：
+
+- 防火墙放行 RTMP 端口。
+- 如果用 WebRTC，放行 STUN UDP 端口。
+- 多副本 HLS 必须使用共享存储。
+
+多副本 HLS 示例：
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+## Proxy slice cache
+
+如果启用文件后端：
+
+```yaml
+cache:
+  proxy_slice_cache_enabled: true
+  proxy_slice_file_backend_enabled: true
+  proxy_slice_file_cache_dir: "cache/proxy-slice"
+```
+
+上线前确认：
+
+- 目录有足够空间。
+- 容器 volume 已挂载。
+- 多副本共享缓存时使用共享文件系统。
+- 你理解 slice cache 不做 full-body cache，上游不支持 Range 时会 bypass。
+
+## Metrics
+
+建议生产开启：
+
+```yaml
+metrics:
+  enabled: true
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_token"
+```
+
+不要把 `/metrics` 直接暴露公网。
+
+Kubernetes 中建议配合 ServiceMonitor、VMServiceScrape 或 NetworkPolicy。
+
+## 配置校验和启动验证
+
+上线前至少运行：
+
+```bash
+synctv config validate
+synctv db status
+```
+
+容器或 Helm 部署时，还要检查：
+
+```bash
+docker compose config
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv
+```
+
+启动后检查：
+
+```bash
+curl -fsS http://localhost:8080/health/ready
+```
+
+## 备份
+
+必须备份：
+
+- PostgreSQL。
+- 生产 secret。
+
+按需备份：
+
+- HLS 共享存储。
+- proxy slice cache。
+- 自定义配置文件。
+
+通常不需要长期备份 Redis，但如果你依赖短期状态，Redis 重启会影响 OAuth2 state、token blacklist、限流计数等。
+
+详细恢复顺序和演练要求见 [备份与恢复](../../operations/backup-restore/)。
+
+## 升级
+
+升级前：
+
+- 备份数据库。
+- 保留所有 secret。
+- 先在测试环境启动目标版本，验证自动 migration 和业务读写。
+- 检查 [配置总索引](../../reference/configuration-index/)、[完整配置示例](../../configuration/full-example/)、Compose 和 Helm values 是否有新配置项。
+- 如果启用 OpenAPI，确认客户端 SDK 与接口变更匹配。
+
+Kubernetes 滚动更新时，设置合理的 readiness、termination grace period 和 `server.shutdown_drain_timeout_seconds`，避免大量长连接被突然断开。
+
+详细 migration、Helm/Compose 发布、滚动更新和回滚策略见 [升级与迁移](../../operations/upgrades/)。
+
+## 观测
+
+上线后至少要有：
+
+- `/health/ready` readiness 检查。
+- metrics 抓取和鉴权。
+- JSON 日志或能被日志系统稳定解析的格式。
+- PostgreSQL、Redis、登录失败、MFA 失败、WebSocket、Provider、proxy、直播和集群的基本告警。
+
+详细监控项和事故信息收集流程见 [观测与运行手册](../../operations/observability/)。

@@ -1,0 +1,191 @@
+---
+title: 文档导览
+description: 按部署、配置、运维、开发和排障任务快速定位 SyncTV 文档。
+---
+
+import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+这个页面按任务组织文档入口。它不是配置参考的替代品，而是帮助你判断先读哪一页、每一页解决什么问题。
+
+<Aside type="tip">
+如果你正在第一次部署，优先走“部署者路径”；如果服务已经运行，直接按下面的任务卡片进入对应页面。
+</Aside>
+
+## 角色路径
+
+<Tabs syncKey="reader-path">
+  <TabItem label="部署者" icon="rocket">
+    <Steps>
+      1. 先看 [快速开始](../quick-start/)，确认最小 Compose 环境可以启动。
+      2. 阅读 [架构总览](../architecture/)，明确主服务、management、metrics、Redis、PostgreSQL 和 Provider proxy 的边界。
+      3. 阅读 [配置文件如何工作](../../configuration/how-configuration-works/)，理解默认值、配置文件、环境变量和 CLI 覆盖顺序。
+      4. 从 [完整配置示例](../../configuration/full-example/) 复制最小生产骨架，再按需取用全量模板里的功能段落。
+      5. 阅读 [安全与密钥](../../configuration/security/)，替换示例 secret，并确认长期稳定的密钥不会在重启或升级时丢失。
+      6. 按部署方式阅读 [Docker Compose 部署](../../deployment/docker-compose/) 或 [Helm 部署](../../deployment/helm/)。
+      7. 上线前使用 [生产部署清单](../../deployment/production-checklist/) 做最后检查。
+      8. 补齐 [备份与恢复](../../operations/backup-restore/)、[升级与迁移](../../operations/upgrades/) 和 [观测与运行手册](../../operations/observability/)。
+      9. 如果你要写客户端、SDK 或第三方集成，阅读 [客户端集成指南](../client-integration/)。
+      10. 如果你要做数据治理、隐私评估或保留策略说明，阅读 [数据、隐私与保留策略](../../operations/data-retention/)。
+      11. 遇到启动、Ingress、认证或媒体播放问题时，从 [排障入口](../../operations/troubleshooting/) 按现象定位。
+    </Steps>
+  </TabItem>
+  <TabItem label="管理员" icon="setting">
+    <Steps>
+      1. 阅读 [CLI 参考](../../reference/cli/)，确认如何管理用户、房间、Provider、系统状态和配置校验。
+      2. 阅读 [管理员操作手册](../administration/)，理解用户、房间、审核、Provider、runtime settings 和系统运维的操作边界。
+      3. 阅读 [房间、权限与用户偏好](../rooms-permissions/)，确认全局角色、房间角色、权限位、房间设置和用户偏好语义。
+      4. 阅读 [认证与安全模型](../security-model/)，确认本地登录、OAuth2、2FA、token 和 management 控制面的关系。
+      5. 阅读 [Runtime settings 参考](../../reference/runtime-settings/)，确认哪些策略可以热更新，哪些必须改启动配置。
+      6. 阅读 [邮件与 OAuth2](../../configuration/email-oauth2/) 和 [WebAuthn 配置](../../configuration/webauthn/)，确认登录方式、邮箱验证码和两步验证依赖。
+      7. 阅读 [限流与连接限制](../../configuration/rate-limits/)，理解登录、验证码、WebSocket 和 API 请求的保护边界。
+      8. 阅读 [Metrics 监控](../../configuration/metrics/) 和 [观测与运行手册](../../operations/observability/)，把服务状态接入 Prometheus 或其他兼容系统。
+    </Steps>
+  </TabItem>
+  <TabItem label="开发者" icon="puzzle">
+    <Steps>
+      1. 阅读 [开发指南](../development/)，准备 Rust、Node.js、PostgreSQL、Redis、SQLx 和文档站环境。
+      2. 阅读 [OpenAPI 文档入口](../../reference/openapi/)，确认 Swagger UI 和 OpenAPI JSON 的访问位置。
+      3. 阅读 [gRPC 调试](../../reference/grpc/)，确认 cluster/admin/service protobuf 和 reflection 调试方式。
+      4. 阅读 [客户端集成指南](../client-integration/)，理解登录、MFA、WebSocket、OAuth2 和媒体 header 的组合方式。
+      5. 阅读 [配置总索引](../../reference/configuration-index/)，修改配置结构时同步更新文档。
+    </Steps>
+  </TabItem>
+</Tabs>
+
+## 常见任务
+
+<CardGrid>
+  <LinkCard
+    title="我要把服务跑起来"
+    href="../quick-start/"
+    description="最短路径启动 PostgreSQL、Redis 和 SyncTV，并验证服务可访问。"
+  />
+  <LinkCard
+    title="我要准备生产环境"
+    href="../../deployment/production-checklist/"
+    description="检查 secret、数据库、Redis、反向代理、Ingress、存储、监控、备份和升级策略。"
+  />
+  <LinkCard
+    title="我要理解整体架构"
+    href="../architecture/"
+    description="了解单二进制服务、网络入口、状态层、媒体代理、slice cache 和集群模型。"
+  />
+  <LinkCard
+    title="我要理解认证安全"
+    href="../security-model/"
+    description="确认密码、WebAuthn、邮箱、OAuth2、用户 2FA、token 上下文和 management 控制面边界。"
+  />
+  <LinkCard
+    title="我要管理生产实例"
+    href="../administration/"
+    description="按用户、房间、审核、Provider、runtime settings、system 和 slice cache 理解管理操作。"
+  />
+  <LinkCard
+    title="我要理解权限"
+    href="../rooms-permissions/"
+    description="解释全局角色、房间角色、权限位、房间设置、成员权限覆盖和用户偏好。"
+  />
+  <LinkCard
+    title="我要排查故障"
+    href="../../operations/troubleshooting/"
+    description="按现象定位启动、配置、部署、认证、代理、直播和集群问题。"
+  />
+  <LinkCard
+    title="我要做备份恢复"
+    href="../../operations/backup-restore/"
+    description="确认 PostgreSQL、secret、配置文件、HLS、Redis 状态和恢复演练步骤。"
+  />
+  <LinkCard
+    title="我要说明数据保留"
+    href="../../operations/data-retention/"
+    description="说明个人信息、Provider 凭据、审计日志、通知、聊天、备份和后台清理策略。"
+  />
+  <LinkCard
+    title="我要规划升级"
+    href="../../operations/upgrades/"
+    description="处理 migration、Compose/Helm 发布、滚动更新、配置快照和回滚风险。"
+  />
+  <LinkCard
+    title="我要接入观测"
+    href="../../operations/observability/"
+    description="配置健康检查、metrics、日志、关键告警和事故信息收集流程。"
+  />
+  <LinkCard
+    title="我要查某个配置项"
+    href="../../reference/configuration-index/"
+    description="按配置结构列出字段、类型、默认值、环境变量和详细说明入口。"
+  />
+  <LinkCard
+    title="我要查热更新设置"
+    href="../../reference/runtime-settings/"
+    description="列出 runtime settings 的 key、默认值、校验规则、同步语义和 CLI 示例。"
+  />
+  <LinkCard
+    title="我要一份配置模板"
+    href="../../configuration/full-example/"
+    description="提供最小生产配置骨架和覆盖全部静态字段的全量 YAML 示例。"
+  />
+  <LinkCard
+    title="我要理解配置来源"
+    href="../../configuration/how-configuration-works/"
+    description="解释默认值、配置文件、环境变量、secret 文件、CLI 覆盖和 data_dir 路径解析。"
+  />
+  <LinkCard
+    title="我要部署到 Kubernetes"
+    href="../../deployment/helm/"
+    description="说明 Helm values、HTTP/gRPC 独立 Service、独立 Ingress、metrics 和外部依赖。"
+  />
+  <LinkCard
+    title="我要接入外部媒体源"
+    href="../../configuration/media-providers/"
+    description="说明 Alist、Emby、Bilibili、直链、Provider instance、请求头和凭据加密。"
+  />
+  <LinkCard
+    title="我要排查代理缓存"
+    href="../../configuration/cache-and-proxy/"
+    description="解释业务缓存、代理 slice cache、Range 行为、存储目录、TTL 和容量控制。"
+  />
+  <LinkCard
+    title="我要接入 API"
+    href="../../reference/openapi/"
+    description="说明如何启用 openapi feature，并访问 Swagger UI 与 OpenAPI JSON。"
+  />
+  <LinkCard
+    title="我要写客户端或 SDK"
+    href="../client-integration/"
+    description="说明登录、MFA、OAuth2、WebSocket、gRPC room metadata、媒体 header 和 token 处理方式。"
+  />
+</CardGrid>
+
+## 配置阅读顺序
+
+配置页很细，建议不要从头到尾线性阅读。先按运行所需依赖确认基础配置，再按启用的功能模块进入对应页面。
+
+<CardGrid>
+  <Card title="基础运行" icon="setting">
+    <Badge text="必读" variant="tip" /> 先读服务监听、运行时路径、安全密钥、数据库与 Redis。
+  </Card>
+  <Card title="访问控制" icon="setting">
+    继续读 CORS、可信代理、限流、邮件、OAuth2、WebAuthn 和用户安全相关配置。
+  </Card>
+  <Card title="媒体能力" icon="puzzle">
+    如果启用媒体源或代理缓存，阅读 Provider、cache/proxy、直播和 WebRTC 文档。
+  </Card>
+  <Card title="横向扩展" icon="cloud-download">
+    如果多副本运行，阅读 cluster、Redis、Helm、Ingress、HLS 存储和 metrics 文档。
+  </Card>
+</CardGrid>
+
+## 维护文档时的检查点
+
+- 新增配置字段时，同时更新 [配置总索引](../../reference/configuration-index/)、[完整配置示例](../../configuration/full-example/) 和对应配置专题页。
+- 新增 CLI 命令时，同时更新 [CLI 参考](../../reference/cli/)。
+- 修改部署模板时，同时更新 [Docker Compose 部署](../../deployment/docker-compose/) 或 [Helm 部署](../../deployment/helm/)。
+- 修改常见错误、端口、Ingress、认证或代理行为时，同步更新 [排障入口](../../operations/troubleshooting/)。
+- 修改运行时入口、依赖关系、Provider/proxy 边界或集群模型时，同步更新 [架构总览](../architecture/)。
+- 修改登录、2FA、OAuth2、token、management 或权限边界时，同步更新 [认证与安全模型](../security-model/)。
+- 修改用户、房间、审核、Provider、runtime settings 或管理 CLI 语义时，同步更新 [管理员操作手册](../administration/)。
+- 修改房间角色、权限位、room settings、成员覆盖或用户偏好时，同步更新 [房间、权限与用户偏好](../rooms-permissions/)。
+- 修改 `SettingsRegistry` 注册的热更新字段时，同步更新 [Runtime settings 参考](../../reference/runtime-settings/)。
+- 修改 API feature、Swagger UI 路径或 OpenAPI JSON 路径时，同时更新 [OpenAPI 文档入口](../../reference/openapi/)。
+- 修改 cluster/admin/service protobuf 时，同时更新 [gRPC 调试](../../reference/grpc/)。

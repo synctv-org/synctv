@@ -1,0 +1,171 @@
+---
+title: 集群配置
+description: 多副本、Redis 协调、节点发现、leader election、静态发现和 Kubernetes DNS 配置。
+---
+
+## 什么时候需要集群模式？
+
+如果你只运行一个 SyncTV 进程，通常不需要开启集群模式。
+
+需要开启的场景：
+
+- Kubernetes 中运行多个副本。
+- 多台服务器共同服务同一个 SyncTV 实例。
+- 需要跨节点踢人、房间同步、缓存失效、直播协调。
+
+开启方式：
+
+```yaml
+cluster:
+  enabled: true
+```
+
+开启后，Redis 和 `server.cluster_secret` 都是必需项。
+
+## `cluster.enabled`
+
+默认值：`false`。
+
+开启后，SyncTV 会启用跨节点协调逻辑。
+
+必须满足：
+
+- 所有节点连接同一个 PostgreSQL。
+- 所有节点连接同一个 Redis。
+- 所有节点使用同一个 `server.cluster_secret`。
+- 节点之间能访问彼此的 API/gRPC 地址。
+
+## `cluster.critical_channel_capacity`
+
+默认值：`1000`。
+
+作用：高优先级事件通道容量，例如踢人、权限变更等不能随便丢的事件。
+
+满了以后发送方会等待，而不是丢弃事件。
+
+## `cluster.publish_channel_capacity`
+
+默认值：`10000`。
+
+作用：普通 Redis publish 通道容量。
+
+普通事件在极端拥塞时可能丢弃并记录 warning，避免拖垮主流程。
+
+## `cluster.discovery_mode`
+
+可选值：
+
+- `redis`
+- `static`
+- `k8s_dns`
+
+### `redis`
+
+默认值。节点通过 Redis 注册和发现。
+
+优点：
+
+- 跨环境通用。
+- 不依赖 Kubernetes DNS。
+- 配置简单。
+
+### `static`
+
+手动配置节点地址。
+
+```yaml
+cluster:
+  discovery_mode: "static"
+  peers:
+    - "node2.example.com:8080"
+    - "node3.example.com"
+```
+
+适合固定服务器数量的小集群。
+
+如果 peer 不写端口，SyncTV 会尝试使用 `server.port`。
+
+### `k8s_dns`
+
+通过 Kubernetes headless service DNS 发现 Pod。
+
+需要环境变量：
+
+- `HEADLESS_SERVICE_NAME`
+- `POD_NAMESPACE`
+
+注意：`k8s_dns` 仍然需要 Redis。DNS 只帮助更快发现 Pod，不替代 Redis 的健康监控、负载均衡和 pub/sub。
+
+## `cluster.leader_election_mode`
+
+可选值：
+
+- `redis`
+- `k8s_lease`
+
+### `redis`
+
+默认值。通过 Redis 锁做 leader election。
+
+适合 Docker Compose、普通服务器、Kubernetes。
+
+### `k8s_lease`
+
+使用 Kubernetes `coordination.k8s.io/v1 Lease`。
+
+需要：
+
+- `POD_NAME`
+- `POD_NAMESPACE`
+- RBAC 权限
+
+Helm chart 会在需要时渲染相关 RBAC。
+
+## `cluster.catchup_window_secs`
+
+默认值：`300`。
+
+作用：新节点加入时，从 Redis Stream 回放多久以内的事件，避免刚订阅时漏掉短时间内发布的事件。
+
+调大：
+
+- 事件量不大，但你希望更保守。
+- 节点启动慢。
+
+调小：
+
+- 事件量很大。
+- 想缩短启动回放时间。
+
+## `cluster.stream_max_length`
+
+默认值：`10000`。
+
+作用：每个 Redis Stream 大约保留多少条事件。
+
+高流量房间很多时，太小可能导致断线节点还没追上，事件就被裁剪。太大则占用更多 Redis 内存。
+
+## 多副本 HLS 额外要求
+
+集群模式不等于 HLS 文件自动共享。
+
+如果使用 HLS 直播，并且运行多个副本，需要配置共享存储：
+
+```yaml
+livestream:
+  hls_shared_storage: true
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+并确保所有 Pod 都能读写同一个路径。
+
+## Helm 中的集群建议
+
+Helm chart 默认可以启用集群 wiring，但副本数仍由 `replicaCount` 和 HPA 控制。
+
+扩容前必须确认：
+
+- Redis 可用。
+- `server.cluster_secret` 已设置。
+- HLS 存储是共享的，或者你不使用 HLS。
+- gRPC Service/Ingress 与内部节点访问符合你的网络设计。

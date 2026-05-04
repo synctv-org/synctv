@@ -1,0 +1,97 @@
+---
+title: OpenAPI 文档入口
+description: 开发者如何启用、访问、导出 SyncTV 内置 OpenAPI JSON 和 Swagger UI。
+---
+
+## 这页回答什么？
+
+SyncTV 内置了 OpenAPI 文档，但默认二进制是否包含它取决于构建 feature。开发者如果要调试 HTTP API、生成客户端 SDK 或查看请求/响应结构，需要启用 `openapi` feature。
+
+这页说明的是“在哪里获取 OpenAPI 文档”，不是评价 OpenAPI 内容是否覆盖每个接口。
+
+## 启用 OpenAPI
+
+本地启动带 OpenAPI 的服务：
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve
+```
+
+如果还要指定配置文件：
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve --config synctv.yaml
+```
+
+编译检查：
+
+```bash
+cargo check --workspace --all-targets --features openapi
+```
+
+## Swagger UI 地址
+
+服务启动后访问：
+
+```text
+http://localhost:8080/swagger-ui/
+```
+
+如果你修改了 `server.port`，把 `8080` 换成实际端口。
+
+生产或远程环境示例：
+
+```text
+https://api.example.com/swagger-ui/
+```
+
+## OpenAPI JSON 地址
+
+OpenAPI JSON 地址：
+
+```text
+http://localhost:8080/api-docs/openapi.json
+```
+
+导出到文件：
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+带认证访问普通业务接口时，OpenAPI 文档中的安全方案使用 Bearer Token。公共接口会在文档中标注不需要认证。
+
+## 生成客户端
+
+拿到 JSON 后，可以用 OpenAPI Generator、orval、openapi-typescript、Kiota 等工具生成客户端。
+
+TypeScript 类型示例：
+
+```bash
+npx openapi-typescript http://localhost:8080/api-docs/openapi.json -o synctv-api.d.ts
+```
+
+OpenAPI Generator 示例：
+
+```bash
+openapi-generator-cli generate \
+  -i http://localhost:8080/api-docs/openapi.json \
+  -g typescript-fetch \
+  -o ./generated/synctv-client
+```
+
+## 部署环境注意事项
+
+如果你希望生产环境也提供 Swagger UI，需要确认：
+
+- 二进制构建时启用了 `openapi` feature。
+- 反向代理允许访问 `/swagger-ui/`。
+- 反向代理允许访问 `/api-docs/openapi.json`。
+- 如果只允许内网开发者访问，应在 Ingress、Nginx、网关或防火墙层限制来源。
+
+如果你不希望生产环境暴露 API 结构，可以使用不带 `openapi` feature 的构建，只在开发或预发布环境启用。
+
+## 继续阅读
+
+- [客户端集成指南](../../guides/client-integration/)
+- [gRPC 调试](../grpc/)

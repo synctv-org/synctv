@@ -1,0 +1,44 @@
+:root {
+  --sl-color-accent-low: #d6f3eb;
+  --sl-color-accent: #0f8f78;
+  --sl-color-accent-high: #003c32;
+  --sl-content-width: 60rem;
+  --sl-font: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", sans-serif;
+  --sl-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #083b34;
+  --sl-color-accent: #46d6b7;
+  --sl-color-accent-high: #bdf7e8;
+}
+
+.hero {
+  border-radius: 1.5rem;
+}
+
+@media (min-width: 96rem) {
+  :root {
+    --sl-content-width: 72rem;
+  }
+}
+
+@media (min-width: 72rem) {
+  .sl-markdown-content table:not(:where(.not-content *)) {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .sl-markdown-content table:not(:where(.not-content *)) :is(th, td):last-child {
+    min-width: 18rem;
+  }
+}
+
+.sl-markdown-content table:not(:where(.not-content *)) {
+  overflow-wrap: anywhere;
+}
+
+.sl-markdown-content table:not(:where(.not-content *)) :is(th, td) {
+  vertical-align: top;
+}

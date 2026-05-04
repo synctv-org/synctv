@@ -1,0 +1,269 @@
+---
+title: 数据库与 Redis
+description: PostgreSQL、Redis、连接池、Sentinel、单机模式和集群依赖说明。
+---
+
+## SyncTV 为什么需要数据库？
+
+PostgreSQL 是 SyncTV 的主存储。用户、房间、播放列表、媒体、权限、审计、Provider 配置等持久数据都在数据库里。
+
+Redis 是共享状态和缓存层。单机模式下可以不用 Redis，但生产部署通常建议配置 Redis。
+
+## `database`
+
+### 两种配置方式
+
+方式一：使用完整 URL。
+
+```yaml
+database:
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+```
+
+方式二：使用拆分字段。
+
+```yaml
+database:
+  host: "postgres"
+  port: 5432
+  username: "synctv"
+  password_file: "/run/secrets/database_password"
+  name: "synctv"
+```
+
+建议：
+
+- 本地开发用 URL 最简单。
+- Docker Compose 可以用 URL。
+- Kubernetes/Helm 通常使用拆分字段和 Secret 环境变量。
+
+### `database.url`
+
+完整 PostgreSQL 连接字符串。
+
+环境变量：
+
+```bash
+SYNCTV_DATABASE_URL=postgresql://synctv:password@postgres:5432/synctv
+SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
+```
+
+如果 URL 中包含密码，不要提交到 Git。
+
+### `database.host`
+
+数据库主机名。
+
+Docker Compose 常见值：
+
+```yaml
+database:
+  host: "postgres"
+```
+
+Kubernetes 常见值是 Service 名。
+
+### `database.port`
+
+PostgreSQL 默认端口是 `5432`。
+
+### `database.username`
+
+数据库用户名。配置文件里也接受 `user` 作为别名，环境变量也接受 `SYNCTV_DATABASE_USER`。
+
+### `database.password`
+
+数据库密码。生产建议使用：
+
+```yaml
+database:
+  password_file: "/run/secrets/database_password"
+```
+
+或：
+
+```bash
+SYNCTV_DATABASE_PASSWORD_FILE=/run/secrets/database_password
+```
+
+### `database.name`
+
+数据库名。
+
+### `database.max_connections`
+
+默认值：`20`。
+
+作用：SyncTV 最多同时保持多少个数据库连接。
+
+调大场景：
+
+- 并发用户很多。
+- API 访问频繁。
+- 数据库资源充足。
+
+不要盲目调大。数据库连接不是越多越好，连接太多会压垮 PostgreSQL。
+
+### `database.min_connections`
+
+默认值：`5`。
+
+作用：连接池至少保持多少个空闲连接。
+
+生产环境建议小于 `max_connections`。如果设置得比 `max_connections` 大，配置校验会失败。
+
+### `database.connect_timeout_seconds`
+
+默认值：`10`。
+
+作用：连接数据库时最多等待多久。
+
+如果数据库在远程网络、启动慢或云数据库偶尔延迟较高，可以适当调大。
+
+### `database.idle_timeout_seconds`
+
+默认值：`600`，也就是 10 分钟。
+
+作用：空闲连接保留多久后关闭。
+
+### `database.max_lifetime_seconds`
+
+默认值：`1800`，也就是 30 分钟。
+
+作用：一个数据库连接最多使用多久，超过后会被替换。它可以减少长期连接遇到网络设备、数据库重启、云服务连接回收导致的问题。
+
+## `redis`
+
+### Redis 在 SyncTV 中做什么？
+
+Redis 可能用于：
+
+- token blacklist，支持跨节点登出和 token 撤销。
+- 限流计数。
+- 暴力破解防护计数。
+- 用户名、用户、房间缓存。
+- OAuth2 state 临时保存。
+- WebAuthn/passkey challenge 状态。
+- 集群 pub/sub。
+- 节点注册、健康检查、负载均衡。
+- Redis Stream 事件补偿。
+
+### 单机模式可以不配置 Redis 吗？
+
+可以。`cluster.enabled=false` 且 `redis.url` 为空时，SyncTV 会使用内存 fallback。
+
+但你要理解影响：
+
+- 重启后 token blacklist、限流、OAuth2 state 等内存状态会丢失。
+- 多副本无法共享状态。
+- WebAuthn 在集群模式下必须依赖 Redis。
+
+生产环境建议配置 Redis。
+
+### `redis.url`
+
+完整 Redis 连接字符串。
+
+示例：
+
+```yaml
+redis:
+  url: "redis://localhost:6379"
+```
+
+带密码：
+
+```yaml
+redis:
+  url: "redis://:password@redis:6379/0"
+```
+
+环境变量：
+
+```bash
+SYNCTV_REDIS_URL=redis://redis:6379
+SYNCTV_REDIS_URL_FILE=/run/secrets/redis_url
+```
+
+### 拆分字段
+
+```yaml
+redis:
+  host: "redis"
+  port: 6379
+  username: ""
+  password_file: "/run/secrets/redis_password"
+  database: 0
+```
+
+### `redis.connect_timeout_seconds`
+
+默认值：`5`。
+
+Redis 一般应该很快。如果经常超时，优先检查网络、DNS、Redis 负载，而不是只调大超时。
+
+### `redis.key_prefix`
+
+默认值：
+
+```yaml
+redis:
+  key_prefix: "synctv:"
+```
+
+作用：所有 SyncTV Redis key 的前缀。
+
+什么时候要改：
+
+- 多个 SyncTV 实例共用同一个 Redis。
+- 同一个 Redis 里还有其他业务，想避免 key 冲突。
+
+示例：
+
+```yaml
+redis:
+  key_prefix: "synctv-prod:"
+```
+
+### `redis.deployment_mode`
+
+可选值：
+
+- `standalone`
+- `sentinel`
+
+`standalone` 是单 Redis 实例，适合开发、小规模部署。
+
+`sentinel` 用于 Redis Sentinel 高可用部署。
+
+### Sentinel 配置
+
+```yaml
+redis:
+  deployment_mode: "sentinel"
+  sentinel_master_name: "mymaster"
+  sentinel_addresses:
+    - "redis://sentinel1:26379"
+    - "redis://sentinel2:26379"
+    - "redis://sentinel3:26379"
+```
+
+注意：Redis Sentinel 运维复杂度高于 standalone。自托管部署通常先使用 standalone，并配合定期备份和监控。
+
+## 数据库和 Redis 的生产建议
+
+最低建议：
+
+- PostgreSQL 使用持久化存储。
+- Redis 使用持久化或受管服务。
+- 数据库密码和 Redis 密码使用 Secret。
+- 定期备份 PostgreSQL。
+- 给 PostgreSQL 和 Redis 设置资源限制和监控。
+
+多节点部署额外要求：
+
+- `cluster.enabled=true`
+- Redis 必须可用。
+- 所有 SyncTV 节点使用同一个 PostgreSQL。
+- 所有 SyncTV 节点使用同一个 Redis。
+- 所有节点的 `server.cluster_secret` 一致。

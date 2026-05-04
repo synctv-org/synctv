@@ -1,0 +1,119 @@
+---
+title: WebRTC Configuration
+description: WebRTC mode, built-in STUN, ICE servers, private candidate filtering, and NAT deployment notes.
+---
+
+## What WebRTC Does
+
+WebRTC is used for real-time low-latency client communication. SyncTV handles signaling, permission checks, and ICE server delivery.
+
+## `webrtc.mode`
+
+Allowed values:
+
+- `signaling_only`
+- `peer_to_peer`
+
+### `signaling_only`
+
+SyncTV only relays signaling and does not provide built-in STUN.
+
+Use it when you already have WebRTC infrastructure or do not want SyncTV to expose a UDP STUN port.
+
+### `peer_to_peer`
+
+Enables P2P mode and can use built-in STUN plus external ICE servers.
+
+Default:
+
+```yaml
+webrtc:
+  mode: "peer_to_peer"
+```
+
+## Built-In STUN
+
+`webrtc.enable_builtin_stun` default: `true`.
+
+STUN helps clients discover their public mapped address for NAT traversal.
+
+Disable it when:
+
+- You use external STUN/TURN infrastructure.
+- The deployment cannot expose UDP.
+- You only use `signaling_only`.
+
+`webrtc.stun_port` default: `3478`.
+
+Expose UDP 3478 if clients should use the built-in STUN server.
+
+`webrtc.stun_host` default:
+
+```yaml
+webrtc:
+  stun_host: "0.0.0.0"
+```
+
+Container and server deployments usually keep this default.
+
+## `webrtc.stun_external_addr`
+
+Address advertised to clients for the STUN server.
+
+If empty, SyncTV tries `server.advertise_host:stun_port`.
+
+Set it explicitly in NAT or Kubernetes environments:
+
+```yaml
+webrtc:
+  stun_external_addr: "203.0.113.10:3478"
+```
+
+or:
+
+```yaml
+webrtc:
+  stun_external_addr: "stun.example.com:3478"
+```
+
+## `webrtc.filter_private_ice_candidates`
+
+Default: `true`.
+
+Filters private, loopback, and link-local ICE candidates to reduce internal network information exposure.
+
+Keep it enabled in production. Disable only for local development or LAN-only deployments where private candidates are required.
+
+## External ICE Servers
+
+External ICE servers are managed through runtime settings, not static YAML:
+
+```text
+webrtc.external_ice_servers
+```
+
+Value format:
+
+```json
+[
+  { "urls": ["stun:stun.l.google.com:19302"] },
+  {
+    "urls": ["turn:turn.example.com:3478"],
+    "username": "user",
+    "credential": "pass"
+  }
+]
+```
+
+Runtime settings are used because TURN credentials may rotate and administrators may need to adjust ICE servers without restarting the service.
+
+## Deployment Checklist
+
+If WebRTC connectivity fails, check:
+
+1. Clients can reach the SyncTV HTTP/gRPC API.
+2. UDP 3478 is reachable when built-in STUN is enabled.
+3. `stun_external_addr` is reachable by clients.
+4. Reverse proxies only handle HTTP and do not automatically expose UDP.
+5. TURN is configured for strict NAT environments.
+6. `filter_private_ice_candidates` matches your network model.

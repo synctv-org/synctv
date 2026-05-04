@@ -1,0 +1,69 @@
+---
+title: Internal Buffers
+description: buffer_sizes controls WebSocket outbound queues and audit event buffer capacity.
+---
+
+## Scope
+
+`buffer_sizes` controls internal queue sizes. Most deployments do not need to change these values. They matter when handling high concurrency, slow clients, audit spikes, or tight memory limits.
+
+These settings are not rate limits. Rate limits reject excessive requests; buffers absorb short bursts or downstream processing delays.
+
+## Complete Example
+
+```yaml
+buffer_sizes:
+  websocket_outbound: 256
+  audit_buffer: 10000
+```
+
+## `buffer_sizes.websocket_outbound`
+
+Type: integer.
+
+Default: `256`.
+
+Purpose: outbound message queue capacity for each WebSocket connection.
+
+When the server produces messages for a client faster than the client can read them, messages enter this queue first.
+
+Increase it when:
+
+- Client networks are unstable.
+- Room events or playback sync events spike for short periods.
+- Slow clients should be tolerated longer.
+
+Decrease it when:
+
+- Memory is constrained.
+- Slow clients should be disconnected earlier.
+- Client consumption problems should surface faster.
+
+Risk: this value is per connection. With 5000 connections and 256 queued messages per connection, memory pressure scales with connection count.
+
+## `buffer_sizes.audit_buffer`
+
+Type: integer.
+
+Default: `10000`.
+
+Purpose: audit event buffer capacity.
+
+Increase it when:
+
+- There are many admin operations.
+- Audit events pile up during peak periods.
+- The audit write backend occasionally slows down.
+
+Decrease it when:
+
+- Memory is limited.
+- Audit processing capacity problems should become visible earlier.
+
+For production, keep the default first and use logs or metrics to observe dropped or accumulated audit events.
+
+## Related Pages
+
+- [Rate Limits and Connection Limits](../rate-limits/)
+- [Metrics Monitoring](../metrics/)
+- [Configuration Index](../../reference/configuration-index/)

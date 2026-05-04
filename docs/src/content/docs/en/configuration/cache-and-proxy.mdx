@@ -1,0 +1,115 @@
+---
+title: Cache and Proxy Slice Cache
+description: Business caches, username and permission caches, and range-based media proxy slice cache.
+---
+
+## Cache Types
+
+SyncTV has two different cache families:
+
+- Business caches for small database-heavy objects such as users, rooms, usernames, and permissions.
+- Proxy slice cache for media proxying, where upstream byte ranges are cached as slices.
+
+Both live under `cache`, but they solve different problems.
+
+## Business Cache Fields
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `cache.l1_capacity` | `500` | Maximum number of in-process L1 entries |
+| `cache.l1_ttl_seconds` | `300` | L1 entry lifetime |
+| `cache.l2_ttl_seconds` | `300` | Redis L2 entry lifetime |
+| `cache.username_cache_capacity` | `1000` | Username lookup cache capacity |
+| `cache.username_cache_ttl_seconds` | `3600` | Username lookup cache lifetime |
+| `cache.permission_cache_capacity` | `1000` | Permission cache capacity |
+| `cache.permission_cache_ttl_seconds` | `300` | Permission cache lifetime |
+
+Defaults are suitable for small and medium deployments. Increase capacities only when you know cache churn is causing database load. Longer TTLs can improve hit rate but delay visibility of changes.
+
+## Proxy Slice Cache
+
+Media clients often request byte ranges:
+
+```http
+Range: bytes=1048576-2097151
+```
+
+The proxy slice cache stores upstream media in fixed-size byte slices. Repeated requests for the same slice can be served from cache, reducing provider bandwidth and latency.
+
+Current behavior:
+
+- Only range-capable upstream responses are cached.
+- Full-body cache is not used.
+- If an upstream does not support Range, SyncTV bypasses slice caching.
+- Runtime enable/disable is not supported; the setting is read at process startup.
+
+## `cache.proxy_slice_cache_enabled`
+
+Default: `true`.
+
+Purpose: main switch for proxy slice cache.
+
+Keep it enabled when media proxying is used. Disable it if disk or memory is constrained, or if every proxy request should stream directly from upstream.
+
+Environment variable:
+
+```bash
+SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED=true
+```
+
+## `cache.proxy_slice_file_backend_enabled`
+
+Default: `false`.
+
+Purpose: persist slice cache files to local or shared storage.
+
+Enable it when:
+
+- Media content is requested repeatedly.
+- Upstream provider bandwidth is limited.
+- Local or shared storage capacity is sufficient.
+
+Avoid it when:
+
+- The container has no persistent volume.
+- Disk capacity is limited.
+- Upstream content changes frequently and cache storage is not worth the risk.
+
+## `cache.proxy_slice_file_cache_dir`
+
+Default: empty. When the file backend is enabled and this value is empty, SyncTV uses its built-in default path under `data_dir`.
+
+Relative paths are resolved under `data_dir`:
+
+```yaml
+data_dir: "/var/lib/synctv"
+cache:
+  proxy_slice_file_backend_enabled: true
+  proxy_slice_file_cache_dir: "cache/proxy-slice"
+```
+
+Effective path:
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+For Docker and Helm deployments, mount a persistent volume if you expect cache to survive restarts. Shared slice cache across replicas requires storage that all replicas can read and write.
+
+## Common Questions
+
+### Are non-Range client GETs cached?
+
+SyncTV can try a Range request upstream even when the client did not send a Range header. If the upstream supports Range, slice cache can be used. If the upstream rejects or ignores Range, SyncTV bypasses.
+
+### Does SyncTV download the whole file if Range is unsupported?
+
+No. Full-body cache is intentionally not used because large media files can be slow and expensive to cache as complete objects.
+
+### What about suffix ranges like `bytes=-N`?
+
+If metadata is available and the total size is known, SyncTV can translate suffix ranges into concrete byte ranges and use slice cache. Without enough metadata, SyncTV does not force a HEAD probe just for suffix ranges; it bypasses and lets the upstream handle the request.
+
+### Can cached bytes become stale?
+
+SyncTV uses headers such as ETag and Content-Range when available to detect consistency. If a later slice fetch detects that the object changed while streaming, the connection is interrupted instead of continuing with mixed old and new bytes.

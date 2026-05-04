@@ -1,0 +1,137 @@
+---
+title: Configuration Validation
+description: Use config validate, logs, and rendered manifests to locate configuration problems.
+---
+
+## Primary Commands
+
+Local binary:
+
+```bash
+synctv config --config synctv.yaml validate
+```
+
+Development via Cargo:
+
+```bash
+cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
+```
+
+This page covers configuration validation errors. If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).
+
+## Common Errors
+
+### OPAQUE Secret Is Empty
+
+Meaning: `security.opaque_server_setup_secret` is not configured.
+
+Fix:
+
+```bash
+export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
+```
+
+Save this value in production. Do not regenerate it on every deployment.
+
+### Credential Key Format Is Invalid
+
+`security.credential_encryption_key` must be 64 hexadecimal characters.
+
+Generate:
+
+```bash
+openssl rand -hex 32
+```
+
+Wrong examples:
+
+- Base64 strings.
+- Human passwords.
+- Any value whose length is not 64 hex characters.
+
+### CORS Origin Is Invalid
+
+Correct:
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+```
+
+Wrong:
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com/path"
+```
+
+CORS origins cannot include paths.
+
+### WebAuthn Origin Is Invalid
+
+`webauthn.rp_origin` must also be an origin without path, query, or fragment.
+
+### Cluster Enabled but Redis Missing
+
+`cluster.enabled=true` requires Redis.
+
+Fix:
+
+```yaml
+redis:
+  url: "redis://redis:6379"
+```
+
+### Cluster Enabled but Cluster Secret Missing
+
+Fix:
+
+```bash
+export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
+```
+
+## Compose Debugging
+
+Inspect final Compose config:
+
+```bash
+docker compose config
+```
+
+Inspect logs:
+
+```bash
+docker compose logs -f synctv
+```
+
+If Compose reports a required variable missing, production Compose expects explicit secrets.
+
+## Helm Debugging
+
+Render manifests:
+
+```bash
+helm template synctv ./helm/synctv --values my-values.yaml
+```
+
+Lint:
+
+```bash
+helm lint ./helm/synctv
+```
+
+Inspect runtime ConfigMap:
+
+```bash
+kubectl get configmap synctv-config -n synctv -o yaml
+```
+
+List Secret keys:
+
+```bash
+kubectl get secret synctv-secrets -n synctv -o jsonpath='{.data}' | jq 'keys'
+```
+
+Do not paste Secret values into issues or chat.

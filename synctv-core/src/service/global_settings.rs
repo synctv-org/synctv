@@ -14,15 +14,15 @@
 //! registry.init(cancel).unwrap();
 //!
 //! // Read - type-safe, returns cached value
-//! if registry.signup_enabled.get().unwrap() {
-//!     // Signup is enabled
+//! if registry.enable_password_signup.get().unwrap() {
+//!     // Password signup is enabled
 //! }
 //!
 //! // Write - auto-converts to string and persists
-//! registry.signup_enabled.set(false).await?;
+//! registry.enable_password_signup.set(true).await?;
 //!
 //! // Validate user input via storage
-//! if registry.storage.validate("server.signup_enabled", "true") {
+//! if registry.storage.validate("user.enable_password_signup", "true") {
 //!     // Value is valid
 //! }
 //! ```
@@ -159,7 +159,6 @@ impl std::str::FromStr for CorsAllowedOrigins {
 /// A snapshot of all client-visible settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettings {
-    pub signup_enabled: bool,
     pub allow_room_creation: bool,
     pub max_rooms_per_user: i64,
     pub max_members_per_room: i64,
@@ -172,8 +171,14 @@ pub struct PublicSettings {
     pub room_must_no_need_pwd: bool,
 
     // User settings
-    pub signup_need_review: bool,
     pub enable_password_signup: bool,
+    pub password_signup_need_review: bool,
+    pub enable_email_signup: bool,
+    pub email_signup_need_review: bool,
+    pub enable_oauth2_signup: bool,
+    pub oauth2_signup_need_review: bool,
+    pub enable_webauthn_signup: bool,
+    pub webauthn_signup_need_review: bool,
     pub enable_guest: bool,
 
     // Proxy settings
@@ -194,7 +199,6 @@ impl PublicSettings {
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
-            signup_enabled: true,
             allow_room_creation: true,
             max_rooms_per_user: 10,
             max_members_per_room: 100,
@@ -203,8 +207,14 @@ impl PublicSettings {
             room_ttl: 172_800,
             room_must_need_pwd: false,
             room_must_no_need_pwd: false,
-            signup_need_review: false,
-            enable_password_signup: true,
+            enable_password_signup: false,
+            password_signup_need_review: false,
+            enable_email_signup: false,
+            email_signup_need_review: false,
+            enable_oauth2_signup: false,
+            oauth2_signup_need_review: false,
+            enable_webauthn_signup: false,
+            webauthn_signup_need_review: false,
             enable_guest: true,
             movie_proxy: true,
             live_proxy: true,
@@ -224,7 +234,6 @@ pub struct SettingsRegistry {
     pub storage: Arc<SettingsStorage>,
 
     // Server settings
-    pub signup_enabled: Setting<bool>,
     pub allow_room_creation: Setting<bool>,
     pub max_rooms_per_user: Setting<i64>,
     pub max_members_per_room: Setting<i64>,
@@ -243,9 +252,14 @@ pub struct SettingsRegistry {
     pub room_must_no_need_pwd: Setting<bool>,
 
     // User settings
-    pub signup_need_review: Setting<bool>,
     pub enable_password_signup: Setting<bool>,
     pub password_signup_need_review: Setting<bool>,
+    pub enable_email_signup: Setting<bool>,
+    pub email_signup_need_review: Setting<bool>,
+    pub enable_oauth2_signup: Setting<bool>,
+    pub oauth2_signup_need_review: Setting<bool>,
+    pub enable_webauthn_signup: Setting<bool>,
+    pub webauthn_signup_need_review: Setting<bool>,
     pub enable_guest: Setting<bool>,
 
     // Proxy settings
@@ -293,7 +307,6 @@ impl SettingsRegistry {
 
             // Server settings using the setting! macro
             // Each setting auto-registers its provider to storage
-            signup_enabled: setting!(bool, "server.signup_enabled", storage.clone(), true),
             allow_room_creation: setting!(
                 bool,
                 "server.allow_room_creation",
@@ -401,16 +414,46 @@ impl SettingsRegistry {
             ),
 
             // User settings
-            signup_need_review: setting!(bool, "user.signup_need_review", storage.clone(), false),
             enable_password_signup: setting!(
                 bool,
                 "user.enable_password_signup",
                 storage.clone(),
-                true
+                false
             ),
             password_signup_need_review: setting!(
                 bool,
                 "user.password_signup_need_review",
+                storage.clone(),
+                false
+            ),
+            enable_email_signup: setting!(bool, "user.enable_email_signup", storage.clone(), false),
+            email_signup_need_review: setting!(
+                bool,
+                "user.email_signup_need_review",
+                storage.clone(),
+                false
+            ),
+            enable_oauth2_signup: setting!(
+                bool,
+                "user.enable_oauth2_signup",
+                storage.clone(),
+                false
+            ),
+            oauth2_signup_need_review: setting!(
+                bool,
+                "user.oauth2_signup_need_review",
+                storage.clone(),
+                false
+            ),
+            enable_webauthn_signup: setting!(
+                bool,
+                "user.enable_webauthn_signup",
+                storage.clone(),
+                false
+            ),
+            webauthn_signup_need_review: setting!(
+                bool,
+                "user.webauthn_signup_need_review",
                 storage.clone(),
                 false
             ),
@@ -531,7 +574,6 @@ impl SettingsRegistry {
     #[must_use]
     pub fn to_public_settings(&self) -> PublicSettings {
         PublicSettings {
-            signup_enabled: Self::get_or_warn("signup_enabled", &self.signup_enabled, true),
             allow_room_creation: Self::get_or_warn(
                 "allow_room_creation",
                 &self.allow_room_creation,
@@ -568,15 +610,45 @@ impl SettingsRegistry {
                 &self.room_must_no_need_pwd,
                 false,
             ),
-            signup_need_review: Self::get_or_warn(
-                "signup_need_review",
-                &self.signup_need_review,
-                false,
-            ),
             enable_password_signup: Self::get_or_warn(
                 "enable_password_signup",
                 &self.enable_password_signup,
-                true,
+                false,
+            ),
+            password_signup_need_review: Self::get_or_warn(
+                "password_signup_need_review",
+                &self.password_signup_need_review,
+                false,
+            ),
+            enable_email_signup: Self::get_or_warn(
+                "enable_email_signup",
+                &self.enable_email_signup,
+                false,
+            ),
+            email_signup_need_review: Self::get_or_warn(
+                "email_signup_need_review",
+                &self.email_signup_need_review,
+                false,
+            ),
+            enable_oauth2_signup: Self::get_or_warn(
+                "enable_oauth2_signup",
+                &self.enable_oauth2_signup,
+                false,
+            ),
+            oauth2_signup_need_review: Self::get_or_warn(
+                "oauth2_signup_need_review",
+                &self.oauth2_signup_need_review,
+                false,
+            ),
+            enable_webauthn_signup: Self::get_or_warn(
+                "enable_webauthn_signup",
+                &self.enable_webauthn_signup,
+                false,
+            ),
+            webauthn_signup_need_review: Self::get_or_warn(
+                "webauthn_signup_need_review",
+                &self.webauthn_signup_need_review,
+                false,
             ),
             enable_guest: Self::get_or_warn("enable_guest", &self.enable_guest, true),
             movie_proxy: Self::get_or_warn("movie_proxy", &self.movie_proxy, true),
@@ -676,10 +748,26 @@ mod tests {
         settings.custom_publish_host = "rtmp://live.example.com".to_string();
         let json = serde_json::to_string(&settings).unwrap();
         let deserialized: PublicSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.signup_enabled, settings.signup_enabled);
+        assert_eq!(
+            deserialized.enable_password_signup,
+            settings.enable_password_signup
+        );
         assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
         assert_eq!(deserialized.room_ttl, settings.room_ttl);
         assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
+    }
+
+    #[test]
+    fn test_public_settings_registration_defaults_are_closed() {
+        let settings = PublicSettings::defaults();
+        assert!(!settings.enable_password_signup);
+        assert!(!settings.password_signup_need_review);
+        assert!(!settings.enable_email_signup);
+        assert!(!settings.email_signup_need_review);
+        assert!(!settings.enable_oauth2_signup);
+        assert!(!settings.oauth2_signup_need_review);
+        assert!(!settings.enable_webauthn_signup);
+        assert!(!settings.webauthn_signup_need_review);
     }
 
     #[test]

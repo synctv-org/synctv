@@ -8260,7 +8260,6 @@ mod tests {
 
         let payload: serde_json::Value =
             serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
-        assert_eq!(payload["signup_enabled"], true);
         assert_eq!(payload["allow_room_creation"], true);
         assert_eq!(payload["max_rooms_per_user"], 10);
         assert_eq!(payload["max_members_per_room"], 100);
@@ -8277,24 +8276,16 @@ mod tests {
             .update_settings(
                 crate::proto::admin::UpdateSettingsRequest {
                     group: "server".to_string(),
-                    settings: std::collections::HashMap::from([
-                        ("signup_enabled".to_string(), "false".to_string()),
-                        ("max_rooms_per_user".to_string(), "42".to_string()),
-                    ]),
+                    settings: std::collections::HashMap::from([(
+                        "max_rooms_per_user".to_string(),
+                        "42".to_string(),
+                    )]),
                 },
                 &UserId::new(),
                 &RequestContext::default(),
             )
             .await
             .expect("update_settings should upsert missing flat settings");
-
-        let signup_enabled = admin_api
-            .settings_service
-            .get("server.signup_enabled")
-            .await
-            .expect("signup_enabled should be persisted");
-        assert_eq!(signup_enabled.group_name, "server");
-        assert_eq!(signup_enabled.value, "false");
 
         let max_rooms_per_user = admin_api
             .settings_service
@@ -8317,7 +8308,6 @@ mod tests {
         let group = response.group.expect("settings group response");
         let payload: serde_json::Value =
             serde_json::from_slice(&group.settings).expect("settings payload should be valid JSON");
-        assert_eq!(payload["signup_enabled"], false);
         assert_eq!(payload["max_rooms_per_user"], 42);
         assert_eq!(payload["allow_room_creation"], true);
     }

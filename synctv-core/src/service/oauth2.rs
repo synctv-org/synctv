@@ -25,7 +25,7 @@ use crate::{
     models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
-    service::UserService,
+    service::{RegistrationMode, UserService},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -1032,6 +1032,8 @@ impl OAuth2Service {
             tx.rollback().await?;
             return Ok((mapping.user_id, false));
         }
+
+        user_service.ensure_registration_review_supported(RegistrationMode::OAuth2)?;
 
         let (base_username, candidates) = UserService::oauth2_username_candidates(
             &user_info.provider_user_id,

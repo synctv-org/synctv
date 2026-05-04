@@ -1,0 +1,162 @@
+---
+title: SyncTV Documentation
+description: Official SyncTV documentation for deployment, administration, and development.
+template: splash
+hero:
+  tagline: Real-time synchronized watching, livestreaming, media aggregation, and horizontally scalable collaboration.
+  actions:
+    - text: Quick Start
+      link: guides/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: Architecture
+      link: guides/architecture/
+      icon: puzzle
+    - text: Configuration Reference
+      link: reference/configuration-index/
+      icon: document
+    - text: Client Integration
+      link: guides/client-integration/
+      icon: puzzle
+---
+
+import { Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import LocaleChoiceTracker from '../../../components/LocaleChoiceTracker.astro';
+
+<LocaleChoiceTracker />
+
+## Documentation Layout
+
+SyncTV can run as a self-hosted single-node service or as a multi-node cluster. The documentation is organized around four workflows:
+
+- **Deployment**: Docker Compose, Helm, production checklist, secrets, domains, ports, storage, and Ingress.
+- **Configuration**: Redis, PostgreSQL, CORS, rate limits, metrics, WebAuthn, OAuth2, cluster mode, cache, and providers.
+- **Operations**: backup and restore, upgrades, observability, logs, troubleshooting, and incident data collection.
+- **Development**: configuration precedence, environment variables, CLI, OpenAPI, gRPC, provider configuration, and deployment templates.
+
+<CardGrid>
+  <Card title="Start Quickly" icon="rocket">
+    Bring up PostgreSQL, Redis, and SyncTV with Docker Compose, then verify the required production secrets.
+  </Card>
+  <Card title="Understand Boundaries" icon="puzzle">
+    Learn how HTTP/gRPC, management, metrics, Redis, PostgreSQL, provider proxying, and clustering fit together.
+  </Card>
+  <Card title="Understand Configuration" icon="setting">
+    Every configuration page explains what the field controls, when to change it, and what operational risk it carries.
+  </Card>
+  <Card title="Deploy to Production" icon="rocket">
+    Review Helm, Ingress, split HTTP/gRPC services, metrics, Redis, HLS storage, and multi-replica constraints.
+  </Card>
+  <Card title="Security Defaults" icon="approve-check-circle">
+    JWT, OPAQUE, provider credential encryption, CORS, trusted proxies, rate limits, and WebAuthn have dedicated pages.
+  </Card>
+</CardGrid>
+
+<Aside type="tip">
+For first-time deployment, start with the quick start. For production, use the production checklist and the configuration index.
+</Aside>
+
+## Core Configuration Principles
+
+SyncTV configuration is built around three rules: keep stable secrets stable, inject sensitive values through secret mechanisms, and put runtime-owned files under a persistent data directory.
+
+Key concepts:
+
+- `jwt.secret`: signs login tokens. Rotate it if it leaks; existing sessions may be invalidated.
+- `security.opaque_server_setup_secret`: used by OPAQUE password authentication. Keep it stable across restarts and upgrades.
+- `security.credential_encryption_key`: encrypts media provider credentials. Back it up securely before storing encrypted credentials.
+- `data_dir`: root directory for runtime-owned files such as the management socket, logs, HLS files, and proxy slice cache.
+- `server.cors_allowed_origins`: allowed browser origins for cross-origin API access.
+- `cluster.enabled`: enables multi-node coordination. Redis and `server.cluster_secret` become required.
+
+## Recommended Reading Order
+
+1. Read [Quick Start](guides/quick-start/) and confirm the service can start.
+2. When writing configuration, use the [Full Configuration Example](configuration/full-example/) and [Configuration Index](reference/configuration-index/).
+3. Read [How Configuration Works](configuration/how-configuration-works/) to understand precedence and environment variable naming.
+4. For server deployments, read [Security and Secrets](configuration/security/).
+5. For Docker or Kubernetes, read [Docker Compose Deployment](deployment/docker-compose/) or [Helm Deployment](deployment/helm/).
+6. Before production launch, read [Backup and Restore](operations/backup-restore/), [Upgrades and Migrations](operations/upgrades/), and [Observability Runbook](operations/observability/).
+7. Before managing users, rooms, permissions, or providers, read [Administration Runbook](guides/administration/) and [Rooms, Permissions, and Preferences](guides/rooms-permissions/).
+8. Before building a client or SDK, read the [Client Integration Guide](guides/client-integration/).
+9. For production data governance, read [Data, Privacy, and Retention](operations/data-retention/).
+10. For startup, Ingress, authentication, or media playback failures, start from [Troubleshooting](operations/troubleshooting/).
+
+## Common Entry Points
+
+<CardGrid>
+  <LinkCard
+    title="Documentation Map"
+    href="guides/documentation-map/"
+    description="Task-oriented entry points for deployment, configuration, operations, development, and troubleshooting."
+  />
+  <LinkCard
+    title="Configuration Index"
+    href="reference/configuration-index/"
+    description="All configuration fields, types, defaults, and links to detailed explanations."
+  />
+  <LinkCard
+    title="Architecture Overview"
+    href="guides/architecture/"
+    description="Single-binary service, network surfaces, state layers, provider proxying, slice cache, and cluster model."
+  />
+  <LinkCard
+    title="Authentication and Security Model"
+    href="guides/security-model/"
+    description="Local login, OAuth2, user 2FA, token context, management control plane, and provider header boundaries."
+  />
+  <LinkCard
+    title="Administration Runbook"
+    href="guides/administration/"
+    description="Management boundaries for users, rooms, reviews, providers, runtime settings, system state, and slice cache."
+  />
+  <LinkCard
+    title="Rooms, Permissions, and Preferences"
+    href="guides/rooms-permissions/"
+    description="Global roles, room roles, permission bits, room settings, member overrides, and user preferences."
+  />
+  <LinkCard
+    title="Client Integration Guide"
+    href="guides/client-integration/"
+    description="HTTP, gRPC, WebSocket, login, MFA, OAuth2, tokens, and media header integration guidance."
+  />
+  <LinkCard
+    title="Production Checklist"
+    href="deployment/production-checklist/"
+    description="Review secrets, database, Redis, Ingress, metrics, backups, and upgrades before launch."
+  />
+  <LinkCard
+    title="Data, Privacy, and Retention"
+    href="operations/data-retention/"
+    description="PostgreSQL, Redis, logs, backups, PII, provider credentials, and background cleanup behavior."
+  />
+  <LinkCard
+    title="Observability Runbook"
+    href="operations/observability/"
+    description="Health checks, metrics, logs, key alerts, and incident data collection."
+  />
+  <LinkCard
+    title="Troubleshooting"
+    href="operations/troubleshooting/"
+    description="Diagnose startup, configuration, Ingress, authentication, provider, cache, livestream, and cluster issues."
+  />
+  <LinkCard
+    title="CLI Reference"
+    href="reference/cli/"
+    description="Manage users, rooms, providers, settings, system state, and slice cache from the CLI."
+  />
+  <LinkCard
+    title="Runtime Settings Reference"
+    href="reference/runtime-settings/"
+    description="Database hot-reload setting keys, defaults, validation rules, and scope."
+  />
+  <LinkCard
+    title="OpenAPI Access"
+    href="reference/openapi/"
+    description="Enable the openapi feature and access Swagger UI or the OpenAPI JSON document."
+  />
+</CardGrid>
+
+## License
+
+SyncTV is licensed under the MIT License. See the repository `LICENSE` file for the full terms.

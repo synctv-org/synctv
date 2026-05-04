@@ -1,0 +1,295 @@
+---
+title: Configuration Index
+description: Source-aligned list of all SyncTV configuration fields, types, defaults, and detailed documentation pages.
+---
+
+## How to Use This Page
+
+This page is the configuration coverage index. Use it to confirm whether a YAML field is documented and to find the detailed page for that field.
+
+Defaults in this page are source-level defaults. `synctv config show --output yaml` prints the effective configuration after defaults, config file, environment variables, CLI overrides, path resolution, and timezone fallback are applied. Dynamic objects such as `oauth2.providers` and `media_providers.providers` are provider-specific; this page lists their outer static fields.
+
+## Full Configuration Example
+
+The full YAML template is kept on a dedicated page so this index stays scannable:
+
+- [Full Configuration Example](../../configuration/full-example/): minimal production skeleton, full YAML template covering all static fields, and URL/split configuration examples.
+- `synctv config show --output yaml`: prints the current binary's complete effective configuration with secrets redacted.
+
+## Top-Level Configuration
+
+| Field | Type | Default | Details |
+| --- | --- | --- | --- |
+| `server` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| `time` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| `public_ids` | object | see below | [Public IDs](../../configuration/public-ids/) |
+| `security` | object | see below | [Security and Secrets](../../configuration/security/) |
+| `data_dir` | string path | platform-specific | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| `metrics` | object | see below | [Metrics Monitoring](../../configuration/metrics/) |
+| `management` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| `database` | object | see below | [Database and Redis](../../configuration/database-and-redis/) |
+| `redis` | object | see below | [Database and Redis](../../configuration/database-and-redis/) |
+| `jwt` | object | see below | [Security and Secrets](../../configuration/security/) |
+| `logging` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
+| `livestream` | object | see below | [Livestream Configuration](../../configuration/livestream/) |
+| `oauth2` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
+| `webauthn` | object | see below | [WebAuthn and Passkeys](../../configuration/webauthn/) |
+| `email` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
+| `media_providers` | object | see below | [Media Providers](../../configuration/media-providers/) |
+| `webrtc` | object | see below | [WebRTC Configuration](../../configuration/webrtc/) |
+| `connection_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| `bootstrap` | object | see below | [Bootstrap Root User](../../configuration/bootstrap/) |
+| `cluster` | object | see below | [Cluster Configuration](../../configuration/cluster/) |
+| `password_complexity` | object | see below | [Security and Secrets](../../configuration/security/) |
+| `buffer_sizes` | object | see below | [Internal Buffers](../../configuration/buffer-sizes/) |
+| `cache` | object | see below | [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) |
+| `messaging_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| `http_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+| `grpc_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
+
+## `server`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `server.host` | IP/listen address | `0.0.0.0` | Main API listen address |
+| `server.port` | port | `8080` | HTTP REST, public gRPC, and health-check port |
+| `server.enable_reflection` | boolean | `true` | Enable public gRPC reflection |
+| `server.trusted_proxies` | string array | `[]` | Trusted reverse proxy IPs/CIDRs |
+| `server.cors_allowed_origins` | string array | `[]` | Frontend origins allowed by startup CORS |
+| `server.cluster_secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
+| `server.advertise_host` | string | `""` | Address other nodes use to reach this node |
+| `server.shutdown_drain_timeout_seconds` | seconds | `30` | Graceful shutdown drain timeout |
+| `server.grpc_max_message_size_bytes` | bytes | `16777216` | Maximum gRPC message size |
+
+## `time`, `public_ids`, and `security`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `time.timezone` | IANA timezone | `""` | Timezone for human-readable formatting and local datetime parsing |
+| `public_ids.sqids` | object or null | `null` | Enable sqids public IDs when configured |
+| `public_ids.sqids.alphabet` | string or null | `null` | sqids alphabet |
+| `public_ids.sqids.min_length` | integer | `12` | Minimum sqids length |
+| `security.credential_encryption_key` | 64-character hex secret | `""` | Provider credential encryption key |
+| `security.opaque_server_setup_secret` | secret string | `""` | Stable OPAQUE server setup secret |
+
+## `metrics`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `metrics.enabled` | boolean | `false` | Start the dedicated metrics listener |
+| `metrics.host` | IP/listen address | `0.0.0.0` | Metrics listen address |
+| `metrics.port` | port | `9090` | Metrics listen port |
+| `metrics.tls.enabled` | boolean | `false` | Enable TLS on the metrics listener |
+| `metrics.tls.cert_path` | file path | `""` | Metrics TLS certificate |
+| `metrics.tls.key_path` | file path | `""` | Metrics TLS private key |
+| `metrics.auth.mode` | `bearer_token`, `basic`, or `kubernetes` | `bearer_token` | Metrics authentication mode |
+| `metrics.auth.bearer_token` | secret string | `""` | Bearer token for bearer-token mode |
+| `metrics.auth.basic_username` | string | `""` | Basic-auth username |
+| `metrics.auth.basic_password` | secret string | `""` | Basic-auth password |
+| `metrics.auth.kubernetes.audience` | string | `""` | Kubernetes TokenReview audience |
+| `metrics.auth.kubernetes.authentication_cache_ttl_seconds` | seconds | `60` | TokenReview result cache TTL |
+| `metrics.auth.kubernetes.authorization_cache_ttl_seconds` | seconds | `60` | SubjectAccessReview result cache TTL |
+
+## `management`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `management.enabled` | boolean | `true` | Enable the management endpoint |
+| `management.transport` | `unix` or `tcp` | `unix` on Unix, `tcp` elsewhere | Management endpoint transport |
+| `management.port` | port | `50052` | TCP management port |
+| `management.unix_socket_path` | file path | platform-specific | Unix socket path |
+| `management.auth_token` | secret string | `""` | TCP management bearer token |
+| `management.enable_reflection` | boolean | `false` | Management gRPC reflection |
+
+## `database`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `database.url` | PostgreSQL URL | `postgresql://synctv:synctv@localhost:5432/synctv` | Complete database connection URL |
+| `database.host` | string | `""` | Database host for split configuration |
+| `database.port` | port | `0` | Database port for split configuration |
+| `database.username` | string | `""` | Database username |
+| `database.password` | secret string | `""` | Database password |
+| `database.name` | string | `""` | Database name |
+| `database.max_connections` | integer | `20` | Maximum pool connections |
+| `database.min_connections` | integer | `5` | Minimum idle pool connections |
+| `database.connect_timeout_seconds` | seconds | `10` | Connection timeout |
+| `database.idle_timeout_seconds` | seconds | `600` | Idle connection timeout |
+| `database.max_lifetime_seconds` | seconds | `1800` | Maximum connection lifetime |
+
+## `redis`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `redis.url` | Redis URL | `""` | Complete Redis connection URL |
+| `redis.host` | string | `""` | Redis host for split configuration |
+| `redis.port` | port | `0` | Redis port for split configuration |
+| `redis.username` | string | `""` | Redis username |
+| `redis.password` | secret string | `""` | Redis password |
+| `redis.database` | integer | `0` | Redis database index |
+| `redis.connect_timeout_seconds` | seconds | `5` | Redis connection timeout |
+| `redis.key_prefix` | string | `synctv:` | Redis key prefix |
+| `redis.deployment_mode` | `standalone` or `sentinel` | `standalone` | Redis deployment mode |
+| `redis.sentinel_master_name` | string or null | `null` | Sentinel master name |
+| `redis.sentinel_addresses` | string array | `[]` | Sentinel node addresses |
+
+## `jwt` and `logging`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `jwt.secret` | secret string | `change-me-in-production` | Token signing secret |
+| `jwt.access_token_duration_hours` | hours | `1` | Access-token lifetime |
+| `jwt.refresh_token_duration_days` | days | `30` | Refresh-token lifetime |
+| `jwt.guest_token_duration_hours` | hours | `4` | Guest-token lifetime |
+| `jwt.clock_skew_leeway_secs` | seconds | `60` | Token timestamp skew allowance |
+| `logging.level` | `error`, `warn`, `info`, `debug`, or `trace` | `info` | Log level |
+| `logging.format` | `pretty` or `json` | `pretty` | Log format |
+| `logging.filter` | tracing filter string or null | `null` | Advanced module-level log filter |
+| `logging.backtrace` | boolean | `false` | Emit backtraces |
+| `logging.file_path` | file path or null | `null` | Log file path |
+
+## `livestream`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `livestream.rtmp_port` | port | `1935` | RTMP ingest port |
+| `livestream.public_rtmp_host` | string | `""` | Public RTMP host returned to publishers |
+| `livestream.gop_cache_size` | integer | `2` | Number of GOPs cached per stream |
+| `livestream.stream_timeout_seconds` | seconds | `300` | Pull-stream idle timeout |
+| `livestream.cleanup_check_interval_seconds` | seconds | `60` | Cleanup check interval |
+| `livestream.pull_max_retries` | integer | `10` | Maximum pull-stream retries |
+| `livestream.pull_initial_backoff_ms` | milliseconds | `1000` | Initial pull retry backoff |
+| `livestream.pull_max_backoff_ms` | milliseconds | `30000` | Maximum pull retry backoff |
+| `livestream.max_flv_tag_size_bytes` | bytes | `10485760` | Maximum accepted FLV tag size |
+| `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP cache memory limit |
+| `livestream.hls_memory_max_mb` | MB | `0` | In-memory HLS storage limit; `0` uses the built-in default |
+| `livestream.hls_shared_storage` | boolean | `false` | Whether HLS storage is shared across replicas |
+| `livestream.hls_storage_path` | path | `""` | HLS file storage path |
+| `livestream.flv_max_connection_duration_seconds` | seconds | `86400` | Maximum HTTP-FLV connection duration |
+| `livestream.flv_write_timeout_seconds` | seconds | `30` | HTTP-FLV write timeout |
+
+## `oauth2`, `webauthn`, and `email`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `oauth2.providers` | dynamic object | `{}` | OAuth2/OIDC provider configuration |
+| `oauth2.redirect_scheme` | `http` or `https` | `https` | OAuth2 redirect URL scheme |
+| `webauthn.enabled` | boolean | `false` | Enable passkey endpoints |
+| `webauthn.rp_id` | domain | `""` | WebAuthn relying-party ID |
+| `webauthn.rp_origin` | origin | `""` | Primary WebAuthn origin |
+| `webauthn.rp_name` | string | `SyncTV` | Authenticator display name |
+| `webauthn.allowed_origins` | origin array | `[]` | Additional accepted origins |
+| `webauthn.allow_subdomains` | boolean | `false` | Allow subdomains of configured origins |
+| `webauthn.allow_any_port` | boolean | `false` | Ignore origin ports |
+| `webauthn.timeout_seconds` | seconds | `300` | Challenge timeout |
+| `email.smtp_host` | string | `""` | SMTP host |
+| `email.smtp_port` | port | `587` | SMTP port |
+| `email.smtp_username` | string | `""` | SMTP username |
+| `email.smtp_password` | secret string | `""` | SMTP password |
+| `email.from_email` | email address | `""` | Sender email address |
+| `email.from_name` | string | `SyncTV` | Sender display name |
+| `email.use_tls` | boolean | `true` | Use TLS for SMTP |
+
+## `media_providers` and `webrtc`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `media_providers.providers` | dynamic object | `{}` | Alist, Emby, Bilibili, and other provider instance configuration |
+| `media_providers.request_timeout_seconds` | seconds | `30` | Total provider HTTP request timeout |
+| `media_providers.connect_timeout_seconds` | seconds | `10` | Provider HTTP connection timeout |
+| `webrtc.mode` | `signaling_only` or `peer_to_peer` | `peer_to_peer` | WebRTC operating mode |
+| `webrtc.enable_builtin_stun` | boolean | `true` | Enable built-in STUN |
+| `webrtc.stun_port` | port | `3478` | STUN port |
+| `webrtc.stun_host` | IP/listen address | `0.0.0.0` | STUN listen address |
+| `webrtc.stun_external_addr` | string | `""` | STUN external address announced to clients |
+| `webrtc.filter_private_ice_candidates` | boolean | `true` | Filter private ICE candidates |
+
+## `connection_limits`, `bootstrap`, and `cluster`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `connection_limits.max_per_user` | integer | `5` | Maximum connections per user |
+| `connection_limits.max_per_room` | integer | `200` | Maximum connections per room |
+| `connection_limits.max_total` | integer | `10000` | Maximum service-wide connections |
+| `connection_limits.idle_timeout_seconds` | seconds | `300` | Idle connection timeout |
+| `connection_limits.max_duration_seconds` | seconds | `86400` | Maximum connection lifetime |
+| `connection_limits.ws_message_rate_limit_per_second` | per-second count | `50` | WebSocket message rate per connection |
+| `bootstrap.create_root_user` | boolean | `false` | Create the initial root user automatically |
+| `bootstrap.root_username` | string | `root` | Initial root username |
+| `bootstrap.root_email` | email or empty | `""` | Initial root email |
+| `bootstrap.root_password` | secret string | `""` | Initial root password |
+| `cluster.enabled` | boolean | `false` | Enable cluster mode |
+| `cluster.critical_channel_capacity` | integer | `1000` | High-priority cluster event queue capacity |
+| `cluster.publish_channel_capacity` | integer | `10000` | Normal cluster publish queue capacity |
+| `cluster.discovery_mode` | `redis`, `static`, or `k8s_dns` | `redis` | Node discovery mode |
+| `cluster.leader_election_mode` | `redis` or `k8s_lease` | `redis` | Leader election mode |
+| `cluster.peers` | string array | `[]` | Static peer addresses |
+| `cluster.catchup_window_secs` | seconds | `300` | Redis Stream catch-up replay window |
+| `cluster.stream_max_length` | integer | `10000` | Approximate Redis Stream maximum length |
+
+## `password_complexity`, `buffer_sizes`, and `cache`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `password_complexity.min_length` | integer | `8` | Minimum password length |
+| `password_complexity.require_uppercase` | boolean | `true` | Require uppercase letters |
+| `password_complexity.require_lowercase` | boolean | `true` | Require lowercase letters |
+| `password_complexity.require_digit` | boolean | `true` | Require digits |
+| `password_complexity.require_special` | boolean | `false` | Require special characters |
+| `password_complexity.max_repeated_chars` | integer | `3` | Maximum repeated consecutive characters; `0` disables this check |
+| `buffer_sizes.websocket_outbound` | integer | `256` | Per-connection WebSocket outbound queue size |
+| `buffer_sizes.audit_buffer` | integer | `10000` | Audit event buffer capacity |
+| `cache.l1_capacity` | integer | `500` | L1 in-memory cache capacity |
+| `cache.l1_ttl_seconds` | seconds | `300` | L1 in-memory cache TTL |
+| `cache.l2_ttl_seconds` | seconds | `300` | Redis L2 cache TTL |
+| `cache.username_cache_capacity` | integer | `1000` | Username cache capacity |
+| `cache.username_cache_ttl_seconds` | seconds | `3600` | Username cache TTL |
+| `cache.permission_cache_capacity` | integer | `1000` | Permission cache capacity |
+| `cache.permission_cache_ttl_seconds` | seconds | `300` | Permission cache TTL |
+| `cache.proxy_slice_cache_enabled` | boolean | `true` | Enable proxy slice cache at startup |
+| `cache.proxy_slice_file_backend_enabled` | boolean | `false` | Enable file backend for proxy slice cache |
+| `cache.proxy_slice_file_cache_dir` | path | `""` | Proxy slice cache file directory |
+
+## `messaging_rate_limits`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `messaging_rate_limits.chat_per_second` | integer | `10` | Maximum chat messages per window |
+| `messaging_rate_limits.danmaku_per_second` | integer | `3` | Maximum danmaku messages per window |
+| `messaging_rate_limits.window_seconds` | seconds | `1` | Chat/danmaku rate-limit window |
+
+## `http_rate_limits`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `http_rate_limits.auth_max_requests` | integer | `5` | Maximum HTTP auth requests per window |
+| `http_rate_limits.auth_window_seconds` | seconds | `60` | HTTP auth rate-limit window |
+| `http_rate_limits.write_max_requests` | integer | `30` | Maximum HTTP write requests per window |
+| `http_rate_limits.write_window_seconds` | seconds | `60` | HTTP write rate-limit window |
+| `http_rate_limits.read_max_requests` | integer | `100` | Maximum HTTP read requests per window |
+| `http_rate_limits.read_window_seconds` | seconds | `60` | HTTP read rate-limit window |
+| `http_rate_limits.media_max_requests` | integer | `20` | Maximum HTTP media requests per window |
+| `http_rate_limits.media_window_seconds` | seconds | `60` | HTTP media rate-limit window |
+| `http_rate_limits.admin_max_requests` | integer | `30` | Maximum HTTP admin requests per window |
+| `http_rate_limits.admin_window_seconds` | seconds | `60` | HTTP admin rate-limit window |
+| `http_rate_limits.streaming_max_requests` | integer | `200` | Maximum HTTP streaming requests per window |
+| `http_rate_limits.streaming_window_seconds` | seconds | `60` | HTTP streaming rate-limit window |
+| `http_rate_limits.websocket_max_requests` | integer | `10` | Maximum WebSocket connection attempts per window |
+| `http_rate_limits.websocket_window_seconds` | seconds | `60` | WebSocket connection rate-limit window |
+
+## `grpc_rate_limits`
+
+| Field | Type / values | Default | Meaning |
+| --- | --- | --- | --- |
+| `grpc_rate_limits.auth_max_requests` | integer | `5` | Maximum gRPC auth requests per window |
+| `grpc_rate_limits.auth_window_seconds` | seconds | `60` | gRPC auth rate-limit window |
+| `grpc_rate_limits.email_max_requests` | integer | `5` | Maximum gRPC email requests per window |
+| `grpc_rate_limits.email_window_seconds` | seconds | `60` | gRPC email rate-limit window |
+| `grpc_rate_limits.media_max_requests` | integer | `20` | Maximum gRPC media requests per window |
+| `grpc_rate_limits.media_window_seconds` | seconds | `60` | gRPC media rate-limit window |
+| `grpc_rate_limits.write_max_requests` | integer | `30` | Maximum gRPC write requests per window |
+| `grpc_rate_limits.write_window_seconds` | seconds | `60` | gRPC write rate-limit window |
+| `grpc_rate_limits.admin_max_requests` | integer | `30` | Maximum gRPC admin requests per window |
+| `grpc_rate_limits.admin_window_seconds` | seconds | `60` | gRPC admin rate-limit window |
+| `grpc_rate_limits.read_max_requests` | integer | `100` | Maximum gRPC read requests per window |
+| `grpc_rate_limits.read_window_seconds` | seconds | `60` | gRPC read rate-limit window |

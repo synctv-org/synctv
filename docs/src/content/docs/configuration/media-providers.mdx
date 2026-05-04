@@ -1,0 +1,138 @@
+---
+title: 媒体 Provider
+description: Alist、Emby、Jellyfin、Bilibili 等媒体 Provider 的通用配置方式。
+---
+
+## Provider 配置是什么？
+
+Media Provider 是 SyncTV 访问外部媒体来源的方式，例如：
+
+- Alist
+- Emby
+- Jellyfin
+- Bilibili
+- 其他远程 Provider
+
+Provider 的具体字段是动态的，因此放在：
+
+```yaml
+media_providers:
+  providers: {}
+```
+
+## 通用超时配置
+
+### `media_providers.request_timeout_seconds`
+
+默认值：`30`。
+
+作用：一次外部 Provider HTTP 请求最多等待多久。
+
+如果上游服务很慢，超时能避免 SyncTV 工作线程长期被卡住。
+
+设置为 `0` 表示禁用请求超时，但生产环境不推荐。
+
+### `media_providers.connect_timeout_seconds`
+
+默认值：`10`。
+
+作用：建立 TCP 连接最多等待多久。
+
+如果这个值大于 `request_timeout_seconds`，配置校验会提示不合理。
+
+## `media_providers.providers`
+
+这是一个对象，每个 key 是 provider 实例名。
+
+Alist 示例：
+
+```yaml
+media_providers:
+  providers:
+    alist:
+      base_url: "https://alist.example.com"
+      token_file: "/run/secrets/alist_token"
+```
+
+Emby 示例：
+
+```yaml
+media_providers:
+  providers:
+    emby:
+      base_url: "https://emby.example.com"
+      api_key_file: "/run/secrets/emby_api_key"
+```
+
+Bilibili 示例取决于当前 Provider 实现和实例配置。通常会包含 cookie、credential、UA、代理策略等与账号或实例相关的字段。
+
+## secret-like 字段
+
+Provider 内部的敏感字段支持 `_file`：
+
+- `token_file`
+- `api_key_file`
+- `password_file`
+- `access_token_file`
+- `refresh_token_file`
+- `client_secret_file`
+
+示例：
+
+```yaml
+media_providers:
+  providers:
+    demo:
+      access_token_file: "/run/secrets/demo_access_token"
+```
+
+相对路径会相对配置文件所在目录，而不是 `data_dir`。
+
+## Provider 请求头原则
+
+SyncTV 的底层 proxy 不应该自己猜测和转发客户端原始请求头。Provider 应该明确决定上游请求需要哪些 header，例如：
+
+- `User-Agent`
+- `Referer`
+- `Range`
+- Provider 特定认证 header
+
+这样做的好处：
+
+- 行为可预测。
+- 不会把客户端不该转发的 header 泄露给上游。
+- 不同 Provider 可以按自己的要求设置直连和代理 header。
+
+## Alist 提示
+
+Alist 可能返回对 User-Agent 有要求的 URL。SyncTV 会尽量保证：
+
+- Provider 自己发起的请求使用的 UA。
+- 返回给客户端直连时要求客户端使用的 UA。
+- 代理模式转发到上游时使用的 UA。
+
+三者在语义上保持一致。
+
+如果客户端无法设置某些 header，就应该选择代理模式，而不是直连。
+
+## Bilibili 提示
+
+Bilibili 对请求头更敏感，尤其是：
+
+- `User-Agent`
+- `Referer`
+- Cookie 或鉴权相关 header
+- Range 请求
+
+如果你发现直连可用但代理不可用，或代理可用但直连不可用，优先检查 Provider 返回给客户端的 header 与代理上游请求 header 是否一致。
+
+## 凭据加密
+
+如果你保存 Provider 凭据，生产环境应该配置：
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+否则，创建或更新某些 Provider 凭据可能会被拒绝，或者已有加密凭据无法读取。

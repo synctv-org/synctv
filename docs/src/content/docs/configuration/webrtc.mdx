@@ -1,0 +1,140 @@
+---
+title: WebRTC
+description: WebRTC 模式、内置 STUN、ICE server、私网候选过滤和 NAT 部署说明。
+---
+
+## WebRTC 在 SyncTV 中做什么？
+
+WebRTC 用于客户端之间的实时音视频或低延迟通信能力。SyncTV 负责信令、权限检查和 ICE server 下发。
+
+## `webrtc.mode`
+
+可选值：
+
+- `signaling_only`
+- `peer_to_peer`
+
+### `signaling_only`
+
+只使用 SyncTV 做信令转发，不提供内置 STUN。
+
+适合：
+
+- 你已有完整 WebRTC 基础设施。
+- 只想保留信令，不希望服务监听 UDP STUN 端口。
+
+### `peer_to_peer`
+
+启用 P2P 模式，并可使用内置 STUN 和外部 ICE servers。
+
+默认推荐：
+
+```yaml
+webrtc:
+  mode: "peer_to_peer"
+```
+
+## `webrtc.enable_builtin_stun`
+
+默认值：`true`。
+
+作用：是否启动 SyncTV 内置 STUN server。
+
+STUN 帮助客户端发现自己的公网映射地址，是 NAT 穿透的一部分。
+
+关闭场景：
+
+- 你使用外部 STUN/TURN。
+- 当前部署环境不能暴露 UDP 端口。
+- 只使用 `signaling_only`。
+
+## `webrtc.stun_port`
+
+默认值：`3478`。
+
+这是 STUN 常用端口。
+
+Kubernetes 或云服务器上要确保 UDP 3478 能被客户端访问。
+
+## `webrtc.stun_host`
+
+默认值：
+
+```yaml
+webrtc:
+  stun_host: "0.0.0.0"
+```
+
+作用：STUN server 绑定的本地地址。容器和服务器部署通常保持默认。
+
+## `webrtc.stun_external_addr`
+
+作用：告诉客户端 STUN server 的外部可达地址。
+
+如果留空，SyncTV 会尝试用 `server.advertise_host:stun_port`。
+
+NAT 或 Kubernetes 环境建议显式设置：
+
+```yaml
+webrtc:
+  stun_external_addr: "203.0.113.10:3478"
+```
+
+或使用域名：
+
+```yaml
+webrtc:
+  stun_external_addr: "stun.example.com:3478"
+```
+
+## `webrtc.filter_private_ice_candidates`
+
+默认值：`true`。
+
+作用：过滤私网、回环、链路本地 ICE candidates，减少内部网络信息泄露。
+
+生产环境建议保持开启。
+
+什么时候关闭：
+
+- 客户端都在同一个局域网。
+- 本地开发调试。
+- 你明确需要暴露内网候选地址。
+
+## 外部 ICE servers
+
+外部 ICE servers 不在 YAML 里静态配置，而是通过运行时设置管理：
+
+```text
+webrtc.external_ice_servers
+```
+
+值是 ICE server 对象数组，例如：
+
+```json
+[
+  { "urls": ["stun:stun.l.google.com:19302"] },
+  {
+    "urls": ["turn:turn.example.com:3478"],
+    "username": "user",
+    "credential": "pass"
+  }
+]
+```
+
+为什么放到运行时设置：
+
+- TURN 凭据可能需要更新。
+- 管理员可能希望不重启服务就调整 ICE servers。
+- 多节点需要统一动态下发。
+
+## 部署检查清单
+
+如果 WebRTC 连接失败，按顺序检查：
+
+1. 客户端是否能访问 SyncTV HTTP/gRPC API。
+2. UDP 3478 是否开放。
+3. `stun_external_addr` 是否是客户端可达地址。
+4. 反向代理是否只代理了 HTTP，而没有开放 UDP。
+5. 如果客户端在严格 NAT 后面，是否配置了 TURN。
+6. `filter_private_ice_candidates` 是否符合你的网络环境。

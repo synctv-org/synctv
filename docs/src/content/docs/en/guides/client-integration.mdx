@@ -1,0 +1,156 @@
+---
+title: Client Integration Guide
+description: HTTP, gRPC, WebSocket, authentication, MFA, OAuth2, and realtime integration guidance for clients, SDKs, and third-party integrations.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## Purpose
+
+OpenAPI and protobuf definitions describe request and response shapes. This page explains how clients should combine those APIs. Read it before implementing web, desktop, mobile, CLI, bot, or third-party SDK integrations, then use [OpenAPI Access](../../reference/openapi/) and [gRPC Debugging](../../reference/grpc/) for exact interface details.
+
+## Choose an Interface
+
+| Scenario | Recommended interface | Notes |
+| --- | --- | --- |
+| Normal business operations | HTTP/OpenAPI or public gRPC | Users, rooms, playlists, notifications, providers, and most business APIs can use either style. |
+| SDK generation | HTTP/OpenAPI | Generate TypeScript, Kotlin, Swift, Go, or other clients from `/api-docs/openapi.json`. |
+| Strongly typed internal clients | gRPC | Use `synctv-proto/proto/client.proto`, `oauth2.proto`, and provider protobuf files. |
+| Room realtime state | WebSocket or gRPC stream | Use for playback state, chat, danmaku, and WebRTC signaling. |
+| Operations management | management gRPC or CLI | Do not expose the management endpoint to normal clients. Prefer the CLI. |
+| Media playback | Direct provider URL or SyncTV proxy URL | Providers decide headers, proxy policy, and Range behavior. Clients should not infer upstream rules. |
+
+## Transport Security
+
+Production deployments must use TLS. Password-related RPCs in `client.proto` carry password or new-password fields in protobuf payloads. The server does not force HTTPS so local, private, or test deployments remain possible, but public deployments must not expose these APIs over plaintext transport.
+
+Requirements:
+
+- Login, registration, password changes, password reset, and MFA password verification must use HTTPS or a trusted encrypted tunnel.
+- Access and refresh tokens should only be used through `Authorization: Bearer <token>` or controlled client storage.
+- Do not write tokens, OAuth2 codes, email codes, provider tokens, or cookies to logs.
+- Use `wss://` for WebSocket connections outside local development.
+
+## Token Usage
+
+Business APIs use Bearer tokens:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Client guidance:
+
+- Use access tokens only for short-lived API calls.
+- Use refresh tokens only for session refresh. Do not put them in WebSocket query strings, media URLs, or third-party requests.
+- After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
+- When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
+
+## Local Login and MFA
+
+`LoginResponse` always has the same shape. It can return final tokens directly or return `mfa.required=true`.
+
+Client flow:
+
+<Steps>
+1. Submit the first factor, such as password, OPAQUE, passkey, or email-code login.
+2. Read `LoginResponse.mfa.required`.
+3. If `required=false`, store `access_token` and `refresh_token`.
+4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
+5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` immediately when the user chooses email.
+6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
+7. If `MFA_METHOD_PASSWORD` is available, call `VerifyMfaPassword`. Failures are tracked by brute-force protection.
+8. After the second factor succeeds, the final response returns usable tokens.
+</Steps>
+
+`GetUserPreferences` returns `auth_factors`, which lets clients show whether the current user has password, WebAuthn, or verified email factors. Enabling 2FA requires at least two local factors. OAuth2 does not count as a local 2FA factor.
+
+<Aside type="note">
+OPAQUE is a password login protocol, but clients must not infer password MFA availability from it. Show password as a second factor only when the server returns `MFA_METHOD_PASSWORD` in `available_methods`.
+</Aside>
+
+## Email Codes
+
+Email codes can be used for login, MFA, email verification, and password reset. Keep those flows separate in client state.
+
+Recommendations:
+
+- After sending a code, show a resend countdown to avoid rate-limit loops.
+- Treat rate-limit errors as authoritative and back off.
+- MFA email codes use `mfa_session_id`; they are not normal email-login tokens.
+
+## OAuth2
+
+OAuth2/OIDC is frontend-driven:
+
+<Steps>
+1. Call `GetAuthorizationUrl` to get the provider authorization URL and state.
+2. Redirect the user to the provider.
+3. The provider redirects back to the client URL with `code` and `state`.
+4. Call `ExchangeAuthorizationCode`.
+5. The server validates state, exchanges the code for user info, and returns SyncTV tokens.
+</Steps>
+
+Use `GetAuthorizationUrlForBind` when binding a provider to an existing authenticated account. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+
+## WebSocket
+
+WebSocket URL:
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+Authentication options:
+
+| Method | Clients | Notes |
+| --- | --- | --- |
+| `Authorization: Bearer <token>` | Native clients, CLI, server-side SDKs | Recommended because the token is not placed in the URL. |
+| `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to obtain a short-lived one-time ticket. |
+
+Browser-style flow:
+
+<Steps>
+1. Call `POST /api/tickets` with a normal Bearer token and target `room_id`.
+2. Receive `ticket` and its expiration.
+3. Connect to `wss://<host>/ws/rooms/<room_id>?ticket=<ticket>`.
+4. Do not reuse tickets after success or failure. Request a new one instead.
+</Steps>
+
+## gRPC Room Context
+
+Room-scoped public gRPC APIs use two metadata values:
+
+- `Authorization: Bearer <access_token>` for user identity.
+- `x-room-id: <room_id>` for room context.
+
+Do not put the room id only in the request body and expect the server to infer it. RPCs marked with `x-room-id metadata` in `client.proto` should send that metadata explicitly.
+
+## Media URLs and Headers
+
+Provider playback results may include URLs, proxy mode, direct mode, and required headers. Client rules:
+
+- Use the headers returned by the provider. Do not invent `User-Agent`, `Referer`, or `Range`.
+- If a provider returns a direct URL with required headers, the client runtime must be able to set those headers.
+- If the client cannot set required headers, use the provider proxy URL or request proxy mode.
+- Range playback depends on the provider and upstream origin. SyncTV proxy does not automatically forward raw client headers.
+
+See [Media Providers](../../configuration/media-providers/) and [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) for provider and proxy behavior.
+
+## Error Handling
+
+Clients should handle errors by category, not by matching exact text:
+
+- `401`: token expired, ticket invalid, or unauthenticated. Start login or refresh.
+- `403`: authenticated but not authorized. Show a permission error.
+- `409`: state conflict, such as concurrent modification or invalid business state.
+- `429`: rate-limited. Back off according to the server response.
+- `5xx`: server or dependency failure. Show retry and collect request id, time, and path.
+
+## Development Entry Points
+
+- [OpenAPI Access](../../reference/openapi/): Swagger UI and `/api-docs/openapi.json`.
+- [gRPC Debugging](../../reference/grpc/): reflection, grpcurl, and protobuf file locations.
+- [Authentication and Security Model](../security-model/): 2FA, OAuth2, token context, and provider header boundaries.
+- [Rooms, Permissions, and Preferences](../rooms-permissions/): roles, permission bits, room settings, and user preferences.
+- [Troubleshooting](../../operations/troubleshooting/): CORS, WebSocket, login, provider, and Range diagnostics.

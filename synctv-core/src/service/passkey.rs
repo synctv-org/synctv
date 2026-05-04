@@ -13,6 +13,7 @@ use crate::{
     config::WebAuthnConfig,
     models::{SignupMethod, User, UserId},
     repository::{PasswordCredentialMaterial, WebAuthnCredential, WebAuthnCredentialRepository},
+    service::RegistrationMode,
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -401,11 +402,8 @@ impl PasskeyService {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
-        if self.user_service.signup_review_enabled() {
-            return Err(Error::InvalidInput(
-                "WebAuthn registration is not available while signup review is enabled".to_string(),
-            ));
-        }
+        self.user_service
+            .ensure_registration_review_supported(RegistrationMode::WebAuthn)?;
 
         self.user_service
             .validate_registration_identity_with_control(
@@ -504,11 +502,9 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
-        if self.user_service.signup_review_enabled() {
-            return Err(Error::InvalidInput(
-                "WebAuthn registration is not available while signup review is enabled".to_string(),
-            ));
-        }
+        self.user_service
+            .ensure_registration_review_supported(RegistrationMode::WebAuthn)?;
+
         self.user_service
             .validate_registration_identity_with_control(
                 &username,

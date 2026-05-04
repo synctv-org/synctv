@@ -1,0 +1,431 @@
+---
+title: 完整配置示例
+description: SyncTV 最小生产配置骨架和覆盖全部静态字段的 YAML 配置模板。
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 使用原则
+
+完整配置模板用于查字段、确认层级和准备自己的配置文件，不建议把所有默认值原样复制到生产环境。生产配置应只固定你明确负责的值，例如 secret、数据库、Redis、域名、反向代理、存储路径和已启用功能。
+
+推荐流程：
+
+1. 从下面的“最小生产配置骨架”开始。
+2. 需要启用某个能力时，再从“全量配置模板”复制对应段落。
+3. 使用 `synctv config validate` 校验生产配置。
+4. 使用 `synctv config show --output yaml` 查看最终生效配置。这个命令会合并默认值、配置文件、环境变量和 CLI 覆盖，并自动打码 secret。
+
+## 配置模板
+
+<Tabs syncKey="config-example">
+  <TabItem label="最小生产配置" icon="rocket">
+
+下面示例覆盖生产部署最常见的必填项。secret 建议用 `_file` 形式注入，不要直接写在 YAML 里。
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  enable_reflection: false
+  cors_allowed_origins:
+    - "https://app.example.com"
+  trusted_proxies:
+    - "10.0.0.0/8"
+
+data_dir: "/var/lib/synctv"
+
+database:
+  url_file: "/run/secrets/database_url"
+  max_connections: 20
+  min_connections: 5
+
+redis:
+  url_file: "/run/secrets/redis_url"
+  key_prefix: "synctv:"
+
+jwt:
+  secret_file: "/run/secrets/jwt_secret"
+
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+
+management:
+  enabled: true
+  transport: "unix"
+  enable_reflection: false
+
+bootstrap:
+  create_root_user: true
+  root_username: "root"
+  root_email: "admin@example.com"
+  root_password_file: "/run/secrets/bootstrap_root_password"
+
+logging:
+  level: "info"
+  format: "json"
+
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  auth:
+    mode: "bearer_token"
+    bearer_token_file: "/run/secrets/metrics_bearer_token"
+```
+
+这个骨架没有启用集群、WebAuthn、OAuth2、SMTP、Provider、HLS 文件存储或 slice cache 文件后端。需要这些能力时再进入对应配置页补充。
+
+  </TabItem>
+  <TabItem label="全量配置模板" icon="setting">
+
+这份模板覆盖当前版本的全部静态配置字段，并给出常见动态对象的写法。`oauth2.providers` 和 `media_providers.providers` 的内部结构由具体 provider 决定，无法像静态字段一样穷举；这里给出代表性实例，详细说明见 [邮件与 OAuth2](../email-oauth2/) 和 [媒体 Provider](../media-providers/)。
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  enable_reflection: false
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "192.168.0.0/16"
+  cors_allowed_origins:
+    - "https://app.example.com"
+  cluster_secret: ""
+  cluster_secret_file: "/run/secrets/cluster_secret"
+  advertise_host: "synctv-0.synctv-headless.default.svc.cluster.local"
+  shutdown_drain_timeout_seconds: 30
+  grpc_max_message_size_bytes: 16777216
+
+time:
+  timezone: "Asia/Shanghai"
+
+public_ids:
+  sqids:
+    alphabet: null
+    min_length: 12
+
+security:
+  credential_encryption_key: ""
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+  opaque_server_setup_secret: ""
+  opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+
+data_dir: "/var/lib/synctv"
+
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9090
+  tls:
+    enabled: false
+    cert_path: ""
+    key_path: ""
+  auth:
+    mode: "bearer_token"
+    bearer_token: ""
+    bearer_token_file: "/run/secrets/metrics_bearer_token"
+    basic_username: ""
+    basic_password: ""
+    kubernetes:
+      audience: ""
+      authentication_cache_ttl_seconds: 60
+      authorization_cache_ttl_seconds: 60
+
+management:
+  enabled: true
+  transport: "unix"
+  port: 50052
+  unix_socket_path: "run/synctv.sock"
+  auth_token: ""
+  enable_reflection: false
+
+database:
+  url: ""
+  url_file: "/run/secrets/database_url"
+  host: ""
+  port: 0
+  username: ""
+  password: ""
+  name: ""
+  max_connections: 20
+  min_connections: 5
+  connect_timeout_seconds: 10
+  idle_timeout_seconds: 600
+  max_lifetime_seconds: 1800
+
+redis:
+  url: ""
+  url_file: "/run/secrets/redis_url"
+  host: ""
+  port: 0
+  username: ""
+  password: ""
+  database: 0
+  connect_timeout_seconds: 5
+  key_prefix: "synctv:"
+  deployment_mode: "standalone"
+  sentinel_master_name: null
+  sentinel_addresses: []
+
+jwt:
+  secret: ""
+  secret_file: "/run/secrets/jwt_secret"
+  access_token_duration_hours: 1
+  refresh_token_duration_days: 30
+  guest_token_duration_hours: 4
+  clock_skew_leeway_secs: 60
+
+logging:
+  level: "info"
+  format: "json"
+  filter: null
+  backtrace: false
+  file_path: null
+
+livestream:
+  rtmp_port: 1935
+  public_rtmp_host: "stream.example.com"
+  gop_cache_size: 2
+  stream_timeout_seconds: 300
+  cleanup_check_interval_seconds: 60
+  pull_max_retries: 10
+  pull_initial_backoff_ms: 1000
+  pull_max_backoff_ms: 30000
+  max_flv_tag_size_bytes: 10485760
+  gop_cache_max_memory_mb: 100
+  hls_memory_max_mb: 0
+  hls_shared_storage: false
+  hls_storage_path: ""
+  flv_max_connection_duration_seconds: 86400
+  flv_write_timeout_seconds: 30
+
+oauth2:
+  redirect_scheme: "https"
+  providers:
+    github:
+      type: "github"
+      client_id: "github-client-id"
+      client_secret_file: "/run/secrets/oauth2_github_client_secret"
+      redirect_url: "https://app.example.com/oauth2/callback"
+    oidc:
+      type: "oidc"
+      client_id: "oidc-client-id"
+      client_secret_file: "/run/secrets/oauth2_oidc_client_secret"
+      issuer: "https://idp.example.com"
+      redirect_url: "https://app.example.com/oauth2/callback"
+
+webauthn:
+  enabled: true
+  rp_id: "example.com"
+  rp_origin: "https://app.example.com"
+  rp_name: "SyncTV"
+  allowed_origins:
+    - "https://admin.example.com"
+  allow_subdomains: false
+  allow_any_port: false
+  timeout_seconds: 300
+
+email:
+  smtp_host: "smtp.example.com"
+  smtp_port: 587
+  smtp_username: "synctv@example.com"
+  smtp_password: ""
+  smtp_password_file: "/run/secrets/smtp_password"
+  from_email: "synctv@example.com"
+  from_name: "SyncTV"
+  use_tls: true
+
+media_providers:
+  request_timeout_seconds: 30
+  connect_timeout_seconds: 10
+  providers:
+    alist:
+      type: "alist"
+      base_url: "https://alist.example.com"
+      token_file: "/run/secrets/alist_token"
+    emby:
+      type: "emby"
+      base_url: "https://emby.example.com"
+      api_key_file: "/run/secrets/emby_api_key"
+    bilibili:
+      type: "bilibili"
+      user_agent: "Mozilla/5.0 SyncTV"
+
+webrtc:
+  mode: "peer_to_peer"
+  enable_builtin_stun: true
+  stun_port: 3478
+  stun_host: "0.0.0.0"
+  stun_external_addr: ""
+  filter_private_ice_candidates: true
+
+connection_limits:
+  max_per_user: 5
+  max_per_room: 200
+  max_total: 10000
+  idle_timeout_seconds: 300
+  max_duration_seconds: 86400
+  ws_message_rate_limit_per_second: 50
+
+bootstrap:
+  create_root_user: true
+  root_username: "root"
+  root_email: "admin@example.com"
+  root_password: ""
+  root_password_file: "/run/secrets/bootstrap_root_password"
+
+cluster:
+  enabled: false
+  critical_channel_capacity: 1000
+  publish_channel_capacity: 10000
+  discovery_mode: "redis"
+  leader_election_mode: "redis"
+  peers: []
+  catchup_window_secs: 300
+  stream_max_length: 10000
+
+password_complexity:
+  min_length: 8
+  require_uppercase: true
+  require_lowercase: true
+  require_digit: true
+  require_special: false
+  max_repeated_chars: 3
+
+buffer_sizes:
+  websocket_outbound: 256
+  audit_buffer: 10000
+
+cache:
+  l1_capacity: 500
+  l1_ttl_seconds: 300
+  l2_ttl_seconds: 300
+  username_cache_capacity: 1000
+  username_cache_ttl_seconds: 3600
+  permission_cache_capacity: 1000
+  permission_cache_ttl_seconds: 300
+  proxy_slice_cache_enabled: true
+  proxy_slice_file_backend_enabled: false
+  proxy_slice_file_cache_dir: ""
+
+messaging_rate_limits:
+  chat_per_second: 10
+  danmaku_per_second: 3
+  window_seconds: 1
+
+http_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  streaming_max_requests: 200
+  streaming_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
+
+grpc_rate_limits:
+  auth_max_requests: 5
+  auth_window_seconds: 60
+  email_max_requests: 5
+  email_window_seconds: 60
+  media_max_requests: 20
+  media_window_seconds: 60
+  write_max_requests: 30
+  write_window_seconds: 60
+  admin_max_requests: 30
+  admin_window_seconds: 60
+  read_max_requests: 100
+  read_window_seconds: 60
+```
+
+  </TabItem>
+</Tabs>
+
+## URL 形式和拆分形式
+
+`database` 和 `redis` 都支持完整 URL，也支持拆分字段。生产环境通常优先使用 `url_file`，因为最少暴露凭据。
+
+数据库 URL 形式：
+
+```yaml
+database:
+  url_file: "/run/secrets/database_url"
+```
+
+数据库拆分形式：
+
+```yaml
+database:
+  host: "postgres.example.com"
+  port: 5432
+  username: "synctv"
+  password_file: "/run/secrets/database_password"
+  name: "synctv"
+```
+
+Redis URL 形式：
+
+```yaml
+redis:
+  url_file: "/run/secrets/redis_url"
+```
+
+Redis Sentinel 形式：
+
+```yaml
+redis:
+  deployment_mode: "sentinel"
+  sentinel_master_name: "mymaster"
+  sentinel_addresses:
+    - "redis://sentinel-0.redis:26379"
+    - "redis://sentinel-1.redis:26379"
+    - "redis://sentinel-2.redis:26379"
+```
+
+## 查看当前版本完整生效配置
+
+```bash
+synctv config show --output yaml
+```
+
+指定配置文件：
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+```
+
+输出 TOML：
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output toml
+```
+
+## 校验配置
+
+部署前运行：
+
+```bash
+synctv --config /etc/synctv/synctv.yaml config validate
+```
+
+这个命令会检查：
+
+- 必要 secret 是否为空或仍为默认值。
+- `cluster.enabled=true` 时 Redis 和 `server.cluster_secret` 是否满足要求。
+- TCP management 是否配置了 `management.auth_token`。
+- CORS origin、gRPC message size、WebAuthn origin 等字段是否合法。
+- 路径类配置是否能按预期解析。
+
+## 相关页面
+
+- [配置总索引](../../reference/configuration-index/)：按字段列出类型、默认值和详细说明页面。
+- [常用环境变量](../../reference/environment-variables/)：列出源码支持的 `SYNCTV_*` 环境变量。
+- [配置文件如何工作](../how-configuration-works/)：解释优先级、搜索路径、secret 文件和 `data_dir` 路径解析。

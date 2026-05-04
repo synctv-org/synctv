@@ -12711,23 +12711,23 @@ mod tests {
             "synctv",
             "settings",
             "update",
-            "server",
+            "user",
             "--set",
-            "signup_enabled=false",
+            "enable_password_signup=true",
             "--set",
-            "max_rooms_per_user=42",
+            "password_signup_need_review=true",
         ]);
         match cli.command {
             Commands::Settings(SettingsCommand {
                 command: SettingsSubcommand::Update(args),
                 ..
             }) => {
-                assert_eq!(args.group, "server");
+                assert_eq!(args.group, "user");
                 assert_eq!(
                     args.entries,
                     vec![
-                        "signup_enabled=false".to_string(),
-                        "max_rooms_per_user=42".to_string()
+                        "enable_password_signup=true".to_string(),
+                        "password_signup_need_review=true".to_string()
                     ]
                 );
             }
@@ -13327,12 +13327,12 @@ mod tests {
 
     #[test]
     fn parse_setting_entries_rejects_invalid_and_duplicate_entries() {
-        let invalid = parse_setting_entries(&["signup_enabled".to_string()]);
+        let invalid = parse_setting_entries(&["enable_password_signup".to_string()]);
         assert!(invalid.is_err(), "missing '=' must be rejected");
 
         let duplicate = parse_setting_entries(&[
-            "signup_enabled=false".to_string(),
-            "signup_enabled=true".to_string(),
+            "enable_password_signup=false".to_string(),
+            "enable_password_signup=true".to_string(),
         ]);
         assert!(duplicate.is_err(), "duplicate keys must be rejected");
     }

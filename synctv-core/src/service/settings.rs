@@ -347,7 +347,7 @@ impl SettingsService {
         Ok(updated)
     }
 
-    /// Get a specific setting value by key (e.g., "`server.allow_registration`")
+    /// Get a specific setting value by key (e.g., "`user.enable_password_signup`")
     pub async fn get_value(&self, key: &str) -> Option<String> {
         let setting = self.get(key).await.ok()?;
         Some(setting.value)
@@ -575,12 +575,12 @@ mod tests {
     fn test_settings_group_new() {
         let group = SettingsGroup::new(
             "server".to_string(),
-            r#"{"allow_registration": true}"#.to_string(),
+            r#"{"allow_room_creation": true}"#.to_string(),
         );
 
         assert_eq!(group.group_name, "server");
         assert_eq!(group.key, "server.default");
-        assert_eq!(group.value, r#"{"allow_registration": true}"#);
+        assert_eq!(group.value, r#"{"allow_room_creation": true}"#);
     }
 
     #[test]
@@ -801,7 +801,7 @@ mod tests {
 
         let existing = SettingsGroup::new(
             "server".to_string(),
-            serde_json::json!({"allow_registration": true}).to_string(),
+            serde_json::json!({"allow_room_creation": true}).to_string(),
         );
         service.cache.insert(existing.key.clone(), existing.clone());
 
@@ -990,7 +990,7 @@ mod tests {
         #[test]
         fn test_cross_validation_only_affects_password_settings() {
             let updates: Vec<(String, String)> = vec![
-                ("server.allow_registration".to_string(), "true".to_string()),
+                ("user.enable_password_signup".to_string(), "true".to_string()),
                 ("server.max_rooms_per_user".to_string(), "10".to_string()),
                 ("room.room_must_need_pwd".to_string(), "true".to_string()),
             ];

@@ -345,7 +345,10 @@ fn test_public_settings_serialization() {
     // Deserialize
     let deserialized: PublicSettings = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.signup_enabled, settings.signup_enabled);
+    assert_eq!(
+        deserialized.enable_password_signup,
+        settings.enable_password_signup
+    );
     assert_eq!(deserialized.max_rooms_per_user, settings.max_rooms_per_user);
     assert_eq!(deserialized.custom_publish_host, "rtmp://live.example.com");
 }
@@ -621,13 +624,13 @@ async fn test_registry_wires_validation_to_settings_service() {
     // Boolean settings should validate parse-ability
     assert!(
         service
-            .validate_setting("server.signup_enabled", "true")
+            .validate_setting("user.enable_password_signup", "true")
             .is_ok(),
         "Valid boolean should pass"
     );
     assert!(
         service
-            .validate_setting("server.signup_enabled", "not_bool")
+            .validate_setting("user.enable_password_signup", "not_bool")
             .is_err(),
         "Invalid boolean should fail"
     );

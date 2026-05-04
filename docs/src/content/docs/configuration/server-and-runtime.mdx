@@ -1,0 +1,403 @@
+---
+title: 服务监听与运行时路径
+description: server、time、data_dir、logging、management 配置详解。
+---
+
+## 这一页解决什么问题？
+
+这一页解释 SyncTV 进程“监听在哪、别人怎么访问它、运行时文件写到哪里、日志怎么输出、管理 CLI 如何连接服务”。
+
+这些配置通常在第一次部署时就要确认好：
+
+- `server.host`
+- `server.port`
+- `server.cors_allowed_origins`
+- `server.trusted_proxies`
+- `data_dir`
+- `logging`
+- `management`
+
+## `server`
+
+`server` 控制公开 API 服务。HTTP REST 和公开 gRPC 使用同一个端口。
+
+### `server.host`
+
+默认值：
+
+```yaml
+server:
+  host: "0.0.0.0"
+```
+
+作用：决定 SyncTV 监听哪个网卡地址。
+
+常见值：
+
+| 值 | 含义 | 适合场景 |
+| --- | --- | --- |
+| `0.0.0.0` | 监听所有 IPv4 网卡 | Docker、Kubernetes、服务器部署 |
+| `127.0.0.1` | 只允许本机访问 | 本地开发、只通过反向代理访问 |
+| `::` | 监听 IPv6 所有地址 | IPv6 环境 |
+
+如果需要容器外、局域网或反向代理访问 SyncTV，通常使用 `0.0.0.0`。如果只允许本机访问，使用 `127.0.0.1`。
+
+环境变量：
+
+```bash
+SYNCTV_SERVER_HOST=0.0.0.0
+```
+
+### `server.port`
+
+默认值：
+
+```yaml
+server:
+  port: 8080
+```
+
+作用：HTTP REST API、公开 gRPC API、健康检查都走这个端口。
+
+注意：在 Kubernetes Helm 里，HTTP 和 gRPC 会被暴露成两个独立 Service，但它们最终仍指向同一个容器端口。
+
+环境变量：
+
+```bash
+SYNCTV_SERVER_PORT=8080
+```
+
+### `server.enable_reflection`
+
+默认值：
+
+```yaml
+server:
+  enable_reflection: true
+```
+
+作用：是否开启公开 gRPC reflection。Reflection 方便调试工具发现 gRPC 服务定义，但也会暴露更多接口结构信息。
+
+建议：
+
+- 本地开发可以开启。
+- 生产环境通常显式关闭。
+- 内网开发者平台可以按需开启。
+
+### `server.grpc_max_message_size_bytes`
+
+默认值：`16777216`，也就是 16 MB。
+
+作用：限制 gRPC 请求和响应的最大消息体大小，避免异常客户端发送超大消息导致内存压力。
+
+范围：
+
+- 最小：1 MB
+- 最大：1 GB
+
+什么时候要改：
+
+- 批量导入、批量媒体操作、管理接口返回内容很大时可以调高。
+- 如果暴露公网且客户端不可控，不建议调得太高。
+
+### `server.trusted_proxies`
+
+默认值：
+
+```yaml
+server:
+  trusted_proxies: []
+```
+
+作用：告诉 SyncTV 哪些反向代理的 `X-Forwarded-For` / `X-Real-IP` 可信。
+
+为什么重要：限流、审计日志、安全判断通常需要知道真实客户端 IP。如果 SyncTV 直接相信任何客户端传来的 `X-Forwarded-For`，攻击者可以伪造 IP 绕过限制。
+
+示例：
+
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+```
+
+建议：
+
+- 如果 SyncTV 前面有 Nginx、Ingress、Cloudflare Tunnel、负载均衡器，只填写这些代理所在的内网网段或固定 IP。
+- 不要填写 `0.0.0.0/0` 或 `::/0`。
+- 不确定时保持空列表，SyncTV 会使用 socket 直连 IP。
+
+### `server.cors_allowed_origins`
+
+默认值：
+
+```yaml
+server:
+  cors_allowed_origins: []
+```
+
+作用：允许哪些 Web 前端域名跨域访问 SyncTV API。
+
+如果前端页面在 `https://app.example.com`，后端 API 在 `https://api.example.com`，浏览器会要求后端明确允许 `https://app.example.com`。
+
+示例：
+
+```yaml
+server:
+  cors_allowed_origins:
+    - "https://app.example.com"
+    - "https://admin.example.com"
+```
+
+注意：
+
+- 这里必须是 origin，只包含协议、域名和端口。
+- 不能包含路径，例如 `https://app.example.com/synctv` 是错的。
+- 生产环境不要随意使用通配策略。
+
+环境变量推荐 JSON：
+
+```bash
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+```
+
+### `server.cluster_secret`
+
+作用：多节点之间调用内部 gRPC 接口时使用的共享密钥。
+
+什么时候必填：
+
+- `cluster.enabled=true` 时必填。
+- 单机模式可以为空。
+
+生成方式：
+
+```bash
+openssl rand -hex 32
+```
+
+环境变量：
+
+```bash
+SYNCTV_SERVER_CLUSTER_SECRET=...
+SYNCTV_SERVER_CLUSTER_SECRET_FILE=/run/secrets/cluster_secret
+```
+
+安全建议：
+
+- 只能在同一个集群内部节点之间共享。
+- 不要写进公开仓库。
+- 如果泄露，需要轮换所有节点配置并重启。
+
+### `server.advertise_host`
+
+作用：告诉其他节点“应该用哪个地址连接我”。
+
+常见场景：
+
+- Kubernetes：通常使用 Pod IP，通过 downward API 设置 `SYNCTV_SERVER_ADVERTISE_HOST`。
+- 静态多节点：填写内网 IP 或域名。
+- 单机：通常留空。
+
+留空时，SyncTV 会尝试使用 `POD_IP`，再尝试系统 hostname。
+
+### `server.shutdown_drain_timeout_seconds`
+
+默认值：`30`。
+
+作用：进程关闭时等待已有连接自然结束的时间。
+
+什么时候调大：
+
+- 有大量长连接。
+- 反向代理或 Kubernetes 更新时希望更平滑下线。
+
+什么时候调小：
+
+- 开发环境。
+- 希望升级或重启更快完成。
+
+## `time`
+
+### `time.timezone`
+
+默认值为空，表示自动检测。
+
+作用：用于人类可读时间显示和本地时间解析。
+
+示例：
+
+```yaml
+time:
+  timezone: "Asia/Shanghai"
+```
+
+优先级：
+
+1. `time.timezone`
+2. `SYNCTV_TIME_TIMEZONE`
+3. `TZ`
+4. 系统时区
+5. `UTC`
+
+如果用户都在中国大陆，建议显式设置：
+
+```yaml
+time:
+  timezone: "Asia/Shanghai"
+```
+
+## `data_dir`
+
+示例：
+
+```yaml
+data_dir: "/var/lib/synctv"
+```
+
+作用：SyncTV 运行过程中自己写文件的根目录。
+
+会放到这里的内容可能包括：
+
+- 管理 Unix socket。
+- 日志文件。
+- HLS 直播分片。
+- proxy slice cache 文件。
+
+Docker/Helm 建议：
+
+- 容器内使用 `/data`。
+- 把 `/data` 挂载成 volume。
+
+本机服务建议：
+
+- Linux：`/var/lib/synctv`
+- macOS 开发：`~/.synctv`
+
+## `logging`
+
+### `logging.level`
+
+默认值：
+
+```yaml
+logging:
+  level: "info"
+```
+
+常见值：
+
+| 值 | 含义 |
+| --- | --- |
+| `error` | 只输出错误 |
+| `warn` | 输出警告和错误 |
+| `info` | 推荐生产默认值 |
+| `debug` | 调试问题时使用 |
+| `trace` | 非常详细，通常只用于开发 |
+
+### `logging.format`
+
+常见值：
+
+- `pretty`：适合本地终端阅读。
+- `json`：适合 Kubernetes、ELK、Loki、Vector、Fluent Bit 等日志系统采集。
+
+生产 Kubernetes 推荐：
+
+```yaml
+logging:
+  format: "json"
+```
+
+### `logging.file_path`
+
+默认不写文件，输出到 stdout。
+
+如果设置相对路径，会相对 `data_dir`：
+
+```yaml
+data_dir: "/var/lib/synctv"
+logging:
+  file_path: "logs/synctv.log"
+```
+
+实际路径是：
+
+```text
+/var/lib/synctv/logs/synctv.log
+```
+
+容器和 Kubernetes 一般不建议写文件日志，建议保持 stdout。
+
+### `logging.filter`
+
+高级配置，用于精确控制 Rust tracing 模块日志级别。
+
+示例：
+
+```yaml
+logging:
+  filter: "info,synctv=debug,synctv_core::service=trace"
+```
+
+常规部署不需要设置。
+
+### `logging.backtrace`
+
+是否在错误时输出 backtrace。调试 panic 或深层错误时有用。
+
+生产环境通常保持 `false`，临时排查问题时可以开启。
+
+## `management`
+
+管理端点用于 `synctv` CLI 执行本地或受控管理操作，不属于客户端业务 API。
+
+### `management.enabled`
+
+默认值：`true`。
+
+关闭后，一些 CLI 管理命令不能连接到正在运行的服务。
+
+### `management.transport`
+
+可选值：
+
+- `unix`
+- `tcp`
+
+Unix-like 系统默认推荐 `unix`。Windows 使用 `tcp`。
+
+### `management.unix_socket_path`
+
+Unix socket 路径。相对路径会相对 `data_dir`。
+
+容器常见值：
+
+```yaml
+management:
+  unix_socket_path: "/run/synctv/synctv.sock"
+```
+
+### `management.port`
+
+当 `transport: "tcp"` 时使用。
+
+默认值：`50052`。
+
+注意：TCP 管理端点只应绑定本机回环或受控网络，不应该直接暴露公网。
+
+### `management.auth_token`
+
+TCP transport 必须设置。Unix transport 可选。
+
+建议：
+
+- TCP 模式必须使用强随机 token。
+- Kubernetes/生产环境用 Secret 注入。
+- 不要使用短密码或固定示例值。
+
+### `management.enable_reflection`
+
+是否开启管理 gRPC reflection。只建议开发和调试时开启。

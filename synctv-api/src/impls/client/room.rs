@@ -957,7 +957,6 @@ impl ClientApiImpl {
 
         let s = reg.to_public_settings();
         Ok(crate::proto::client::GetPublicSettingsResponse {
-            signup_enabled: s.signup_enabled,
             allow_room_creation: s.allow_room_creation,
             max_rooms_per_user: s.max_rooms_per_user,
             max_members_per_room: s.max_members_per_room,
@@ -965,8 +964,14 @@ impl ClientApiImpl {
             create_room_need_review: s.create_room_need_review,
             room_ttl: s.room_ttl,
             room_must_need_pwd: s.room_must_need_pwd,
-            signup_need_review: s.signup_need_review,
             enable_password_signup: s.enable_password_signup,
+            password_signup_need_review: s.password_signup_need_review,
+            enable_email_signup: s.enable_email_signup,
+            email_signup_need_review: s.email_signup_need_review,
+            enable_oauth2_signup: s.enable_oauth2_signup,
+            oauth2_signup_need_review: s.oauth2_signup_need_review,
+            enable_webauthn_signup: s.enable_webauthn_signup,
+            webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,
             movie_proxy: s.movie_proxy,
             live_proxy: s.live_proxy,

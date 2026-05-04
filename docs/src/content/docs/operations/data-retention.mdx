@@ -1,0 +1,135 @@
+---
+title: 数据、隐私与保留策略
+description: SyncTV 存储哪些数据、哪些字段属于敏感信息、后台清理策略如何工作，以及备份和日志的处理边界。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## 这页解决什么问题
+
+这页面向部署者、管理员和安全审查人员，说明 SyncTV 会在 PostgreSQL、Redis、运行时目录、日志和备份中保存哪些数据，以及默认清理策略是什么。它不是法律合规声明；实际合规要求仍取决于你的部署地区、组织政策和用户协议。
+
+## 数据位置
+
+| 位置 | 保存内容 | 持久性 |
+| --- | --- | --- |
+| PostgreSQL | 用户、认证凭据、房间、成员、播放列表、媒体、聊天、通知、审计日志、Provider 实例、用户 Provider 凭据、runtime settings、用户偏好 | 必须持久化 |
+| Redis | 限流、暴力破解保护、token blacklist、OAuth2 state、WebAuthn challenge、集群状态、缓存失效消息 | 通常是短期状态，多副本建议持久化或高可用 |
+| `data_dir` | management socket、日志文件、HLS 文件、proxy slice cache 文件等运行时输出 | 按启用功能决定是否持久化 |
+| 日志系统 | 请求、错误、审计上下文、依赖异常、运行状态 | 按你的日志平台策略保留 |
+| 备份 | PostgreSQL dump、secret、配置文件、可选 HLS 或 cache 数据 | 按你的备份策略保留 |
+
+## 个人信息和敏感信息
+
+| 数据 | 示例 | 风险 |
+| --- | --- | --- |
+| 用户标识 | 用户名、用户 ID、角色、创建时间 | 可关联用户行为 |
+| 邮箱 | 用户邮箱、邮箱验证身份、通知收件地址 | PII，只应返回给本人或管理员 |
+| 认证数据 | password credential、OPAQUE credential、WebAuthn credential、OAuth2 identity、email token、refresh token/blacklist | 高敏感，不应进入日志 |
+| Provider 凭据 | Alist token、Emby API key、Bilibili cookie、远程 Provider JWT secret | 高敏感，依赖 `security.credential_encryption_key` 保护 |
+| 房间数据 | 房间名、成员、权限、播放列表、媒体、播放状态、邀请和审核记录 | 业务数据 |
+| 消息数据 | 聊天、弹幕、通知内容 | 可能包含用户输入和敏感上下文 |
+| 审计数据 | actor、action、target、details、IP、User-Agent | 安全排查必要，但也可能包含个人数据 |
+
+`client.proto` 中的 `User` 包含邮箱，只应返回给用户本人或管理员。公开场景应使用 `UserPublicView`，它不包含邮箱等 PII。
+
+## 用户偏好数据
+
+用户偏好保存在 `user_preferences`：
+
+- `two_factor_enabled`：用户级 2FA 开关。
+- notification 字段：站内通知和邮件通知偏好。
+- provider default 字段：Alist、Emby、Bilibili 默认实例名。
+- `settings` JSONB：低优先级扩展载荷。核心偏好应优先使用明确数据库字段，而不是全部塞进 JSON。
+
+`settings` JSONB 不应保存 secret、token、密码、Cookie 或 Provider 凭据。
+
+## Provider 凭据加密
+
+生产环境应设置：
+
+```yaml
+security:
+  credential_encryption_key_file: "/run/secrets/credential_encryption_key"
+```
+
+要求：
+
+- key 是 64 位 hex。
+- key 必须长期稳定。
+- key 丢失后，已加密 Provider 凭据无法可靠恢复。
+- key 泄露后，需要轮换相关 Provider 凭据，并评估数据库备份暴露风险。
+
+更多内容见 [安全与密钥](../../configuration/security/) 和 [媒体 Provider](../../configuration/media-providers/)。
+
+## 默认保留策略
+
+| 数据 | 默认策略 | 可调入口 |
+| --- | --- | --- |
+| 空闲房间 | `room.room_ttl=172800` 秒后软删除，`0` 表示不自动过期 | Runtime settings |
+| 已软删除用户 | 默认 90 天后永久清理 | 启动期清理配置，目前文档化为内部默认 |
+| 已软删除房间 | 默认 90 天后永久清理 | 启动期清理配置，目前文档化为内部默认 |
+| 过期邮箱 token | 默认过期 7 天后清理 | 内部清理配置 |
+| 过期 Provider 凭据 | `expires_at` 过期后再等待 1 小时 buffer 清理 | 内部清理配置 |
+| 已读通知 | 默认 30 天后清理 | 内部清理配置 |
+| 所有通知 | 默认最多保留 90 天 | 内部清理配置 |
+| 通知分区 | 默认保留 6 个月分区 | 内部分区管理 |
+| 聊天消息 | `chat.message_retention_days=90` 天绝对保留上限 | Runtime settings |
+| 每房间聊天数量 | `chat.max_messages_per_room=500`，`0` 表示不限数量 | Runtime settings |
+| 聊天分区 | 默认按 90 天保留分区 | 内部分区管理 |
+| 审计日志分区 | 默认保留 12 个月分区 | 内部分区管理 |
+| token blacklist | 过期记录会被后台清理 | 内部清理配置 |
+
+清理任务在多副本部署中由 leader-gated 后台任务执行，避免多个副本重复清理。数据库维护任务会在启动时和周期性运行时清理邮箱 token、通知、过期 Provider 凭据和旧聊天消息。
+
+<Aside type="note">
+Runtime settings 是数据库热更新设置，适合调整 `room.room_ttl`、`chat.message_retention_days` 和 `chat.max_messages_per_room`。它不替代启动配置，也不用于保存 secret。
+</Aside>
+
+## 删除用户和房间
+
+用户删除使用软删除和事务性资源清理：
+
+- 用户记录先进入 `deleted_at` 状态。
+- OAuth2 映射、邮箱身份、邮箱 token、Provider 凭据、通知等用户关联数据会随删除流程清理。
+- 相关房间成员关系会移除。
+- 聊天消息可能按用户清理语义匿名化或保留必要上下文。
+- 软删除记录在保留期后由清理任务永久删除。
+
+房间删除同样先软删除，并清理房间相关播放列表、媒体、成员、邀请、审核、播放状态等资源。保留期结束后再硬删除房间行。
+
+## 备份中的数据
+
+备份通常包含最完整、最敏感的数据集合。
+
+必须保护：
+
+- PostgreSQL 备份。
+- `jwt.secret`、`security.opaque_server_setup_secret`、`security.credential_encryption_key`。
+- Provider token、SMTP 密码、OAuth2 client secret、management token。
+- Helm Secret、Compose `.env`、Kubernetes Secret、外部 Secret Manager 快照。
+
+如果用户数据从主库删除，历史备份中的数据不会自动删除。需要根据你的组织策略决定备份保留期、加密方式和销毁流程。
+
+## 日志和指标
+
+日志建议：
+
+- 生产使用结构化日志，便于检索和脱敏。
+- 不记录 Authorization、Cookie、OAuth2 code、邮箱验证码、密码、Provider token、SMTP 密码。
+- 提交 issue 或内部工单前复查 `config show`、请求 header 和错误日志。
+
+指标建议：
+
+- `/metrics` 不应暴露公网。
+- metrics token 或 Basic 密码必须通过 secret 注入。
+- 指标适合容量、错误率、连接数和延迟观测，不应携带用户内容。
+
+## 相关页面
+
+- [备份与恢复](../backup-restore/)
+- [升级与迁移](../upgrades/)
+- [观测与运行手册](../observability/)
+- [认证与安全模型](../../guides/security-model/)
+- [房间、权限与用户偏好](../../guides/rooms-permissions/)
+- [Runtime settings 参考](../../reference/runtime-settings/)

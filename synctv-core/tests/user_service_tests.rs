@@ -54,6 +54,7 @@ fn create_user_service(pool: PgPool) -> UserService {
         brute_force,
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc.enable_password_registration_for_tests();
     svc
 }
 
@@ -78,6 +79,7 @@ fn create_user_service_with_security_pipeline(
         brute_force,
     );
     service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    service.enable_password_registration_for_tests();
     let service = Arc::new(service);
     let pipeline = SecurityPipeline::new(Arc::clone(&service))
         .with_token_blacklist(token_blacklist, key_builder);

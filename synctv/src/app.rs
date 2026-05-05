@@ -112,6 +112,7 @@ pub struct ApplicationBuildOptions {
     pub provider_test_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_hex_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn PasswordHasherService>>,
+    pub enable_password_registration_for_tests: bool,
 }
 
 impl std::fmt::Debug for ApplicationBuildOptions {
@@ -131,6 +132,10 @@ impl std::fmt::Debug for ApplicationBuildOptions {
             .field(
                 "password_hasher_override",
                 &self.password_hasher_override.as_ref().map(|_| "<injected>"),
+            )
+            .field(
+                "enable_password_registration_for_tests",
+                &self.enable_password_registration_for_tests,
             )
             .finish()
     }
@@ -457,6 +462,13 @@ impl Application {
                 return Err(e);
             }
         };
+        if options.enable_password_registration_for_tests {
+            core.services
+                .settings_registry
+                .enable_password_signup
+                .set(true)
+                .await?;
+        }
 
         // Phase 4: Leader election and singleton tasks
         let leader = match Self::init_leader_election(&infra, &core, &mut shutdown).await {
@@ -1280,8 +1292,8 @@ mod tests {
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
         HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-        OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig,
-        WebAuthnConfig, WebRTCConfig,
+        PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig, WebAuthnConfig,
+        WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1410,11 +1422,11 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
+                hls_storage_backend: synctv_core::config::HlsStorageBackend::File,
                 hls_shared_storage: true,
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
-            oauth2: OAuth2Config::default(),
             webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),

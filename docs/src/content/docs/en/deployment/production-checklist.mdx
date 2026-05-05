@@ -60,7 +60,7 @@ Check:
 - `redis.url` or split fields are correct.
 - All replicas share the same Redis.
 - `redis.key_prefix` does not collide with another environment.
-- Sentinel mode has `sentinel_master_name` and `sentinel_addresses`.
+- Sentinel mode has `sentinel_master_name` and `sentinel_addresses`, and is not combined with `cluster.enabled=true`.
 
 Redis affects rate limits, brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, cluster pub/sub, node registry, and stream catch-up.
 
@@ -143,7 +143,7 @@ email:
 Test:
 
 ```bash
-synctv settings test-email --to admin@example.com
+synctv settings test-email admin@example.com
 ```
 
 ## OAuth2
@@ -152,7 +152,8 @@ Check:
 
 - Each provider has correct `client_id` and `client_secret`.
 - `redirect_url` matches the provider registration.
-- `oauth2.redirect_scheme` is `https` in production.
+- OAuth2 runtime setting `oauth2.providers.*.config.redirect_url` matches the value registered in the external provider.
+- Configure each OAuth2 provider's `enable_signup` and `signup_need_review` according to product policy.
 - Multi-replica deployments use Redis for OAuth2 state.
 
 ## HLS, RTMP, and STUN
@@ -165,12 +166,23 @@ If livestreaming is used:
 
 - Open the RTMP port.
 - Open UDP STUN if WebRTC uses built-in STUN.
-- Use shared HLS storage in multi-replica deployments.
+- Choose the multi-replica HLS model explicitly: local backend with publisher-node proxying for small deployments, or `file` shared filesystem storage / `oss` object storage for high production traffic.
 
 ```yaml
 livestream:
+  hls_storage_backend: "file"
   hls_shared_storage: true
   hls_storage_path: "/var/lib/synctv/hls"
+```
+
+Or:
+
+```yaml
+livestream:
+  hls_storage_backend: "oss"
+  hls_oss:
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
 ```
 
 ## Proxy Slice Cache

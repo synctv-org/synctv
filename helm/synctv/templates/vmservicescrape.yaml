@@ -19,7 +19,7 @@ spec:
       app.kubernetes.io/component: api
   endpoints:
     - port: metrics
-      path: {{ .Values.metrics.path | default "/metrics" }}
+      path: /metrics
       interval: {{ .Values.metrics.vmServiceScrape.interval | default "30s" }}
       {{- with .Values.metrics.vmServiceScrape.scrapeTimeout }}
       scrapeTimeout: {{ . }}

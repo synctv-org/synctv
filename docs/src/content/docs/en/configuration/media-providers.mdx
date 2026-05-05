@@ -11,72 +11,61 @@ Media providers are SyncTV's integration points for external media sources, incl
 - Emby.
 - Jellyfin.
 - Bilibili.
-- Direct URLs and other provider backends.
+- Remote provider instances.
 
-Provider-specific fields are dynamic and live under:
+`media_providers` only configures local built-in provider adapters in this SyncTV process. Each provider has explicit fields:
 
 ```yaml
 media_providers:
-  providers: {}
+  alist:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  bilibili:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  emby:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
 ```
 
-## Common Timeout Fields
+Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
 
-`media_providers.request_timeout_seconds` default: `30`.
+## Local Provider Timeout Fields
 
-This is the total timeout for a provider HTTP request. Setting it to `0` disables the request timeout, which is not recommended in production.
+`request_timeout_seconds` default: `30`.
 
-`media_providers.connect_timeout_seconds` default: `10`.
+This is the total timeout for one upstream HTTP request made by that provider.
 
-This is the TCP connection timeout. Validation reports an unreasonable config if it is larger than the total request timeout.
+`connect_timeout_seconds` default: `10`.
 
-## Provider Instances
-
-Each key under `media_providers.providers` is a provider instance name.
+This is the TCP connection timeout for that provider. Validation reports an unreasonable config if it is larger than the same provider's request timeout.
 
 Alist:
 
 ```yaml
 media_providers:
-  providers:
-    alist:
-      base_url: "https://alist.example.com"
-      token_file: "/run/secrets/alist_token"
+  alist:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
 ```
 
 Emby:
 
 ```yaml
 media_providers:
-  providers:
-    emby:
-      base_url: "https://emby.example.com"
-      api_key_file: "/run/secrets/emby_api_key"
+  emby:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
 ```
 
-Bilibili instance fields depend on the current provider implementation and account mode. They commonly involve cookies, credentials, user agent, and proxy behavior.
-
-## Secret-Like Fields
-
-Provider objects support `_file` for secret-like fields, including:
-
-- `token_file`
-- `api_key_file`
-- `password_file`
-- `access_token_file`
-- `refresh_token_file`
-- `client_secret_file`
-
-Example:
+Bilibili:
 
 ```yaml
 media_providers:
-  providers:
-    demo:
-      access_token_file: "/run/secrets/demo_access_token"
+  bilibili:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
 ```
-
-Relative paths are resolved relative to the configuration file directory, not `data_dir`.
 
 ## Header Ownership
 

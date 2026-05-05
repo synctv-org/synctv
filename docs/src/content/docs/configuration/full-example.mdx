@@ -80,7 +80,9 @@ metrics:
   </TabItem>
   <TabItem label="全量配置模板" icon="setting">
 
-这份模板覆盖当前版本的全部静态配置字段，并给出常见动态对象的写法。`oauth2.providers` 和 `media_providers.providers` 的内部结构由具体 provider 决定，无法像静态字段一样穷举；这里给出代表性实例，详细说明见 [邮件与 OAuth2](../email-oauth2/) 和 [媒体 Provider](../media-providers/)。
+这份模板覆盖当前版本的全部静态配置字段。Provider 相关字段只配置本进程内置 local provider adapter；远程 provider instance 通过管理 API/CLI 持久化，详见 [媒体 Provider](../media-providers/)。
+
+模板中同时列出 secret 直填字段和 `*_file` 字段是为了展示层级。生产配置不要两种方式照抄混用；优先使用 `*_file` 或环境变量注入，并确保引用的文件真实存在。
 
 ```yaml
 server:
@@ -196,25 +198,20 @@ livestream:
   max_flv_tag_size_bytes: 10485760
   gop_cache_max_memory_mb: 100
   hls_memory_max_mb: 0
+  hls_storage_backend: "memory"
   hls_shared_storage: false
   hls_storage_path: ""
+  hls_oss:
+    endpoint: ""
+    access_key_id: ""
+    access_key_id_file: "/run/secrets/hls_oss_access_key_id"
+    secret_access_key: ""
+    secret_access_key_file: "/run/secrets/hls_oss_secret_access_key"
+    bucket: ""
+    region: null
+    base_path: "hls/"
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
-
-oauth2:
-  redirect_scheme: "https"
-  providers:
-    github:
-      type: "github"
-      client_id: "github-client-id"
-      client_secret_file: "/run/secrets/oauth2_github_client_secret"
-      redirect_url: "https://app.example.com/oauth2/callback"
-    oidc:
-      type: "oidc"
-      client_id: "oidc-client-id"
-      client_secret_file: "/run/secrets/oauth2_oidc_client_secret"
-      issuer: "https://idp.example.com"
-      redirect_url: "https://app.example.com/oauth2/callback"
 
 webauthn:
   enabled: true
@@ -238,20 +235,15 @@ email:
   use_tls: true
 
 media_providers:
-  request_timeout_seconds: 30
-  connect_timeout_seconds: 10
-  providers:
-    alist:
-      type: "alist"
-      base_url: "https://alist.example.com"
-      token_file: "/run/secrets/alist_token"
-    emby:
-      type: "emby"
-      base_url: "https://emby.example.com"
-      api_key_file: "/run/secrets/emby_api_key"
-    bilibili:
-      type: "bilibili"
-      user_agent: "Mozilla/5.0 SyncTV"
+  alist:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  emby:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
+  bilibili:
+    request_timeout_seconds: 30
+    connect_timeout_seconds: 10
 
 webrtc:
   mode: "peer_to_peer"
@@ -379,6 +371,8 @@ redis:
 ```
 
 Redis Sentinel 形式：
+
+Sentinel 不能与 `cluster.enabled=true` 同时使用。集群部署请使用稳定单入口 Redis、托管 Redis 或平台保证连接语义的 Redis 服务。
 
 ```yaml
 redis:

@@ -124,12 +124,12 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
 | gRPC 经 Ingress 失败但 HTTP 正常 | 是否使用独立 gRPC Service/Ingress，Nginx 是否设置 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` | [Helm 部署](../../deployment/helm/) |
 | Swagger UI 或 OpenAPI JSON 不存在 | 二进制是否启用 `openapi` feature，反向代理是否放行 `/swagger-ui/` 和 `/api-docs/openapi.json` | [OpenAPI 文档入口](../../reference/openapi/) |
 | WebAuthn/passkey 注册或登录失败 | `rp_id` 是否为可注册域，`rp_origin` 是否精确匹配客户端 origin，是否 HTTPS | [WebAuthn 配置](../../configuration/webauthn/) |
-| OAuth2 登录出现 state 或 callback 问题 | `oauth2.redirect_scheme`、provider `redirect_url`、多副本 Redis、客户端 callback URI | [邮件与 OAuth2](../../configuration/email-oauth2/) |
+| OAuth2 登录出现 state 或 callback 问题 | runtime `oauth2.providers.*.config.redirect_url`、多副本 Redis、客户端 callback URI | [邮件与 OAuth2](../../configuration/email-oauth2/) |
 | 邮件验证码、密码找回或邮箱 2FA 不工作 | SMTP host、port、TLS、用户名、密码、from_email，邮件限流 | [邮件与 OAuth2](../../configuration/email-oauth2/) |
 | 登录、验证码或管理接口被频繁拒绝 | HTTP/gRPC rate limit、brute-force 保护、客户端重试策略 | [限流与连接限制](../../configuration/rate-limits/) |
 | Provider 直连可用但代理不可用，或反过来 | Provider 返回给客户端的 header 与代理上游 header 是否一致，特别是 UA、Referer、Range | [媒体 Provider](../../configuration/media-providers/) |
 | Range 播放、seek 或 HLS byterange 异常 | Provider 是否提供 Range header、上游是否支持 Range、slice cache 是否启用 | [缓存与代理 slice cache](../../configuration/cache-and-proxy/) |
-| HLS 多副本播放偶发 404 或不连续 | `hls_shared_storage`、`hls_storage_path` 是否所有副本共享 | [直播配置](../../configuration/livestream/) |
+| HLS 多副本播放偶发 404 或不连续 | publisher 节点是否可达、Pod 间 gRPC 是否通、`hls_shared_storage` 是否与实际挂载一致；高流量场景是否应改用 `file` 共享文件系统或 `oss` | [直播配置](../../configuration/livestream/) |
 | RTMP 推流或 HTTP-FLV 拉流失败 | 端口暴露、LoadBalancer/NodePort、反向代理超时、FLV 写超时 | [直播配置](../../configuration/livestream/) |
 | STUN/WebRTC 连接失败 | `webrtc.mode`、`stun_external_addr`、UDP 3478 暴露、私网 candidate 过滤 | [WebRTC 配置](../../configuration/webrtc/) |
 

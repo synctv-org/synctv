@@ -1,4 +1,4 @@
-{{- if .Values.headlessService.enabled }}
+{{- if or .Values.headlessService.enabled (and .Values.config.cluster.enabled (eq (.Values.config.cluster.discoveryMode | default "redis") "k8s_dns")) }}
 apiVersion: v1
 kind: Service
 metadata:

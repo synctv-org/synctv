@@ -234,7 +234,9 @@ redis:
 
 `standalone` 是单 Redis 实例，适合开发、小规模部署。
 
-`sentinel` 用于 Redis Sentinel 高可用部署。
+`sentinel` 用于连接 Redis Sentinel 部署。SyncTV 会在连续健康检查失败后重新向 Sentinel 查询当前 master，并尽力重建、热替换 Redis 连接。
+
+这个能力不是强一致 failover 保证：failover 窗口内的 in-flight Redis 操作仍可能失败，依赖 Redis 分布式锁和 pub/sub 的集群协调也可能受到影响。因此 Sentinel 仍然不能与 `cluster.enabled=true` 同时使用。
 
 ### Sentinel 配置
 
@@ -248,7 +250,7 @@ redis:
     - "redis://sentinel3:26379"
 ```
 
-注意：Redis Sentinel 运维复杂度高于 standalone。自托管部署通常先使用 standalone，并配合定期备份和监控。
+注意：Redis Sentinel 运维复杂度高于 standalone，且不能与 `cluster.enabled=true` 同时使用。集群模式依赖 Redis 分布式锁和 pub/sub，一旦 Sentinel failover 期间出现协调窗口，可能造成跨节点状态不一致。需要集群模式时，优先使用稳定的单入口 Redis、托管 Redis 或由平台保证连接语义的方案。
 
 ## 数据库和 Redis 的生产建议
 

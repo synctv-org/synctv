@@ -31,8 +31,10 @@ List services:
 
 ```bash
 grpcurl -plaintext localhost:8080 list
-grpcurl -plaintext localhost:8080 list synctv.client.ClientService
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
+
+Public client services include `synctv.client.AuthService`, `UserService`, `RoomService`, `PublicService`, `EmailService`, `NotificationService`, and `OAuth2Service`. The public admin gRPC service is `synctv.admin.AdminService`. The management gRPC service is a separate endpoint named `synctv.management.ManagementService`; it is not served on `server.port`.
 
   </TabItem>
   <TabItem label="Protobuf Files" icon="document">
@@ -41,14 +43,16 @@ Use repository protobuf files without reflection:
 
 ```bash
 grpcurl -plaintext \
-  -import-path synctv-proto/proto \
-  -proto client.proto \
+  -import-path synctv-proto \
+  -proto proto/client.proto \
   localhost:8080 \
-  synctv.client.ClientService/Login
+  synctv.client.AuthService/Login
 ```
 
   </TabItem>
 </Tabs>
+
+`-plaintext` is for local development or trusted internal networks only. Production deployments should use TLS at the proxy or client connection layer.
 
 ## Register Example
 
@@ -57,7 +61,7 @@ grpcurl -plaintext -d '{
   "username": "alice",
   "email": "alice@example.com",
   "password": "securepassword123"
-}' localhost:8080 synctv.client.ClientService/Register
+}' localhost:8080 synctv.client.AuthService/Register
 ```
 
 ## Login Example
@@ -66,7 +70,7 @@ grpcurl -plaintext -d '{
 grpcurl -plaintext -d '{
   "username": "alice",
   "password": "securepassword123"
-}' localhost:8080 synctv.client.ClientService/Login
+}' localhost:8080 synctv.client.AuthService/Login
 ```
 
 ## Relationship With OpenAPI

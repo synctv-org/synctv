@@ -3,11 +3,25 @@ title: 架构总览
 description: SyncTV 的进程边界、核心依赖、网络入口、存储层、缓存层和扩展模型。
 ---
 
+import Diagram from '../../../components/Diagram.astro';
+import architectureDiagramDark from '../../../assets/diagrams/architecture-dark.svg';
+import architectureDiagramLight from '../../../assets/diagrams/architecture-light.svg';
+import kubernetesTopologyDark from '../../../assets/diagrams/kubernetes-topology-dark.svg';
+import kubernetesTopologyLight from '../../../assets/diagrams/kubernetes-topology-light.svg';
+import productionMinimalDark from '../../../assets/diagrams/production-minimal-dark.svg';
+import productionMinimalLight from '../../../assets/diagrams/production-minimal-light.svg';
 import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 一句话模型
 
 SyncTV 是一个单二进制服务，内部组合 HTTP API、公开 gRPC、management gRPC、实时房间状态、媒体 Provider、媒体代理、直播和集群协调能力。持久状态在 PostgreSQL，跨节点临时状态和分布式协调依赖 Redis，本地运行时文件放在 `data_dir`。
+
+<Diagram
+  light={architectureDiagramLight}
+  dark={architectureDiagramDark}
+  alt="SyncTV 架构总览图，展示客户端、Ingress、SyncTV 单二进制、PostgreSQL、Redis、外部 Provider 和 HLS 存储之间的关系。"
+  caption="SyncTV 的核心边界：一个服务进程承载业务 API、实时协作、管理控制面、媒体代理和直播能力，持久状态进入 PostgreSQL，跨节点临时状态进入 Redis。"
+/>
 
 ## 主要组件
 
@@ -112,34 +126,36 @@ Provider header 是边界设计的一部分。这样可以避免底层 proxy 猜
 
 - 所有副本共享同一个 PostgreSQL。
 - 所有副本共享同一个 Redis 和 `redis.key_prefix`。
-- HLS 如果需要跨节点访问，必须使用共享存储。
+- HLS 跨节点访问可以走 publisher-node proxy；高流量生产场景建议使用共享文件系统或 OSS，减少 publisher 节点压力。
 - Pod 关闭时给足 `server.shutdown_drain_timeout_seconds` 和 Kubernetes termination grace period。
+
+更完整的运行时设计、发现模式、leader election 和集群直播边界见 [集群配置](../../configuration/cluster/)。
+
+## 直播模型
+
+直播路径和点播 proxy 路径不同。RTMP 是推流入口；HTTP-FLV 面向低延迟播放；HLS 通过 remuxer 生成 playlist/segment 并写入 `memory`、`file` 或 `oss` backend。多副本时，publisher 所在节点通过共享 registry 暴露给其他节点；非 publisher 节点可以通过 HLS gRPC proxy 向 publisher 节点读取分片，也可以在共享文件系统或 OSS 模型下直接读取分片。
+
+详细的 RTMP/StreamHub/HTTP-FLV/HLS pipeline、backend 选择和集群直播故障边界见 [直播与 HLS/FLV](../../configuration/livestream/)。
 
 ## 生产架构建议
 
 最小生产拓扑：
 
-```text
-Client
-  -> TLS reverse proxy / Ingress
-  -> SyncTV
-  -> PostgreSQL
-  -> Redis
-```
+<Diagram
+  light={productionMinimalLight}
+  dark={productionMinimalDark}
+  alt="最小生产拓扑图，展示客户端经 TLS 反向代理或 Ingress 访问 SyncTV，SyncTV 连接 PostgreSQL 和 Redis。"
+  caption="最小生产拓扑只需要一个 SyncTV 服务入口、PostgreSQL 和 Redis。Redis 在简单单节点场景可选，但生产建议配置。"
+/>
 
 Kubernetes 多副本拓扑：
 
-```text
-Client
-  -> HTTP Ingress -> HTTP Service -> SyncTV pods
-  -> gRPC Ingress -> gRPC Service -> SyncTV pods
-
-SyncTV pods
-  -> PostgreSQL
-  -> Redis
-  -> optional shared HLS storage
-  -> optional external media providers
-```
+<Diagram
+  light={kubernetesTopologyLight}
+  dark={kubernetesTopologyDark}
+  alt="Kubernetes 多副本拓扑图，展示 HTTP Ingress、gRPC Ingress、两个独立 Service、多个 SyncTV Pod、PostgreSQL、Redis、HLS backend 或 publisher-node proxy，以及外部媒体 Provider。"
+  caption="Kubernetes 多副本部署应拆分 HTTP 与 gRPC 的 Service/Ingress，同时让所有 Pod 共享 PostgreSQL、Redis。HLS 可以使用 publisher-node proxy；高流量生产建议使用共享文件系统或 OSS。"
+/>
 
 ## 继续阅读
 

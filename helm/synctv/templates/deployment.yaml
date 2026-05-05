@@ -1,3 +1,16 @@
+{{- $hlsBackend := .Values.config.livestream.hlsStorageBackend | default "memory" -}}
+{{- if not (has $hlsBackend (list "memory" "file" "oss")) -}}
+{{- fail "config.livestream.hlsStorageBackend must be one of: memory, file, oss" -}}
+{{- end -}}
+{{- if and (eq $hlsBackend "file") (not .Values.config.livestream.hlsStoragePath) -}}
+{{- fail "config.livestream.hlsStorageBackend=file requires config.livestream.hlsStoragePath" -}}
+{{- end -}}
+{{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath (not (hasPrefix "/" .Values.config.livestream.hlsStoragePath)) -}}
+{{- fail "config.livestream.hlsStorageBackend=file requires an absolute config.livestream.hlsStoragePath in Kubernetes" -}}
+{{- end -}}
+{{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsSharedStorage (not .Values.persistence.hls.existingClaim) -}}
+{{- fail "config.livestream.hlsSharedStorage=true requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -202,6 +215,18 @@ spec:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
             {{- end }}
+            {{- if eq $hlsBackend "oss" }}
+            - name: SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID
+            - name: SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY
+            {{- end }}
             - name: SYNCTV_MANAGEMENT_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -239,7 +264,7 @@ spec:
               mountPath: /tmp
             - name: app-data
               mountPath: /data
-            {{- if .Values.config.livestream.hlsStoragePath }}
+            {{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath }}
             - name: hls-storage
               mountPath: {{ .Values.config.livestream.hlsStoragePath | quote }}
             {{- end }}
@@ -257,10 +282,20 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: app-data
+          {{- if .Values.persistence.data.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.data.existingClaim | quote }}
+          {{- else }}
           emptyDir: {}
-        {{- if .Values.config.livestream.hlsStoragePath }}
+          {{- end }}
+        {{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath }}
         - name: hls-storage
+          {{- if .Values.persistence.hls.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.hls.existingClaim | quote }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         {{- end }}
         {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
         - name: metrics-tls

@@ -12,7 +12,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 | 文件 | 用途 | 特点 |
 | --- | --- | --- |
 | `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
-| `docker-compose.yml` | 预构建镜像部署 | 使用镜像，需要显式提供生产 secret |
+| `docker-compose.yml` | 预构建镜像部署 | 使用 `synctvorg/synctv:0.1.0`，需要显式提供生产 secret |
 
 ## 开发 Compose
 
@@ -48,6 +48,7 @@ docker compose -f docker-compose.dev.yml up -d
 
 ```bash
 export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
 export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
@@ -57,6 +58,8 @@ docker compose up -d
 ```
 
 如果漏掉必填变量，Compose 会报错并拒绝生成配置。
+
+升级镜像时同步修改 `docker-compose.yml` 中的镜像 tag，或在自己的 Compose 覆盖文件中指定镜像版本。
 
   </TabItem>
 </Tabs>

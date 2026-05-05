@@ -124,12 +124,12 @@ Do not start by reading every configuration field. Classify the failure, then ju
 | gRPC fails through Ingress while HTTP works | Separate gRPC Service/Ingress and `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` | [Helm Deployment](../../deployment/helm/) |
 | Swagger UI or OpenAPI JSON is missing | Binary built with `openapi` feature; proxy allows `/swagger-ui/` and `/api-docs/openapi.json` | [OpenAPI Access](../../reference/openapi/) |
 | WebAuthn/passkey registration or login fails | `rp_id`, exact `rp_origin`, HTTPS, allowed origins | [WebAuthn and Passkeys](../../configuration/webauthn/) |
-| OAuth2 login has state or callback problems | `oauth2.redirect_scheme`, provider `redirect_url`, Redis in multi-replica mode, client callback URI | [Email and OAuth2](../../configuration/email-oauth2/) |
+| OAuth2 login has state or callback problems | runtime `oauth2.providers.*.config.redirect_url`, Redis in multi-replica mode, client callback URI | [Email and OAuth2](../../configuration/email-oauth2/) |
 | Email codes, password reset, or email MFA do not work | SMTP host, port, TLS, username, password, from address, email rate limits | [Email and OAuth2](../../configuration/email-oauth2/) |
 | Login, email, or admin APIs are rejected frequently | HTTP/gRPC rate limits, brute-force protection, client retry behavior | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
 | Provider direct mode works but proxy mode fails, or the reverse | Client-facing headers and proxy upstream headers, especially UA, Referer, and Range | [Media Providers](../../configuration/media-providers/) |
 | Range playback, seeking, or HLS byterange fails | Provider Range headers, upstream Range support, slice cache state | [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) |
-| HLS multi-replica playback returns intermittent 404 or discontinuities | `hls_shared_storage` and a storage path shared by all replicas | [Livestream Configuration](../../configuration/livestream/) |
+| HLS multi-replica playback returns intermittent 404 or discontinuities | Publisher node reachability, Pod-to-Pod gRPC, `hls_shared_storage` matching the actual mount, or whether high traffic should move to `file` shared filesystem storage / `oss` | [Livestream Configuration](../../configuration/livestream/) |
 | RTMP push or HTTP-FLV pull fails | Exposed ports, LoadBalancer/NodePort, proxy timeouts, FLV write timeout | [Livestream Configuration](../../configuration/livestream/) |
 | STUN/WebRTC connectivity fails | `webrtc.mode`, `stun_external_addr`, UDP 3478 exposure, private candidate filtering | [WebRTC Configuration](../../configuration/webrtc/) |
 

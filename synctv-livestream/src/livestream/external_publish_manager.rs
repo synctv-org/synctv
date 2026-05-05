@@ -74,6 +74,7 @@ pub struct ExternalPublishManager {
     /// Maximum number of concurrent pull streams.
     /// Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
+    max_flv_tag_size_bytes: usize,
 }
 
 impl ExternalPublishManager {
@@ -111,6 +112,12 @@ impl ExternalPublishManager {
     #[must_use]
     pub const fn with_max_streams(mut self, max: usize) -> Self {
         self.max_concurrent_streams = max;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
+        self.max_flv_tag_size_bytes = max;
         self
     }
 
@@ -157,6 +164,7 @@ impl ExternalPublishManager {
             stream_hub_event_sender,
             http_client,
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         })
     }
 
@@ -270,6 +278,7 @@ impl ExternalPublishManager {
             source_url.to_string(),
             self.stream_hub_event_sender.clone(),
             self.http_client.clone(),
+            self.max_flv_tag_size_bytes,
         ));
 
         // Validate that we have an API address before registering. Other nodes need this
@@ -416,6 +425,7 @@ pub struct ExternalPublishStream {
     unpublish_sent: AtomicBool,
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
     http_client: reqwest::Client,
+    max_flv_tag_size_bytes: usize,
 }
 
 impl ManagedStream for ExternalPublishStream {
@@ -436,6 +446,7 @@ impl ExternalPublishStream {
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
         http_client: reqwest::Client,
+        max_flv_tag_size_bytes: usize,
     ) -> Self {
         Self {
             room_id,
@@ -445,6 +456,7 @@ impl ExternalPublishStream {
             lifecycle: StreamLifecycle::new(),
             unpublish_sent: AtomicBool::new(false),
             http_client,
+            max_flv_tag_size_bytes,
         }
     }
 
@@ -462,6 +474,7 @@ impl ExternalPublishStream {
         let source_url = self.source_url.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
         let http_client = self.http_client.clone();
+        let max_flv_tag_size_bytes = self.max_flv_tag_size_bytes;
         // Clone the is_running flag so the task can mark itself unhealthy on exit
         let is_running_flag = self.lifecycle.is_running_clone();
 
@@ -480,7 +493,10 @@ impl ExternalPublishStream {
             )
             .await
             {
-                Ok(p) => p.with_confirm(confirm_tx).with_http_client(http_client),
+                Ok(p) => p
+                    .with_confirm(confirm_tx)
+                    .with_http_client(http_client)
+                    .with_max_flv_tag_size_bytes(max_flv_tag_size_bytes),
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
                     error!("{}", msg);
@@ -717,6 +733,7 @@ mod tests {
             "rtmp://example.com/live/stream".to_string(),
             sender,
             reqwest::Client::new(),
+            ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         );
 
         assert_eq!(stream.subscriber_count(), 0);

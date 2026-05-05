@@ -235,7 +235,7 @@ synctv user ban alice --reason "abuse"
 synctv user unban alice
 synctv user set-role alice admin
 synctv user set-password alice --password 'NewStrongPass123'
-synctv user set-username alice alice2
+synctv user set-username alice --username alice2
 synctv user rooms alice
 ```
 
@@ -257,8 +257,8 @@ synctv user admin list
 Batch operations:
 
 ```bash
-synctv user batch ban --user alice --user bob --reason "spam"
-synctv user batch delete --user alice --user bob
+synctv user batch ban alice bob --reason "spam"
+synctv user batch delete alice bob
 ```
 
 Privileged operations follow role hierarchy. A non-root admin cannot modify root or higher-privilege users' sensitive settings.
@@ -268,11 +268,11 @@ Privileged operations follow role hierarchy. A non-root admin cannot modify root
 Rooms:
 
 ```bash
-synctv room create "Movie Room" --actor-user alice
+synctv room create "Movie Room" --username alice
 synctv room list
 synctv room get <ROOM_ID>
 synctv room set-password <ROOM_ID> --password "room-pass"
-synctv room transfer-owner <ROOM_ID> --actor-user alice bob
+synctv room transfer-owner <ROOM_ID> --username alice bob
 synctv room ban <ROOM_ID> --reason "policy"
 synctv room unban <ROOM_ID>
 synctv room delete <ROOM_ID>
@@ -301,10 +301,10 @@ Playback:
 
 ```bash
 synctv room playback get <ROOM_ID>
-synctv room playback start <ROOM_ID> <MEDIA_ID>
+synctv room playback start --room-id <ROOM_ID> --media-id <MEDIA_ID>
 synctv room playback play <ROOM_ID>
 synctv room playback pause <ROOM_ID>
-synctv room playback seek <ROOM_ID> --position-ms 60000
+synctv room playback seek --room-id <ROOM_ID> --position 60
 synctv room playback speed <ROOM_ID> --speed 1.25
 synctv room playback stop <ROOM_ID>
 ```
@@ -354,9 +354,9 @@ Playlists:
 ```bash
 synctv playlist list <ROOM_ID>
 synctv playlist get <ROOM_ID> <PLAYLIST_ID>
-synctv playlist create <ROOM_ID> --title "Weekend List"
-synctv playlist update <ROOM_ID> <PLAYLIST_ID> --title "New Title"
-synctv playlist move <ROOM_ID> <PLAYLIST_ID> --position 2
+synctv playlist create --room-id <ROOM_ID> --username alice "Weekend List"
+synctv playlist update --room-id <ROOM_ID> <PLAYLIST_ID> --name "New Title"
+synctv playlist move --room-id <ROOM_ID> <PLAYLIST_ID> --after-playlist-id <OTHER_PLAYLIST_ID>
 synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
 ```
 
@@ -364,10 +364,10 @@ Media:
 
 ```bash
 synctv media list <ROOM_ID>
-synctv media add-url <ROOM_ID> "https://example.com/video.mp4"
-synctv media add <ROOM_ID> --title "Video" --url "https://example.com/video.mp4"
-synctv media edit <ROOM_ID> <MEDIA_ID> --title "New Title"
-synctv media move <ROOM_ID> <MEDIA_ID> --position 3
+synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --title "Video"
+synctv media add --room-id <ROOM_ID> --username alice --source-config-json '{"url":"https://example.com/video.mp4"}' --title "Video"
+synctv media update --room-id <ROOM_ID> <MEDIA_ID> --title "New Title"
+synctv media move --room-id <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>
 ```
 
@@ -393,8 +393,8 @@ Provider instances:
 synctv provider available
 synctv provider backends alist
 synctv provider list
-synctv provider create <NAME> --kind alist --config-json '{}'
-synctv provider update <NAME> --config-json '{}'
+synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
+synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
 synctv provider enable <NAME>
 synctv provider disable <NAME>
 synctv provider reconnect <NAME>
@@ -404,43 +404,43 @@ synctv provider delete <NAME>
 Alist:
 
 ```bash
-synctv provider alist login <INSTANCE> --username alice --password 'pass'
-synctv provider alist list <INSTANCE> --path /
-synctv provider alist search <INSTANCE> --keyword movie
-synctv provider alist get-me <INSTANCE>
-synctv provider alist binds <INSTANCE>
-synctv provider alist logout <INSTANCE>
+synctv provider alist login --username alice --host https://alist.example --account-username alice --password 'pass' --instance-name alist-main
+synctv provider alist list --username alice --path / --instance-name alist-main
+synctv provider alist search --username alice --keyword movie --instance-name alist-main
+synctv provider alist me --username alice --instance-name alist-main
+synctv provider alist binds --username alice
+synctv provider alist logout --username alice --instance-name alist-main
 ```
 
 Emby:
 
 ```bash
-synctv provider emby login <INSTANCE> --username alice --password 'pass'
-synctv provider emby list <INSTANCE>
-synctv provider emby get-me <INSTANCE>
-synctv provider emby binds <INSTANCE>
-synctv provider emby logout <INSTANCE>
+synctv provider emby login --username alice --host https://emby.example --account-username alice --password 'pass' --instance-name emby-main
+synctv provider emby list --username alice --instance-name emby-main
+synctv provider emby me --username alice --instance-name emby-main
+synctv provider emby binds --username alice
+synctv provider emby logout --username alice --instance-name emby-main
 ```
 
 Bilibili:
 
 ```bash
 synctv provider bilibili parse "https://www.bilibili.com/video/..."
-synctv provider bilibili login-qr <INSTANCE>
-synctv provider bilibili check-qr <INSTANCE> --qrcode-key <KEY>
-synctv provider bilibili get-captcha <INSTANCE>
-synctv provider bilibili send-sms <INSTANCE> --phone 13800000000
-synctv provider bilibili login-sms <INSTANCE> --phone 13800000000 --code 123456
-synctv provider bilibili get-user-info <INSTANCE>
-synctv provider bilibili binds <INSTANCE>
-synctv provider bilibili logout <INSTANCE>
+synctv provider bilibili login-qr --username alice --instance-name bilibili-main
+synctv provider bilibili check-qr --username alice --key <KEY> --instance-name bilibili-main
+synctv provider bilibili get-captcha --username alice --instance-name bilibili-main
+synctv provider bilibili send-sms --username alice --phone 13800000000 --token <TOKEN> --challenge <CHALLENGE> --validate <VALIDATE> --instance-name bilibili-main
+synctv provider bilibili login-sms --username alice --phone 13800000000 --code 123456 --captcha-key <CAPTCHA_KEY> --instance-name bilibili-main
+synctv provider bilibili me --username alice --instance-name bilibili-main
+synctv provider bilibili binds --username alice
+synctv provider bilibili logout --username alice --instance-name bilibili-main
 ```
 
 RTMP:
 
 ```bash
-synctv provider rtmp publish-key <ROOM_ID> <MEDIA_ID>
-synctv provider rtmp get-stream-info <ROOM_ID> <MEDIA_ID>
+synctv provider rtmp create-publish-key --username alice --room-id <ROOM_ID> <MEDIA_ID>
+synctv provider rtmp info --username alice --room-id <ROOM_ID> <MEDIA_ID>
 ```
 
 ## Runtime Settings
@@ -451,7 +451,7 @@ Runtime settings are changed through the management endpoint. They are not the s
 synctv settings list
 synctv settings get email
 synctv settings update email --set whitelist_enabled=true --set whitelist=example.com
-synctv settings test-email --to admin@example.com
+synctv settings test-email admin@example.com
 ```
 
 See [Runtime Settings Reference](../runtime-settings/) for all keys, defaults, and validation rules.

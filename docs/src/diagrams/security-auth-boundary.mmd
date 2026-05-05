@@ -1,0 +1,18 @@
+flowchart LR
+  Local[Local first factor<br/>password / OPAQUE / WebAuthn / email]
+  MFA[MFA session<br/>remaining local methods]
+  OAuth2[OAuth2 provider]
+  Tokens[Access / refresh tokens<br/>with auth context]
+  API[HTTP / gRPC business APIs]
+  Management[Management gRPC<br/>separate ops token]
+
+  Local -->|2FA enabled| MFA
+  MFA -->|second factor verified| Tokens
+  Local -->|2FA disabled| Tokens
+  OAuth2 -->|independent login trust| Tokens
+  Tokens --> API
+
+  CLI[CLI / operators] --> Management
+
+  Note[OAuth2 does not count as a local 2FA factor.<br/>2FA-enabled users may still log in through OAuth2.]
+  OAuth2 -.-> Note

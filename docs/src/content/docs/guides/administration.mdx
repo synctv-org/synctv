@@ -87,7 +87,7 @@ synctv user preferences get alice
 | 成员 | `room member add/kick/ban/unban/set-permissions` | 会改变访问和管理能力 |
 | 设置 | `room settings update/reset` | 会改变加入规则、游客、聊天、弹幕和权限默认值 |
 | 播放 | `room playback play/pause/seek/start/stop` | 会改变所有在线成员看到的播放状态 |
-| 直播 | `room stream list`、`provider rtmp publish-key` | 涉及推流密钥和直播会话 |
+| 直播 | `room stream list`、`provider rtmp create-publish-key` | 涉及推流密钥和直播会话 |
 
 建议顺序：
 
@@ -130,8 +130,8 @@ Provider 实例是外部媒体源的连接配置。实例配置通常包含 URL�
 ```bash
 synctv provider available
 synctv provider list
-synctv provider create <NAME> --kind alist --config-json '{}'
-synctv provider update <NAME> --config-json '{}'
+synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
+synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
 synctv provider enable <NAME>
 synctv provider disable <NAME>
 synctv provider reconnect <NAME>
@@ -152,7 +152,7 @@ runtime settings 是数据库里的热更新设置，和 YAML 启动配置不同
 ```bash
 synctv settings list
 synctv settings get user.enable_password_signup
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
 语义：

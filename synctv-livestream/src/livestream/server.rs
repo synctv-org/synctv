@@ -19,8 +19,9 @@ use crate::{
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use synctv_core::config::{HlsOssConfig, HlsStorageBackend};
 use synctv_xiu::rtmp::auth::AuthCallback;
-use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage};
+use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage};
 use synctv_xiu::streamhub::StreamsHub;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -85,62 +86,101 @@ pub struct LivestreamConfig {
     /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// 0 means use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
+    /// Maximum FLV tag data size accepted from external HTTP-FLV sources.
+    pub max_flv_tag_size_bytes: usize,
     /// Advertised shared API address of this node for cross-node proxying.
     /// Used by `PublisherManager` for re-registration after `StreamHub` restart.
     pub api_address: String,
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
     pub hls_memory_max_mb: u64,
+    /// HLS segment storage backend.
+    pub hls_storage_backend: HlsStorageBackend,
     /// Whether HLS segments should be written to a shared filesystem.
     pub hls_shared_storage: bool,
     /// Base path for shared HLS filesystem storage.
     pub hls_storage_path: String,
+    /// S3-compatible object storage settings for the OSS backend.
+    pub hls_oss: HlsOssConfig,
 }
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
-    if config.hls_shared_storage {
-        let path = config.hls_storage_path.trim();
-        if path.is_empty() {
-            return Err(crate::error::StreamError::InvalidState(
-                "hls_shared_storage=true requires a non-empty hls_storage_path".to_string(),
-            ));
+    match config.hls_storage_backend {
+        HlsStorageBackend::File => {
+            let path = config.hls_storage_path.trim();
+            if path.is_empty() {
+                return Err(crate::error::StreamError::InvalidState(
+                    "hls_storage_backend=file requires a non-empty hls_storage_path".to_string(),
+                ));
+            }
+
+            info!(
+                hls_storage_path = %path,
+                hls_shared_storage = config.hls_shared_storage,
+                "HLS storage backend: filesystem"
+            );
+            Ok(Arc::new(FileStorage::new(path)))
         }
+        HlsStorageBackend::Oss => {
+            let oss = &config.hls_oss;
+            let storage = OssStorage::new(OssConfig {
+                endpoint: oss.endpoint.clone(),
+                access_key_id: oss.access_key_id.clone(),
+                secret_access_key: oss.secret_access_key.clone(),
+                bucket: oss.bucket.clone(),
+                region: oss.region.clone(),
+                base_path: oss.base_path.clone(),
+                public_url_prefix: String::new(),
+                presign_expires_in: 3600,
+            })
+            .map_err(|error| {
+                crate::error::StreamError::InvalidState(format!(
+                    "failed to initialize HLS OSS storage: {error}"
+                ))
+            })?;
 
-        info!(hls_storage_path = %path, "HLS storage backend: shared filesystem");
-        return Ok(Arc::new(FileStorage::new(path)));
+            info!(
+                endpoint = %oss.endpoint,
+                bucket = %oss.bucket,
+                base_path = %oss.base_path,
+                "HLS storage backend: OSS/S3-compatible object storage"
+            );
+            Ok(Arc::new(storage))
+        }
+        HlsStorageBackend::Memory => {
+            let storage: Arc<dyn HlsStorage> = if config.hls_memory_max_mb > 0 {
+                let max_bytes_mb = usize::try_from(config.hls_memory_max_mb).map_err(|_| {
+                    crate::error::StreamError::InvalidState(format!(
+                        "hls_memory_max_mb={} exceeds platform usize",
+                        config.hls_memory_max_mb
+                    ))
+                })?;
+                let max_bytes = max_bytes_mb.checked_mul(1024 * 1024).ok_or_else(|| {
+                    crate::error::StreamError::InvalidState(format!(
+                        "hls_memory_max_mb={} overflows byte capacity",
+                        config.hls_memory_max_mb
+                    ))
+                })?;
+                info!(
+                    "HLS memory storage max set to {} MB",
+                    config.hls_memory_max_mb,
+                );
+                Arc::new(MemoryStorage::with_limits(max_bytes, 0))
+            } else {
+                Arc::new(MemoryStorage::new())
+            };
+
+            if config.cluster_enabled {
+                warn!(
+                    "HLS storage is using in-memory backend in cluster mode. \
+                     Each segment request will require gRPC proxy to the publisher node. \
+                     Use OSS or shared filesystem storage for production multi-replica HLS."
+                );
+            }
+
+            Ok(storage)
+        }
     }
-
-    let storage: Arc<dyn HlsStorage> = if config.hls_memory_max_mb > 0 {
-        let max_bytes_mb = usize::try_from(config.hls_memory_max_mb).map_err(|_| {
-            crate::error::StreamError::InvalidState(format!(
-                "hls_memory_max_mb={} exceeds platform usize",
-                config.hls_memory_max_mb
-            ))
-        })?;
-        let max_bytes = max_bytes_mb.checked_mul(1024 * 1024).ok_or_else(|| {
-            crate::error::StreamError::InvalidState(format!(
-                "hls_memory_max_mb={} overflows byte capacity",
-                config.hls_memory_max_mb
-            ))
-        })?;
-        info!(
-            "HLS memory storage max set to {} MB",
-            config.hls_memory_max_mb,
-        );
-        Arc::new(MemoryStorage::with_limits(max_bytes, 0))
-    } else {
-        Arc::new(MemoryStorage::new())
-    };
-
-    if config.cluster_enabled {
-        warn!(
-            "HLS storage is using in-memory backend in cluster mode. \
-             Each segment request will require gRPC proxy to the publisher node. \
-             Consider using OSS or shared filesystem storage for better performance."
-        );
-    }
-
-    Ok(storage)
 }
 
 /// Handle returned by [`LivestreamServer::start`].
@@ -905,14 +945,17 @@ impl LivestreamServer {
         let pull_manager_cleanup = pull_manager.start_cleanup_task();
 
         // 6. Create ExternalPublishManager
-        let external_publish_manager = Arc::new(ExternalPublishManager::with_timeouts(
-            self.publisher_registry.clone(),
-            self.config.node_id.clone(),
-            self.config.api_address.clone(),
-            event_sender.clone(),
-            self.config.cleanup_check_interval_seconds,
-            self.config.stream_timeout_seconds,
-        )?);
+        let external_publish_manager = Arc::new(
+            ExternalPublishManager::with_timeouts(
+                self.publisher_registry.clone(),
+                self.config.node_id.clone(),
+                self.config.api_address.clone(),
+                event_sender.clone(),
+                self.config.cleanup_check_interval_seconds,
+                self.config.stream_timeout_seconds,
+            )?
+            .with_max_flv_tag_size_bytes(self.config.max_flv_tag_size_bytes),
+        );
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let external_publish_cleanup = external_publish_manager.start_cleanup_task();
 
@@ -1048,10 +1091,13 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
+            max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            hls_oss: HlsOssConfig::default(),
         }
     }
 
@@ -1083,6 +1129,7 @@ mod tests {
         let mut config = test_config();
         config.cluster_enabled = true;
         config.cluster_secret = Some("cluster-secret".to_string());
+        config.hls_storage_backend = HlsStorageBackend::File;
         config.hls_shared_storage = true;
         config.hls_storage_path = dir.path().display().to_string();
 
@@ -1441,10 +1488,13 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
+            max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            hls_oss: HlsOssConfig::default(),
         };
 
         let server =
@@ -1480,10 +1530,13 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
+            max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            hls_oss: HlsOssConfig::default(),
         };
 
         let server =
@@ -1523,10 +1576,13 @@ mod tests {
             cluster_enabled: false,
             cluster_secret: None,
             gop_cache_max_memory_mb: 0,
+            max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            hls_oss: HlsOssConfig::default(),
         };
 
         let server =

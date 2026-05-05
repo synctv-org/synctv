@@ -27,7 +27,7 @@ metadata:
     {{- include "synctv.labels" . | nindent 4 }}
 rules:
   - nonResourceURLs:
-      - {{ .Values.metrics.path | default "/metrics" | quote }}
+      - "/metrics"
     verbs:
       - get
 {{- end }}

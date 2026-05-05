@@ -1658,6 +1658,7 @@ impl RoomService for ClientServiceImpl {
         .with_playlist_items_snapshot_service(self.client_api.clone())
         .with_room_members_snapshot_service(self.client_api.clone())
         .with_heartbeat_schedule(self.heartbeat_schedule)
+        .with_filter_private_ice_candidates(self.config.webrtc.filter_private_ice_candidates)
         .with_ws_message_rate_limit(
             self.config
                 .connection_limits

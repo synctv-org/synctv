@@ -1,14 +1,15 @@
 //! Providers Manager
 //!
 //! Manages all `MediaProvider` instances with singleton pattern.
-//! Providers are loaded from configuration and created once at startup.
+//! Built-in local providers are created once at startup from explicit local
+//! provider configuration.
 
+use crate::config::{LocalProviderHttpConfig, MediaProvidersConfig};
 use crate::provider::{
     AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
     MediaProvider, ProviderClientManager, RtmpProvider,
 };
 use crate::service::RemoteProviderManager;
-use crate::Config;
 use crate::Result;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -17,20 +18,27 @@ use tokio::sync::RwLock;
 
 fn provider_http_client_from_config(
     config: &Value,
-    default_connect_timeout: std::time::Duration,
 ) -> std::result::Result<Option<reqwest::Client>, crate::Error> {
-    let timeout_seconds = config
-        .get("timeout_seconds")
+    let request_timeout_seconds = config
+        .get("request_timeout_seconds")
+        .and_then(serde_json::Value::as_u64);
+    let connect_timeout_seconds = config
+        .get("connect_timeout_seconds")
         .and_then(serde_json::Value::as_u64);
 
-    let Some(timeout_seconds) = timeout_seconds else {
+    if request_timeout_seconds.is_none() && connect_timeout_seconds.is_none() {
         return Ok(None);
-    };
+    }
+
+    let request_timeout_seconds = request_timeout_seconds
+        .unwrap_or_else(|| LocalProviderHttpConfig::default().request_timeout_seconds);
+    let connect_timeout_seconds = connect_timeout_seconds
+        .unwrap_or_else(|| LocalProviderHttpConfig::default().connect_timeout_seconds);
 
     let client = synctv_common::http::SsrfSafeClientBuilder::provider()
-        .request_timeout(std::time::Duration::from_secs(timeout_seconds))
-        .read_timeout(std::time::Duration::from_secs(timeout_seconds))
-        .connect_timeout(default_connect_timeout)
+        .request_timeout(std::time::Duration::from_secs(request_timeout_seconds))
+        .read_timeout(std::time::Duration::from_secs(request_timeout_seconds))
+        .connect_timeout(std::time::Duration::from_secs(connect_timeout_seconds))
         .build()
         .map_err(|e| {
             crate::Error::Internal(format!("Failed to build provider HTTP client: {e}"))
@@ -81,8 +89,6 @@ pub struct ProvidersManager {
     /// Default injected local provider clients used by provider instances
     /// when they do not specify a per-instance HTTP transport override.
     default_client_manager: Arc<ProviderClientManager>,
-    /// Default connect timeout used when building per-instance override clients.
-    default_provider_connect_timeout: std::time::Duration,
 }
 
 impl ProvidersManager {
@@ -95,11 +101,7 @@ impl ProvidersManager {
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
         let default_provider_http_client = synctv_common::http::build_provider_client()
             .expect("default provider HTTP client should build");
-        Self::new_with_provider_http_client(
-            instance_manager,
-            default_provider_http_client,
-            std::time::Duration::from_secs(10),
-        )
+        Self::new_with_provider_http_client(instance_manager, default_provider_http_client)
     }
 
     /// Create a new manager with an explicit default local provider HTTP client.
@@ -107,7 +109,6 @@ impl ProvidersManager {
     pub fn new_with_provider_http_client(
         instance_manager: Arc<RemoteProviderManager>,
         default_provider_http_client: reqwest::Client,
-        default_provider_connect_timeout: std::time::Duration,
     ) -> Self {
         let default_client_manager = Arc::new(
             ProviderClientManager::new_with_provider_http_client(default_provider_http_client),
@@ -117,7 +118,6 @@ impl ProvidersManager {
             instances: Arc::new(RwLock::new(HashMap::new())),
             instance_manager,
             default_client_manager,
-            default_provider_connect_timeout,
         };
 
         // Register all built-in providers
@@ -135,14 +135,11 @@ impl ProvidersManager {
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
         let default_client_manager = Arc::clone(&self.default_client_manager);
-        let default_provider_connect_timeout = self.default_provider_connect_timeout;
-        // Alist factory - reads optional timeout from config
+        // Alist factory - reads local Alist config.
         self.register_factory(
             "alist",
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) =
-                    provider_http_client_from_config(config, default_provider_connect_timeout)?
-                {
+                let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     AlistProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
@@ -161,15 +158,12 @@ impl ProvidersManager {
             }),
         );
 
-        // Bilibili factory - reads optional timeout from config
+        // Bilibili factory - reads local Bilibili config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
-        let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "bilibili",
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) =
-                    provider_http_client_from_config(config, default_provider_connect_timeout)?
-                {
+                let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     BilibiliProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
@@ -188,15 +182,12 @@ impl ProvidersManager {
             }),
         );
 
-        // Emby factory - reads optional timeout from config
+        // Emby factory - reads local Emby config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
-        let default_provider_connect_timeout = self.default_provider_connect_timeout;
         self.register_factory(
             "emby",
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) =
-                    provider_http_client_from_config(config, default_provider_connect_timeout)?
-                {
+                let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     EmbyProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
@@ -244,77 +235,6 @@ impl ProvidersManager {
         tracing::debug!("Registered provider factory: {}", provider_type);
     }
 
-    /// Load providers from configuration
-    ///
-    /// Reads provider configurations from Config and creates instances.
-    /// This should be called once during server startup.
-    ///
-    /// # Arguments
-    /// * `config`: Application configuration
-    ///
-    /// # Returns
-    /// Number of providers loaded
-    pub async fn load_from_config(&mut self, config: &Config) -> Result<usize> {
-        let mut count = 0;
-        let mut saw_explicit_provider_config = false;
-
-        // Read provider configurations from config.media_providers.providers
-        // Each provider config should have:
-        // - instance_id: Unique identifier for this instance
-        // - provider_type: Type of provider (alist, emby, bilibili, etc.)
-        // - config: Provider-specific configuration (URL, credentials, etc.)
-
-        // Check if providers is an object
-        if let Some(providers_obj) = config.media_providers.providers.as_object() {
-            saw_explicit_provider_config = !providers_obj.is_empty();
-            for (instance_id, provider_config) in providers_obj {
-                // Extract provider_type from config (defaults to first part of instance_id)
-                let provider_type = provider_config
-                    .get("provider_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| {
-                        // Fallback: derive from instance_id (e.g., "alist_main" -> "alist")
-                        // split('_').next() always returns Some for non-empty strings
-                        instance_id.split('_').next().unwrap_or(instance_id)
-                    });
-
-                // Check if this provider type is registered
-                if !self.has_factory(provider_type) {
-                    return Err(crate::Error::InvalidInput(format!(
-                        "Unknown provider type '{provider_type}' for instance '{instance_id}'"
-                    )));
-                }
-
-                // Create the provider instance
-                match self
-                    .create_provider(provider_type, instance_id, provider_config)
-                    .await
-                {
-                    Ok(_) => {
-                        count += 1;
-                        tracing::info!(
-                            "Loaded provider instance: {} (type: {})",
-                            instance_id,
-                            provider_type
-                        );
-                    }
-                    Err(e) => {
-                        return Err(crate::Error::Internal(format!(
-                            "Failed to load provider instance '{instance_id}' (type: {provider_type}): {e}"
-                        )));
-                    }
-                }
-            }
-        }
-
-        if count == 0 && !saw_explicit_provider_config {
-            tracing::info!("No provider instances configured; ProvidersManager will start empty");
-        }
-
-        tracing::info!("Loaded {} providers from configuration", count);
-        Ok(count)
-    }
-
     /// Create a provider instance (singleton per type)
     ///
     /// # Arguments
@@ -353,10 +273,19 @@ impl ProvidersManager {
     /// Default instances are addressable by provider type name directly, e.g.
     /// `direct_url`, `alist`, `emby`.
     pub async fn create_builtin_defaults(&self) -> Result<usize> {
+        self.create_builtin_defaults_with_config(&MediaProvidersConfig::default())
+            .await
+    }
+
+    /// Create missing built-in default provider instances using explicit local
+    /// provider config from static configuration.
+    pub async fn create_builtin_defaults_with_config(
+        &self,
+        config: &MediaProvidersConfig,
+    ) -> Result<usize> {
         let mut provider_types = self.list_types();
         provider_types.sort();
 
-        let default_config = serde_json::json!({});
         let mut created = 0;
 
         for provider_type in provider_types {
@@ -365,7 +294,19 @@ impl ProvidersManager {
                 continue;
             }
 
-            self.create_provider(&provider_type, &instance_id, &default_config)
+            let provider_config = match provider_type.as_str() {
+                "alist" => serde_json::to_value(&config.alist),
+                "bilibili" => serde_json::to_value(&config.bilibili),
+                "emby" => serde_json::to_value(&config.emby),
+                _ => Ok(serde_json::json!({})),
+            }
+            .map_err(|e| {
+                crate::Error::Internal(format!(
+                    "Failed to serialize local provider config for '{provider_type}': {e}"
+                ))
+            })?;
+
+            self.create_provider(&provider_type, &instance_id, &provider_config)
                 .await?;
             created += 1;
         }
@@ -547,9 +488,10 @@ mod tests {
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
-        // Create provider with timeout config
+        // Create provider with Alist-specific timeout config.
         let config = serde_json::json!({
-            "timeout_seconds": 30
+            "request_timeout_seconds": 30,
+            "connect_timeout_seconds": 10
         });
         let provider = manager
             .create_provider("alist", "test_alist_timeout", &config)
@@ -569,9 +511,10 @@ mod tests {
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
-        // Create provider with timeout config
+        // Create provider with Bilibili-specific timeout config.
         let config = serde_json::json!({
-            "timeout_seconds": 45
+            "request_timeout_seconds": 45,
+            "connect_timeout_seconds": 10
         });
         let provider = manager
             .create_provider("bilibili", "test_bilibili_timeout", &config)
@@ -591,9 +534,10 @@ mod tests {
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
-        // Create provider with timeout config
+        // Create provider with Emby-specific timeout config.
         let config = serde_json::json!({
-            "timeout_seconds": 60
+            "request_timeout_seconds": 60,
+            "connect_timeout_seconds": 10
         });
         let provider = manager
             .create_provider("emby", "test_emby_timeout", &config)
@@ -613,9 +557,9 @@ mod tests {
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
         let manager = ProvidersManager::new(instance_manager);
 
-        // Create provider with invalid timeout type (string instead of number)
+        // Create provider with invalid timeout type (string instead of number).
         let config = serde_json::json!({
-            "timeout_seconds": "invalid"
+            "request_timeout_seconds": "invalid"
         });
         let provider = manager
             .create_provider("alist", "test_alist_invalid", &config)
@@ -635,11 +579,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let manager = ProvidersManager::new_with_provider_http_client(
-            instance_manager,
-            client,
-            std::time::Duration::from_secs(4),
-        );
+        let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
 
         assert!(manager.has_factory("alist"));
         assert!(manager.has_factory("bilibili"));
@@ -657,11 +597,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let manager = ProvidersManager::new_with_provider_http_client(
-            instance_manager,
-            client,
-            std::time::Duration::from_secs(4),
-        );
+        let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let expected_marker = manager.default_client_manager_marker();
 
         for provider_type in ["alist", "bilibili", "emby"] {
@@ -693,18 +629,17 @@ mod tests {
             .build()
             .unwrap();
 
-        let manager = ProvidersManager::new_with_provider_http_client(
-            instance_manager,
-            client,
-            std::time::Duration::from_secs(4),
-        );
+        let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let default_marker = manager.default_client_manager_marker();
 
         let provider = manager
             .create_provider(
                 "alist",
                 "alist_override",
-                &serde_json::json!({"timeout_seconds": 30}),
+                &serde_json::json!({
+                    "request_timeout_seconds": 30,
+                    "connect_timeout_seconds": 4
+                }),
             )
             .await
             .unwrap();
@@ -857,7 +792,7 @@ mod tests {
         let manager = ProvidersManager::new(instance_manager);
 
         // Create first instance
-        let config1 = serde_json::json!({"timeout_seconds": 10});
+        let config1 = serde_json::json!({"request_timeout_seconds": 10});
         let provider1 = manager
             .create_provider("alist", "alist_singleton", &config1)
             .await
@@ -865,7 +800,7 @@ mod tests {
         assert_eq!(provider1.name(), "alist");
 
         // Create second instance with same ID (should replace)
-        let config2 = serde_json::json!({"timeout_seconds": 30});
+        let config2 = serde_json::json!({"request_timeout_seconds": 30});
         let provider2 = manager
             .create_provider("alist", "alist_singleton", &config2)
             .await
@@ -968,221 +903,6 @@ mod tests {
             }
             _ => panic!("Expected NotFound error"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_empty() {
-        // Empty config should keep the manager empty; startup must not invent
-        // implicit *_default instances behind the caller's back.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        let config = crate::Config::default();
-
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 0);
-        assert!(manager.get("alist").await.is_none());
-        assert!(manager.get("bilibili").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_explicit_instances() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "rtmp_default": {
-                        "provider_type": "rtmp"
-                    },
-                    "live_proxy_default": {
-                        "provider_type": "live_proxy"
-                    }
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Load from config (should create 2 providers from explicit config)
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 2); // rtmp_default and live_proxy_default
-
-        // Verify instances exist
-        assert!(manager.get("rtmp_default").await.is_some());
-        assert!(manager.get("live_proxy_default").await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_with_providers() {
-        // Test loading providers from config with provider definitions
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        // Create config with provider definitions
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "alist_main": {
-                        "provider_type": "alist",
-                        "timeout_seconds": 60
-                    },
-                    "bilibili_backup": {
-                        "provider_type": "bilibili"
-                    }
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Load from config
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 2);
-
-        // Verify instances exist
-        assert!(manager.get("alist_main").await.is_some());
-        assert!(manager.get("bilibili_backup").await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_derives_type_from_id() {
-        // Test that provider_type is derived from instance_id when not specified
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        // Create config with provider definitions (no provider_type specified)
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "alist_company": {}
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Load from config
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 1);
-
-        // Verify instance exists
-        assert!(manager.get("alist_company").await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_unknown_provider_skipped() {
-        // Explicit provider configuration must fail fast when it contains an
-        // unknown provider type.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        // Create config with unknown provider type
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "unknown_provider": {
-                        "provider_type": "does_not_exist"
-                    },
-                    "alist_valid": {
-                        "provider_type": "alist"
-                    }
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let error = manager
-            .load_from_config(&config)
-            .await
-            .expect_err("explicit invalid provider config must fail startup");
-        assert!(
-            error
-                .to_string()
-                .contains("Unknown provider type 'does_not_exist'"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            manager.get("alist_valid").await.is_some(),
-            "providers loaded before the error may remain in memory; the critical contract is that startup fails and no default fallback happens"
-        );
-        assert!(manager.get("unknown_provider").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_invalid_provider_skipped() {
-        // Startup provider wiring only validates provider instance type/transport
-        // configuration. Source-specific media identifiers are validated later by
-        // the provider's business methods, so this config still loads.
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        // Create config with a syntactically incomplete Bilibili source payload.
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "bilibili_invalid": {
-                        "provider_type": "bilibili"
-                    },
-                    "alist_valid": {
-                        "provider_type": "alist"
-                    }
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Both providers load because provider instance creation does not
-        // validate source identifiers at bootstrap time.
-        let count = manager.load_from_config(&config).await.unwrap();
-        assert_eq!(count, 2);
-
-        // Verify both provider instances exist.
-        assert!(manager.get("alist_valid").await.is_some());
-        assert!(manager.get("bilibili_invalid").await.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_load_from_config_does_not_fallback_to_defaults_after_explicit_errors() {
-        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
-        let repo = Arc::new(ProviderInstanceRepository::new(pool));
-        let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let mut manager = ProvidersManager::new(instance_manager);
-
-        let config = crate::Config {
-            media_providers: crate::config::MediaProvidersConfig {
-                providers: serde_json::json!({
-                    "broken_provider": {
-                        "provider_type": "does_not_exist"
-                    }
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        manager
-            .load_from_config(&config)
-            .await
-            .expect_err("explicit invalid config must not silently fallback to defaults");
-
-        assert!(manager.get("alist").await.is_none());
-        assert!(manager.get("bilibili").await.is_none());
     }
 
     #[tokio::test]

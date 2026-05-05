@@ -21,7 +21,8 @@ helm/synctv
 - ConfigMap。
 - Secret。
 - Ingress。
-- 可选 metrics、ServiceMonitor、VMServiceScrape、NetworkPolicy、HPA、PDB。
+- ServiceAccount、Role、RoleBinding。
+- 可选 metrics、ServiceMonitor、VMServiceScrape、PrometheusRule、NetworkPolicy、HPA、PDB。
 
 ## 安装
 
@@ -108,14 +109,18 @@ existingSecret: "my-external-synctv-secret"
 
 需要提供这些 key：
 
-- `SYNCTV_DATABASE_PASSWORD`
-- `SYNCTV_REDIS_PASSWORD`
+- `SYNCTV_DATABASE_PASSWORD`，除非 PostgreSQL 使用 KubeBlocks 模式。
+- `SYNCTV_REDIS_PASSWORD`，除非 Redis 使用 KubeBlocks 模式。
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_SERVER_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
-- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，如果 `config.bootstrap.createRootUser=true`。
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN`，如果 management 使用 TCP。
+- `SYNCTV_EMAIL_SMTP_USERNAME` 和 `SYNCTV_EMAIL_SMTP_PASSWORD`，如果配置了 `config.email.smtpHost` 且 SMTP 需要认证。
+- `SYNCTV_METRICS_AUTH_BEARER_TOKEN`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=bearer_token`。
+- `SYNCTV_METRICS_AUTH_BASIC_USERNAME` 和 `SYNCTV_METRICS_AUTH_BASIC_PASSWORD`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=basic`。
+- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorageBackend=oss`。
 
 ## PostgreSQL 和 Redis 模式
 
@@ -145,6 +150,8 @@ redis:
 
 KubeBlocks 模式下，数据库账号密码来自 KubeBlocks 生成的 Secret。
 
+注意：KubeBlocks Redis Sentinel 组件属于数据库 Operator 的内部拓扑，不等同于把 SyncTV 配置成 `redis.deployment_mode=sentinel`。Helm 默认仍向 SyncTV 注入稳定 Redis Service endpoint；SyncTV 集群模式不能与 SyncTV Sentinel mode 同时使用。
+
 ## `config.dataDir`
 
 Helm 默认：
@@ -154,20 +161,70 @@ config:
   dataDir: "/data"
 ```
 
-Deployment 会挂载 `/data`。当前默认是 `emptyDir`，适合运行时临时文件。如果你需要持久化 HLS 或 slice cache，应该改成 PVC 或共享存储。
+Deployment 会挂载 `/data`。默认是 `emptyDir`，适合运行时临时文件。如果需要持久化运行时文件，可以设置 `persistence.data.existingClaim`。
 
 ## HLS 多副本注意事项
 
-如果 `replicaCount > 1` 或启用 HPA，并且使用 HLS，必须确认：
+Helm 默认不启用集群模式，也不把 HLS 声明为共享存储。多副本 HLS 有两种模型：本地 backend 通过 publisher-node HLS proxy 工作；共享文件系统或 OSS 让任意副本直接读取分片，更适合生产高流量。
+
+本地 backend 示例：
 
 ```yaml
 config:
+  cluster:
+    enabled: true
   livestream:
-    hlsSharedStorage: true
-    hlsStoragePath: "/var/lib/synctv/hls"
+    hlsStorageBackend: "memory"
 ```
 
-并把该路径挂载为所有副本共享的存储。
+这种配置不需要 HLS PVC，但非 publisher Pod 的 playlist/segment 请求会通过 gRPC 回源到 publisher Pod。
+
+共享文件系统示例：
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorageBackend: "file"
+    hlsSharedStorage: true
+    hlsStoragePath: "/var/lib/synctv/hls"
+
+persistence:
+  hls:
+    existingClaim: "synctv-hls-rwx"
+```
+
+Helm 会提前拒绝以下组合：
+
+- `hlsStorageBackend` 不是 `memory`、`file` 或 `oss`。
+- `hlsStorageBackend=file` 但 `hlsStoragePath` 为空。
+- Kubernetes 中 `hlsStorageBackend=file` 但 `hlsStoragePath` 不是绝对路径。
+- `hlsSharedStorage=true` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
+
+OSS 示例：
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorageBackend: "oss"
+    hlsOss:
+      endpoint: "https://s3.example.com"
+      bucket: "synctv-hls"
+      basePath: "synctv/hls/"
+
+secrets:
+  livestream:
+    hlsOss:
+      accessKeyId: "..."
+      secretAccessKey: "..."
+```
+
+只要开启 `config.cluster.enabled=true`，应用启动校验还要求 Redis 可用、`SYNCTV_SERVER_CLUSTER_SECRET` 稳定且所有副本一致，并且每个 Pod 具备可用于节点互联的 `SYNCTV_SERVER_ADVERTISE_HOST`。Helm 默认会注入 Redis 连接、自动生成 cluster secret，并用 Pod IP 作为 advertise host；如果你裁剪 values 或使用外部 Secret，需要保留这些条件。直播 HLS 选择本地 backend 时，还要确保 Pod 间 gRPC 路径可达，因为远端分片读取依赖 publisher-node proxy。
+
+如果 `config.cluster.discoveryMode=k8s_dns`，Chart 会自动渲染 headless Service，并注入 `HEADLESS_SERVICE_NAME` 和 `POD_NAMESPACE`。如果 `config.cluster.leaderElectionMode=k8s_lease`，Chart 会注入 `POD_NAME` 和 `POD_NAMESPACE`。这两种模式都要求镜像构建包含 `k8s` feature。
 
 ## Metrics
 
@@ -197,6 +254,8 @@ metrics:
 ```
 
 metrics Service selector 会只匹配 `app.kubernetes.io/component: api` 的 Service，避免抓到 gRPC Service。
+
+如果使用 `metrics.auth.mode=kubernetes`，镜像内的 SyncTV 二进制必须启用 `k8s` feature。Helm 只负责 RBAC、ServiceAccount token 和抓取资源，不能改变镜像编译特性。
 
 ## 验证渲染
 

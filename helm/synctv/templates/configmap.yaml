@@ -11,6 +11,9 @@ metadata:
 {{- $passwordComplexity := .Values.config.passwordComplexity | default dict }}
 {{- $bufferSizes := .Values.config.bufferSizes | default dict }}
 {{- $mediaProviders := .Values.config.mediaProviders | default dict }}
+{{- $mediaProviderAlist := $mediaProviders.alist | default dict }}
+{{- $mediaProviderBilibili := $mediaProviders.bilibili | default dict }}
+{{- $mediaProviderEmby := $mediaProviders.emby | default dict }}
 {{- $webauthn := .Values.config.webauthn | default dict }}
 {{- $cache := .Values.config.cache | default dict }}
 data:
@@ -86,10 +89,21 @@ data:
       min_connections: {{ .Values.config.database.minConnections | default 5 }}
       connect_timeout_seconds: {{ .Values.config.database.connectTimeoutSeconds | default 10 }}
       idle_timeout_seconds: {{ .Values.config.database.idleTimeoutSeconds | default 600 }}
+      max_lifetime_seconds: {{ .Values.config.database.maxLifetimeSeconds | default 1800 }}
 
     redis:
       connect_timeout_seconds: {{ .Values.config.redis.connectTimeoutSeconds | default 5 }}
       key_prefix: {{ .Values.config.redis.keyPrefix | default "synctv:" | quote }}
+      deployment_mode: {{ .Values.config.redis.deploymentMode | default "standalone" | quote }}
+      {{- if .Values.config.redis.sentinelMasterName }}
+      sentinel_master_name: {{ .Values.config.redis.sentinelMasterName | quote }}
+      {{- end }}
+      {{- if .Values.config.redis.sentinelAddresses }}
+      sentinel_addresses:
+        {{- range .Values.config.redis.sentinelAddresses }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
 
     jwt:
       access_token_duration_hours: {{ .Values.config.jwt.accessTokenDurationHours | default 1 }}
@@ -134,8 +148,20 @@ data:
       max_flv_tag_size_bytes: {{ printf "%d" (int64 (.Values.config.livestream.maxFlvTagSizeBytes | default 10485760)) }}
       gop_cache_max_memory_mb: {{ printf "%d" (int64 (.Values.config.livestream.gopCacheMaxMemoryMb | default 100)) }}
       hls_memory_max_mb: {{ printf "%d" (int64 (.Values.config.livestream.hlsMemoryMaxMb | default 0)) }}
+      hls_storage_backend: {{ .Values.config.livestream.hlsStorageBackend | default "memory" | quote }}
       hls_shared_storage: {{ .Values.config.livestream.hlsSharedStorage | default false }}
       hls_storage_path: {{ .Values.config.livestream.hlsStoragePath | default "" | quote }}
+      {{- if eq (.Values.config.livestream.hlsStorageBackend | default "memory") "oss" }}
+      hls_oss:
+        endpoint: {{ .Values.config.livestream.hlsOss.endpoint | default "" | quote }}
+        bucket: {{ .Values.config.livestream.hlsOss.bucket | default "" | quote }}
+        {{- if .Values.config.livestream.hlsOss.region }}
+        region: {{ .Values.config.livestream.hlsOss.region | quote }}
+        {{- else }}
+        region: null
+        {{- end }}
+        base_path: {{ .Values.config.livestream.hlsOss.basePath | default "hls/" | quote }}
+      {{- end }}
       flv_max_connection_duration_seconds: {{ .Values.config.livestream.flvMaxConnectionDurationSeconds | default 86400 }}
       flv_write_timeout_seconds: {{ .Values.config.livestream.flvWriteTimeoutSeconds | default 30 }}
 
@@ -145,6 +171,14 @@ data:
       publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
       leader_election_mode: {{ .Values.config.cluster.leaderElectionMode | default "redis" | quote }}
+      {{- if .Values.config.cluster.peers }}
+      peers:
+        {{- range .Values.config.cluster.peers }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      catchup_window_secs: {{ .Values.config.cluster.catchupWindowSecs | default 300 }}
+      stream_max_length: {{ .Values.config.cluster.streamMaxLength | default 10000 }}
 
     webrtc:
       mode: {{ .Values.config.webrtc.mode | default "peer_to_peer" | quote }}
@@ -226,15 +260,15 @@ data:
     {{- end }}
 
     media_providers:
-      request_timeout_seconds: {{ $mediaProviders.requestTimeoutSeconds | default 30 }}
-      connect_timeout_seconds: {{ $mediaProviders.connectTimeoutSeconds | default 10 }}
-      providers: {{ $mediaProviders.providers | default dict | toJson }}
-
-    {{- if .Values.config.oauth2 }}
-    oauth2:
-      redirect_scheme: {{ .Values.config.oauth2.redirectScheme | default "https" | quote }}
-      providers: {{ .Values.config.oauth2.providers | default dict | toJson }}
-    {{- end }}
+      alist:
+        request_timeout_seconds: {{ $mediaProviderAlist.requestTimeoutSeconds | default 30 }}
+        connect_timeout_seconds: {{ $mediaProviderAlist.connectTimeoutSeconds | default 10 }}
+      bilibili:
+        request_timeout_seconds: {{ $mediaProviderBilibili.requestTimeoutSeconds | default 30 }}
+        connect_timeout_seconds: {{ $mediaProviderBilibili.connectTimeoutSeconds | default 10 }}
+      emby:
+        request_timeout_seconds: {{ $mediaProviderEmby.requestTimeoutSeconds | default 30 }}
+        connect_timeout_seconds: {{ $mediaProviderEmby.connectTimeoutSeconds | default 10 }}
 
     webauthn:
       enabled: {{ $webauthn.enabled | default false }}

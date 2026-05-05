@@ -1,4 +1,4 @@
-{{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes") .Values.metrics.auth.kubernetes.allowedServiceAccounts }}
+{{- if and .Values.metrics.enabled (eq (.Values.metrics.auth.mode | default "bearer_token") "kubernetes") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -13,6 +13,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "synctv.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.metrics.auth.kubernetes.allowedServiceAccounts }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -30,4 +31,5 @@ subjects:
     name: {{ .name }}
     namespace: {{ .namespace }}
   {{- end }}
+{{- end }}
 {{- end }}

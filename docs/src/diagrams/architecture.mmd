@@ -1,0 +1,38 @@
+flowchart TB
+  Client[Client apps]
+  Edge[TLS reverse proxy / Ingress]
+  CLI[CLI / management tools]
+
+  subgraph SyncTV["SyncTV single binary"]
+    direction TB
+    HTTP[HTTP REST<br/>OpenAPI / health / proxy routes]
+    GRPC[Public gRPC]
+    WS[WebSocket realtime]
+    MGMT[Management gRPC]
+    Provider[Media providers]
+    Proxy[Media proxy<br/>slice cache]
+    Live[Livestream<br/>RTMP / STUN / HLS]
+    Cluster[Cluster coordination]
+  end
+
+  PG[(PostgreSQL)]
+  Redis[(Redis)]
+  External[External media services]
+  HLS[(HLS backend<br/>local / shared / OSS)]
+
+  Client --> Edge
+  Edge --> HTTP
+  Edge --> GRPC
+  Edge --> WS
+  CLI --> MGMT
+
+  HTTP --> PG
+  GRPC --> PG
+  MGMT --> PG
+  WS --> Redis
+  Cluster --> Redis
+  Provider --> External
+  Proxy --> External
+  Proxy --> Redis
+  Live --> HLS
+  Live -. publisher-node HLS proxy .-> Redis

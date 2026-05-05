@@ -3,6 +3,9 @@ title: 认证与安全模型
 description: SyncTV 的登录方式、2FA 语义、token 上下文、管理权限和安全边界。
 ---
 
+import Diagram from '../../../components/Diagram.astro';
+import securityAuthBoundaryDiagramDark from '../../../assets/diagrams/security-auth-boundary-dark.svg';
+import securityAuthBoundaryDiagramLight from '../../../assets/diagrams/security-auth-boundary-light.svg';
 import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 
 ## 安全边界
@@ -15,6 +18,13 @@ SyncTV 把安全边界拆成几层：
 - **management 控制面**：CLI 使用的管理端点，独立于普通用户 token。
 - **Provider 上游访问**：Provider 自己决定上游 header 和凭据，不由 proxy 猜测客户端 header。
 - **集群内部认证**：节点间 gRPC 使用 `server.cluster_secret`。
+
+<Diagram
+  light={securityAuthBoundaryDiagramLight}
+  dark={securityAuthBoundaryDiagramDark}
+  alt="认证与 2FA 边界图，展示本地第一因素、MFA 会话、OAuth2、token、业务 API 和 management 控制面的关系。"
+  caption="本地登录和 OAuth2 是不同信任路径。开启 2FA 后，本地登录需要完成第二因素；OAuth2 不计入本地 2FA，但可以独立签发可接受的登录上下文。"
+/>
 
 ## 登录方式与 2FA
 
@@ -64,7 +74,7 @@ OAuth2 是独立登录信任来源，不作为本地 2FA 的第一步或第二�
 约束：
 
 - 开启 2FA 前必须有至少两种可用本地验证方式。
-- 删除绑定的验证方式时，如果 2FA 已开启，删除后仍必须保留至少两种可用方式。
+- 删除 passkey 时，如果 2FA 已开启，删除后仍必须保留至少两种可用本地方式。其他认证方式的删除入口应按同一产品规则实现。
 - 管理员修改用户偏好时必须遵守角色层级，普通 admin 不能越权修改 root 或同级高权限用户。
 
 ## 管理控制面
@@ -99,7 +109,7 @@ Provider 负责决定上游请求 header。proxy 层只执行 Provider 给出的
     配置 JWT、OPAQUE、Provider 凭据加密、密码复杂度、CORS 和可信代理。
   </Card>
   <Card title="邮件与 OAuth2" icon="document">
-    配置邮箱验证码、SMTP、OAuth2 provider 和 redirect scheme。
+    配置邮箱验证码、SMTP 和运行时 OAuth2 provider 配置。
   </Card>
   <Card title="WebAuthn" icon="puzzle">
     配置 passkey 的 RP ID、origin、允许 origin 和 challenge 超时。

@@ -43,6 +43,8 @@ metrics:
 
 Kubernetes TokenReview and SubjectAccessReview:
 
+This mode requires the SyncTV binary to be compiled with the `k8s` feature. Helm can render RBAC, service account token settings, and scrape resources, but it cannot change the feature set of the container image.
+
 ```yaml
 metrics:
   enabled: true
@@ -95,6 +97,8 @@ metrics:
 | `bearer_token` | Static bearer token | Compose, single-node, simple Prometheus |
 | `basic` | HTTP Basic Auth | Legacy scraping systems |
 | `kubernetes` | TokenReview and SubjectAccessReview | Kubernetes-native deployments |
+
+`kubernetes` mode requires a binary compiled with the `k8s` feature; otherwise configuration validation fails.
 
 ### Bearer Token
 

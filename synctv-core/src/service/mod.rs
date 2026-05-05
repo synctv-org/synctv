@@ -66,7 +66,10 @@ pub use distributed_lock::{with_coordination_lock, CoordinationLock, Distributed
 pub use email::{mask_email, EmailConfig, EmailService};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::{EmailTokenService, EmailTokenType};
-pub use global_settings::{ConfiguredIceServer, IceServerList, PublicSettings, SettingsRegistry};
+pub use global_settings::{
+    ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+    OAuth2SignupPolicy, PublicSettings, SettingsRegistry,
+};
 pub use media::MediaService;
 pub use member::{AddMemberOptions, MemberEventBroadcaster, MemberService};
 pub use notification::{NotificationService, RoomEvent};
@@ -75,8 +78,8 @@ pub use notification_partition_manager::{
     NotificationPartitionManager,
 };
 pub use oauth2::{
-    local_oauth_state_store, shared_oauth_state_store, OAuth2Service, OAuth2State, OAuth2UserInfo,
-    OAuthStateStore,
+    local_oauth_state_store, shared_oauth_state_store, OAuth2LinkResult, OAuth2PendingRegistration,
+    OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{

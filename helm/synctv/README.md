@@ -36,8 +36,7 @@ The default installation deploys:
 - Redis 8
 
 These database services are internal-only and are not exposed outside the cluster. For temporary external access, prefer `kubectl port-forward`.
-The chart now defaults to `config.cluster.enabled=true` with `replicaCount=1` and `autoscaling.enabled=false`.
-That keeps cluster wiring enabled from the start while avoiding an invalid multi-replica default. Before scaling beyond one replica, replace the default HLS storage mount with a real shared filesystem.
+The chart defaults to single-replica mode with `config.cluster.enabled=false`. Before scaling beyond one replica, enable cluster mode. Local HLS backends work through publisher-node gRPC proxying, while `file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
 
 ```bash
 helm install synctv ./helm/synctv \
@@ -132,6 +131,7 @@ Notes:
 - PostgreSQL and Redis secret keys are fixed as `username` / `password`
 - KubeBlocks mode uses the generated database account by default; the PostgreSQL database name is fixed to `postgres`
 - KubeBlocks-generated database services are also internal-only; for external debugging, prefer `kubectl port-forward`
+- The KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically set SyncTV `redis.deployment_mode=sentinel`; this chart injects a stable Redis service endpoint. SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
 
 ## Configuration Model
 
@@ -152,8 +152,7 @@ The application currently uses split database/Redis configuration rather than re
 | `config.email` | SMTP base settings; credentials can come from a secret |
 | `config.livestream` | RTMP/HLS/pull timeout and cache settings |
 | `config.cache` | L1/L2 cache and startup-only proxy slice cache settings |
-| `config.mediaProviders` | Provider request timeouts and static provider instances |
-| `config.oauth2` | OAuth2/OIDC provider instances and redirect scheme |
+| `config.mediaProviders` | Local built-in provider adapter request and connect timeouts |
 | `config.webauthn` | Passkey relying-party settings |
 | `config.webrtc` | Built-in STUN and WebRTC settings; external ICE servers are runtime settings |
 | `config.httpRateLimits` | HTTP API category rate limits |
@@ -181,6 +180,12 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when `config.management.transport=tcp`
+- `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
+- `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
+- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` when `config.livestream.hlsStorageBackend=oss`
+- `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
+
+HLS storage rendering fails fast for invalid combinations: `hlsStorageBackend=file` requires a non-empty `hlsStoragePath`, and `hlsSharedStorage=true` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but shared file storage or OSS is the recommended production model.
 
 ## Verify the Deployment
 
@@ -299,6 +304,7 @@ If you want Kubernetes-native `TokenReview` + `SubjectAccessReview` auth instead
 - SyncTV validates the scraper's service account token with Kubernetes `TokenReview`
 - SyncTV authorizes `/metrics` access with `SubjectAccessReview`
 - You grant scrape access by listing allowed service accounts in the chart values
+- The SyncTV image must be compiled with the `k8s` feature. The chart renders RBAC and token settings, but it cannot change the binary feature set.
 
 ```yaml
 metrics:
@@ -387,7 +393,7 @@ You can then scrape through either Prometheus Operator (`ServiceMonitor`) or Vic
 - [ ] Keep `secrets.security.opaqueServerSetupSecret` stable across upgrades
 - [ ] Enable TLS for ingress (cert-manager)
 - [ ] Set appropriate resource limits
-- [ ] Configure shared HLS storage before enabling cluster mode or autoscaling
+- [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared file/OSS for production traffic
 - [ ] Enable autoscaling (HPA)
 - [ ] Configure pod disruption budget
 - [ ] Enable network policies

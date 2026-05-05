@@ -1,5 +1,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightCodeblockFullscreen from 'starlight-codeblock-fullscreen';
+import starlightLinksValidator from 'starlight-links-validator';
 
 const site = process.env.SYNCTV_DOCS_SITE || 'https://synctv.wiki';
 const base = process.env.SYNCTV_DOCS_BASE || '/';
@@ -74,6 +76,17 @@ export default defineConfig({
           borderRadius: '0.85rem',
         },
       },
+      plugins: [
+        starlightLinksValidator({
+          errorOnRelativeLinks: false,
+          failOnError: true,
+        }),
+        starlightCodeblockFullscreen({
+          addToUntitledBlocks: true,
+          enableEscapeKey: true,
+          exitOnBrowserBack: true,
+        }),
+      ],
       social: [
         {
           icon: 'github',

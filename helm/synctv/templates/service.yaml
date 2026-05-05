@@ -9,7 +9,7 @@ metadata:
   {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations.enabled }}
   {{- $_ := set $annotations "prometheus.io/scrape" "true" }}
   {{- $_ := set $annotations "prometheus.io/port" (.Values.metrics.port | default 9090 | toString) }}
-  {{- $_ := set $annotations "prometheus.io/path" (.Values.metrics.path | default "/metrics") }}
+  {{- $_ := set $annotations "prometheus.io/path" "/metrics" }}
   {{- $_ := set $annotations "prometheus.io/scheme" (ternary "https" "http" (.Values.metrics.tls.enabled | default false)) }}
   {{- end }}
   {{- with .Values.service.annotations }}

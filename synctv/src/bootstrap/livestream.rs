@@ -178,10 +178,13 @@ pub async fn init_livestream(
                 None
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
+            max_flv_tag_size_bytes: config.livestream.max_flv_tag_size_bytes,
             api_address: config.advertise_api_address(),
             hls_memory_max_mb: config.livestream.hls_memory_max_mb,
+            hls_storage_backend: config.livestream.hls_storage_backend,
             hls_shared_storage: config.livestream.hls_shared_storage,
             hls_storage_path: config.livestream.hls_storage_path.clone(),
+            hls_oss: config.livestream.hls_oss.clone(),
         },
         publisher_registry,
         user_stream_tracker,

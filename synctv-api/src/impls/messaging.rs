@@ -56,6 +56,20 @@ const PLAYBACK_PROGRESS_MAX_DRIFT_SECONDS: f64 = 30.0;
 static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
 
+fn is_private_ice_candidate_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+        }
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+        }
+    }
+}
+
 use crate::impls::client::convert::{playback_client_profile_from_proto, playback_state_to_proto};
 use crate::impls::playback_snapshot::PlaybackSnapshotService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
@@ -519,6 +533,7 @@ pub struct StreamMessageHandler {
     /// writing to the DB on every progress heartbeat.
     last_progress_write: Arc<tokio::sync::Mutex<Option<(f64, tokio::time::Instant)>>>,
     heartbeat_schedule: HeartbeatSchedule,
+    filter_private_ice_candidates: bool,
 }
 
 impl Clone for StreamMessageHandler {
@@ -553,6 +568,7 @@ impl Clone for StreamMessageHandler {
             concurrency_config: Arc::clone(&self.concurrency_config),
             last_progress_write: Arc::clone(&self.last_progress_write),
             heartbeat_schedule: self.heartbeat_schedule,
+            filter_private_ice_candidates: self.filter_private_ice_candidates,
         }
     }
 }
@@ -623,6 +639,13 @@ impl StreamMessageHandler {
         let user_matches = self.encode_user_id_for_webrtc(current.user_id) == target_user_id;
 
         user_matches && current.room_id.as_ref() == Some(&self.room_id) && current.rtc_joined
+    }
+
+    fn ice_candidate_contains_private_ip(candidate: &str) -> bool {
+        candidate
+            .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '[' | ']'))
+            .filter_map(|part| part.parse::<std::net::IpAddr>().ok())
+            .any(is_private_ice_candidate_ip)
     }
 
     /// Create a new stream message handler
@@ -757,6 +780,7 @@ impl StreamMessageHandler {
             concurrency_config,
             last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
             heartbeat_schedule: HeartbeatSchedule::production(),
+            filter_private_ice_candidates: true,
         }
     }
 
@@ -841,6 +865,12 @@ impl StreamMessageHandler {
                 .build(),
         );
         self.heartbeat_schedule = schedule;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_filter_private_ice_candidates(mut self, enabled: bool) -> Self {
+        self.filter_private_ice_candidates = enabled;
         self
     }
 
@@ -3608,6 +3638,11 @@ impl StreamMessageHandler {
                 candidate.data.len()
             ));
         }
+        if self.filter_private_ice_candidates
+            && Self::ice_candidate_contains_private_ip(&candidate.data)
+        {
+            return Err("WebRTC ICE candidate contains a private or local address".to_string());
+        }
 
         // Check permission
         self.room_service
@@ -4944,7 +4979,7 @@ mod tests {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let password_complexity = PasswordComplexityConfig::default();
 
-        UserService::new(
+        let mut service = UserService::new(
             pool,
             jwt_service,
             username_cache,
@@ -4952,7 +4987,9 @@ mod tests {
             create_test_token_blacklist_store_service(),
             synctv_core::cache::KeyBuilder::new("test"),
             create_test_brute_force_protection_service(),
-        )
+        );
+        service.enable_password_registration_for_tests();
+        service
     }
 
     fn test_room_service(pool: sqlx::PgPool) -> Arc<RoomService> {
@@ -9080,6 +9117,25 @@ mod tests {
             data: "a".repeat(super::MAX_ICE_CANDIDATE_SIZE + 1),
         };
         assert!(candidate.data.len() > super::MAX_ICE_CANDIDATE_SIZE);
+    }
+
+    #[test]
+    fn test_private_ice_candidate_detection() {
+        assert!(
+            super::StreamMessageHandler::ice_candidate_contains_private_ip(
+                "candidate:0 1 UDP 2122252543 192.168.1.10 54400 typ host"
+            )
+        );
+        assert!(
+            super::StreamMessageHandler::ice_candidate_contains_private_ip(
+                "candidate:0 1 UDP 2122252543 fd00::1 54400 typ host"
+            )
+        );
+        assert!(
+            !super::StreamMessageHandler::ice_candidate_contains_private_ip(
+                "candidate:0 1 UDP 2122252543 203.0.113.10 54400 typ srflx"
+            )
+        );
     }
 
     #[tokio::test]

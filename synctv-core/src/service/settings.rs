@@ -990,7 +990,10 @@ mod tests {
         #[test]
         fn test_cross_validation_only_affects_password_settings() {
             let updates: Vec<(String, String)> = vec![
-                ("user.enable_password_signup".to_string(), "true".to_string()),
+                (
+                    "user.enable_password_signup".to_string(),
+                    "true".to_string(),
+                ),
                 ("server.max_rooms_per_user".to_string(), "10".to_string()),
                 ("room.room_must_need_pwd".to_string(), "true".to_string()),
             ];

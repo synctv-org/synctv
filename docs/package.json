@@ -5,11 +5,12 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "diagrams": "node scripts/render-diagrams.mjs",
+    "dev": "npm run diagrams && astro dev",
+    "build": "npm run diagrams && astro build",
     "preview": "astro preview",
-    "check": "astro check",
-    "validate": "astro check && astro build"
+    "check": "npm run diagrams && astro check",
+    "validate": "npm run diagrams && astro check && astro build"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.4",
@@ -18,6 +19,9 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
+    "@mermaid-js/mermaid-cli": "^11.14.0",
+    "starlight-codeblock-fullscreen": "^1.0.0",
+    "starlight-links-validator": "^0.24.0",
     "typescript": "^5.9.3"
   }
 }

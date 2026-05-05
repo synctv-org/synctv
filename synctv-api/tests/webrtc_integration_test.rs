@@ -274,7 +274,7 @@ mod permissions {
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
             Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
 
-        let user_service = Arc::new(UserService::new(
+        let mut user_service = UserService::new(
             pool.clone(),
             jwt_service.clone(),
             username_cache,
@@ -282,7 +282,9 @@ mod permissions {
             token_blacklist,
             KeyBuilder::new(redis_key_prefix),
             brute_force,
-        ));
+        );
+        user_service.enable_password_registration_for_tests();
+        let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
         let settings_repo = SettingsRepository::new(pool.clone());
         let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));

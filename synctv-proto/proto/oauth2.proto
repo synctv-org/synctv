@@ -167,6 +167,11 @@ message ExchangeAuthorizationCodeResponse {
     // Whether this was a bind operation (true) or login operation (false)
     bool is_bind = 6;
 
+    // True when a first-time OAuth2 signup was accepted but requires admin review.
+    bool registration_review_required = 7;
+
+    // Public review request ID when registration_review_required is true.
+    string registration_review_id = 8;
 }
 
 // ==================== List Available Providers ====================
@@ -186,6 +191,12 @@ message OAuth2ProviderInstance {
 
     // Provider type (e.g., "github", "google", "oidc", "logto")
     string type = 2;
+
+    // Whether this provider instance allows new local account creation.
+    bool signup_enabled = 3;
+
+    // Whether new account creation through this provider instance requires review.
+    bool signup_need_review = 4;
 }
 
 // ==================== Unlink Provider ====================

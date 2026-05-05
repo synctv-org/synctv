@@ -23,7 +23,7 @@ Runtime settings 是存储在 PostgreSQL 的热更新设置，主要用于运行
 ```bash
 synctv settings list
 synctv settings get user.enable_password_signup
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
 如果命令支持 `--set` 批量形式，也可以用：
@@ -84,13 +84,47 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | `user.password_signup_need_review` | bool | `false` | 密码注册是否需要审核 |
 | `user.enable_email_signup` | bool | `false` | 是否允许邮件注册。当前邮件登录只服务已有账号，此开关用于后续邮件无密码建号入口 |
 | `user.email_signup_need_review` | bool | `false` | 邮件注册是否需要审核 |
-| `user.enable_oauth2_signup` | bool | `false` | 是否允许 OAuth2 首次登录自动创建本地账号；已绑定的 OAuth2 登录不受影响 |
-| `user.oauth2_signup_need_review` | bool | `false` | OAuth2 注册是否需要审核。当前审核表不存 OAuth2 临时身份，启用后会拒绝新的 OAuth2 注册 |
 | `user.enable_webauthn_signup` | bool | `false` | 是否允许 WebAuthn/passkey 作为初始账号注册方式；登录后绑定 passkey 不属于注册 |
 | `user.webauthn_signup_need_review` | bool | `false` | WebAuthn 注册是否需要审核。当前审核表不存 WebAuthn 临时凭据，启用后会拒绝新的 WebAuthn 注册 |
 | `user.enable_guest` | bool | `true` | 是否允许游客能力 |
 
 注册相关开关默认全部关闭。生产环境应只打开明确需要的注册入口，并分别决定是否需要审核。
+
+### OAuth2
+
+| Key | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `oauth2.providers` | JSON 对象 | `{}` | OAuth2/OIDC provider 实例注册表。每个 key 是实例名，每个 value 包含 `type`、`enable_signup`、`signup_need_review` 和 provider 私有 `config` |
+
+`oauth2.providers` 是唯一的 OAuth2 配置入口，不再使用配置文件、环境变量或 Helm values 定义 provider。实例名只能包含 ASCII 字母、数字、`_` 和 `-`，并且最长 64 字节。外层结构固定，`config` 内部由具体 provider 解析：
+
+```json
+{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  },
+  "corp_oidc": {
+    "type": "oidc",
+    "enable_signup": false,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "synctv",
+      "client_secret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
+```
+
+缺失 provider 实例表示该登录入口不可用。缺失或为 `false` 的 `enable_signup` 会阻止首次 OAuth2 登录自动创建本地账号，但已绑定的 OAuth2 登录不受影响。`signup_need_review=true` 会把首次 OAuth2 注册写入用户注册审核队列，审核通过后才创建本地账号和 OAuth2 绑定。
 
 注意：用户级 2FA、通知偏好和 Provider 默认实例不在这里，属于 user preferences。见 [房间、权限与用户偏好](../../guides/rooms-permissions/)。
 
@@ -116,7 +150,9 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `email.whitelist_enabled` | bool | `false` | 是否启用邮箱白名单 |
-| `email.whitelist` | string | `""` | 邮箱白名单内容，具体格式由业务逻辑解析 |
+| `email.whitelist` | string | `""` | 邮箱白名单内容，逗号分隔域名或邮箱 |
+
+`email.whitelist_enabled=true` 且 `email.whitelist` 为空时不会拒绝任何邮箱；只有白名单非空时才会按域名或邮箱匹配。
 
 SMTP 主机、密码、发件人等启动配置仍在 [邮件与 OAuth2](../../configuration/email-oauth2/)。
 
@@ -124,7 +160,16 @@ SMTP 主机、密码、发件人等启动配置仍在 [邮件与 OAuth2](../../c
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `webrtc.external_ice_servers` | JSON/字符串结构 | `[]` | 返回给原生客户端的外部 ICE servers |
+| `webrtc.external_ice_servers` | JSON/字符串结构 | Google STUN 两项 | 返回给原生客户端的外部 ICE servers |
+
+默认值是：
+
+```json
+[
+  { "urls": ["stun:stun.l.google.com:19302"] },
+  { "urls": ["stun:stun1.l.google.com:19302"] }
+]
+```
 
 内置 STUN 监听端口、host、candidate 过滤等启动配置见 [WebRTC 配置](../../configuration/webrtc/)。
 
@@ -149,29 +194,46 @@ SMTP 主机、密码、发件人等启动配置仍在 [邮件与 OAuth2](../../c
   <TabItem label="开启密码注册" icon="setting">
 
 ```bash
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
   </TabItem>
   <TabItem label="密码注册审核" icon="approve-check-circle">
 
 ```bash
-synctv settings update user.password_signup_need_review --value true
+synctv settings update user --set password_signup_need_review=true
 ```
 
   </TabItem>
   <TabItem label="限制房间数量" icon="document">
 
 ```bash
-synctv settings update server.max_rooms_per_user --value 20
+synctv settings update server --set max_rooms_per_user=20
 ```
 
   </TabItem>
   <TabItem label="清理聊天保留" icon="delete">
 
 ```bash
-synctv settings update chat.max_messages_per_room --value 1000
-synctv settings update chat.message_retention_days --value 180
+synctv settings update chat --set max_messages_per_room=1000 --set message_retention_days=180
+```
+
+  </TabItem>
+  <TabItem label="配置 OAuth2" icon="document">
+
+```bash
+synctv settings update oauth2 --set providers='{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}'
 ```
 
   </TabItem>

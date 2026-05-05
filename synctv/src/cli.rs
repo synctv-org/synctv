@@ -8927,12 +8927,6 @@ mod tests {
         config.metrics.auth.basic_password = "metrics-basic-password".into();
         config.email.smtp_password = "smtp-secret".into();
         config.bootstrap.root_password = "RootPass12345".into();
-        config.oauth2.providers = json!({
-            "github": {
-                "client_id": "client-id",
-                "client_secret": "oauth-client-secret"
-            }
-        });
         config
     }
 

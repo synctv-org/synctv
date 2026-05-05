@@ -19,7 +19,7 @@ spec:
       - {{ .Release.Namespace }}
   endpoints:
     - port: metrics
-      path: {{ .Values.metrics.path | default "/metrics" }}
+      path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
       scrapeTimeout: {{ . }}

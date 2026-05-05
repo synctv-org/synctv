@@ -1,6 +1,6 @@
 //! RTMP `MediaProvider`
 //!
-//! Provides playback URLs for RTMP live streams.
+//! Provides HTTP-FLV and HLS playback URLs for SyncTV live streams published over RTMP.
 //! URLs point to synctv's own HTTP-FLV and HLS endpoints.
 
 use super::{
@@ -40,13 +40,13 @@ impl RtmpProvider {
     ) -> Result<(&'a RoomId, &'a MediaId), ProviderError> {
         let room_id = ctx.room_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
-                "Missing room_id in provider context for internal RTMP playback".to_string(),
+                "Missing room_id in provider context for live stream playback".to_string(),
             )
         })?;
 
         let media_id = ctx.media_id().ok_or_else(|| {
             ProviderError::InvalidConfig(
-                "Missing media_id in provider context for internal RTMP playback".to_string(),
+                "Missing media_id in provider context for live stream playback".to_string(),
             )
         })?;
 
@@ -99,12 +99,12 @@ impl RtmpProvider {
         let room_id = super::proxy::parse_proxy_room_id(
             &ctx.services.public_id_codec,
             room_id,
-            "RTMP playback metadata",
+            "live stream playback metadata",
         )?;
         let media_id = super::proxy::parse_proxy_media_id(
             &ctx.services.public_id_codec,
             media_id,
-            "RTMP playback metadata",
+            "live stream playback metadata",
         )?;
 
         match rest {

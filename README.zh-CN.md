@@ -40,6 +40,8 @@ docker compose -f docker-compose.dev.yml up -d
 
 ```bash
 export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
+export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
 export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"

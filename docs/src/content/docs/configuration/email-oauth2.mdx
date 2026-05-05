@@ -1,209 +1,129 @@
 ---
 title: 邮件与 OAuth2
-description: SMTP 邮件、邮箱验证、OAuth2/OIDC 登录提供商配置说明。
+description: 邮件登录与 OAuth2 provider runtime 配置说明
 ---
 
-## 邮件配置有什么用？
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-`email` 配置用于 SMTP 发信。常见用途包括：
+## 这页讲什么
 
-- 邮箱验证。
-- 密码找回。
-- 两步验证中的邮箱验证码。
-- 系统通知。
+这页只讲两类和登录相关的内容：
 
-如果 `email.smtp_host` 为空，邮件功能会被视为未配置。
+- 邮件登录的静态配置
+- OAuth2 provider 的 runtime 配置
 
-## `email.smtp_host`
+OAuth2 provider 不再放在配置文件、环境变量或 Helm values 中定义，而是放在 runtime settings 的 `oauth2.providers` 里。
 
-SMTP 服务器地址。
+## 邮件配置
 
-示例：
+邮件配置仍然属于静态配置，主要用于 SMTP 连接和发信身份。
 
 ```yaml
 email:
   smtp_host: "smtp.example.com"
-```
-
-常见服务商会提供类似：
-
-- `smtp.gmail.com`
-- `smtp.office365.com`
-- 企业邮箱 SMTP 地址
-
-## `email.smtp_port`
-
-默认值：`587`。
-
-常见端口：
-
-| 端口 | 用途 |
-| --- | --- |
-| `587` | STARTTLS，最常见推荐 |
-| `465` | SMTPS |
-| `25` | 传统 SMTP，很多云服务器会封禁 |
-
-## `email.smtp_username`
-
-SMTP 用户名。通常是邮箱地址或服务商提供的账号。
-
-## `email.smtp_password`
-
-SMTP 密码或应用专用密码。
-
-生产建议：
-
-```yaml
-email:
+  smtp_port: 587
+  smtp_username: "synctv@example.com"
   smtp_password_file: "/run/secrets/smtp_password"
-```
-
-或：
-
-```bash
-SYNCTV_EMAIL_SMTP_PASSWORD_FILE=/run/secrets/smtp_password
-```
-
-不要把 SMTP 密码写进 Git。
-
-## `email.from_email`
-
-发件人邮箱。
-
-示例：
-
-```yaml
-email:
-  from_email: "noreply@example.com"
-```
-
-这个地址通常需要与 SMTP 账号或域名授权匹配，否则邮件可能被拒收或进入垃圾箱。
-
-## `email.from_name`
-
-发件人显示名称。
-
-默认值：
-
-```yaml
-email:
+  from_email: "synctv@example.com"
   from_name: "SyncTV"
+  use_tls: true
 ```
 
-## `email.use_tls`
+| 字段 | 默认值 | 作用 |
+| --- | --- | --- |
+| `email.smtp_host` | `""` | SMTP 服务器地址。为空表示不配置发信能力 |
+| `email.smtp_port` | `587` | SMTP 端口 |
+| `email.smtp_username` | `""` | SMTP 登录用户名 |
+| `email.smtp_password` | `""` | SMTP 登录密码，支持 `smtp_password_file` |
+| `email.from_email` | `""` | 发件邮箱。配置 SMTP 时必须是合法邮箱地址 |
+| `email.from_name` | `SyncTV` | 发件人显示名 |
+| `email.use_tls` | `true` | 是否使用 TLS 连接 SMTP |
 
-默认值：`true`。
+邮件验证码、密码重置、邮件 MFA 都依赖这组 SMTP 配置。独立邮箱登录只服务已有账号；请求验证码接口会返回统一文案，避免泄露邮箱是否已注册。邮件注册是否开放、是否需要审核属于 runtime settings，见 [运行时设置](../../reference/runtime-settings/#user)。
 
-生产环境不要关闭 TLS。只有在本地测试 SMTP 服务时才可能设置为 `false`。
+## OAuth2 runtime 配置
 
-## OAuth2/OIDC 配置有什么用？
+`oauth2.providers` 是一个动态对象。每个 key 是一个 provider 实例名，例如 `github`、`logto1`、`corp_oidc`。实例名只能包含 ASCII 字母、数字、`_` 和 `-`。
 
-`oauth2` 用于接入第三方登录，例如 GitHub、Google、Logto、Keycloak、Casdoor、Authelia 或其他 OIDC 服务。
+每个实例都使用同一个外层结构：
 
-重要产品行为：
-
-- OAuth2 token 只用于登录交换，不长期保存。
-- SyncTV 保存的是“用户与第三方账号的绑定关系”。
-- OAuth2 不参与本地两步验证，但开启 2FA 的用户仍然可以使用 OAuth2 登录。
-
-## `oauth2.redirect_scheme`
-
-默认值通常是 `https`，本地配置示例可能是 `http`。
-
-作用：生成或校验 OAuth2 redirect 相关 URL 时使用的协议。
-
-生产环境必须使用 HTTPS：
-
-```yaml
-oauth2:
-  redirect_scheme: "https"
+```json
+{
+  "type": "github",
+  "enable_signup": true,
+  "signup_need_review": false,
+  "config": {
+    "client_id": "github-client-id",
+    "client_secret": "github-client-secret",
+    "redirect_url": "https://app.example.com/oauth2/callback"
+  }
+}
 ```
 
-## `oauth2.providers`
+外层字段含义：
 
-OAuth2 Provider 是一个动态对象。每个 key 是实例名。
+| 字段 | 作用 |
+| --- | --- |
+| `type` | provider 类型。当前支持的值以服务端内置 provider registry 为准 |
+| `enable_signup` | 是否允许这个 provider 的首次登录自动创建本地账号 |
+| `signup_need_review` | 首次登录是否进入注册审核 |
+| `config` | provider 私有配置。外层不枚举，由对应 provider 自己解析 |
 
-GitHub 示例：
+## 常见 provider 示例
 
-```yaml
-oauth2:
-  redirect_scheme: "https"
-  providers:
-    github:
-      client_id: "your_github_client_id"
-      client_secret_file: "/run/secrets/github_client_secret"
-      redirect_url: "https://app.example.com/oauth2/callback"
+<Tabs>
+<TabItem label="GitHub" value="github">
+
+```json
+{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
 ```
 
-Google 示例：
+</TabItem>
+<TabItem label="OIDC" value="oidc">
 
-```yaml
-oauth2:
-  providers:
-    google:
-      client_id: "your_google_client_id"
-      client_secret_file: "/run/secrets/google_client_secret"
-      redirect_url: "https://app.example.com/oauth2/callback"
+```json
+{
+  "corp_oidc": {
+    "type": "oidc",
+    "enable_signup": false,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "synctv",
+      "client_secret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
 ```
 
-通用 OIDC 示例：
+</TabItem>
+</Tabs>
 
-```yaml
-oauth2:
-  providers:
-    keycloak:
-      type: oidc
-      client_id: "synctv"
-      client_secret_file: "/run/secrets/keycloak_client_secret"
-      issuer: "https://keycloak.example.com/realms/main"
-      redirect_url: "https://app.example.com/oauth2/callback"
-```
+## 运行时行为
 
-Logto 示例：
+- 运行时 settings 修改后，OAuth2 服务会按新配置重建 provider map。
+- 缺失某个实例名，就等于这个入口不可用。
+- `enable_signup=false` 只影响首次 OAuth2 建号，不影响已绑定账号登录。
+- `signup_need_review=true` 会把首次 OAuth2 注册送入审核流程。
 
-```yaml
-oauth2:
-  providers:
-    logto:
-      type: logto
-      client_id: "synctv"
-      client_secret_file: "/run/secrets/logto_client_secret"
-      endpoint: "https://logto.example.com"
-      redirect_url: "https://app.example.com/oauth2/callback"
-```
+## 常见问题
 
-## `client_id`
+### 为什么不再有 `oauth2.redirect_scheme`
 
-第三方平台分配给 SyncTV 的应用 ID。通常不算 secret，但也不建议随意公开在无关场景。
+因为 redirect URL 现在直接写在每个 provider 的 `config.redirect_url` 里。这样不会把协议抽成全局状态，也不会限制不同 provider 之间的回调写法。
 
-## `client_secret`
+### `client_secret` 应该放哪里
 
-第三方平台分配的应用密钥。必须当作 secret 保存。
-
-推荐：
-
-```yaml
-client_secret_file: "/run/secrets/provider_client_secret"
-```
-
-## `redirect_url`
-
-OAuth2 回调地址。
-
-SyncTV 的 OAuth2 流程是前端/客户端驱动：
-
-1. 第三方 Provider 跳转到前端或客户端回调地址，携带 `code` 和 `state`。
-2. 前端或客户端调用 SyncTV 的 exchange 接口完成登录。
-
-因此 `redirect_url` 通常是客户端 URL，而不一定是后端 API URL。
-
-示例：
-
-- Web 前端：`https://app.example.com/oauth2/callback`
-- 桌面/移动客户端：`synctv://oauth2/callback`
-
-## Redis 依赖
-
-OAuth2 登录过程需要临时保存 state。没有 Redis 时单机可以使用内存 store。
-
-多副本部署必须使用 Redis，否则用户发起登录的请求和回调 exchange 请求可能落到不同 Pod，导致 state 找不到。
+放在 `config.client_secret`，并通过 runtime settings 管理。不要放进静态配置文件。

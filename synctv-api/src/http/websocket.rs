@@ -1248,6 +1248,7 @@ async fn handle_socket(
     .with_room_members_snapshot_service(state.client_api.clone())
     .with_connection_id(connection_id.clone())
     .with_heartbeat_schedule(state.heartbeat_schedule)
+    .with_filter_private_ice_candidates(state.config.webrtc.filter_private_ice_candidates)
     .with_ws_message_rate_limit(
         state
             .config
@@ -1382,7 +1383,7 @@ mod tests {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
 
-        UserService::new(
+        let mut service = UserService::new(
             pool,
             jwt_service,
             username_cache,
@@ -1390,7 +1391,9 @@ mod tests {
             token_blacklist,
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        )
+        );
+        service.enable_password_registration_for_tests();
+        service
     }
 
     fn test_room_service(pool: sqlx::PgPool) -> RoomService {

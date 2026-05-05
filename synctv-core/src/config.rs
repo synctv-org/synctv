@@ -251,10 +251,10 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "redis.url"
             | "jwt.secret"
             | "email.smtp_password"
+            | "livestream.hls_oss.access_key_id"
+            | "livestream.hls_oss.secret_access_key"
             | "bootstrap.root_password"
-    ) || ((current_path.starts_with("oauth2.providers.")
-        || current_path.starts_with("media_providers.providers."))
-        && is_secret_like_provider_key(base_key))
+    ) || (current_path.starts_with("media_providers.") && is_secret_like_provider_key(base_key))
 }
 
 fn resolve_secret_file_references_in_json_value(
@@ -402,7 +402,6 @@ pub struct Config {
     pub jwt: JwtConfig,
     pub logging: LoggingConfig,
     pub livestream: LivestreamConfig,
-    pub oauth2: OAuth2Config,
     pub webauthn: WebAuthnConfig,
     pub email: EmailConfig,
     pub media_providers: MediaProvidersConfig,
@@ -433,7 +432,6 @@ impl std::fmt::Debug for Config {
             .field("jwt", &"<redacted>")
             .field("logging", &self.logging)
             .field("livestream", &self.livestream)
-            .field("oauth2", &self.oauth2)
             .field("webauthn", &self.webauthn)
             .field("email", &"<redacted>")
             .field("media_providers", &self.media_providers)
@@ -466,7 +464,6 @@ impl Default for Config {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
-            oauth2: OAuth2Config::default(),
             webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -908,9 +905,10 @@ impl Default for DatabaseConfig {
 /// # Supported modes
 ///
 /// - **Standalone** (default): Single Redis instance. Works with all features.
-/// - **Sentinel**: Redis Sentinel for high availability. Automatic master
-///   failover is NOT yet supported; a restart is required after failover.
-///   A proper `SentinelClient` integration is planned.
+/// - **Sentinel**: Redis Sentinel for high availability. SyncTV performs
+///   best-effort master rediscovery and connection hot-swap after repeated
+///   health-check failures, but in-flight operations can still fail during a
+///   failover window. Sentinel mode is intentionally rejected in cluster mode.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RedisDeploymentMode {
@@ -1089,6 +1087,74 @@ impl Default for LoggingConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum HlsStorageBackend {
+    #[default]
+    Memory,
+    File,
+    Oss,
+}
+
+impl FromStr for HlsStorageBackend {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "memory" => Ok(Self::Memory),
+            "file" | "filesystem" => Ok(Self::File),
+            "oss" | "s3" | "object_storage" => Ok(Self::Oss),
+            _ => Err(ConfigError::Message(format!(
+                "livestream.hls_storage_backend '{value}' must be one of: memory, file, oss"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HlsOssConfig {
+    /// S3/OSS endpoint, for example `https://s3.amazonaws.com` or `https://minio.example.com`.
+    pub endpoint: String,
+    /// Access key ID used by the object storage backend.
+    pub access_key_id: String,
+    /// Secret access key used by the object storage backend.
+    pub secret_access_key: String,
+    /// Bucket name.
+    pub bucket: String,
+    /// Optional S3 region.
+    pub region: Option<String>,
+    /// Object key prefix inside the bucket, for example `synctv/hls/`.
+    pub base_path: String,
+}
+
+impl Default for HlsOssConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            bucket: String::new(),
+            region: None,
+            base_path: "hls/".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Debug for HlsOssConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HlsOssConfig")
+            .field("endpoint", &self.endpoint)
+            .field("access_key_id", &"<redacted>")
+            .field("secret_access_key", &"<redacted>")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("base_path", &self.base_path)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LivestreamConfig {
@@ -1119,12 +1185,17 @@ pub struct LivestreamConfig {
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
     pub hls_memory_max_mb: u64,
+    /// HLS segment storage backend.
+    ///
+    /// - `memory`: in-process memory storage.
+    /// - `file`: filesystem storage at `hls_storage_path`.
+    /// - `oss`: S3-compatible object storage configured by `hls_oss`.
+    pub hls_storage_backend: HlsStorageBackend,
     /// Whether HLS segment storage is on shared storage accessible by all replicas.
     ///
-    /// In cluster mode (`cluster.enabled=true`), HLS segments
-    /// must be accessible from any replica. If this is false and cluster mode is
-    /// enabled, a warning is logged at startup. Set to true when using NFS, shared
-    /// volume mounts, or S3-compatible object storage for HLS segments.
+    /// Only meaningful for the `file` backend. Set to true when
+    /// `hls_storage_path` is backed by a filesystem mount visible to every
+    /// replica, such as NFS or a RWX CSI/PVC volume.
     ///
     /// Default: false (local storage, single-node safe).
     pub hls_shared_storage: bool,
@@ -1132,9 +1203,11 @@ pub struct LivestreamConfig {
     ///
     /// Used for validation: paths that are obviously local-only (e.g. /tmp/)
     /// trigger a stronger warning in cluster mode even when `hls_shared_storage=true`.
-    /// If empty, the default in-memory storage is used.
+    /// Required when `hls_storage_backend=file`.
     /// Relative paths are resolved against the effective `data_dir`.
     pub hls_storage_path: String,
+    /// S3-compatible object storage settings used when `hls_storage_backend=oss`.
+    pub hls_oss: HlsOssConfig,
     /// Maximum HTTP-FLV connection duration in seconds.
     ///
     /// Prevents slow-client `DoS` attacks by enforcing a maximum connection lifetime.
@@ -1164,40 +1237,12 @@ impl Default for LivestreamConfig {
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             gop_cache_max_memory_mb: 100,
             hls_memory_max_mb: 0,
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            hls_oss: HlsOssConfig::default(),
             flv_max_connection_duration_seconds: 86400, // 24 hours
             flv_write_timeout_seconds: 30,
-        }
-    }
-}
-
-/// `OAuth2` configuration
-///
-/// Stores `OAuth2` provider configurations in the main config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct OAuth2Config {
-    /// Provider configurations (e.g., github, google, logto1, logto2)
-    #[serde(default)]
-    pub providers: serde_json::Value,
-    /// URL scheme for `OAuth2` redirect URLs.
-    /// Supported values: "http", "https"
-    /// Default: "https".
-    /// When behind a reverse proxy terminating TLS, set this to "https".
-    #[serde(default = "default_redirect_scheme")]
-    pub redirect_scheme: String,
-}
-
-fn default_redirect_scheme() -> String {
-    "https".to_string()
-}
-
-impl Default for OAuth2Config {
-    fn default() -> Self {
-        Self {
-            providers: serde_json::json!({}),
-            redirect_scheme: default_redirect_scheme(),
         }
     }
 }
@@ -1242,35 +1287,35 @@ impl Default for WebAuthnConfig {
     }
 }
 
-/// Media providers configuration
-///
-/// Stores media provider configurations (Alist, Emby, Bilibili, etc.)
+/// HTTP transport configuration for a local provider adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct MediaProvidersConfig {
-    /// Provider configurations (e.g., alist, emby, jellyfin, bilibili)
-    #[serde(default)]
-    pub providers: serde_json::Value,
-
-    /// Timeout for external provider HTTP requests (seconds)
-    /// Prevents indefinite hanging on slow/unresponsive provider APIs (Bilibili, Alist, Emby).
-    /// Default: 30 seconds. Set to 0 to disable timeout (not recommended in production).
+pub struct LocalProviderHttpConfig {
+    /// Total timeout for one upstream provider request.
     pub request_timeout_seconds: u64,
-
-    /// Connection timeout for provider API connections (seconds)
-    /// Limits time spent establishing TCP connections to external providers.
-    /// Default: 10 seconds.
+    /// Timeout for establishing an upstream provider connection.
     pub connect_timeout_seconds: u64,
 }
 
-impl Default for MediaProvidersConfig {
+impl Default for LocalProviderHttpConfig {
     fn default() -> Self {
         Self {
-            providers: serde_json::json!({}),
             request_timeout_seconds: 30,
             connect_timeout_seconds: 10,
         }
     }
+}
+
+/// Local media provider adapter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MediaProvidersConfig {
+    /// Local Alist adapter configuration.
+    pub alist: LocalProviderHttpConfig,
+    /// Local Bilibili adapter configuration.
+    pub bilibili: LocalProviderHttpConfig,
+    /// Local Emby/Jellyfin adapter configuration.
+    pub emby: LocalProviderHttpConfig,
 }
 
 /// WebRTC configuration for audio/video calls
@@ -1848,7 +1893,11 @@ impl Config {
                                  apply: &mut dyn FnMut(&str) -> Result<(), ConfigError>|
          -> Result<(), ConfigError> {
             if let Some(val) = get_env(name) {
-                apply(&val)?;
+                apply(&val).map_err(|error| {
+                    ConfigError::Message(format!(
+                        "Invalid value for environment variable {name}: '{val}' ({error})"
+                    ))
+                })?;
             }
             Ok(())
         };
@@ -2205,6 +2254,10 @@ impl Config {
             "SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB",
             &mut self.livestream.hls_memory_max_mb,
         )?;
+        env_override_enum("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND", &mut |val| {
+            self.livestream.hls_storage_backend = val.parse()?;
+            Ok(())
+        })?;
         env_override_bool(
             "SYNCTV_LIVESTREAM_HLS_SHARED_STORAGE",
             &mut self.livestream.hls_shared_storage,
@@ -2212,6 +2265,40 @@ impl Config {
         env_override_str(
             "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH",
             &mut self.livestream.hls_storage_path,
+        );
+        env_override_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_ENDPOINT",
+            &mut self.livestream.hls_oss.endpoint,
+        );
+        env_override_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID",
+            &mut self.livestream.hls_oss.access_key_id,
+        );
+        env_override_str_file(
+            "SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID_FILE",
+            "livestream.hls_oss.access_key_id",
+            &mut self.livestream.hls_oss.access_key_id,
+        )?;
+        env_override_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY",
+            &mut self.livestream.hls_oss.secret_access_key,
+        );
+        env_override_str_file(
+            "SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY_FILE",
+            "livestream.hls_oss.secret_access_key",
+            &mut self.livestream.hls_oss.secret_access_key,
+        )?;
+        env_override_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_BUCKET",
+            &mut self.livestream.hls_oss.bucket,
+        );
+        env_override_opt_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_REGION",
+            &mut self.livestream.hls_oss.region,
+        );
+        env_override_str(
+            "SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH",
+            &mut self.livestream.hls_oss.base_path,
         );
         env_override_parse(
             "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
@@ -2235,18 +2322,29 @@ impl Config {
         env_override_str("SYNCTV_EMAIL_FROM_NAME", &mut self.email.from_name);
         env_override_bool("SYNCTV_EMAIL_USE_TLS", &mut self.email.use_tls)?;
 
-        env_override_str(
-            "SYNCTV_OAUTH2_REDIRECT_SCHEME",
-            &mut self.oauth2.redirect_scheme,
-        );
-
         env_override_parse(
-            "SYNCTV_MEDIA_PROVIDERS_REQUEST_TIMEOUT_SECONDS",
-            &mut self.media_providers.request_timeout_seconds,
+            "SYNCTV_MEDIA_PROVIDERS_ALIST_REQUEST_TIMEOUT_SECONDS",
+            &mut self.media_providers.alist.request_timeout_seconds,
         )?;
         env_override_parse(
-            "SYNCTV_MEDIA_PROVIDERS_CONNECT_TIMEOUT_SECONDS",
-            &mut self.media_providers.connect_timeout_seconds,
+            "SYNCTV_MEDIA_PROVIDERS_ALIST_CONNECT_TIMEOUT_SECONDS",
+            &mut self.media_providers.alist.connect_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_MEDIA_PROVIDERS_BILIBILI_REQUEST_TIMEOUT_SECONDS",
+            &mut self.media_providers.bilibili.request_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_MEDIA_PROVIDERS_BILIBILI_CONNECT_TIMEOUT_SECONDS",
+            &mut self.media_providers.bilibili.connect_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_MEDIA_PROVIDERS_EMBY_REQUEST_TIMEOUT_SECONDS",
+            &mut self.media_providers.emby.request_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_MEDIA_PROVIDERS_EMBY_CONNECT_TIMEOUT_SECONDS",
+            &mut self.media_providers.emby.connect_timeout_seconds,
         )?;
 
         env_override_enum("SYNCTV_WEBRTC_MODE", &mut |val| {
@@ -2639,6 +2737,20 @@ impl Config {
                 .to_string()
         };
 
+        let hls_oss_base_path = self
+            .livestream
+            .hls_oss
+            .base_path
+            .trim()
+            .trim_start_matches('/');
+        self.livestream.hls_oss.base_path = if hls_oss_base_path.is_empty() {
+            String::new()
+        } else if hls_oss_base_path.ends_with('/') {
+            hls_oss_base_path.to_string()
+        } else {
+            format!("{hls_oss_base_path}/")
+        };
+
         let proxy_slice_cache_dir = self.cache.proxy_slice_file_cache_dir.trim();
         self.cache.proxy_slice_file_cache_dir = if proxy_slice_cache_dir.is_empty() {
             if self.cache.proxy_slice_file_backend_enabled {
@@ -2733,6 +2845,35 @@ impl Config {
 
     pub fn validate_with_env_map(&self, env: &HashMap<String, String>) -> Result<(), Vec<String>> {
         self.validate_with_env(&|name| env.get(name).cloned())
+    }
+
+    fn validate_local_provider_http_config(
+        path: &str,
+        config: &LocalProviderHttpConfig,
+        errors: &mut Vec<String>,
+    ) {
+        if config.request_timeout_seconds > 300 {
+            errors.push(format!(
+                "{path}.request_timeout_seconds should not exceed 300 seconds (5 minutes)"
+            ));
+        }
+        if config.request_timeout_seconds == 0 {
+            errors.push(format!(
+                "{path}.request_timeout_seconds must be greater than 0"
+            ));
+        }
+        if config.connect_timeout_seconds == 0 {
+            errors.push(format!(
+                "{path}.connect_timeout_seconds must be greater than 0"
+            ));
+        }
+        if config.connect_timeout_seconds > config.request_timeout_seconds
+            && config.request_timeout_seconds > 0
+        {
+            errors.push(format!(
+                "{path}.connect_timeout_seconds should not exceed request_timeout_seconds"
+            ));
+        }
     }
 
     fn validate_with_env(
@@ -3275,26 +3416,21 @@ impl Config {
             }
         }
 
-        // Validate media provider timeouts
-        if self.media_providers.request_timeout_seconds > 300 {
-            errors.push(
-                "media_providers.request_timeout_seconds should not exceed 300 seconds (5 minutes)"
-                    .to_string(),
-            );
-        }
-        if self.media_providers.connect_timeout_seconds == 0 {
-            errors
-                .push("media_providers.connect_timeout_seconds must be greater than 0".to_string());
-        }
-        if self.media_providers.connect_timeout_seconds
-            > self.media_providers.request_timeout_seconds
-            && self.media_providers.request_timeout_seconds > 0
-        {
-            errors.push(
-                "media_providers.connect_timeout_seconds should not exceed request_timeout_seconds"
-                    .to_string(),
-            );
-        }
+        Self::validate_local_provider_http_config(
+            "media_providers.alist",
+            &self.media_providers.alist,
+            &mut errors,
+        );
+        Self::validate_local_provider_http_config(
+            "media_providers.bilibili",
+            &self.media_providers.bilibili,
+            &mut errors,
+        );
+        Self::validate_local_provider_http_config(
+            "media_providers.emby",
+            &self.media_providers.emby,
+            &mut errors,
+        );
 
         // Validate CORS origins
         if !self.server.cors_allowed_origins.is_empty() {
@@ -3311,13 +3447,57 @@ impl Config {
             }
         }
 
-        if self.livestream.hls_shared_storage && self.livestream.hls_storage_path.trim().is_empty()
-        {
-            errors.push(
-                "livestream.hls_storage_path must be set when livestream.hls_shared_storage=true. \
-                 Configure a shared filesystem mount path accessible by every replica."
-                    .to_string(),
-            );
+        match self.livestream.hls_storage_backend {
+            HlsStorageBackend::Memory => {
+                if self.livestream.hls_shared_storage {
+                    errors.push(
+                        "livestream.hls_shared_storage=true is only valid when livestream.hls_storage_backend='file'"
+                            .to_string(),
+                    );
+                }
+            }
+            HlsStorageBackend::File => {
+                if self.livestream.hls_storage_path.trim().is_empty() {
+                    errors.push(
+                        "livestream.hls_storage_path must be set when livestream.hls_storage_backend='file'"
+                            .to_string(),
+                    );
+                }
+            }
+            HlsStorageBackend::Oss => {
+                if self.livestream.hls_shared_storage {
+                    errors.push(
+                        "livestream.hls_shared_storage is not used with livestream.hls_storage_backend='oss'; object storage is inherently shared across replicas"
+                            .to_string(),
+                    );
+                }
+
+                let oss = &self.livestream.hls_oss;
+                if oss.endpoint.trim().is_empty() {
+                    errors.push(
+                        "livestream.hls_oss.endpoint must be set when livestream.hls_storage_backend='oss'"
+                            .to_string(),
+                    );
+                }
+                if oss.bucket.trim().is_empty() {
+                    errors.push(
+                        "livestream.hls_oss.bucket must be set when livestream.hls_storage_backend='oss'"
+                            .to_string(),
+                    );
+                }
+                if oss.access_key_id.trim().is_empty() {
+                    errors.push(
+                        "livestream.hls_oss.access_key_id must be set when livestream.hls_storage_backend='oss'"
+                            .to_string(),
+                    );
+                }
+                if oss.secret_access_key.trim().is_empty() {
+                    errors.push(
+                        "livestream.hls_oss.secret_access_key must be set when livestream.hls_storage_backend='oss'"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         if self.cache.proxy_slice_file_backend_enabled {
@@ -3350,7 +3530,7 @@ impl Config {
         if cluster_mode_active && !redis_backend_configured {
             errors.push(
                 "cluster mode requires Redis to be configured. \
-                 Configure either redis.url for standalone mode or Sentinel settings \
+                 Configure standalone Redis via redis.url or redis.host/redis.port \
                  before enabling cluster.enabled=true."
                     .to_string(),
             );
@@ -3424,45 +3604,55 @@ impl Config {
             );
         }
 
-        // HLS shared storage validation in cluster mode.
-        // In cluster mode, HLS segments must be on storage accessible by all replicas.
-        // If segments are on local-only storage, clients will receive 404s for segments
-        // served by a replica that did not create them.
+        // HLS storage validation in cluster mode.
+        // Local backends are functional because non-publisher nodes can proxy HLS
+        // playlist/segment reads to the publisher node. Shared storage is still
+        // preferable for high-traffic production HLS because it avoids routing
+        // every remote segment request through the publisher node.
         if cluster_mode_active {
-            if self.livestream.hls_shared_storage {
-                // shared_storage=true but check for obviously-local paths
-                let path = &self.livestream.hls_storage_path;
-                let is_obviously_local = path.starts_with("/tmp/")
-                    || path == "/tmp"
-                    || path.starts_with("/var/tmp/")
-                    || path.starts_with("/dev/shm/");
-                if is_obviously_local {
+            match self.livestream.hls_storage_backend {
+                HlsStorageBackend::Oss => {}
+                HlsStorageBackend::File if self.livestream.hls_shared_storage => {
+                    // shared_storage=true but check for obviously-local paths
+                    let path = &self.livestream.hls_storage_path;
+                    let is_obviously_local = path.starts_with("/tmp/")
+                        || path == "/tmp"
+                        || path.starts_with("/var/tmp/")
+                        || path.starts_with("/dev/shm/");
+                    if is_obviously_local {
+                        tracing::warn!(
+                            hls_storage_path = %path,
+                            "livestream.hls_shared_storage=true but hls_storage_path '{}' appears \
+                             to be a local-only path. Ensure this path is actually mounted from \
+                             shared storage (NFS, CSI volume) on every replica. Otherwise remote \
+                             HLS requests will fall back to publisher-node gRPC proxying instead \
+                             of direct shared-storage reads.",
+                            path
+                        );
+                    }
+                }
+                HlsStorageBackend::File => {
                     tracing::warn!(
-                        hls_storage_path = %path,
-                        "livestream.hls_shared_storage=true but hls_storage_path '{}' appears \
-                         to be a local-only path. Ensure this path is actually mounted from \
-                         shared storage (NFS, CSI volume) on every replica, otherwise HLS \
-                         clients will receive 404 errors for segments on other replicas.",
-                        path
+                        "Cluster mode is enabled with livestream.hls_storage_backend='file' and livestream.hls_shared_storage=false. \
+                         HLS remains functional through publisher-node gRPC proxying, but shared filesystem storage or OSS is recommended for production multi-replica HLS."
                     );
                 }
-            } else {
-                errors.push(
-                    "Cluster mode is enabled but livestream.hls_shared_storage is false. \
-                     HLS segments stored on node-local storage will NOT be accessible from \
-                     other replicas, causing 404 errors for clients. \
-                     Use a shared volume (NFS, CSI), S3-compatible mount, or set \
-                     livestream.hls_shared_storage=true once shared storage is configured."
-                        .to_string(),
-                );
+                HlsStorageBackend::Memory => {
+                    tracing::warn!(
+                        "Cluster mode is enabled with livestream.hls_storage_backend='memory'. \
+                         HLS remains functional through publisher-node gRPC proxying, but memory storage is node-local and lost on restart. \
+                         Use shared filesystem storage or OSS for production multi-replica HLS."
+                    );
+                }
             }
-        } else if self.livestream.hls_storage_path.trim().is_empty() {
+        } else if self.livestream.hls_storage_backend == HlsStorageBackend::Memory {
             // Single-node: warn about MemoryStorage only when the effective
             // storage backend is actually the in-memory default.
             tracing::warn!(
                 "The default HLS storage backend is MemoryStorage, which is node-local. \
-                 HLS segments will NOT be shared across replicas if cluster mode is later enabled. \
-                 For multi-replica HLS, configure shared FileStorage (NFS/CSI volume) or OssStorage."
+                 HLS segments are lost on restart. For production multi-replica HLS, \
+                 configure livestream.hls_storage_backend='file' with shared filesystem storage \
+                 or 'oss' with S3-compatible object storage."
             );
         }
 
@@ -3542,24 +3732,6 @@ impl Config {
                          Set webrtc.stun_external_addr to the server's public IP:port."
                 );
             }
-        }
-
-        // Validate OAuth2 state storage requirements.
-        // In cluster mode, Redis is required for OAuth2 state storage because the
-        // callback request may hit a different replica than the one that generated
-        // the auth URL. In standalone mode, an in-memory state store is used.
-        let oauth2_enabled = self
-            .oauth2
-            .providers
-            .as_object()
-            .is_some_and(|obj| !obj.is_empty());
-        if oauth2_enabled && !redis_backend_configured && self.cluster.enabled {
-            errors.push(
-                "OAuth2 requires Redis for state storage in cluster mode. \
-                 Configure a Redis backend (redis.url or Sentinel settings) \
-                 or disable OAuth2 by removing all oauth2.providers."
-                    .to_string(),
-            );
         }
 
         if self.webauthn.enabled {
@@ -3771,8 +3943,9 @@ impl FromStr for ClusterLeaderElectionMode {
 pub struct ClusterChannelConfig {
     /// Whether cluster mode is explicitly enabled.
     ///
-    /// When true, Redis is **mandatory** and startup will fail (not warn) if
-    /// `redis.url` is empty or unset. Cluster mode uses Redis for:
+    /// When true, Redis is **mandatory** and startup will fail if no standalone
+    /// Redis backend is configured through `redis.url` or `redis.host`/`redis.port`.
+    /// Cluster mode uses Redis for:
     /// - Cross-replica pub/sub (`PlaybackStateChanged`, `KickUser`, etc.)
     /// - Distributed leader election (singleton tasks)
     /// - Node registry and health monitoring
@@ -4169,7 +4342,6 @@ mod tests {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
-            oauth2: OAuth2Config::default(),
             webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -4212,7 +4384,6 @@ mod tests {
             jwt: JwtConfig::default(),
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig::default(),
-            oauth2: OAuth2Config::default(),
             webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -4364,6 +4535,21 @@ mod tests {
     }
 
     #[test]
+    fn test_from_env_rejects_invalid_hls_storage_backend_override() {
+        let error = Config::from_env_map(&env_map(&[(
+            "SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND",
+            "nfs",
+        )]))
+        .expect_err("invalid HLS storage backend override must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND"));
+        assert!(message.contains("memory"));
+        assert!(message.contains("file"));
+        assert!(message.contains("oss"));
+    }
+
+    #[test]
     fn test_from_env_ignores_unknown_server_port_env_vars() {
         let config = Config::from_env_map(&env_map(&[
             ("SYNCTV_SERVER_GRPC_PORT", "50051"),
@@ -4495,13 +4681,13 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                // Keep shared storage enabled so cluster-mode tests can opt in by
-                // toggling `cluster.enabled` without additional changes.
+                // Keep a valid file backend so cluster-mode tests can opt in by
+                // toggling `cluster.enabled` without unrelated HLS path errors.
+                hls_storage_backend: HlsStorageBackend::File,
                 hls_shared_storage: true,
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
-            oauth2: OAuth2Config::default(),
             webauthn: WebAuthnConfig::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -4535,16 +4721,18 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_cluster_mode_requires_hls_shared_storage() {
-        // In cluster mode (`cluster.enabled=true`), hls_shared_storage must be true
-        // to prevent 404 errors when HLS segments are served from different replicas.
+    fn test_validate_cluster_mode_allows_local_hls_storage() {
+        // In cluster mode, local HLS backends are allowed because non-publisher
+        // nodes proxy playlist/segment reads to the publisher node.
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
+        config.server.advertise_host = "10.0.0.12".to_string();
         config.livestream.hls_shared_storage = false;
-        let errors = config.validate().unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
+        assert!(config.validate().is_ok());
+
+        config.livestream.hls_storage_backend = HlsStorageBackend::Memory;
+        config.livestream.hls_storage_path = String::new();
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -4564,59 +4752,6 @@ mod tests {
         config.livestream.hls_shared_storage = false;
         // This should pass validation (only a warning is logged)
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_cluster_oauth2_rejects_redis_sentinel_backend_without_url() {
-        let mut config = valid_prod_config();
-        config.cluster.enabled = true;
-        config.cluster.leader_election_mode = ClusterLeaderElectionMode::K8sLease;
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "client-id",
-                "client_secret": "client-secret"
-            }
-        });
-        config.redis.url.clear();
-        config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
-        config.redis.sentinel_master_name = Some("mymaster".to_string());
-        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
-
-        let result = config.validate_with_env_map(&env_map(&[
-            ("POD_NAME", "synctv-0"),
-            ("POD_NAMESPACE", "default"),
-        ]));
-
-        let errors =
-            result.expect_err("Sentinel-backed Redis must still be rejected in cluster mode");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("cluster.enabled=true is not supported with Redis Sentinel")),
-            "expected Sentinel rejection while Redis distributed locks are still required, got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_cluster_oauth2_rejects_missing_redis_backend() {
-        let mut config = valid_prod_config();
-        config.cluster.enabled = true;
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "client-id",
-                "client_secret": "client-secret"
-            }
-        });
-        config.redis.url.clear();
-
-        let result = config.validate();
-
-        let errors = result.expect_err("cluster OAuth2 must require a configured Redis backend");
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("cluster mode requires Redis to be configured")));
     }
 
     #[test]
@@ -4719,6 +4854,47 @@ jwt:
         assert_eq!(config.logging.level, LoggingConfig::default().level);
         assert_eq!(config.logging.filter, LoggingConfig::default().filter);
         assert_eq!(config.logging.backtrace, LoggingConfig::default().backtrace);
+    }
+
+    #[test]
+    fn test_from_file_parses_explicit_local_media_provider_config() {
+        let unique = format!(
+            "synctv-media-providers-config-test-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(
+            &path,
+            r"
+media_providers:
+  alist:
+    request_timeout_seconds: 40
+    connect_timeout_seconds: 8
+  bilibili:
+    request_timeout_seconds: 50
+    connect_timeout_seconds: 9
+  emby:
+    request_timeout_seconds: 60
+    connect_timeout_seconds: 10
+",
+        )
+        .expect("write config");
+
+        let config =
+            Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &HashMap::new())
+                .expect("explicit local media provider config should load");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(config.media_providers.alist.request_timeout_seconds, 40);
+        assert_eq!(config.media_providers.alist.connect_timeout_seconds, 8);
+        assert_eq!(config.media_providers.bilibili.request_timeout_seconds, 50);
+        assert_eq!(config.media_providers.bilibili.connect_timeout_seconds, 9);
+        assert_eq!(config.media_providers.emby.request_timeout_seconds, 60);
+        assert_eq!(config.media_providers.emby.connect_timeout_seconds, 10);
     }
 
     #[test]
@@ -5101,119 +5277,6 @@ management:
         assert_eq!(
             Path::new(&config.cache.proxy_slice_file_cache_dir),
             expected_data_dir.join("cache").join("proxy-slice")
-        );
-    }
-
-    #[test]
-    fn test_from_file_resolves_secret_file_references_inside_provider_json() {
-        let temp_dir = tempdir().expect("temp dir should be created");
-        let config_path = temp_dir.path().join("synctv.yaml");
-        std::fs::write(
-            temp_dir.path().join("github.client_secret"),
-            "github-client-secret-from-file\n",
-        )
-        .expect("github client secret should be written");
-        std::fs::write(
-            temp_dir.path().join("provider.access_token"),
-            "provider-access-token-from-file\n",
-        )
-        .expect("provider access token should be written");
-
-        std::fs::write(
-            &config_path,
-            r#"
-jwt:
-  secret: "12345678901234567890123456789012"
-oauth2:
-  providers:
-    github:
-      type: "github"
-      client_id: "github-client-id"
-      client_secret_file: "./github.client_secret"
-media_providers:
-  providers:
-    demo:
-      type: "custom"
-      access_token_file: "./provider.access_token"
-"#,
-        )
-        .expect("config file should be written");
-
-        let unknown_keys =
-            Config::collect_unknown_config_file_keys(config_path.to_str().expect("utf-8 path"))
-                .expect("supported nested _file keys should not be reported as unknown");
-        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
-            .expect("nested provider _file references should load");
-
-        assert!(
-            unknown_keys.is_empty(),
-            "nested _file keys should not be treated as unknown: {unknown_keys:?}"
-        );
-        assert_eq!(
-            config.oauth2.providers["github"]["client_secret"],
-            "github-client-secret-from-file"
-        );
-        assert_eq!(
-            config.media_providers.providers["demo"]["access_token"],
-            "provider-access-token-from-file"
-        );
-    }
-
-    #[test]
-    fn test_from_file_only_resolves_supported_nested_secret_file_paths() {
-        let temp_dir = tempdir().expect("temp dir should be created");
-        let config_path = temp_dir.path().join("synctv.yaml");
-        std::fs::write(
-            temp_dir.path().join("github.client_secret"),
-            "github-client-secret-from-file\n",
-        )
-        .expect("github client secret should be written");
-        std::fs::write(
-            temp_dir.path().join("provider.access_token"),
-            "provider-access-token-from-file\n",
-        )
-        .expect("provider access token should be written");
-
-        std::fs::write(
-            &config_path,
-            r#"
-jwt:
-  secret: "12345678901234567890123456789012"
-oauth2:
-  providers:
-    github:
-      type: "github"
-      client_id: "github-client-id"
-      client_secret_file: "./github.client_secret"
-      avatar_file: "avatars/github.png"
-media_providers:
-  providers:
-    demo:
-      type: "custom"
-      access_token_file: "./provider.access_token"
-      poster_file: "providers/demo/poster.png"
-"#,
-        )
-        .expect("config file should be written");
-
-        let config = Config::from_file(config_path.to_str().expect("utf-8 path"))
-            .expect("unrelated *_file fields inside free-form provider JSON must remain literal");
-
-        assert_eq!(
-            config.oauth2.providers["github"]["client_secret"],
-            "github-client-secret-from-file"
-        );
-        assert_eq!(
-            config.oauth2.providers["github"]["avatar_file"],
-            "avatars/github.png"
-        );
-        assert_eq!(
-            config.media_providers.providers["demo"]["access_token"],
-            "provider-access-token-from-file"
-        );
-        assert_eq!(
-            config.media_providers.providers["demo"]["poster_file"],
-            "providers/demo/poster.png"
         );
     }
 
@@ -6102,6 +6165,16 @@ jwt:
     fn test_from_env_overrides_livestream_extended_runtime_limits() {
         let config = Config::from_env_map(&env_map(&[
             ("SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB", "768"),
+            ("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND", "oss"),
+            (
+                "SYNCTV_LIVESTREAM_HLS_OSS_ENDPOINT",
+                "https://s3.example.com",
+            ),
+            ("SYNCTV_LIVESTREAM_HLS_OSS_BUCKET", "synctv-hls"),
+            ("SYNCTV_LIVESTREAM_HLS_OSS_REGION", "auto"),
+            ("SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH", "/synctv/hls"),
+            ("SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID", "access-key"),
+            ("SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY", "secret-key"),
             (
                 "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
                 "7200",
@@ -6112,9 +6185,68 @@ jwt:
         .expect("livestream env overrides should parse");
 
         assert_eq!(config.livestream.hls_memory_max_mb, 768);
+        assert_eq!(
+            config.livestream.hls_storage_backend,
+            HlsStorageBackend::Oss
+        );
+        assert_eq!(config.livestream.hls_oss.endpoint, "https://s3.example.com");
+        assert_eq!(config.livestream.hls_oss.bucket, "synctv-hls");
+        assert_eq!(config.livestream.hls_oss.region.as_deref(), Some("auto"));
+        assert_eq!(config.livestream.hls_oss.base_path, "synctv/hls/");
+        assert_eq!(config.livestream.hls_oss.access_key_id, "access-key");
+        assert_eq!(config.livestream.hls_oss.secret_access_key, "secret-key");
         assert_eq!(config.livestream.flv_max_connection_duration_seconds, 7200);
         assert_eq!(config.livestream.flv_write_timeout_seconds, 45);
         assert_eq!(config.livestream.public_rtmp_host, "stream.example.com");
+    }
+
+    #[test]
+    fn test_from_env_overrides_local_media_provider_timeouts() {
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_MEDIA_PROVIDERS_ALIST_REQUEST_TIMEOUT_SECONDS", "40"),
+            ("SYNCTV_MEDIA_PROVIDERS_ALIST_CONNECT_TIMEOUT_SECONDS", "8"),
+            (
+                "SYNCTV_MEDIA_PROVIDERS_BILIBILI_REQUEST_TIMEOUT_SECONDS",
+                "50",
+            ),
+            (
+                "SYNCTV_MEDIA_PROVIDERS_BILIBILI_CONNECT_TIMEOUT_SECONDS",
+                "9",
+            ),
+            ("SYNCTV_MEDIA_PROVIDERS_EMBY_REQUEST_TIMEOUT_SECONDS", "60"),
+            ("SYNCTV_MEDIA_PROVIDERS_EMBY_CONNECT_TIMEOUT_SECONDS", "10"),
+        ]))
+        .expect("local media provider env overrides should parse");
+
+        assert_eq!(config.media_providers.alist.request_timeout_seconds, 40);
+        assert_eq!(config.media_providers.alist.connect_timeout_seconds, 8);
+        assert_eq!(config.media_providers.bilibili.request_timeout_seconds, 50);
+        assert_eq!(config.media_providers.bilibili.connect_timeout_seconds, 9);
+        assert_eq!(config.media_providers.emby.request_timeout_seconds, 60);
+        assert_eq!(config.media_providers.emby.connect_timeout_seconds, 10);
+    }
+
+    #[test]
+    fn test_validate_local_media_provider_timeouts() {
+        let mut config = valid_prod_config();
+        config.media_providers.alist.request_timeout_seconds = 0;
+        config.media_providers.bilibili.connect_timeout_seconds = 31;
+        config.media_providers.bilibili.request_timeout_seconds = 30;
+        config.media_providers.emby.request_timeout_seconds = 301;
+
+        let errors = config
+            .validate()
+            .expect_err("invalid local provider timeout config must fail validation");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("media_providers.alist.request_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("media_providers.bilibili.connect_timeout_seconds")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("media_providers.emby.request_timeout_seconds")));
     }
 
     #[test]
@@ -6624,6 +6756,7 @@ jwt:
     #[test]
     fn test_validate_shared_hls_storage_requires_storage_path() {
         let mut config = valid_prod_config();
+        config.livestream.hls_storage_backend = HlsStorageBackend::File;
         config.livestream.hls_shared_storage = true;
         config.livestream.hls_storage_path = String::new();
 
@@ -6634,6 +6767,37 @@ jwt:
                 .iter()
                 .any(|e| e.contains("hls_storage_path") && e.contains("must be set")),
             "Expected hls_storage_path validation error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_oss_hls_storage_requires_required_fields() {
+        let mut config = valid_prod_config();
+        config.cluster.enabled = false;
+        config.server.cluster_secret.clear();
+        config.livestream.hls_storage_backend = HlsStorageBackend::Oss;
+        config.livestream.hls_shared_storage = false;
+        config.livestream.hls_oss = HlsOssConfig::default();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors.iter().any(|e| e.contains("hls_oss.endpoint")),
+            "Expected hls_oss.endpoint validation error, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("hls_oss.bucket")),
+            "Expected hls_oss.bucket validation error, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("hls_oss.access_key_id")),
+            "Expected hls_oss.access_key_id validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("hls_oss.secret_access_key")),
+            "Expected hls_oss.secret_access_key validation error, got: {errors:?}"
         );
     }
 }

@@ -331,6 +331,7 @@ async fn start_test_server() -> TestServer {
                     TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
                 ),
                 password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
+                enable_password_registration_for_tests: true,
             },
         ))
         .await

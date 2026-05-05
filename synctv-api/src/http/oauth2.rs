@@ -444,6 +444,39 @@ mod tests {
     }
 
     #[test]
+    fn test_exchange_authorization_code_request_deserializes_without_provider() {
+        let req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
+            r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
+        )
+        .expect("deserialize HTTP exchange request without provider");
+
+        assert!(req.provider.is_empty());
+        assert_eq!(req.code, "abc123._+-");
+        assert_eq!(req.state, "AbCdEfGh1234567890aBcDeFgHiJkLm");
+    }
+
+    #[test]
+    fn test_oauth2_path_injected_query_requests_deserialize_without_provider() {
+        let authorize: GetAuthorizationUrlRequest =
+            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fcallback")
+                .expect("authorize query should not require provider");
+        assert!(authorize.provider.is_empty());
+        assert_eq!(authorize.redirect_url, "http://localhost/callback");
+
+        let bind: GetAuthorizationUrlForBindRequest =
+            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fbind")
+                .expect("bind query should not require provider");
+        assert!(bind.provider.is_empty());
+        assert_eq!(bind.redirect_url, "http://localhost/bind");
+
+        let unlink: UnlinkProviderRequest =
+            serde_urlencoded::from_str("provider_user_id=remote-user-1")
+                .expect("unlink query should not require provider");
+        assert!(unlink.provider.is_empty());
+        assert_eq!(unlink.provider_user_id, "remote-user-1");
+    }
+
+    #[test]
     fn test_validate_oauth2_proto_request_rejects_too_long_provider_user_id() {
         let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
             provider: "github".to_string(),

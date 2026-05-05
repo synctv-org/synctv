@@ -364,6 +364,11 @@ fn user_registration_review_row_to_proto(
         reviewed_at: optional_timestamp(reviewed_at),
         reviewed_by: encode_optional_user_id(public_id_codec, reviewed_by)?,
         rejection_reason: rejection_reason.unwrap_or_default(),
+        oauth2_provider: row.try_get("oauth2_provider").unwrap_or_default(),
+        oauth2_provider_user_id: row.try_get("oauth2_provider_user_id").unwrap_or_default(),
+        oauth2_provider_username: row.try_get("oauth2_provider_username").unwrap_or_default(),
+        oauth2_avatar_url: row.try_get("oauth2_avatar_url").unwrap_or_default(),
+        oauth2_email_verified: row.try_get("oauth2_email_verified").unwrap_or(false),
     })
 }
 
@@ -3181,7 +3186,9 @@ impl AdminApiImpl {
         let row = sqlx::query(
             r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
-                   requested_at, reviewed_at, reviewed_by, rejection_reason
+                   requested_at, reviewed_at, reviewed_by, rejection_reason,
+                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                   oauth2_avatar_url, oauth2_email_verified
             FROM user_registration_requests
             WHERE id = $1
             ",
@@ -3281,7 +3288,9 @@ impl AdminApiImpl {
         let rows = sqlx::query(
             r"
             SELECT id, username, COALESCE(email, '') AS email, signup_method, status,
-                   requested_at, reviewed_at, reviewed_by, rejection_reason
+                   requested_at, reviewed_at, reviewed_by, rejection_reason,
+                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                   oauth2_avatar_url, oauth2_email_verified
             FROM user_registration_requests
             WHERE status = $1
               AND ($2 = '' OR username ILIKE ('%' || $2 || '%') OR COALESCE(email, '') ILIKE ('%' || $2 || '%'))

@@ -3,6 +3,11 @@ title: Cluster Configuration
 description: Multi-replica coordination, Redis discovery, static peers, Kubernetes DNS, leader election, and stream catch-up.
 ---
 
+import Diagram from '../../../../components/Diagram.astro';
+import clusterRuntimeDark from '../../../../assets/diagrams/cluster-runtime-dark.svg';
+import clusterRuntimeLight from '../../../../assets/diagrams/cluster-runtime-light.svg';
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
 ## When to Enable Cluster Mode
 
 Single-process deployments usually do not need cluster mode.
@@ -19,6 +24,57 @@ cluster:
 ```
 
 Redis and `server.cluster_secret` become required.
+
+## Design Goal
+
+Cluster mode solves runtime consistency when multiple SyncTV processes serve the same instance. It is not just a load-balancing switch, and it does not replace PostgreSQL, Redis, Ingress, or a deliberate livestream storage/proxy model.
+
+<CardGrid>
+  <Card title="Single Source of Truth" icon="seti:db">
+    PostgreSQL stores durable state: users, rooms, permissions, providers, preferences, and audit data. Every node must use the same database.
+  </Card>
+  <Card title="Runtime Coordination" icon="seti:redis">
+    Redis stores ephemeral shared state: node registration, pub/sub, Redis Stream catch-up, leader election, rate limits, and short-lived auth state.
+  </Card>
+  <Card title="Inter-Node Trust" icon="setting">
+    `server.cluster_secret` authenticates inter-node gRPC calls. It must be identical across replicas and must not be exposed to clients.
+  </Card>
+  <Card title="Livestream Reachability" icon="youtube">
+    RTMP publishers can land on any node, and HLS segments can be requested from any node; livestreaming therefore needs a publisher registry and a deliberate choice between local and shared HLS backends.
+  </Card>
+</CardGrid>
+
+<Diagram
+  light={clusterRuntimeLight}
+  dark={clusterRuntimeDark}
+  alt="SyncTV cluster runtime architecture showing clients reaching multiple nodes through HTTP/gRPC, with nodes sharing PostgreSQL and Redis, and reading livestream segments through an HLS backend or publisher-node proxy."
+  caption="In cluster mode, durable business state goes to PostgreSQL and cross-node runtime state goes to Redis. HLS can use local backends with publisher-node proxying, or shared filesystem/OSS backends for direct segment reads from every replica."
+/>
+
+## How It Works
+
+<Steps>
+1. Each node starts with the same PostgreSQL and Redis backends and derives or reads its node identity.
+2. Nodes register and discover peers through `cluster.discovery_mode`. The default `redis` mode fits most environments; Kubernetes deployments can use `k8s_dns` to assist Pod discovery.
+3. Room events, permission changes, cache invalidations, and kicks are distributed through Redis pub/sub. After a short disconnect, nodes replay recent Redis Stream events within `cluster.catchup_window_secs`.
+4. Background work uses `cluster.leader_election_mode` so only one replica performs global tasks at a time.
+5. Livestream publishers are recorded in a shared registry so another node can determine which node owns a room/media publisher.
+6. If an HLS request lands on a non-publisher node and the segment is not directly readable there, the node proxies playlist/segment reads to the publisher node through the HLS gRPC proxy.
+</Steps>
+
+<Aside type="caution">
+Cluster mode cannot compensate for inconsistent dependencies. Replicas must share the same PostgreSQL, Redis, and `server.cluster_secret`. Local HLS backends work through publisher-node proxying, but publisher-node restarts, reachability issues, or network partitions affect remote segment reads; shared filesystem or OSS backends reduce that cross-node dependency.
+</Aside>
+
+## Deployment Shapes
+
+| Shape | Use case | Recommended configuration |
+| --- | --- | --- |
+| Single process | Small self-hosted instance, development, testing | `cluster.enabled=false`; Redis is optional but recommended in production |
+| Fixed multi-node | Stable VM or bare-metal node count | `cluster.enabled=true`, `discovery_mode=static` or `redis` |
+| Kubernetes replicas | Horizontal scaling, rolling updates, Ingress exposure | `cluster.enabled=true`, `discovery_mode=redis` or `k8s_dns`, separate HTTP/gRPC Services |
+| Low-traffic multi-replica livestream | HLS/FLV playback must survive cross-node routing, but segment request volume is low | `cluster.enabled=true`; `memory` or local `file` can rely on publisher-node proxying |
+| High-traffic multi-replica livestream | High HLS request volume or cleaner rolling-upgrade boundaries | Add `file` shared storage or the `oss` HLS backend on top of cluster configuration |
 
 ## Requirements
 
@@ -98,24 +154,67 @@ This controls approximate Redis Stream retention. If traffic is high and nodes d
 
 ## HLS and Multi-Replica Deployments
 
-Cluster mode does not automatically make HLS files shared.
+Clustered HLS has two supported models. SyncTV records the publisher owner in the publisher registry and can proxy playlist/segment reads from non-publisher nodes to the publisher node through the HLS gRPC proxy.
 
-If multiple replicas serve HLS, configure shared storage:
+### Publisher-Node Proxy
+
+Applicable backends:
+
+- `memory`
+- `file` with `hls_shared_storage=false`
+
+This model is simple and does not require a shared segment directory. The tradeoff is that remote HLS segment requests go through the publisher node; if that node restarts, becomes unreachable, or is partitioned, remote nodes may be unable to read the stream's segments.
+
+Example:
 
 ```yaml
 livestream:
+  hls_storage_backend: "memory"
+```
+
+or:
+
+```yaml
+livestream:
+  hls_storage_backend: "file"
+  hls_shared_storage: false
+  hls_storage_path: "/var/lib/synctv/hls"
+```
+
+### Shared Backend
+
+Filesystem option:
+
+```yaml
+livestream:
+  hls_storage_backend: "file"
   hls_shared_storage: true
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
-All replicas must read and write the same path.
+All replicas must read and write the same path, for example through NFS, an RWX PVC, or a CSI volume.
+
+Object storage option:
+
+```yaml
+livestream:
+  hls_storage_backend: "oss"
+  hls_oss:
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    base_path: "synctv/hls/"
+```
+
+The `oss` backend uses S3-compatible object storage and does not use `hls_shared_storage`. `hls_shared_storage=true` is valid only with `hls_storage_backend=file`; configuration validation rejects it with `memory` or `oss`.
 
 ## Helm Checklist
+
+The Helm chart does not enable cluster mode by default. Before scaling replicas, explicitly set `config.cluster.enabled=true`. HLS can start with the publisher-node proxy model; for high-traffic production HLS, configure shared file-backed HLS or OSS-backed HLS.
 
 Before scaling replicas:
 
 - Redis is configured and reachable.
 - `server.cluster_secret` is stable and shared by every replica.
-- HLS storage is shared, or HLS is not used.
+- The HLS model is explicit: local backend with publisher-node proxying for small deployments, or `file + hls_shared_storage=true + RWX/PVC` / `oss` for high-traffic production.
 - HTTP and gRPC Services/Ingresses match your network design.
 - Leader election mode matches your platform.

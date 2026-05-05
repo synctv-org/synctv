@@ -1,0 +1,20 @@
+---
+import type { ImageMetadata } from 'astro';
+
+interface Props {
+  light: ImageMetadata;
+  dark: ImageMetadata;
+  alt: string;
+  caption: string;
+}
+
+const { light, dark, alt, caption } = Astro.props;
+---
+
+<figure class="diagram-frame">
+  <div class="diagram-preview">
+    <img class="diagram-image diagram-image--light" src={light.src} alt={alt} />
+    <img class="diagram-image diagram-image--dark" src={dark.src} alt={alt} />
+  </div>
+  <figcaption>{caption}</figcaption>
+</figure>

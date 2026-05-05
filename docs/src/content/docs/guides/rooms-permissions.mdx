@@ -91,7 +91,7 @@ SyncTV 有两层角色，不能混为一谈。
 
 ## 房间设置
 
-房间设置控制加入策略、显示能力、默认权限和 RTMP 播放能力。
+房间设置控制加入策略、显示能力和默认权限。
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -106,7 +106,6 @@ SyncTV 有两层角色，不能混为一谈。
 | `admin_added_permissions` / `admin_removed_permissions` | `0` | 房间 admin 默认权限增减 |
 | `member_added_permissions` / `member_removed_permissions` | `0` | 房间 member 默认权限增减 |
 | `guest_added_permissions` / `guest_removed_permissions` | `0` | 房间 guest 默认权限增减 |
-| `rtmp_player` | `false` | 是否允许 RTMP 播放，默认关闭 |
 
 示例：
 
@@ -114,10 +113,6 @@ SyncTV 有两层角色，不能混为一谈。
 synctv room settings get <ROOM_ID>
 synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
 ```
-
-<Aside type="caution">
-`rtmp_player` 默认关闭，因为 RTMP 播放没有同等认证语义。普通观看路径优先使用 HTTP-FLV、HLS 或客户端支持的安全播放路径。
-</Aside>
 
 ## 成员权限覆盖
 

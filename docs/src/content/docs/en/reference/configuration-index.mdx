@@ -7,7 +7,7 @@ description: Source-aligned list of all SyncTV configuration fields, types, defa
 
 This page is the configuration coverage index. Use it to confirm whether a YAML field is documented and to find the detailed page for that field.
 
-Defaults in this page are source-level defaults. `synctv config show --output yaml` prints the effective configuration after defaults, config file, environment variables, CLI overrides, path resolution, and timezone fallback are applied. Dynamic objects such as `oauth2.providers` and `media_providers.providers` are provider-specific; this page lists their outer static fields.
+Defaults in this page are source-level defaults. `synctv config show --output yaml` prints the effective configuration after defaults, config file, environment variables, CLI overrides, path resolution, and timezone fallback are applied. OAuth2 provider instances are runtime settings; see [Runtime Settings](../runtime-settings/#oauth2). Remote media provider instances are persisted through the management API/CLI and are not static config-file fields.
 
 ## Full Configuration Example
 
@@ -32,7 +32,6 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 | `jwt` | object | see below | [Security and Secrets](../../configuration/security/) |
 | `logging` | object | see below | [Server Listener and Runtime Paths](../../configuration/server-and-runtime/) |
 | `livestream` | object | see below | [Livestream Configuration](../../configuration/livestream/) |
-| `oauth2` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
 | `webauthn` | object | see below | [WebAuthn and Passkeys](../../configuration/webauthn/) |
 | `email` | object | see below | [Email and OAuth2](../../configuration/email-oauth2/) |
 | `media_providers` | object | see below | [Media Providers](../../configuration/media-providers/) |
@@ -163,17 +162,22 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 | `livestream.max_flv_tag_size_bytes` | bytes | `10485760` | Maximum accepted FLV tag size |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP cache memory limit |
 | `livestream.hls_memory_max_mb` | MB | `0` | In-memory HLS storage limit; `0` uses the built-in default |
-| `livestream.hls_shared_storage` | boolean | `false` | Whether HLS storage is shared across replicas |
-| `livestream.hls_storage_path` | path | `""` | HLS file storage path |
+| `livestream.hls_storage_backend` | `memory`, `file`, or `oss` | `memory` | HLS segment storage backend |
+| `livestream.hls_shared_storage` | boolean | `false` | Whether the `file` backend path is a multi-replica shared filesystem |
+| `livestream.hls_storage_path` | path | `""` | HLS file path for the `file` backend |
+| `livestream.hls_oss.endpoint` | string | `""` | S3/OSS endpoint for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_oss.access_key_id` | secret string | `""` | Access key ID for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_oss.secret_access_key` | secret string | `""` | Secret access key for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_oss.bucket` | string | `""` | Bucket for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_oss.region` | string or null | `null` | Region for the `oss` backend |
+| `livestream.hls_oss.base_path` | string | `hls/` | Object key prefix inside the bucket |
 | `livestream.flv_max_connection_duration_seconds` | seconds | `86400` | Maximum HTTP-FLV connection duration |
 | `livestream.flv_write_timeout_seconds` | seconds | `30` | HTTP-FLV write timeout |
 
-## `oauth2`, `webauthn`, and `email`
+## `webauthn` and `email`
 
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
-| `oauth2.providers` | dynamic object | `{}` | OAuth2/OIDC provider configuration |
-| `oauth2.redirect_scheme` | `http` or `https` | `https` | OAuth2 redirect URL scheme |
 | `webauthn.enabled` | boolean | `false` | Enable passkey endpoints |
 | `webauthn.rp_id` | domain | `""` | WebAuthn relying-party ID |
 | `webauthn.rp_origin` | origin | `""` | Primary WebAuthn origin |
@@ -194,9 +198,12 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
-| `media_providers.providers` | dynamic object | `{}` | Alist, Emby, Bilibili, and other provider instance configuration |
-| `media_providers.request_timeout_seconds` | seconds | `30` | Total provider HTTP request timeout |
-| `media_providers.connect_timeout_seconds` | seconds | `10` | Provider HTTP connection timeout |
+| `media_providers.alist.request_timeout_seconds` | seconds | `30` | Local Alist provider request timeout |
+| `media_providers.alist.connect_timeout_seconds` | seconds | `10` | Local Alist provider connection timeout |
+| `media_providers.bilibili.request_timeout_seconds` | seconds | `30` | Local Bilibili provider request timeout |
+| `media_providers.bilibili.connect_timeout_seconds` | seconds | `10` | Local Bilibili provider connection timeout |
+| `media_providers.emby.request_timeout_seconds` | seconds | `30` | Local Emby/Jellyfin provider request timeout |
+| `media_providers.emby.connect_timeout_seconds` | seconds | `10` | Local Emby/Jellyfin provider connection timeout |
 | `webrtc.mode` | `signaling_only` or `peer_to_peer` | `peer_to_peer` | WebRTC operating mode |
 | `webrtc.enable_builtin_stun` | boolean | `true` | Enable built-in STUN |
 | `webrtc.stun_port` | port | `3478` | STUN port |

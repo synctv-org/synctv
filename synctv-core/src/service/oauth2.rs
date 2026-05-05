@@ -22,10 +22,16 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
+    models::{oauth2_client::OAuth2Provider, ReviewStatus, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
-    service::{RegistrationMode, UserService},
+    service::{
+        user::{
+            PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS, PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS,
+            PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS,
+        },
+        OAuth2SignupPolicy, SettingsRegistry, UserService,
+    },
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
@@ -373,14 +379,27 @@ pub struct OAuth2UserInfo {
     pub email_verified: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct OAuth2PendingRegistration {
+    pub request_id: UserId,
+}
+
+#[derive(Debug, Clone)]
+pub enum OAuth2LinkResult {
+    Linked { user_id: UserId, is_new: bool },
+    PendingReview(OAuth2PendingRegistration),
+}
+
 /// An `OAuth2` provider entry combining the provider instance and its type
 ///
 /// The provider is stored as `Arc<dyn>` rather than `Box<dyn>` so that callers
 /// can clone the `Arc` while holding the read lock and then drop the lock before
 /// invoking any async methods on the provider (TOCTOU race fix).
+#[derive(Clone)]
 struct OAuth2ProviderEntry {
     provider: Arc<dyn OAuth2ProviderTrait>,
     provider_type: OAuth2Provider,
+    signup_policy: OAuth2SignupPolicy,
 }
 
 // OAuth2Service
@@ -408,6 +427,8 @@ pub struct OAuth2Service {
     provider_registry: crate::oauth2::ProviderRegistry,
     /// Allowlist of permitted redirect domains. Empty means relative paths only.
     allowed_redirect_domains: Arc<Vec<String>>,
+    settings_registry: Option<Arc<SettingsRegistry>>,
+    providers_fingerprint: Arc<RwLock<Option<String>>>,
 }
 
 impl std::fmt::Debug for OAuth2Service {
@@ -472,7 +493,15 @@ impl OAuth2Service {
             state_store,
             provider_registry,
             allowed_redirect_domains: Arc::new(Vec::new()),
+            settings_registry: None,
+            providers_fingerprint: Arc::new(RwLock::new(None)),
         })
+    }
+
+    #[must_use]
+    pub fn with_settings_registry(mut self, settings_registry: Arc<SettingsRegistry>) -> Self {
+        self.settings_registry = Some(settings_registry);
+        self
     }
 
     #[must_use]
@@ -584,8 +613,79 @@ impl OAuth2Service {
             OAuth2ProviderEntry {
                 provider: Arc::from(provider),
                 provider_type,
+                signup_policy: OAuth2SignupPolicy::default(),
             },
         );
+    }
+
+    async fn sync_runtime_providers(&self) -> Result<()> {
+        let Some(settings_registry) = self.settings_registry.as_ref() else {
+            return Ok(());
+        };
+
+        let configs = settings_registry.oauth2_providers.get()?;
+        configs.validate()?;
+        let fingerprint = configs.to_string();
+        {
+            let cached = self.providers_fingerprint.read().await;
+            if cached.as_deref() == Some(fingerprint.as_str()) {
+                return Ok(());
+            }
+        }
+
+        let mut rebuilt = HashMap::new();
+        for (instance_name, provider_config) in configs.0 {
+            let provider_type_name = provider_config.provider_type.trim().to_ascii_lowercase();
+            let provider_type =
+                OAuth2Provider::from_str_name(&provider_type_name).ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type_name}'"
+                    ))
+                })?;
+            let provider_private_config = provider_config.provider_config_value();
+            let provider = self
+                .provider_registry
+                .create_provider(&provider_type_name, &provider_private_config)?;
+
+            rebuilt.insert(
+                instance_name,
+                OAuth2ProviderEntry {
+                    provider: Arc::from(provider),
+                    provider_type,
+                    signup_policy: provider_config.signup_policy(),
+                },
+            );
+        }
+
+        *self.providers.write().await = rebuilt;
+        *self.providers_fingerprint.write().await = Some(fingerprint);
+
+        Ok(())
+    }
+
+    async fn provider_entry(&self, instance_name: &str) -> Result<OAuth2ProviderEntry> {
+        self.sync_runtime_providers().await?;
+        let providers = self.providers.read().await;
+        providers.get(instance_name).cloned().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "OAuth2 provider instance not found: {instance_name}"
+            ))
+        })
+    }
+
+    pub async fn signup_policy_for(&self, instance_name: &str) -> Result<OAuth2SignupPolicy> {
+        if self.settings_registry.is_none() {
+            return Ok(OAuth2SignupPolicy {
+                enable_signup: true,
+                signup_need_review: false,
+            });
+        }
+        self.sync_runtime_providers().await?;
+        let providers = self.providers.read().await;
+        Ok(providers
+            .get(instance_name)
+            .map(|entry| entry.signup_policy.clone())
+            .unwrap_or_default())
     }
 
     /// Generate authorization URL with PKCE challenge
@@ -653,19 +753,7 @@ impl OAuth2Service {
             Self::validate_redirect_url_with_allowlist(url, &self.allowed_redirect_domains)?;
         }
 
-        // Clone the Arc<dyn> under the read lock, then drop the lock before any I/O.
-        let provider: Arc<dyn OAuth2ProviderTrait> = {
-            let providers = self.providers.read().await;
-            providers
-                .get(instance_name)
-                .map(|entry| Arc::clone(&entry.provider))
-                .ok_or_else(|| {
-                    Error::InvalidInput(format!(
-                        "OAuth2 provider instance not found: {instance_name}"
-                    ))
-                })?
-            // read lock dropped here
-        };
+        let provider = self.provider_entry(instance_name).await?.provider;
 
         // Generate state token
         let state_token = synctv_common::snanoid!(32);
@@ -860,19 +948,9 @@ impl OAuth2Service {
         pkce_verifier: &str,
         control: Option<&ExecutionControl>,
     ) -> Result<(OAuth2UserInfo, OAuth2Provider)> {
-        // Clone both the Arc<provider> and the provider_type under the read lock.
-        // After this block the lock is released; subsequent code cannot race with
-        // `unlink_provider` or `register_provider`.
-        let (provider, provider_type): (Arc<dyn OAuth2ProviderTrait>, OAuth2Provider) = {
-            let providers = self.providers.read().await;
-            let entry = providers.get(instance_name).ok_or_else(|| {
-                Error::InvalidInput(format!(
-                    "OAuth2 provider instance not found: {instance_name}"
-                ))
-            })?;
-            (Arc::clone(&entry.provider), entry.provider_type.clone())
-            // read lock dropped here
-        };
+        let entry = self.provider_entry(instance_name).await?;
+        let provider = entry.provider;
+        let provider_type = entry.provider_type;
 
         debug!("Exchanging code for user info from {}", instance_name);
 
@@ -989,15 +1067,26 @@ impl OAuth2Service {
     pub async fn find_or_create_and_link(
         &self,
         user_service: &UserService,
+        instance_name: &str,
         provider: &OAuth2Provider,
         user_info: &OAuth2UserInfo,
-    ) -> Result<(UserId, bool)> {
+    ) -> Result<OAuth2LinkResult> {
         // Fast path: user already linked — no transaction needed.
         if let Some(user_id) = self
             .find_user_by_provider(provider, &user_info.provider_user_id)
             .await?
         {
-            return Ok((user_id, false));
+            return Ok(OAuth2LinkResult::Linked {
+                user_id,
+                is_new: false,
+            });
+        }
+
+        let signup_policy = self.signup_policy_for(instance_name).await?;
+        if !signup_policy.enable_signup {
+            return Err(Error::Authorization(
+                "OAuth2 registration is disabled for this provider".to_string(),
+            ));
         }
 
         // Slow path: no existing mapping — create user + link in one transaction.
@@ -1030,16 +1119,191 @@ impl OAuth2Service {
         if let Some(mapping) = existing {
             // Another concurrent request already created the mapping — use it.
             tx.rollback().await?;
-            return Ok((mapping.user_id, false));
+            return Ok(OAuth2LinkResult::Linked {
+                user_id: mapping.user_id,
+                is_new: false,
+            });
         }
-
-        user_service.ensure_registration_review_supported(RegistrationMode::OAuth2)?;
 
         let (base_username, candidates) = UserService::oauth2_username_candidates(
             &user_info.provider_user_id,
             &user_info.username,
         )?;
         let user_email = user_info.email.clone();
+
+        if signup_policy.signup_need_review {
+            let existing_pending_identity: Option<i64> = sqlx::query_scalar(
+                r"
+                SELECT id
+                FROM user_registration_requests
+                WHERE reviewed_at IS NULL
+                  AND status = $1
+                  AND oauth2_provider = $2
+                  AND oauth2_provider_user_id = $3
+                ",
+            )
+            .bind(i16::from(ReviewStatus::Pending))
+            .bind(provider.as_str())
+            .bind(user_info.provider_user_id.as_str())
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(request_id) = existing_pending_identity {
+                tx.rollback().await?;
+                return Ok(OAuth2LinkResult::PendingReview(OAuth2PendingRegistration {
+                    request_id: UserId::from(request_id),
+                }));
+            }
+
+            if let Some(email) = user_email.as_deref() {
+                if user_service.get_by_email(email).await?.is_some() {
+                    tx.rollback().await?;
+                    return Err(Error::AlreadyExists(
+                        synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                    ));
+                }
+                let pending_email_exists: bool = sqlx::query_scalar(
+                    r"
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM user_registration_requests
+                        WHERE reviewed_at IS NULL
+                          AND status = $1
+                          AND email = $2
+                    )
+                    ",
+                )
+                .bind(i16::from(ReviewStatus::Pending))
+                .bind(email)
+                .fetch_one(&mut *tx)
+                .await?;
+                if pending_email_exists {
+                    tx.rollback().await?;
+                    return Err(Error::AlreadyExists(
+                        synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                    ));
+                }
+            }
+
+            let mut pending_request_id = None;
+            for (attempt, candidate) in candidates.iter().enumerate() {
+                let username_in_use: bool = sqlx::query_scalar(
+                    r"
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM users
+                        WHERE username = $1
+                          AND deleted_at IS NULL
+                    )
+                    ",
+                )
+                .bind(candidate)
+                .fetch_one(&mut *tx)
+                .await?;
+                if username_in_use {
+                    continue;
+                }
+
+                let savepoint = format!("oauth2_review_create_{attempt}");
+                sqlx::query(&format!("SAVEPOINT {savepoint}"))
+                    .execute(&mut *tx)
+                    .await
+                    .internal_with_err("Failed to create OAuth2 review savepoint")?;
+
+                match user_service
+                    .create_oauth2_registration_request_with_executor(
+                        candidate,
+                        user_email.as_deref(),
+                        provider,
+                        &user_info.provider_user_id,
+                        user_info,
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(request_id) => {
+                        sqlx::query(&format!("RELEASE SAVEPOINT {savepoint}"))
+                            .execute(&mut *tx)
+                            .await
+                            .internal_with_err("Failed to release OAuth2 review savepoint")?;
+                        pending_request_id = Some(request_id);
+                        break;
+                    }
+                    Err(Error::AlreadyExists(message)) => {
+                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
+                            .execute(&mut *tx)
+                            .await
+                            .internal_with_err(
+                                "Failed to roll back OAuth2 review savepoint after collision",
+                            )?;
+                        match message.as_str() {
+                            PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS => {}
+                            PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS => {
+                                let request_id: Option<i64> = sqlx::query_scalar(
+                                    r"
+                                    SELECT id
+                                    FROM user_registration_requests
+                                    WHERE reviewed_at IS NULL
+                                      AND status = $1
+                                      AND oauth2_provider = $2
+                                      AND oauth2_provider_user_id = $3
+                                    ",
+                                )
+                                .bind(i16::from(ReviewStatus::Pending))
+                                .bind(provider.as_str())
+                                .bind(user_info.provider_user_id.as_str())
+                                .fetch_optional(&mut *tx)
+                                .await?;
+                                if let Some(request_id) = request_id {
+                                    tx.rollback().await?;
+                                    return Ok(OAuth2LinkResult::PendingReview(
+                                        OAuth2PendingRegistration {
+                                            request_id: UserId::from(request_id),
+                                        },
+                                    ));
+                                }
+                                tx.rollback().await?;
+                                return Err(Error::AlreadyExists(
+                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
+                                        .to_string(),
+                                ));
+                            }
+                            PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS => {
+                                tx.rollback().await?;
+                                return Err(Error::AlreadyExists(
+                                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN
+                                        .to_string(),
+                                ));
+                            }
+                            _ => {
+                                tx.rollback().await?;
+                                return Err(Error::AlreadyExists(message));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint}"))
+                            .execute(&mut *tx)
+                            .await
+                            .internal_with_err(
+                                "Failed to roll back OAuth2 review savepoint after create error",
+                            )?;
+                        return Err(err);
+                    }
+                }
+            }
+
+            let request_id = pending_request_id.ok_or_else(|| {
+                Error::Internal(format!(
+                    "Could not generate a unique username for base '{}' after {} attempts",
+                    user_info.username,
+                    candidates.len()
+                ))
+            })?;
+            tx.commit().await?;
+            return Ok(OAuth2LinkResult::PendingReview(OAuth2PendingRegistration {
+                request_id,
+            }));
+        }
 
         let mut new_user = None;
         for (attempt, candidate) in candidates.iter().enumerate() {
@@ -1151,7 +1415,10 @@ impl OAuth2Service {
                             "OAuth2 mapping conflicted but could not be reloaded".to_string(),
                         )
                     })?;
-                return Ok((existing.user_id, false));
+                return Ok(OAuth2LinkResult::Linked {
+                    user_id: existing.user_id,
+                    is_new: false,
+                });
             }
             Err(err) => return Err(err),
         }
@@ -1175,7 +1442,10 @@ impl OAuth2Service {
             "Created new user via OAuth2 and linked provider in single transaction"
         );
 
-        Ok((new_user.id, true))
+        Ok(OAuth2LinkResult::Linked {
+            user_id: new_user.id,
+            is_new: true,
+        })
     }
 
     /// Get all `OAuth2` providers for a user
@@ -1200,12 +1470,21 @@ impl OAuth2Service {
     /// Returns a list of (`instance_name`, `provider_type`) pairs for all registered providers.
     /// This is used by the HTTP API to tell clients which `OAuth2` login options are available.
     /// Returns an empty vector if no providers are configured. Order is not guaranteed.
-    pub async fn list_available_instances(&self) -> Vec<(String, OAuth2Provider)> {
+    pub async fn list_available_instances(
+        &self,
+    ) -> Result<Vec<(String, OAuth2Provider, OAuth2SignupPolicy)>> {
+        self.sync_runtime_providers().await?;
         let providers = self.providers.read().await;
-        providers
+        Ok(providers
             .iter()
-            .map(|(name, entry)| (name.clone(), entry.provider_type.clone()))
-            .collect()
+            .map(|(name, entry)| {
+                (
+                    name.clone(),
+                    entry.provider_type.clone(),
+                    entry.signup_policy.clone(),
+                )
+            })
+            .collect())
     }
 
     /// Unlink `OAuth2` provider from user
@@ -1692,7 +1971,7 @@ mod tests {
         let service = create_test_service();
 
         // Initially empty
-        let providers = service.list_available_instances().await;
+        let providers = service.list_available_instances().await.unwrap();
         assert!(providers.is_empty());
 
         // Register a mock provider
@@ -1704,7 +1983,7 @@ mod tests {
             )
             .await;
 
-        let providers = service.list_available_instances().await;
+        let providers = service.list_available_instances().await.unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, "github");
         assert_eq!(providers[0].1, OAuth2Provider::GitHub);
@@ -1736,10 +2015,10 @@ mod tests {
             )
             .await;
 
-        let providers = service.list_available_instances().await;
+        let providers = service.list_available_instances().await.unwrap();
         assert_eq!(providers.len(), 3);
 
-        let names: Vec<&str> = providers.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = providers.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(names.contains(&"github"));
         assert!(names.contains(&"logto1"));
         assert!(names.contains(&"google"));
@@ -1766,7 +2045,7 @@ mod tests {
             )
             .await;
 
-        let providers = service.list_available_instances().await;
+        let providers = service.list_available_instances().await.unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].1, OAuth2Provider::Oidc);
     }

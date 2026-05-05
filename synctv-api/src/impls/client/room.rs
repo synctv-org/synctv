@@ -968,8 +968,6 @@ impl ClientApiImpl {
             password_signup_need_review: s.password_signup_need_review,
             enable_email_signup: s.enable_email_signup,
             email_signup_need_review: s.email_signup_need_review,
-            enable_oauth2_signup: s.enable_oauth2_signup,
-            oauth2_signup_need_review: s.oauth2_signup_need_review,
             enable_webauthn_signup: s.enable_webauthn_signup,
             webauthn_signup_need_review: s.webauthn_signup_need_review,
             enable_guest: s.enable_guest,

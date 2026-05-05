@@ -9,10 +9,10 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
-    JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
-    OAuth2Config, PasswordComplexityConfig, PublicIdsConfig, RedisConfig, SecurityConfig,
-    ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
+    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HlsStorageBackend,
+    HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
+    MessagingRateLimitConfig, PasswordComplexityConfig, PublicIdsConfig, RedisConfig,
+    SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -46,7 +46,6 @@ fn standalone_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig::default(),
-        oauth2: OAuth2Config::default(),
         webauthn: WebAuthnConfig::default(),
         email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
@@ -137,11 +136,11 @@ fn cluster_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig {
-            hls_shared_storage: true, // Required for cluster mode
+            hls_storage_backend: HlsStorageBackend::File,
+            hls_shared_storage: true,
             hls_storage_path: "/var/lib/synctv/hls".to_string(),
             ..LivestreamConfig::default()
         },
-        oauth2: OAuth2Config::default(),
         webauthn: WebAuthnConfig::default(),
         email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),

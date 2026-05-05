@@ -1,32 +1,22 @@
 ---
 title: Email and OAuth2
-description: SMTP email, email verification, password reset, email MFA, and OAuth2/OIDC providers.
+description: Email login and OAuth2 provider runtime configuration
 ---
 
-## Email Configuration
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-`email` config controls SMTP delivery. It is used for:
+## What this page covers
 
-- Email verification.
-- Password reset.
-- Email codes for MFA.
-- System notifications.
+This page covers two login-related areas:
 
-If `email.smtp_host` is empty, email features are considered unavailable.
+- static email configuration
+- runtime OAuth2 provider configuration
 
-## SMTP Fields
+OAuth2 providers are no longer declared in the config file, environment variables, or Helm values. They live in runtime settings under `oauth2.providers`.
 
-| Field | Default | Purpose |
-| --- | --- | --- |
-| `email.smtp_host` | `""` | SMTP server host |
-| `email.smtp_port` | `587` | SMTP server port |
-| `email.smtp_username` | `""` | SMTP username |
-| `email.smtp_password` | `""` | SMTP password or app password |
-| `email.from_email` | `""` | Sender email address |
-| `email.from_name` | `SyncTV` | Sender display name |
-| `email.use_tls` | `true` | Whether to use TLS |
+## Email configuration
 
-Example:
+Email settings remain static and are used for SMTP connectivity and sender identity.
 
 ```yaml
 email:
@@ -34,117 +24,106 @@ email:
   smtp_port: 587
   smtp_username: "synctv@example.com"
   smtp_password_file: "/run/secrets/smtp_password"
-  from_email: "noreply@example.com"
+  from_email: "synctv@example.com"
   from_name: "SyncTV"
   use_tls: true
 ```
 
-Common ports:
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `email.smtp_host` | `""` | SMTP server host. Empty means email sending is not configured |
+| `email.smtp_port` | `587` | SMTP port |
+| `email.smtp_username` | `""` | SMTP login username |
+| `email.smtp_password` | `""` | SMTP login password; supports `smtp_password_file` |
+| `email.from_email` | `""` | Sender email address. Required and validated when SMTP is configured |
+| `email.from_name` | `SyncTV` | Sender display name |
+| `email.use_tls` | `true` | Whether SMTP uses TLS |
 
-| Port | Meaning |
+Email verification codes, password reset, and email MFA depend on these SMTP settings. Standalone email login only serves existing accounts; the code request API intentionally returns a generic message to avoid account enumeration. Whether email signup is open or requires review is a runtime setting; see [Runtime Settings](../../reference/runtime-settings/#user).
+
+## OAuth2 runtime configuration
+
+`oauth2.providers` is a dynamic object. Each key is a provider instance name such as `github`, `logto1`, or `corp_oidc`. Instance names may contain only ASCII letters, digits, `_`, and `-`.
+
+Every instance uses the same outer envelope:
+
+```json
+{
+  "type": "github",
+  "enable_signup": true,
+  "signup_need_review": false,
+  "config": {
+    "client_id": "github-client-id",
+    "client_secret": "github-client-secret",
+    "redirect_url": "https://app.example.com/oauth2/callback"
+  }
+}
+```
+
+Outer fields:
+
+| Field | Meaning |
 | --- | --- |
-| `587` | STARTTLS, usually recommended |
-| `465` | SMTPS |
-| `25` | Traditional SMTP, often blocked by cloud providers |
+| `type` | Provider type. Supported values are defined by the built-in provider registry |
+| `enable_signup` | Whether first-time login through this provider can create a local account |
+| `signup_need_review` | Whether first-time signup should enter the review queue |
+| `config` | Provider-private configuration. The outer layer does not enumerate it |
 
-Do not commit SMTP passwords. Use `smtp_password_file` or `SYNCTV_EMAIL_SMTP_PASSWORD_FILE`.
+## Common examples
 
-## OAuth2 and OIDC
+<Tabs>
+<TabItem label="GitHub" value="github">
 
-`oauth2` config integrates third-party login providers such as GitHub, Google, Logto, Keycloak, Casdoor, Authelia, or other OIDC providers.
-
-Important behavior:
-
-- OAuth2 tokens are used only during login exchange and are not stored long-term.
-- SyncTV stores the mapping between a local user and the external provider identity.
-- OAuth2 does not participate in local 2FA, but users with 2FA enabled may still log in through OAuth2.
-
-## `oauth2.redirect_scheme`
-
-Purpose: scheme used when generating or validating OAuth2 redirect-related URLs.
-
-Use HTTPS in production:
-
-```yaml
-oauth2:
-  redirect_scheme: "https"
+```json
+{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
 ```
 
-## `oauth2.providers`
+</TabItem>
+<TabItem label="OIDC" value="oidc">
 
-Providers are dynamic objects. Each key is an instance name.
-
-GitHub:
-
-```yaml
-oauth2:
-  redirect_scheme: "https"
-  providers:
-    github:
-      client_id: "your_github_client_id"
-      client_secret_file: "/run/secrets/github_client_secret"
-      redirect_url: "https://app.example.com/oauth2/callback"
+```json
+{
+  "corp_oidc": {
+    "type": "oidc",
+    "enable_signup": false,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "synctv",
+      "client_secret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
 ```
 
-Google:
+</TabItem>
+</Tabs>
 
-```yaml
-oauth2:
-  providers:
-    google:
-      client_id: "your_google_client_id"
-      client_secret_file: "/run/secrets/google_client_secret"
-      redirect_url: "https://app.example.com/oauth2/callback"
-```
+## Runtime behavior
 
-Generic OIDC:
+- When runtime settings change, the OAuth2 service rebuilds its provider map from the new value.
+- Missing instance names mean the login entry point is unavailable.
+- `enable_signup=false` only blocks first-time account creation through that provider. Existing linked OAuth2 logins still work.
+- `signup_need_review=true` sends first-time OAuth2 signup into the review flow.
 
-```yaml
-oauth2:
-  providers:
-    keycloak:
-      type: oidc
-      client_id: "synctv"
-      client_secret_file: "/run/secrets/keycloak_client_secret"
-      issuer: "https://keycloak.example.com/realms/main"
-      redirect_url: "https://app.example.com/oauth2/callback"
-```
+## FAQ
 
-Logto:
+### Why is there no `oauth2.redirect_scheme`
 
-```yaml
-oauth2:
-  providers:
-    logto:
-      type: logto
-      client_id: "synctv"
-      client_secret_file: "/run/secrets/logto_client_secret"
-      endpoint: "https://logto.example.com"
-      redirect_url: "https://app.example.com/oauth2/callback"
-```
+The redirect URL is now written directly in each provider's `config.redirect_url`. That keeps the scheme local to each provider instance instead of making it a global knob.
 
-## Provider Fields
+### Where should `client_secret` go
 
-`client_id` is the application ID assigned by the provider. It is not usually a secret.
-
-`client_secret` is sensitive. Prefer:
-
-```yaml
-client_secret_file: "/run/secrets/provider_client_secret"
-```
-
-`redirect_url` is the callback URL used by the frontend or native client. SyncTV uses a frontend/client-driven flow:
-
-1. The provider redirects the user to the frontend or native client callback with `code` and `state`.
-2. The frontend or client calls SyncTV's exchange endpoint.
-
-Examples:
-
-- Web frontend: `https://app.example.com/oauth2/callback`
-- Desktop or mobile app: `synctv://oauth2/callback`
-
-## Redis Dependency
-
-OAuth2 login needs temporary state storage. Single-node deployments can use memory state when Redis is unavailable.
-
-Multi-replica deployments must use Redis. Otherwise the initial login request and callback exchange may hit different Pods and the state may not be found.
+Put it in `config.client_secret` and manage it through runtime settings. Do not keep it in the static config file.

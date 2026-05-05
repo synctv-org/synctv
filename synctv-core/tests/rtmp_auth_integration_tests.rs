@@ -12,7 +12,6 @@
 //! - Banned/deleted user handling
 //! - Banned/pending room handling
 //! - Cross-replica user→stream mapping (Redis)
-//! - Room settings `rtmp_player`
 //!
 //! # Requirements
 //!
@@ -444,49 +443,7 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
         .expect("Failed to delete user stream mapping");
 }
 
-// Test 8: Room settings rtmp_player affects play authorization
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn rtmp_auth_test_rtmp_player_settings() {
-    let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
-
-    let user = create_test_user(&pool, "settings_user", UserRole::User).await;
-    let room = create_test_room(&pool, user.id, "Settings Room").await;
-
-    // Verify default rtmp_player is disabled
-    let settings_repo = RoomSettingsRepository::new(pool.clone());
-    let (settings, version) = settings_repo
-        .get_with_version(&room.id)
-        .await
-        .expect("Failed to load settings");
-
-    assert!(
-        !settings.rtmp_player.0,
-        "rtmp_player should be disabled by default"
-    );
-
-    // Enable rtmp_player (use the current version for optimistic locking)
-    let mut updated_settings = settings;
-    updated_settings.rtmp_player.0 = true;
-    settings_repo
-        .set_settings_with_version(&room.id, &updated_settings, version)
-        .await
-        .expect("Failed to update settings");
-
-    // Verify the setting was updated
-    let reloaded_settings = settings_repo
-        .get(&room.id)
-        .await
-        .expect("Failed to reload settings");
-
-    assert!(
-        reloaded_settings.rtmp_player.0,
-        "rtmp_player should be enabled"
-    );
-}
-
-// Test 9: Non-room-member cannot publish
+// Test 8: Non-room-member cannot publish
 
 #[tokio::test]
 #[ignore = "Requires Docker"]

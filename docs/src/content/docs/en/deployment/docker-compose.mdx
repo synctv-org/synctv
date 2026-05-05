@@ -12,7 +12,7 @@ The repository provides two Compose files:
 | File | Purpose | Behavior |
 | --- | --- | --- |
 | `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes development secrets |
-| `docker-compose.yml` | Image-based deployment | Uses prebuilt image and requires explicit production secrets |
+| `docker-compose.yml` | Image-based deployment | Uses `synctvorg/synctv:0.1.0` and requires explicit production secrets |
 
 ## Startup Modes
 
@@ -40,6 +40,7 @@ Set secrets before startup:
 
 ```bash
 export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
+export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
 export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
@@ -49,6 +50,8 @@ docker compose up -d
 ```
 
 If a required variable is missing, Compose refuses to render the final config.
+
+When upgrading, update the image tag in `docker-compose.yml` or pin the desired image in your own Compose override file.
 
   </TabItem>
 </Tabs>

@@ -34,6 +34,7 @@ use crate::service::{
 };
 use crate::setting;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -156,6 +157,127 @@ impl std::str::FromStr for CorsAllowedOrigins {
     }
 }
 
+/// Runtime OAuth2 signup policy for one provider instance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct OAuth2SignupPolicy {
+    pub enable_signup: bool,
+    pub signup_need_review: bool,
+}
+
+/// Runtime configuration for one OAuth2 provider instance.
+///
+/// Only the common envelope is modeled here. Provider-specific fields live
+/// under `config` and are parsed by the selected provider factory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct OAuth2ProviderConfig {
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    pub enable_signup: bool,
+    pub signup_need_review: bool,
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+impl OAuth2ProviderConfig {
+    #[must_use]
+    pub const fn signup_policy(&self) -> OAuth2SignupPolicy {
+        OAuth2SignupPolicy {
+            enable_signup: self.enable_signup,
+            signup_need_review: self.signup_need_review,
+        }
+    }
+
+    #[must_use]
+    pub fn provider_config_value(&self) -> serde_json::Value {
+        serde_json::Value::Object(self.config.clone())
+    }
+}
+
+/// Dynamic OAuth2 provider registry stored as one JSON runtime setting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(transparent)]
+pub struct OAuth2ProviderConfigs(pub BTreeMap<String, OAuth2ProviderConfig>);
+
+impl OAuth2ProviderConfigs {
+    #[must_use]
+    pub fn policy_for(&self, instance_name: &str) -> OAuth2SignupPolicy {
+        self.0
+            .get(instance_name)
+            .map(OAuth2ProviderConfig::signup_policy)
+            .unwrap_or_default()
+    }
+
+    pub fn validate(&self) -> crate::Result<()> {
+        for (instance_name, provider_config) in &self.0 {
+            validate_oauth2_instance_name(instance_name)?;
+            let provider_type = provider_config.provider_type.trim();
+            if provider_type.is_empty() {
+                return Err(crate::Error::InvalidInput(format!(
+                    "OAuth2 provider '{instance_name}' must set a non-empty type"
+                )));
+            }
+            if crate::models::oauth2_client::OAuth2Provider::from_str_name(provider_type).is_none()
+            {
+                return Err(crate::Error::InvalidInput(format!(
+                    "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type}'"
+                )));
+            }
+            let provider_config = provider_config.provider_config_value();
+            crate::oauth2::providers::provider_registry()
+                .create_provider(provider_type, &provider_config)
+                .map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_oauth2_instance_name(instance_name: &str) -> crate::Result<()> {
+    if instance_name.is_empty() {
+        return Err(crate::Error::InvalidInput(
+            "OAuth2 provider instance name must not be empty".to_string(),
+        ));
+    }
+    if instance_name.len() > 64 {
+        return Err(crate::Error::InvalidInput(
+            "OAuth2 provider instance name must be at most 64 bytes".to_string(),
+        ));
+    }
+    if !instance_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(crate::Error::InvalidInput(
+            "OAuth2 provider instance name may only contain ASCII letters, digits, '_' and '-'"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+impl fmt::Display for OAuth2ProviderConfigs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "{}".to_string());
+        f.write_str(&json)
+    }
+}
+
+impl std::str::FromStr for OAuth2ProviderConfigs {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Ok(Self::default());
+        }
+        let configs: BTreeMap<String, OAuth2ProviderConfig> = serde_json::from_str(s)?;
+        Ok(Self(configs))
+    }
+}
+
 /// A snapshot of all client-visible settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettings {
@@ -175,8 +297,6 @@ pub struct PublicSettings {
     pub password_signup_need_review: bool,
     pub enable_email_signup: bool,
     pub email_signup_need_review: bool,
-    pub enable_oauth2_signup: bool,
-    pub oauth2_signup_need_review: bool,
     pub enable_webauthn_signup: bool,
     pub webauthn_signup_need_review: bool,
     pub enable_guest: bool,
@@ -211,8 +331,6 @@ impl PublicSettings {
             password_signup_need_review: false,
             enable_email_signup: false,
             email_signup_need_review: false,
-            enable_oauth2_signup: false,
-            oauth2_signup_need_review: false,
             enable_webauthn_signup: false,
             webauthn_signup_need_review: false,
             enable_guest: true,
@@ -256,11 +374,12 @@ pub struct SettingsRegistry {
     pub password_signup_need_review: Setting<bool>,
     pub enable_email_signup: Setting<bool>,
     pub email_signup_need_review: Setting<bool>,
-    pub enable_oauth2_signup: Setting<bool>,
-    pub oauth2_signup_need_review: Setting<bool>,
     pub enable_webauthn_signup: Setting<bool>,
     pub webauthn_signup_need_review: Setting<bool>,
     pub enable_guest: Setting<bool>,
+
+    // OAuth2 settings
+    pub oauth2_providers: Setting<OAuth2ProviderConfigs>,
 
     // Proxy settings
     pub movie_proxy: Setting<bool>,
@@ -433,18 +552,6 @@ impl SettingsRegistry {
                 storage.clone(),
                 false
             ),
-            enable_oauth2_signup: setting!(
-                bool,
-                "user.enable_oauth2_signup",
-                storage.clone(),
-                false
-            ),
-            oauth2_signup_need_review: setting!(
-                bool,
-                "user.oauth2_signup_need_review",
-                storage.clone(),
-                false
-            ),
             enable_webauthn_signup: setting!(
                 bool,
                 "user.enable_webauthn_signup",
@@ -458,6 +565,15 @@ impl SettingsRegistry {
                 false
             ),
             enable_guest: setting!(bool, "user.enable_guest", storage.clone(), true),
+
+            // OAuth2 settings
+            oauth2_providers: setting!(
+                OAuth2ProviderConfigs,
+                "oauth2.providers",
+                storage.clone(),
+                OAuth2ProviderConfigs::default(),
+                OAuth2ProviderConfigs::validate
+            ),
 
             // Proxy settings
             movie_proxy: setting!(bool, "proxy.movie_proxy", storage.clone(), true),
@@ -630,16 +746,6 @@ impl SettingsRegistry {
                 &self.email_signup_need_review,
                 false,
             ),
-            enable_oauth2_signup: Self::get_or_warn(
-                "enable_oauth2_signup",
-                &self.enable_oauth2_signup,
-                false,
-            ),
-            oauth2_signup_need_review: Self::get_or_warn(
-                "oauth2_signup_need_review",
-                &self.oauth2_signup_need_review,
-                false,
-            ),
             enable_webauthn_signup: Self::get_or_warn(
                 "enable_webauthn_signup",
                 &self.enable_webauthn_signup,
@@ -656,7 +762,7 @@ impl SettingsRegistry {
             ts_disguised_as_png: Self::get_or_warn(
                 "ts_disguised_as_png",
                 &self.ts_disguised_as_png,
-                true,
+                false,
             ),
             custom_publish_host: self.custom_publish_host.get().unwrap_or_else(|e| {
                 tracing::warn!(
@@ -764,10 +870,69 @@ mod tests {
         assert!(!settings.password_signup_need_review);
         assert!(!settings.enable_email_signup);
         assert!(!settings.email_signup_need_review);
-        assert!(!settings.enable_oauth2_signup);
-        assert!(!settings.oauth2_signup_need_review);
         assert!(!settings.enable_webauthn_signup);
         assert!(!settings.webauthn_signup_need_review);
+    }
+
+    #[test]
+    fn test_oauth2_provider_configs_default_closed() {
+        let configs = OAuth2ProviderConfigs::default();
+        let policy = configs.policy_for("github");
+        assert!(!policy.enable_signup);
+        assert!(!policy.signup_need_review);
+        assert_eq!(configs.to_string(), "{}");
+    }
+
+    #[test]
+    fn test_oauth2_provider_configs_parse_dynamic_instances() {
+        let configs: OAuth2ProviderConfigs = r#"{"github":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}},"corp_oidc":{"type":"oidc","enable_signup":true,"signup_need_review":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb","issuer":"https://idp.example.com"}}}"#
+            .parse()
+            .unwrap();
+        assert!(configs.policy_for("github").enable_signup);
+        assert!(!configs.policy_for("github").signup_need_review);
+        assert!(configs.policy_for("corp_oidc").enable_signup);
+        assert!(configs.policy_for("corp_oidc").signup_need_review);
+        assert!(!configs.policy_for("missing").enable_signup);
+        assert_eq!(
+            configs.0["github"].config["redirect_url"],
+            "https://app.example.com/cb"
+        );
+    }
+
+    #[test]
+    fn test_oauth2_provider_configs_validate_instance_names() {
+        let configs: OAuth2ProviderConfigs =
+            r#"{"github_enterprise-1":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
+                .parse()
+                .unwrap();
+        assert!(configs.validate().is_ok());
+
+        let dotted: OAuth2ProviderConfigs =
+            r#"{"github.enterprise-1":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
+                .parse()
+                .unwrap();
+        assert!(dotted.validate().is_err());
+
+        let invalid: OAuth2ProviderConfigs =
+            r#"{"bad/name":{"type":"github","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
+                .parse()
+                .unwrap();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn test_oauth2_provider_configs_validate_rejects_unimplemented_or_invalid_provider() {
+        let unimplemented: OAuth2ProviderConfigs =
+            r#"{"microsoft":{"type":"microsoft","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"https://app.example.com/cb"}}}"#
+                .parse()
+                .unwrap();
+        assert!(unimplemented.validate().is_err());
+
+        let invalid_config: OAuth2ProviderConfigs =
+            r#"{"github":{"type":"github","enable_signup":true,"config":{"client_id":"id"}}}"#
+                .parse()
+                .unwrap();
+        assert!(invalid_config.validate().is_err());
     }
 
     #[test]

@@ -3,6 +3,9 @@ title: Authentication and Security Model
 description: SyncTV login methods, 2FA semantics, token context, management permissions, and security boundaries.
 ---
 
+import Diagram from '../../../../components/Diagram.astro';
+import securityAuthBoundaryDiagramDark from '../../../../assets/diagrams/security-auth-boundary-dark.svg';
+import securityAuthBoundaryDiagramLight from '../../../../assets/diagrams/security-auth-boundary-light.svg';
 import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 
 ## Security Boundaries
@@ -15,6 +18,13 @@ SyncTV separates security into several boundaries:
 - **Management control plane**: the CLI management endpoint, separate from user tokens.
 - **Provider upstream access**: providers own upstream headers and credentials; the proxy does not guess client headers.
 - **Cluster internal authentication**: inter-node gRPC uses `server.cluster_secret`.
+
+<Diagram
+  light={securityAuthBoundaryDiagramLight}
+  dark={securityAuthBoundaryDiagramDark}
+  alt="Authentication and 2FA boundary showing local first factors, MFA sessions, OAuth2, tokens, business APIs, and the management plane."
+  caption="Local login and OAuth2 are separate trust paths. When 2FA is enabled, local login must complete a second factor. OAuth2 does not count as local 2FA, but it can independently issue an accepted authentication context."
+/>
 
 ## Login Methods and 2FA
 
@@ -64,7 +74,7 @@ User preferences store user-level settings. `two_factor_enabled` is security-sen
 Constraints:
 
 - Enabling 2FA requires at least two usable local methods.
-- Removing an authentication method while 2FA is enabled must still leave at least two usable methods.
+- Removing a passkey while 2FA is enabled must still leave at least two usable local methods. Other authentication-method removal flows should follow the same product rule.
 - Admin-initiated preference updates must respect role hierarchy. A non-root admin cannot modify root or equally privileged users.
 
 ## Management Control Plane
@@ -99,7 +109,7 @@ Consequences:
     Configure JWT, OPAQUE, provider credential encryption, password policy, CORS, and trusted proxies.
   </Card>
   <Card title="Email and OAuth2" icon="document">
-    Configure email codes, SMTP, OAuth2 providers, and redirect scheme.
+    Configure email codes, SMTP, and runtime OAuth2 provider settings.
   </Card>
   <Card title="WebAuthn" icon="puzzle">
     Configure passkey RP ID, origins, allowed origins, and challenge timeout.

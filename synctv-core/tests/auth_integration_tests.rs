@@ -56,6 +56,7 @@ fn create_user_service(pool: PgPool) -> UserService {
         brute_force,
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc.enable_password_registration_for_tests();
     svc
 }
 

@@ -60,7 +60,7 @@ Redis 在单机时可以没有，但生产建议配置。多副本和集群模�
 - `redis.url` 或拆分字段正确。
 - 多副本共享同一个 Redis。
 - `redis.key_prefix` 不和其他环境冲突。
-- 如果使用 Sentinel，`sentinel_master_name` 和 `sentinel_addresses` 完整。
+- 如果使用 Sentinel，`sentinel_master_name` 和 `sentinel_addresses` 完整，并且不要同时开启 `cluster.enabled=true`。
 
 Redis 影响：
 
@@ -150,7 +150,7 @@ email:
 上线前测试：
 
 ```bash
-synctv settings test-email --to admin@example.com
+synctv settings test-email admin@example.com
 ```
 
 ## OAuth2
@@ -159,7 +159,8 @@ synctv settings test-email --to admin@example.com
 
 - 每个 provider 的 `client_id` 和 `client_secret` 正确。
 - `redirect_url` 与第三方平台登记的一致。
-- `oauth2.redirect_scheme` 在生产为 `https`。
+- OAuth2 provider 的 runtime setting `oauth2.providers.*.config.redirect_url` 与第三方平台登记值一致。
+- 每个 OAuth2 provider 的 `enable_signup` 和 `signup_need_review` 按产品策略单独设置。
 - 多副本部署使用 Redis，否则 OAuth2 state 可能落到不同节点。
 
 ## HLS、RTMP 和 STUN
@@ -170,14 +171,25 @@ RTMP 默认端口 `1935`，STUN 默认 UDP `3478`。
 
 - 防火墙放行 RTMP 端口。
 - 如果用 WebRTC，放行 STUN UDP 端口。
-- 多副本 HLS 必须使用共享存储。
+- 多副本 HLS 明确选择模型：小规模可使用本地 backend + publisher-node proxy；高流量生产建议使用 `file` 共享文件系统或 `oss` 对象存储。
 
-多副本 HLS 示例：
+共享文件系统示例：
 
 ```yaml
 livestream:
+  hls_storage_backend: "file"
   hls_shared_storage: true
   hls_storage_path: "/var/lib/synctv/hls"
+```
+
+或：
+
+```yaml
+livestream:
+  hls_storage_backend: "oss"
+  hls_oss:
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
 ```
 
 ## Proxy slice cache

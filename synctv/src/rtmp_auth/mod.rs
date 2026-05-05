@@ -476,31 +476,28 @@ impl AuthCallback for SyncTvRtmpAuth {
         }))
     }
 
-    /// RTMP pull (play) authorization based on room settings and status.
+    /// RTMP pull (play) is permanently disabled.
     ///
-    /// By default, RTMP play is disabled (`rtmp_player` = false) because:
-    /// - RTMP has no authentication mechanism
-    /// - Viewers should use HTTP-FLV or HLS endpoints which enforce JWT + room membership auth
-    ///
-    /// Room admins can enable RTMP play by setting `rtmp_player = true` if they understand
-    /// the security implications (anyone with the RTMP URL can watch).
-    ///
-    /// This method also validates:
-    /// - Room is not banned
-    /// - Room status is not Closed
+    /// SyncTV only accepts RTMP for publishing. Viewers must use HTTP-FLV, HLS,
+    /// or provider playback URLs that go through normal authorization paths.
     async fn on_play(
         &self,
         app_name: &str,
-        _stream_name: &str,
+        stream_name: &str,
         _query: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.validate_play_request(app_name).await
+        tracing::warn!(
+            room_id = %app_name,
+            media_id = %stream_name,
+            "RTMP play rejected: RTMP playback is not supported"
+        );
+        Err("RTMP playback is disabled. Use HTTP-FLV or HLS endpoints for playback.".into())
     }
 
     async fn on_unplay(&self, app_name: &str, _stream_name: &str, _query: Option<&str>) {
         tracing::info!(
             room_id = %app_name,
-            "RTMP player disconnected"
+            "RTMP play session disconnected"
         );
     }
 
@@ -678,13 +675,6 @@ impl RoomAccessRejection {
             Self::Closed => format!("Room {app_name} is closed").into(),
         }
     }
-
-    const fn log_message(self) -> &'static str {
-        match self {
-            Self::Banned => "RTMP play rejected: room is banned",
-            Self::Closed => "RTMP play rejected: room is closed",
-        }
-    }
 }
 
 fn validate_rtmp_room_state(room: &Room) -> Result<(), RoomAccessRejection> {
@@ -772,56 +762,6 @@ impl SyncTvRtmpAuth {
             user_id,
             auth_level,
         })
-    }
-
-    /// Validate room status and settings for RTMP play requests.
-    ///
-    /// Checks:
-    /// - Room exists
-    /// - Room is not banned
-    /// - Room status is not Closed
-    /// - Room has rtmp_player enabled in settings
-    pub async fn validate_play_request(
-        &self,
-        app_name: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let room_id = self.decode_rtmp_room_id(app_name)?;
-
-        // Validate room exists and check status
-        let room = self
-            .room_service
-            .get_room(&room_id)
-            .await
-            .map_err(|e| format!("Failed to load room: {e}"))?;
-
-        if let Err(reason) = validate_rtmp_room_state(&room) {
-            tracing::warn!(room_id = %app_name, "{}", reason.log_message());
-            return Err(reason.into_error(app_name));
-        }
-
-        // Check room settings for RTMP player
-        let settings = self
-            .room_service
-            .get_room_settings(&room_id)
-            .await
-            .map_err(|e| format!("Failed to load room settings: {e}"))?;
-
-        if !settings.rtmp_player.0 {
-            tracing::warn!(
-                room_id = %app_name,
-                "RTMP play rejected: rtmp_player is disabled in room settings"
-            );
-            return Err(
-                format!("RTMP play rejected for room {app_name}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.").into()
-            );
-        }
-
-        // All checks passed - allow the connection
-        tracing::info!(
-            room_id = %app_name,
-            "RTMP play allowed: room is active and rtmp_player is enabled"
-        );
-        Ok(())
     }
 
     /// Check that the user has permission to publish to this room/media.
@@ -1765,7 +1705,7 @@ mod tests {
             RoomStatus::Closed,
         );
         let err =
-            validate_rtmp_room_state(&room).expect_err("closed room must reject RTMP publish/play");
+            validate_rtmp_room_state(&room).expect_err("closed room must reject RTMP publish");
         assert!(
             matches!(err, RoomAccessRejection::Closed),
             "unexpected rejection: {err:?}"

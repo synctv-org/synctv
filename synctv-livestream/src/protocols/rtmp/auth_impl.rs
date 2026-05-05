@@ -436,7 +436,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
 
     async fn on_unplay(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         info!(
-            "RTMP player disconnected: room_id={}, media_id={}",
+            "RTMP play session disconnected: room_id={}, media_id={}",
             app_name, stream_name
         );
     }

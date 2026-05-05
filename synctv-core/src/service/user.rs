@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
@@ -69,6 +69,12 @@ const MFA_SESSION_TTL_SECS: u64 = 300;
 const MFA_SESSION_CAPACITY: u64 = 10_000;
 const TWO_FACTOR_REQUIRED_MESSAGE: &str =
     "Two-factor authentication is required before tokens can be issued";
+pub(crate) const PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS: &str =
+    "Pending registration username already exists";
+pub(crate) const PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS: &str =
+    "Pending registration email already exists";
+pub(crate) const PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS: &str =
+    "Pending OAuth2 registration identity already exists";
 
 fn nonnegative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or_default()
@@ -79,10 +85,15 @@ struct PendingRegistrationRequest {
     username: String,
     email: Option<String>,
     legacy_password_hash: Option<String>,
-    opaque_record: Vec<u8>,
-    opaque_credential_identifier: Vec<u8>,
-    opaque_ciphersuite: String,
-    opaque_server_setup_version: i32,
+    opaque_record: Option<Vec<u8>>,
+    opaque_credential_identifier: Option<Vec<u8>>,
+    opaque_ciphersuite: Option<String>,
+    opaque_server_setup_version: Option<i32>,
+    oauth2_provider: Option<OAuth2Provider>,
+    oauth2_provider_user_id: Option<String>,
+    oauth2_provider_username: Option<String>,
+    oauth2_avatar_url: Option<String>,
+    oauth2_email_verified: bool,
     signup_method: SignupMethod,
 }
 
@@ -886,6 +897,9 @@ pub struct UserService {
     refresh_rate_limit_config: RefreshRateLimitConfig,
     /// Optional settings registry for registration policy and email whitelist.
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    /// Explicit registration policy override for tests that exercise public
+    /// registration flows without bootstrapping runtime settings.
+    password_registration_policy_override_for_tests: Option<RegistrationPolicy>,
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
@@ -1905,6 +1919,7 @@ impl UserService {
             refresh_rate_limiter,
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             settings_registry: runtime.settings_registry,
+            password_registration_policy_override_for_tests: None,
             password_hasher: runtime
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
@@ -1933,6 +1948,15 @@ impl UserService {
 
     pub fn set_opaque_password_service(&mut self, service: Arc<OpaquePasswordService>) {
         self.opaque_password_service = service;
+    }
+
+    /// Allow tests to exercise password registration without loosening the
+    /// production default, which remains closed unless runtime settings opt in.
+    pub const fn enable_password_registration_for_tests(&mut self) {
+        self.password_registration_policy_override_for_tests = Some(RegistrationPolicy {
+            enabled: true,
+            need_review: false,
+        });
     }
 
     /// Enable email verification requirement for login (call when email service is configured)
@@ -2031,39 +2055,115 @@ impl UserService {
         Ok(user)
     }
 
+    pub(crate) async fn create_oauth2_registration_request_with_executor<'e, E>(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        provider: &OAuth2Provider,
+        provider_user_id: &str,
+        user_info: &crate::service::oauth2::OAuth2UserInfo,
+        executor: E,
+    ) -> Result<UserId>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let request_id: i64 = sqlx::query_scalar(
+            r"
+            INSERT INTO user_registration_requests (
+                username, email, signup_method, status, requested_at,
+                oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                oauth2_avatar_url, oauth2_email_verified
+            )
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9)
+            RETURNING id
+            ",
+        )
+        .bind(username)
+        .bind(email)
+        .bind(i16::from(SignupMethod::OAuth2))
+        .bind(i16::from(ReviewStatus::Pending))
+        .bind(provider.as_str())
+        .bind(provider_user_id)
+        .bind(user_info.username.as_str())
+        .bind(user_info.avatar.as_deref())
+        .bind(user_info.email_verified)
+        .fetch_one(executor)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(ref db_err) => match db_err.constraint().unwrap_or_default() {
+                "idx_user_registration_requests_username_pending" => {
+                    Error::AlreadyExists(PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS.to_string())
+                }
+                "idx_user_registration_requests_email_pending" => {
+                    Error::AlreadyExists(PENDING_REGISTRATION_EMAIL_ALREADY_EXISTS.to_string())
+                }
+                "idx_user_registration_requests_oauth2_identity_pending" => {
+                    Error::AlreadyExists(PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS.to_string())
+                }
+                _ if db_err.constraint().is_some() => Error::AlreadyExists(
+                    synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
+                ),
+                _ => Error::Database(e),
+            },
+            _ => Error::Database(e),
+        })?;
+
+        Ok(UserId::from(request_id))
+    }
+
     async fn load_pending_registration_request_for_update(
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRegistrationRequest>> {
-        let row = sqlx::query!(
-            r#"
+        let row = sqlx::query(
+            r"
             SELECT username, email, legacy_password_hash, opaque_record,
                    opaque_credential_identifier, opaque_ciphersuite,
-                   opaque_server_setup_version, signup_method AS "signup_method: SignupMethod"
+                   opaque_server_setup_version, signup_method,
+                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
+                   oauth2_avatar_url, oauth2_email_verified
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            "#,
-            request_id.as_i64(),
-            i16::from(ReviewStatus::Pending),
+            ",
         )
+        .bind(request_id.as_i64())
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
+            let signup_method = SignupMethod::try_from(row.try_get::<i16, _>("signup_method")?)
+                .map_err(|err| {
+                    Error::InvalidInput(format!("Invalid signup method in request: {err}"))
+                })?;
+            let oauth2_provider = row
+                .try_get::<Option<String>, _>("oauth2_provider")?
+                .map(|provider| {
+                    OAuth2Provider::from_str_name(&provider).ok_or_else(|| {
+                        Error::InvalidInput(format!(
+                            "Unsupported OAuth2 provider in registration request: {provider}"
+                        ))
+                    })
+                })
+                .transpose()?;
             Ok(PendingRegistrationRequest {
-                username: row.username,
-                email: row.email,
-                legacy_password_hash: row.legacy_password_hash,
-                opaque_record: row.opaque_record,
-                opaque_credential_identifier: row.opaque_credential_identifier,
-                opaque_ciphersuite: row.opaque_ciphersuite,
-                opaque_server_setup_version: row.opaque_server_setup_version,
-                signup_method: row.signup_method,
+                username: row.try_get("username")?,
+                email: row.try_get("email")?,
+                legacy_password_hash: row.try_get("legacy_password_hash")?,
+                opaque_record: row.try_get("opaque_record")?,
+                opaque_credential_identifier: row.try_get("opaque_credential_identifier")?,
+                opaque_ciphersuite: row.try_get("opaque_ciphersuite")?,
+                opaque_server_setup_version: row.try_get("opaque_server_setup_version")?,
+                oauth2_provider,
+                oauth2_provider_user_id: row.try_get("oauth2_provider_user_id")?,
+                oauth2_provider_username: row.try_get("oauth2_provider_username")?,
+                oauth2_avatar_url: row.try_get("oauth2_avatar_url")?,
+                oauth2_email_verified: row.try_get("oauth2_email_verified")?,
+                signup_method,
             })
         })
         .transpose()
-        .map_err(Error::Database)
     }
 
     pub async fn approve_registration_request(
@@ -2101,22 +2201,89 @@ impl UserService {
             request.legacy_password_hash.clone().unwrap_or_default(),
             request.signup_method,
         );
-        let opaque_record = OpaquePasswordRecord {
-            record: request.opaque_record,
-            credential_identifier: request.opaque_credential_identifier,
-            ciphersuite: request.opaque_ciphersuite,
-            server_setup_version: request.opaque_server_setup_version,
-        };
-        let credential_material = match request.legacy_password_hash.as_deref() {
-            Some(password_hash) => {
-                PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+        let created = if request.signup_method == SignupMethod::OAuth2 {
+            let Some(provider) = request.oauth2_provider.as_ref() else {
+                return Err(Error::InvalidInput(
+                    "OAuth2 registration request is missing provider".to_string(),
+                ));
+            };
+            let Some(provider_user_id) = request.oauth2_provider_user_id.as_deref() else {
+                return Err(Error::InvalidInput(
+                    "OAuth2 registration request is missing provider user ID".to_string(),
+                ));
+            };
+
+            let created = self
+                .repository
+                .create_with_password_credentials(
+                    &user,
+                    PasswordCredentialMaterial::none(),
+                    &mut *tx,
+                )
+                .await?;
+
+            let oauth2_user_info = crate::models::oauth2_client::OAuth2UserInfo {
+                provider: provider.clone(),
+                provider_user_id: provider_user_id.to_string(),
+                username: request
+                    .oauth2_provider_username
+                    .clone()
+                    .unwrap_or_else(|| request.username.clone()),
+                email: request.email.clone(),
+                avatar: request.oauth2_avatar_url.clone(),
+            };
+            UserOAuthProviderRepository::new(self.repository.pool().clone())
+                .upsert_with_executor(
+                    &created.id,
+                    provider,
+                    provider_user_id,
+                    &oauth2_user_info,
+                    &mut *tx,
+                )
+                .await?;
+
+            if request.oauth2_email_verified && request.email.is_some() {
+                sqlx::query!(
+                    "UPDATE auth_email_identities SET email_verified = true, updated_at = NOW() WHERE user_id = $1",
+                    created.id.as_i64(),
+                )
+                .execute(&mut *tx)
+                .await
+                .internal_with_err("Failed to mark OAuth2 review email as verified")?;
             }
-            None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+
+            created
+        } else {
+            let opaque_record = OpaquePasswordRecord {
+                record: request.opaque_record.ok_or_else(|| {
+                    Error::InvalidInput("Registration request is missing OPAQUE record".to_string())
+                })?,
+                credential_identifier: request.opaque_credential_identifier.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Registration request is missing OPAQUE credential identifier".to_string(),
+                    )
+                })?,
+                ciphersuite: request.opaque_ciphersuite.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Registration request is missing OPAQUE ciphersuite".to_string(),
+                    )
+                })?,
+                server_setup_version: request.opaque_server_setup_version.ok_or_else(|| {
+                    Error::InvalidInput(
+                        "Registration request is missing OPAQUE setup version".to_string(),
+                    )
+                })?,
+            };
+            let credential_material = match request.legacy_password_hash.as_deref() {
+                Some(password_hash) => {
+                    PasswordCredentialMaterial::legacy_and_opaque(password_hash, &opaque_record)
+                }
+                None => PasswordCredentialMaterial::opaque_only(&opaque_record),
+            };
+            self.repository
+                .create_with_password_credentials(&user, credential_material, &mut *tx)
+                .await?
         };
-        let created = self
-            .repository
-            .create_with_password_credentials(&user, credential_material, &mut *tx)
-            .await?;
 
         sqlx::query!(
             r#"
@@ -2276,6 +2443,12 @@ impl UserService {
     }
 
     pub(crate) fn registration_policy(&self, mode: RegistrationMode) -> RegistrationPolicy {
+        if let RegistrationMode::Password = mode {
+            if let Some(policy) = self.password_registration_policy_override_for_tests {
+                return policy;
+            }
+        }
+
         let Some(registry) = self.settings_registry.as_ref() else {
             return RegistrationPolicy {
                 enabled: false,
@@ -2293,8 +2466,8 @@ impl UserService {
                 need_review: registry.email_signup_need_review.get().unwrap_or(false),
             },
             RegistrationMode::OAuth2 => RegistrationPolicy {
-                enabled: registry.enable_oauth2_signup.get().unwrap_or(false),
-                need_review: registry.oauth2_signup_need_review.get().unwrap_or(false),
+                enabled: false,
+                need_review: false,
             },
             RegistrationMode::WebAuthn => RegistrationPolicy {
                 enabled: registry.enable_webauthn_signup.get().unwrap_or(false),
@@ -5166,7 +5339,7 @@ mod tests {
         assert_eq!(
             initial_status,
             crate::models::UserStatus::Active,
-            "OAuth2 registration with oauth2_signup_need_review=false should be Active"
+            "OAuth2 registration with signup_need_review=false should be Active"
         );
     }
 }

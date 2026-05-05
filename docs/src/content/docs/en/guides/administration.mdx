@@ -87,7 +87,7 @@ Room operations fall into lifecycle, members, settings, playback, and livestream
 | Members | `room member add/kick/ban/unban/set-permissions` | Changes access and management ability |
 | Settings | `room settings update/reset` | Changes join rules, guests, chat, danmaku, and permission defaults |
 | Playback | `room playback play/pause/seek/start/stop` | Changes playback state for online members |
-| Livestream | `room stream list`, `provider rtmp publish-key` | Involves stream keys and livestream sessions |
+| Livestream | `room stream list`, `provider rtmp create-publish-key` | Involves stream keys and livestream sessions |
 
 Recommended flow:
 
@@ -130,8 +130,8 @@ Common operations:
 ```bash
 synctv provider available
 synctv provider list
-synctv provider create <NAME> --kind alist --config-json '{}'
-synctv provider update <NAME> --config-json '{}'
+synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
+synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
 synctv provider enable <NAME>
 synctv provider disable <NAME>
 synctv provider reconnect <NAME>
@@ -152,7 +152,7 @@ Runtime settings are hot-reload database settings. They are not YAML startup con
 ```bash
 synctv settings list
 synctv settings get user.enable_password_signup
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
 Semantics:

@@ -73,6 +73,14 @@ OPAQUE 是密码登录协议，但客户端不能自行推断它是否可作为 
 
 邮箱验证码可以用于登录、MFA、邮箱验证和密码找回，具体接口以 OpenAPI/protobuf 为准。客户端应区分用途，不要复用不同流程的验证码输入框状态。
 
+独立邮箱登录流程是：
+
+<Steps>
+1. 调用 `RequestEmailLogin` 发送登录验证码。接口会返回统一文案，不暴露邮箱是否存在。
+2. 用户输入验证码后，用 `email` + `email_token` 调用登录接口。
+3. 不要把邮箱登录 token 和 MFA 邮件验证码混用；MFA 邮件验证码必须绑定 `mfa_session_id`。
+</Steps>
+
 建议：
 
 - 发送验证码后启用倒计时，避免用户连续点击触发限流。
@@ -84,11 +92,13 @@ OPAQUE 是密码登录协议，但客户端不能自行推断它是否可作为 
 OAuth2/OIDC 是前端驱动流程：
 
 <Steps>
-1. 调用 `GetAuthorizationUrl` 获取第三方授权 URL 和 state。
-2. 把用户跳转到第三方授权页面。
-3. 第三方回调到客户端 URL，带回 `code` 和 `state`。
-4. 客户端调用 `ExchangeAuthorizationCode`。
-5. 服务端校验 state、换取用户信息，并返回 SyncTV token。
+1. 调用 `ListAvailableProviders` 获取可用 provider 实例、`signup_enabled` 和 `signup_need_review`。
+2. 调用 `GetAuthorizationUrl` 获取第三方授权 URL 和 state。
+3. 把用户跳转到第三方授权页面。
+4. 第三方回调到客户端 URL，带回 `code` 和 `state`。
+5. 客户端调用 `ExchangeAuthorizationCode`。
+5. 如果响应包含 `registration_review_required=true`，展示待审核状态并保存 `registration_review_id`，不要把它当作已登录。
+6. 如果响应包含 token，保存 SyncTV access/refresh token。
 </Steps>
 
 绑定已有账号时使用 `GetAuthorizationUrlForBind`，这类请求需要当前用户认证上下文。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。

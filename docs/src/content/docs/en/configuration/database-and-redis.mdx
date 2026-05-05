@@ -109,7 +109,9 @@ redis:
 
 ## Redis Sentinel
 
-Sentinel mode is used for Redis high availability.
+Sentinel mode connects to a Redis Sentinel deployment. After repeated health-check failures, SyncTV queries Sentinel for the current master and performs a best-effort Redis connection rebuild and hot-swap.
+
+This is not a strict failover guarantee: in-flight Redis operations can still fail during the failover window, and cluster coordination that relies on Redis locks and pub/sub can still be unsafe. For that reason, Sentinel mode cannot be used with `cluster.enabled=true`.
 
 ```yaml
 redis:
@@ -121,7 +123,7 @@ redis:
     - "redis://sentinel-2.redis:26379"
 ```
 
-Use Sentinel in production when Redis availability matters and you do not rely on a managed Redis service with its own failover mechanism.
+For clustered SyncTV, prefer a stable single Redis endpoint, a managed Redis service, or a platform that provides stable connection semantics.
 
 ## Cluster Dependency
 

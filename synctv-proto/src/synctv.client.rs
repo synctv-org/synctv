@@ -3665,10 +3665,6 @@ pub struct GetPublicSettingsResponse {
     pub enable_guest: bool,
     #[prost(bool, tag = "19")]
     pub email_signup_need_review: bool,
-    #[prost(bool, tag = "20")]
-    pub enable_oauth2_signup: bool,
-    #[prost(bool, tag = "21")]
-    pub oauth2_signup_need_review: bool,
     #[prost(bool, tag = "22")]
     pub enable_webauthn_signup: bool,
     #[prost(bool, tag = "23")]
@@ -13584,6 +13580,7 @@ pub struct GetAuthorizationUrlForBindResponse {
 pub struct ExchangeAuthorizationCodeRequest {
     /// OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub provider: ::prost::alloc::string::String,
     /// Authorization code received from OAuth2 provider redirect
     /// Frontend extracts this from the callback URL query parameter
@@ -13626,6 +13623,12 @@ pub struct ExchangeAuthorizationCodeResponse {
     /// Whether this was a bind operation (true) or login operation (false)
     #[prost(bool, tag = "6")]
     pub is_bind: bool,
+    /// True when a first-time OAuth2 signup was accepted but requires admin review.
+    #[prost(bool, tag = "7")]
+    pub registration_review_required: bool,
+    /// Public review request ID when registration_review_required is true.
+    #[prost(string, tag = "8")]
+    pub registration_review_id: ::prost::alloc::string::String,
 }
 /// Empty request
 #[derive(::prost_reflect::ReflectMessage)]
@@ -13671,6 +13674,12 @@ pub struct OAuth2ProviderInstance {
     /// Provider type (e.g., "github", "google", "oidc", "logto")
     #[prost(string, tag = "2")]
     pub r#type: ::prost::alloc::string::String,
+    /// Whether this provider instance allows new local account creation.
+    #[prost(bool, tag = "3")]
+    pub signup_enabled: bool,
+    /// Whether new account creation through this provider instance requires review.
+    #[prost(bool, tag = "4")]
+    pub signup_need_review: bool,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.UnlinkProviderRequest")]

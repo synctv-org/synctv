@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
+use synctv_core::config::WebRTCMode;
 use synctv_core::Config;
 
 /// WebRTC components initialized during bootstrap
@@ -11,7 +12,10 @@ pub struct WebRTCComponents {
 
 /// Initialize WebRTC components.
 pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
-    let stun_server = if config.webrtc.enable_builtin_stun {
+    let stun_server = if config.webrtc.mode == WebRTCMode::SignalingOnly {
+        info!("WebRTC signaling_only mode selected; built-in STUN server disabled");
+        None
+    } else if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server...");
         let bind_addr = format!("{}:{}", config.webrtc.stun_host, config.webrtc.stun_port);
 

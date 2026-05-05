@@ -91,7 +91,7 @@ Permission values are usually represented as `u64` bitmasks in APIs and CLI comm
 
 ## Room Settings
 
-Room settings control join policy, room features, default permissions, and RTMP playback.
+Room settings control join policy, room features, and default permissions.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -106,7 +106,6 @@ Room settings control join policy, room features, default permissions, and RTMP 
 | `admin_added_permissions` / `admin_removed_permissions` | `0` | Admin default permission changes |
 | `member_added_permissions` / `member_removed_permissions` | `0` | Member default permission changes |
 | `guest_added_permissions` / `guest_removed_permissions` | `0` | Guest default permission changes |
-| `rtmp_player` | `false` | Allow RTMP playback |
 
 Example:
 
@@ -114,10 +113,6 @@ Example:
 synctv room settings get <ROOM_ID>
 synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
 ```
-
-<Aside type="caution">
-`rtmp_player` defaults to false because RTMP playback does not provide equivalent authentication semantics. Prefer HTTP-FLV, HLS, or safer client-supported playback paths.
-</Aside>
 
 ## Member Overrides
 

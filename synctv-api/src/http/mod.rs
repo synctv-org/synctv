@@ -1263,6 +1263,105 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() {
+        let join_room: crate::proto::client::JoinRoomRequest =
+            serde_json::from_str(r#"{"password":"secret"}"#).expect("join room body");
+        assert!(join_room.room_id.is_empty());
+        assert_eq!(join_room.password, "secret");
+
+        let edit_media: crate::proto::client::EditMediaRequest =
+            serde_json::from_str(r#"{"title":"Episode 1"}"#).expect("edit media body");
+        assert!(edit_media.media_id.is_empty());
+        assert_eq!(edit_media.title, "Episode 1");
+
+        let update_playlist: crate::proto::client::UpdatePlaylistRequest =
+            serde_json::from_str(r#"{"name":"Season 1"}"#).expect("update playlist body");
+        assert!(update_playlist.playlist_id.is_empty());
+        assert_eq!(update_playlist.name, "Season 1");
+
+        let move_playlist: crate::proto::client::MovePlaylistRequest =
+            serde_json::from_str(r#"{"after_playlist_id":"pl_anchor123"}"#)
+                .expect("move playlist body");
+        assert!(move_playlist.playlist_id.is_empty());
+        assert!(matches!(
+            move_playlist.anchor,
+            Some(crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(_))
+        ));
+
+        let member_permissions: crate::proto::client::UpdateMemberPermissionsRequest =
+            serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)
+                .expect("member permissions body");
+        assert!(member_permissions.user_id.is_empty());
+        assert_eq!(member_permissions.role, 2);
+        assert_eq!(member_permissions.added_permissions, 1);
+    }
+
+    #[test]
+    fn test_admin_path_injected_json_proto_requests_deserialize_without_injected_fields() {
+        let user_preferences: crate::proto::admin::UpdateUserPreferencesRequest =
+            serde_json::from_str(r#"{"two_factor_enabled":true}"#)
+                .expect("admin user preferences body");
+        assert!(user_preferences.user_id.is_empty());
+        assert_eq!(user_preferences.two_factor_enabled, Some(true));
+
+        let user_role: crate::proto::admin::UpdateUserRoleRequest =
+            serde_json::from_str(r#"{"role":1}"#).expect("admin user role body");
+        assert!(user_role.user_id.is_empty());
+        assert_eq!(user_role.role, 1);
+
+        let user_password: crate::proto::admin::UpdateUserPasswordRequest =
+            serde_json::from_str(r#"{"new_password":"StrongPass123"}"#)
+                .expect("admin user password body");
+        assert!(user_password.user_id.is_empty());
+        assert_eq!(user_password.new_password, "StrongPass123");
+
+        let user_username: crate::proto::admin::UpdateUserUsernameRequest =
+            serde_json::from_str(r#"{"new_username":"new_admin_name"}"#)
+                .expect("admin user username body");
+        assert!(user_username.user_id.is_empty());
+        assert_eq!(user_username.new_username, "new_admin_name");
+
+        let ban_user: crate::proto::admin::BanUserRequest =
+            serde_json::from_str(r#"{"reason":"spam"}"#).expect("admin ban user body");
+        assert!(ban_user.user_id.is_empty());
+        assert_eq!(ban_user.reason, "spam");
+
+        let room_password: crate::proto::admin::UpdateRoomPasswordRequest =
+            serde_json::from_str(r#"{"new_password":""}"#).expect("admin room password body");
+        assert!(room_password.room_id.is_empty());
+        assert!(room_password.new_password.is_empty());
+
+        let ban_room: crate::proto::admin::BanRoomRequest =
+            serde_json::from_str(r#"{"reason":"abuse"}"#).expect("admin ban room body");
+        assert!(ban_room.room_id.is_empty());
+        assert_eq!(ban_room.reason, "abuse");
+
+        let room_settings: crate::proto::admin::UpdateRoomSettingsRequest =
+            serde_json::from_str(r#"{"settings":{"room":"settings"}}"#)
+                .expect("admin room settings body");
+        assert!(room_settings.room_id.is_empty());
+        let settings: serde_json::Value =
+            serde_json::from_slice(&room_settings.settings).expect("settings json");
+        assert_eq!(settings, serde_json::json!({"room":"settings"}));
+    }
+
+    #[test]
+    fn test_provider_path_injected_json_proto_requests_deserialize_without_injected_fields() {
+        let update_provider: crate::proto::providers::common::UpdateProviderInstanceRequest =
+            serde_json::from_str(
+                r#"{"endpoint":"https://provider.internal","providers":["alist"]}"#,
+            )
+            .expect("update provider instance body");
+
+        assert!(update_provider.name.is_empty());
+        assert_eq!(
+            update_provider.endpoint.as_deref(),
+            Some("https://provider.internal")
+        );
+        assert_eq!(update_provider.providers, vec!["alist".to_string()]);
+    }
+
     pub(crate) fn test_app_state() -> super::AppState {
         test_app_state_with_rate_limits(
             synctv_core::HttpRateLimitConfig::default(),

@@ -711,7 +711,7 @@ mod tests {
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let jwt_service =
             JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
-        let user_service = Arc::new(UserService::new(
+        let mut user_service = UserService::new(
             pool.clone(),
             jwt_service,
             username_cache,
@@ -719,7 +719,9 @@ mod tests {
             Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
             KeyBuilder::new("test"),
             BruteForceProtection::in_memory("test".to_string()),
-        ));
+        );
+        user_service.enable_password_registration_for_tests();
+        let user_service = Arc::new(user_service);
 
         EmailApiImpl::new(
             user_service,

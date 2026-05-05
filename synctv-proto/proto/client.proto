@@ -2290,8 +2290,6 @@ message GetPublicSettingsResponse {
     bool enable_email_signup = 17;
     bool enable_guest = 18;
     bool email_signup_need_review = 19;
-    bool enable_oauth2_signup = 20;
-    bool oauth2_signup_need_review = 21;
     bool enable_webauthn_signup = 22;
     bool webauthn_signup_need_review = 23;
 

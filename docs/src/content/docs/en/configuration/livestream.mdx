@@ -3,11 +3,94 @@ title: Livestream Configuration
 description: RTMP, HLS, HTTP-FLV, pull retry behavior, GOP cache, and livestream storage.
 ---
 
+import Diagram from '../../../../components/Diagram.astro';
+import livestreamPipelineDark from '../../../../assets/diagrams/livestream-pipeline-dark.svg';
+import livestreamPipelineLight from '../../../../assets/diagrams/livestream-pipeline-light.svg';
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
 ## What This Config Controls
 
 `livestream` controls RTMP push/pull, HLS segments, HTTP-FLV connections, livestream memory cache, and livestream file storage.
 
 If you only use on-demand media providers, most values can remain at their defaults.
+
+## Livestream Boundaries
+
+Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS remuxing, HLS storage, and cross-node publisher registration. It is separate from on-demand media provider/proxy flows: on-demand media mostly resolves external URLs and Range proxying, while livestreaming handles data that is being produced now.
+
+<Diagram
+  light={livestreamPipelineLight}
+  dark={livestreamPipelineDark}
+  alt="SyncTV livestream pipeline showing RTMP ingest entering StreamHub, splitting into HTTP-FLV and HLS remuxer paths, and HLS playlist/segment routes reading from memory, file, or OSS storage."
+  caption="Livestream data enters through RTMP and StreamHub, then splits by playback protocol: HTTP-FLV streams low-latency chunks, while HLS remuxing writes playlist and segment state to the selected HLS backend."
+/>
+
+<CardGrid>
+  <Card title="RTMP ingest" icon="youtube">
+    Publishers connect through RTMP. During authentication, the publisher is registered on the local node or shared registry.
+  </Card>
+  <Card title="StreamHub" icon="cloud-download">
+    Live packets are distributed in-process to FLV sessions, the HLS remuxer, and internal relay/pull logic.
+  </Card>
+  <Card title="HTTP-FLV" icon="rocket">
+    Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
+  </Card>
+  <Card title="HLS" icon="folder">
+    Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
+  </Card>
+</CardGrid>
+
+## Choosing a Playback Protocol
+
+| Protocol | Strength | Cost | Best fit |
+| --- | --- | --- | --- |
+| HTTP-FLV | Low latency and short server path | Many long-lived connections; slow clients need strict timeouts | Interactive livestreaming and room-synchronized viewing |
+| HLS | Broad player compatibility; playlist/segment pull model; works with shared storage | Higher latency and segment storage management | Mobile clients, generic players, multi-replica deployments, object storage |
+
+<Aside type="note">
+RTMP is mainly the publishing protocol in the current design. Playback should use HTTP-FLV or HLS.
+</Aside>
+
+## HLS Backend Design
+
+<Tabs syncKey="hls-backend-design">
+  <TabItem label="memory" icon="setting">
+
+`memory` is the default. Segments exist only inside the current process. It is the simplest option for single-replica, development, and low-traffic multi-replica deployments.
+
+Limitations: process restarts lose segments; in multi-replica deployments, non-publisher nodes must read playlist/segment data from the publisher node through the HLS gRPC proxy. It works, but it is not the preferred backend for high-traffic production HLS.
+
+  </TabItem>
+  <TabItem label="file" icon="folder">
+
+`file` writes segments to `hls_storage_path`. Single replicas can use local disk. Multi-replica deployments can use local disk with publisher-node proxying, or mount the path from a filesystem every replica can read and write.
+
+Typical shared-filesystem choices: NFS, RWX PVCs, or CSI shared volumes. Do not mark `emptyDir`, `/tmp`, or node-local disks as shared storage.
+
+  </TabItem>
+  <TabItem label="oss" icon="cloud-download">
+
+`oss` stores segments in S3-compatible object storage. It gives Kubernetes and cross-node deployments an explicit shared-storage boundary.
+
+Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure endpoint, bucket, access key, and secret key.
+
+  </TabItem>
+</Tabs>
+
+## How Clustered Livestreaming Works
+
+<Steps>
+1. A publisher connects through RTMP to any SyncTV node.
+2. After authentication, that node registers `room_id/media_id -> node_id/api_address` in the publisher registry. In cluster mode, the registry uses Redis.
+3. The local StreamHub receives live packets. HTTP-FLV can subscribe directly, and the HLS remuxer keeps producing segments.
+4. HLS segments are written to the selected `memory`, `file`, or `oss` backend.
+5. If a viewer request lands on a non-publisher node, that node uses the shared registry to locate the publisher owner. HTTP-FLV uses cross-node relay; HLS playlist/segment reads can be proxied to the publisher node through the HLS gRPC proxy.
+6. If the HLS backend is `file + hls_shared_storage=true` or `oss`, any node can also read segments directly from the shared backend, reducing publisher-node fan-out pressure.
+</Steps>
+
+<Aside type="note">
+Multi-replica HLS has two models: local backends rely on publisher-node proxying, which is simple but routes remote segment requests through the publisher node; shared filesystem or OSS backends let each node read segments directly and are better for high-traffic production and rolling-upgrade boundaries.
+</Aside>
 
 ## RTMP
 
@@ -67,27 +150,50 @@ This prevents abnormal streams from forcing excessive memory allocation. Do not 
 
 ## HLS
 
+`livestream.hls_storage_backend` default: `memory`.
+
+Allowed values:
+
+| Value | Meaning | Use case |
+| --- | --- | --- |
+| `memory` | Keep HLS segments in process memory | Single replica, temporary livestreams, development |
+| `file` | Write HLS segments to `livestream.hls_storage_path` | Single-replica file storage or multi-replica shared filesystem |
+| `oss` | Write HLS segments to S3-compatible object storage | Multi-replica Kubernetes or cross-node storage |
+
+Canonical values are `memory`, `file`, and `oss`. Raw YAML/env parsing also accepts `filesystem` as a `file` alias, and `s3` or `object_storage` as `oss` aliases. Helm values intentionally allow only canonical values.
+
+Cluster mode can use `memory`. Non-publisher nodes read playlist/segment data from the publisher node through the HLS gRPC proxy. This is acceptable for small deployments or validation environments; high-traffic production HLS should use either:
+
+- `file` with `hls_storage_path` mounted from a filesystem all replicas can read and write.
+- `oss` with `livestream.hls_oss.*` configured.
+
 `livestream.hls_memory_max_mb` default: `0`, which means the built-in default is used.
+
+This only applies when `hls_storage_backend=memory`. The current built-in default is 512 MB.
 
 `livestream.hls_shared_storage` default: `false`.
 
-Single-replica deployments can keep it false. Multi-replica deployments need shared HLS storage; otherwise a segment written by one Pod may be requested from another Pod that does not have it.
+This only applies when `hls_storage_backend=file`. It declares whether `hls_storage_path` is mounted from storage visible to every replica. `oss` is inherently shared and does not use this flag. Setting `hls_shared_storage=true` with the `memory` or `oss` backend is rejected by configuration validation.
+
+With local file-backed HLS in multi-replica deployments, non-publisher nodes use the HLS gRPC proxy to read from the publisher node. To reduce cross-node origin pressure and get cleaner failure boundaries, production multi-replica file-backed HLS should use shared storage:
 
 ```yaml
 livestream:
+  hls_storage_backend: "file"
   hls_shared_storage: true
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
-The path must be shared by all replicas, for example through NFS, a shared PVC, or another shared filesystem.
+The path must be shared by all replicas, for example through NFS, an RWX PVC, or a CSI volume. Do not mark Pod-local `emptyDir`, `/tmp`, or node-local disks as shared storage; if it is local, keep `hls_shared_storage=false`.
 
 `livestream.hls_storage_path` default: empty.
 
-Relative paths are resolved under `data_dir`:
+This is used only when `hls_storage_backend=file`. Relative paths are resolved under `data_dir`:
 
 ```yaml
 data_dir: "/var/lib/synctv"
 livestream:
+  hls_storage_backend: "file"
   hls_storage_path: "livestream/hls"
 ```
 
@@ -96,6 +202,36 @@ Effective path:
 ```text
 /var/lib/synctv/livestream/hls
 ```
+
+### S3-Compatible Object Storage
+
+When `hls_storage_backend=oss`, SyncTV stores HLS segments in S3-compatible object storage:
+
+```yaml
+livestream:
+  hls_storage_backend: "oss"
+  hls_oss:
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    region: "auto"
+    base_path: "synctv/hls/"
+```
+
+Inject credentials through environment variables or secret files:
+
+```bash
+export SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID="..."
+export SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY="..."
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `livestream.hls_oss.endpoint` | `""` | S3/OSS endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
+| `livestream.hls_oss.bucket` | `""` | Bucket used for HLS segments |
+| `livestream.hls_oss.access_key_id` | `""` | Access key ID; supports `access_key_id_file` |
+| `livestream.hls_oss.secret_access_key` | `""` | Secret access key; supports `secret_access_key_file` |
+| `livestream.hls_oss.region` | `null` | S3 region; leave empty or use the provider-required value for compatible services |
+| `livestream.hls_oss.base_path` | `hls/` | Object key prefix inside the bucket; normalized without a leading `/` and with a trailing `/` |
 
 ## HTTP-FLV
 

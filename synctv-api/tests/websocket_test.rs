@@ -824,7 +824,7 @@ mod websocket_e2e {
             ),
         );
 
-        let user_service = Arc::new(UserService::new(
+        let mut user_service = UserService::new(
             pool.clone(),
             jwt_service.clone(),
             username_cache,
@@ -832,7 +832,9 @@ mod websocket_e2e {
             token_blacklist,
             key_builder,
             brute_force,
-        ));
+        );
+        user_service.enable_password_registration_for_tests();
+        let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
         // These helpers are used by cross-replica websocket tests, so cluster
@@ -4653,7 +4655,7 @@ mod websocket_connection_limit_timing {
             ),
         );
 
-        let user_service = Arc::new(UserService::new(
+        let mut user_service = UserService::new(
             pool.clone(),
             jwt_service.clone(),
             username_cache,
@@ -4661,7 +4663,9 @@ mod websocket_connection_limit_timing {
             token_blacklist,
             key_builder,
             brute_force,
-        ));
+        );
+        user_service.enable_password_registration_for_tests();
+        let user_service = Arc::new(user_service);
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
         let redis_client_for_cluster =

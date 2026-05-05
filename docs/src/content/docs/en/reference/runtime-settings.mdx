@@ -23,7 +23,7 @@ Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-
 ```bash
 synctv settings list
 synctv settings get user.enable_password_signup
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
 If the command supports grouped `--set` form:
@@ -84,13 +84,47 @@ Permission bitmask semantics are described in [Rooms, Permissions, and Preferenc
 | `user.password_signup_need_review` | bool | `false` | Require review for password signup |
 | `user.enable_email_signup` | bool | `false` | Allow email signup. Current email login only serves existing accounts; this switch is reserved for a future passwordless email account-creation endpoint |
 | `user.email_signup_need_review` | bool | `false` | Require review for email signup |
-| `user.enable_oauth2_signup` | bool | `false` | Allow first OAuth2 login to create a local account automatically; existing linked OAuth2 logins are not affected |
-| `user.oauth2_signup_need_review` | bool | `false` | Require review for OAuth2 signup. The current review table does not store temporary OAuth2 identities, so enabling this rejects new OAuth2 registrations |
 | `user.enable_webauthn_signup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
 | `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup. The current review table does not store temporary WebAuthn credentials, so enabling this rejects new WebAuthn registrations |
 | `user.enable_guest` | bool | `true` | Allow guest capability |
 
 All registration modes are disabled by default. Production deployments should enable only the intended entry points and configure review independently for each mode.
+
+### OAuth2
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `oauth2.providers` | JSON object | `{}` | OAuth2/OIDC provider instance registry. Each key is an instance name. Each value contains `type`, `enable_signup`, `signup_need_review`, and provider-private `config` |
+
+`oauth2.providers` is the only OAuth2 configuration entry point. Provider instances are no longer defined in the static config file, environment variables, or Helm values. Instance names may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. The outer envelope is fixed; the nested `config` object is parsed by the selected provider:
+
+```json
+{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  },
+  "corp_oidc": {
+    "type": "oidc",
+    "enable_signup": false,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "synctv",
+      "client_secret": "oidc-client-secret",
+      "issuer": "https://idp.example.com",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}
+```
+
+A missing provider instance means that login entry point is unavailable. Missing or false `enable_signup` blocks first-time OAuth2 account creation while existing linked OAuth2 logins continue to work. `signup_need_review=true` stores first-time OAuth2 signup in the user registration review queue; approval creates the local account and OAuth2 binding.
 
 User-level 2FA, notification preferences, and provider defaults are user preferences, not runtime settings. See [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/).
 
@@ -116,7 +150,9 @@ These are business proxy policy switches, not startup setting `cache.proxy_slice
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `email.whitelist_enabled` | bool | `false` | Enable email allowlist |
-| `email.whitelist` | string | `""` | Email allowlist content; parsed by business logic |
+| `email.whitelist` | string | `""` | Email allowlist content as comma-separated domains or email addresses |
+
+When `email.whitelist_enabled=true` but `email.whitelist` is empty, no email domain is rejected. Matching is enforced only when the allowlist has entries.
 
 SMTP host, password, and sender configuration remain startup settings. See [Email and OAuth2](../../configuration/email-oauth2/).
 
@@ -124,7 +160,16 @@ SMTP host, password, and sender configuration remain startup settings. See [Emai
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `webrtc.external_ice_servers` | JSON/string structure | `[]` | External ICE servers returned to native clients |
+| `webrtc.external_ice_servers` | JSON/string structure | two Google STUN entries | External ICE servers returned to native clients |
+
+Default value:
+
+```json
+[
+  { "urls": ["stun:stun.l.google.com:19302"] },
+  { "urls": ["stun:stun1.l.google.com:19302"] }
+]
+```
 
 Built-in STUN listener configuration is startup configuration. See [WebRTC Configuration](../../configuration/webrtc/).
 
@@ -149,29 +194,46 @@ Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for 
   <TabItem label="Enable password signup" icon="setting">
 
 ```bash
-synctv settings update user.enable_password_signup --value true
+synctv settings update user --set enable_password_signup=true
 ```
 
   </TabItem>
   <TabItem label="Review password signup" icon="approve-check-circle">
 
 ```bash
-synctv settings update user.password_signup_need_review --value true
+synctv settings update user --set password_signup_need_review=true
 ```
 
   </TabItem>
   <TabItem label="Limit room count" icon="document">
 
 ```bash
-synctv settings update server.max_rooms_per_user --value 20
+synctv settings update server --set max_rooms_per_user=20
 ```
 
   </TabItem>
   <TabItem label="Chat retention" icon="delete">
 
 ```bash
-synctv settings update chat.max_messages_per_room --value 1000
-synctv settings update chat.message_retention_days --value 180
+synctv settings update chat --set max_messages_per_room=1000 --set message_retention_days=180
+```
+
+  </TabItem>
+  <TabItem label="Configure OAuth2" icon="document">
+
+```bash
+synctv settings update oauth2 --set providers='{
+  "github": {
+    "type": "github",
+    "enable_signup": true,
+    "signup_need_review": false,
+    "config": {
+      "client_id": "github-client-id",
+      "client_secret": "github-client-secret",
+      "redirect_url": "https://app.example.com/oauth2/callback"
+    }
+  }
+}'
 ```
 
   </TabItem>

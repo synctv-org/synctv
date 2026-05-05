@@ -112,7 +112,9 @@ image:
   tag: "" # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-## Headless Service (for inter-node gRPC discovery)
+## Headless Service (for inter-node gRPC discovery).
+## Automatically rendered when config.cluster.enabled=true and
+## config.cluster.discoveryMode=k8s_dns, even if this switch is false.
 headlessService:
   enabled: false
 
@@ -320,11 +322,15 @@ config:
     minConnections: 5
     connectTimeoutSeconds: 10
     idleTimeoutSeconds: 600
+    maxLifetimeSeconds: 1800
 
   ## RedisConfig (url composed from secrets; these are for connection settings)
   redis:
     connectTimeoutSeconds: 5
     keyPrefix: "synctv:"
+    deploymentMode: "standalone"
+    sentinelMasterName: ""
+    sentinelAddresses: []
 
   ## JwtConfig (secret injected via SYNCTV_JWT_SECRET env var)
   ## Raw SyncTV config files also support jwt.secret_file, but this chart uses Secret env injection.
@@ -366,28 +372,33 @@ config:
     gopCacheSize: 2
     streamTimeoutSeconds: 300
     cleanupCheckIntervalSeconds: 60
-    pullMaxRetries: 3
+    pullMaxRetries: 10
     pullInitialBackoffMs: 1000
     pullMaxBackoffMs: 30000
     maxFlvTagSizeBytes: 10485760
     gopCacheMaxMemoryMb: 100
     hlsMemoryMaxMb: 0
-    ## The chart defaults to cluster mode, so HLS output is written to a
-    ## dedicated writable mount path from the deployment template.
-    ## Replace this default storage with a real shared filesystem before
-    ## scaling beyond one replica.
-    hlsSharedStorage: true
-    hlsStoragePath: "/var/lib/synctv/hls"
+    ## Allowed values: memory, file, oss.
+    ## - memory: single-replica in-process HLS segment storage.
+    ## - file: filesystem-backed HLS storage at hlsStoragePath.
+    ## - oss: S3-compatible object storage configured by hlsOss and secrets.livestream.hlsOss.
+    hlsStorageBackend: "memory"
+    hlsSharedStorage: false
+    hlsStoragePath: ""
+    hlsOss:
+      endpoint: ""
+      bucket: ""
+      region: ""
+      basePath: "hls/"
     flvMaxConnectionDurationSeconds: 86400
     flvWriteTimeoutSeconds: 30
 
   ## ClusterChannelConfig (matches code defaults)
   cluster:
-    ## Cluster mode is enabled by default so Redis-backed coordination,
-    ## invalidation, and inter-node contracts are wired consistently from the
-    ## start. The chart still defaults to a single replica; before scaling out,
-    ## replace the default HLS storage with a real shared filesystem.
-    enabled: true
+    ## Enable only for multi-replica deployments. Local HLS backends work through
+    ## publisher-node gRPC proxying; shared file storage or OSS is recommended
+    ## for production multi-replica HLS traffic.
+    enabled: false
     criticalChannelCapacity: 1000
     publishChannelCapacity: 10000
     ## Discovery mode: "redis" (default) or "k8s_dns" (uses headless service DNS)
@@ -396,6 +407,9 @@ config:
     discoveryMode: "redis"
     ## Leader election mode: "redis" (default) or "k8s_lease" (uses Kubernetes Lease)
     leaderElectionMode: "redis"
+    peers: []
+    catchupWindowSecs: 300
+    streamMaxLength: 10000
 
   ## WebRTCConfig
   webrtc:
@@ -483,11 +497,6 @@ config:
     fromName: "SyncTV"
     useTls: true
 
-  ## OAuth2Config
-  oauth2:
-    redirectScheme: "https"
-    providers: {}
-
   ## WebAuthnConfig
   webauthn:
     enabled: false
@@ -501,9 +510,15 @@ config:
 
   ## MediaProvidersConfig
   mediaProviders:
-    requestTimeoutSeconds: 30
-    connectTimeoutSeconds: 10
-    providers: {}
+    alist:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
+    bilibili:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
+    emby:
+      requestTimeoutSeconds: 30
+      connectTimeoutSeconds: 10
 
 ## ============================================================================
 ## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
@@ -584,9 +599,25 @@ secrets:
     ## filesystem permissions.
     authToken: ""
 
+  ## Livestream storage credentials.
+  livestream:
+    hlsOss:
+      ## Required when config.livestream.hlsStorageBackend=oss.
+      accessKeyId: ""
+      ## Required when config.livestream.hlsStorageBackend=oss.
+      secretAccessKey: ""
+
 ## ============================================================================
 ## Additional Settings
 ## ============================================================================
+
+## Application data and HLS storage mounts.
+## `data` stores runtime-owned local files. HLS file backend requires `hls`.
+persistence:
+  data:
+    existingClaim: ""
+  hls:
+    existingClaim: ""
 
 ## Service Account
 serviceAccount:
@@ -616,11 +647,13 @@ securityContext:
 ## Metrics
 ## Metrics are served on a dedicated listener and Service port.
 ## Default auth uses a static bearer token generated into the chart secret.
+## auth.mode=kubernetes requires a SyncTV image compiled with the k8s feature.
+## The chart can render the required RBAC and service account token settings,
+## but it cannot change the feature set of the container image.
 metrics:
   enabled: false
   host: "0.0.0.0"
   port: 9090
-  path: "/metrics"
   auth:
     mode: "bearer_token"
     kubernetes:

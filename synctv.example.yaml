@@ -523,125 +523,29 @@ cluster:
 # Media Providers Configuration
 # ============================================================================
 #
-# Stores media provider configurations (Alist, Emby, Jellyfin, Bilibili, etc.)
+# Configures local built-in media provider adapters in this SyncTV process.
+# Remote provider instances are configured through the management API/CLI.
 
 media_providers:
-  # Timeout for external provider HTTP requests.
-  request_timeout_seconds: 30
-  # Connection timeout for external provider HTTP requests.
-  connect_timeout_seconds: 10
-  # Provider configurations as a dynamic JSON/YAML value.
-  # Secret-like provider fields also support sibling *_file keys, for example
-  # token_file / api_key_file / password_file / access_token_file.
-  # Example:
-  # providers:
-  #   alist:
-  #     base_url: "https://alist.example.com"
-  #     token: "your_token"
-  #     # token_file: "/run/secrets/alist_token"
-  #   emby:
-  #     base_url: "https://emby.example.com"
-  #     api_key: "your_api_key"
-  #     # api_key_file: "/run/secrets/emby_api_key"
-  providers: {}
+  alist:
+    # Timeout for Alist upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Alist upstream HTTP requests.
+    connect_timeout_seconds: 10
+  bilibili:
+    # Timeout for Bilibili upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Bilibili upstream HTTP requests.
+    connect_timeout_seconds: 10
+  emby:
+    # Timeout for Emby/Jellyfin upstream HTTP requests.
+    request_timeout_seconds: 30
+    # Connection timeout for Emby/Jellyfin upstream HTTP requests.
+    connect_timeout_seconds: 10
 
-# ============================================================================
-# OAuth2/OIDC Configuration
-# ============================================================================
-#
-# Providers are configured as a YAML object with dynamic provider-specific fields.
-#
-# Supported Providers:
-#   - github:  GitHub OAuth2
-#   - google:  Google OAuth2
-#   - oidc:    Generic OIDC provider with .well-known discovery
-#              Supports issuer, auth_url, token_url, userinfo_url fields
-#   - qq, gitee, feishu, wechat: Chinese OAuth2 Providers (not yet implemented)
-#   - Any OIDC-compliant provider (Casdoor, Keycloak, Authelia, etc.)
-#     requires 'type: oidc' field
-#
-# Common fields (all providers):
-#   client_id: OAuth2 client ID
-#   client_secret: OAuth2 client secret
-#   client_secret_file: Path to a file containing the client secret
-#   redirect_url: (required) frontend/client callback URI
-#
-# Provider-specific fields:
-#   logto:
-#     endpoint: Logto server URL (e.g., "https://logto.example.com")
-#   oidc:
-#     issuer: Issuer URL for .well-known discovery
-#     auth_url: (optional) Custom authorization endpoint
-#     token_url: (optional) Custom token endpoint
-#     userinfo_url: (optional) Custom userinfo endpoint
-#
-# Multiple Provider Instances:
-#   Use different instance names (e.g., logto1, logto2) and add 'type' field
-#   to specify the provider type.
-#
-# Callback URLs must point to your frontend or native client, because SyncTV
-# uses a frontend-driven OAuth2 flow:
-#   1. Provider redirects to your frontend/client callback URI with code+state
-#   2. Frontend/client calls POST /api/oauth2/<instance_name>/exchange
-# Examples:
-#   https://app.example.com/oauth2/callback
-#   synctv://oauth2/callback
-#
-# Security Notes:
-#   - OAuth2 tokens are only used temporarily during login and then discarded
-#   - Only provider-user mappings are stored (for future logins)
-#   - Always use HTTPS in production for OAuth2 callbacks
-
-oauth2:
-  # URL scheme for OAuth2 redirect URLs ("http" or "https").
-  # When behind a reverse proxy terminating TLS, set to "https".
-  redirect_scheme: "http"
-  # Example configuration (uncomment and modify):
-  # providers:
-  #   # Standard OAuth2 Providers
-  #   github:
-  #     client_id: "your_github_client_id"
-  #     client_secret: "your_github_client_secret"
-  #     # client_secret_file: "/run/secrets/github_client_secret"
-  #     redirect_url: "https://app.example.com/oauth2/callback"
-  #
-  #   google:
-  #     client_id: "your_google_client_id"
-  #     client_secret: "your_google_client_secret"
-  #     # client_secret_file: "/run/secrets/google_client_secret"
-  #     redirect_url: "https://app.example.com/oauth2/callback"
-  #
-  #   # Multiple instances of same provider (requires 'type' field)
-  #   logto1:
-  #     type: logto
-  #     client_id: "logto1_client_id"
-  #     client_secret: "logto1_client_secret"
-  #     # client_secret_file: "/run/secrets/logto1_client_secret"
-  #     endpoint: "https://logto1.example.com"
-  #     redirect_url: "https://app.example.com/oauth2/callback"
-  #
-  #   logto2:
-  #     type: logto
-  #     client_id: "logto2_client_id"
-  #     client_secret: "logto2_client_secret"
-  #     # client_secret_file: "/run/secrets/logto2_client_secret"
-  #     endpoint: "https://logto2.example.com"
-  #     redirect_url: "https://app.example.com/oauth2/callback"
-  #
-  #   # Generic OIDC provider
-  #   custom_oidc:
-  #     type: oidc
-  #     client_id: "custom_client_id"
-  #     redirect_url: "https://app.example.com/oauth2/callback"
-  #     client_secret: "custom_client_secret"
-  #     # client_secret_file: "/run/secrets/custom_oidc_client_secret"
-  #     issuer: "https://custom.oidc.provider.com"
-  providers: {}
-
-# Environment Variables for OAuth2:
-#   Format: SYNCTV_OAUTH2_<FIELD>
-#   Examples:
-#     SYNCTV_OAUTH2_REDIRECT_SCHEME=https
+# OAuth2/OIDC providers are runtime settings, not static startup config.
+# Configure them with the management API or CLI:
+#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enabled":true,"enable_signup":false,"signup_need_review":false,"config":{"client_id":"...","client_secret":"...","redirect_url":"https://app.example.com/oauth2/callback"}}}'
 
 webauthn:
   # Enables passkey/security-key registration and login endpoints:

@@ -43,6 +43,8 @@ metrics:
 
 Kubernetes TokenReview + SubjectAccessReview：
 
+这个模式要求 SyncTV 二进制编译时启用 `k8s` feature。Helm 可以渲染 RBAC、ServiceAccount token 和抓取资源，但不能改变镜像里的 feature set。
+
 ```yaml
 metrics:
   enabled: true
@@ -177,6 +179,8 @@ metrics:
 | `bearer_token` | 使用固定 bearer token | Docker Compose、单机、简单 Prometheus |
 | `basic` | 使用 HTTP Basic Auth | 某些传统抓取系统 |
 | `kubernetes` | 使用 Kubernetes TokenReview 和 SubjectAccessReview | Kubernetes 集群内，更符合平台权限模型 |
+
+`kubernetes` 模式需要二进制启用 `k8s` feature；否则配置校验会失败。
 
 示例：
 

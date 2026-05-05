@@ -73,6 +73,14 @@ OPAQUE is a password login protocol, but clients must not infer password MFA ava
 
 Email codes can be used for login, MFA, email verification, and password reset. Keep those flows separate in client state.
 
+Standalone email login flow:
+
+<Steps>
+1. Call `RequestEmailLogin` to send a login code. The API returns a generic message and does not reveal whether the email exists.
+2. After the user enters the code, call the login API with `email` and `email_token`.
+3. Do not mix email-login tokens with MFA email codes; MFA email codes are bound to `mfa_session_id`.
+</Steps>
+
 Recommendations:
 
 - After sending a code, show a resend countdown to avoid rate-limit loops.
@@ -84,11 +92,13 @@ Recommendations:
 OAuth2/OIDC is frontend-driven:
 
 <Steps>
-1. Call `GetAuthorizationUrl` to get the provider authorization URL and state.
-2. Redirect the user to the provider.
-3. The provider redirects back to the client URL with `code` and `state`.
-4. Call `ExchangeAuthorizationCode`.
-5. The server validates state, exchanges the code for user info, and returns SyncTV tokens.
+1. Call `ListAvailableProviders` to discover provider instances, `signup_enabled`, and `signup_need_review`.
+2. Call `GetAuthorizationUrl` to get the provider authorization URL and state.
+3. Redirect the user to the provider.
+4. The provider redirects back to the client URL with `code` and `state`.
+5. Call `ExchangeAuthorizationCode`.
+5. If the response has `registration_review_required=true`, show pending-review state and keep `registration_review_id`; do not treat it as logged in.
+6. If the response contains tokens, store the SyncTV access and refresh tokens.
 </Steps>
 
 Use `GetAuthorizationUrlForBind` when binding a provider to an existing authenticated account. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.

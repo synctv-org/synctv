@@ -22,7 +22,7 @@
 use std::sync::Arc;
 use synctv_core::models::{User, UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{OAuth2Service, UserService};
+use synctv_core::service::{OAuth2LinkResult, OAuth2Service, UserService};
 use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
@@ -330,6 +330,8 @@ impl OAuth2ApiImpl {
                 user_info: None,
                 redirect_url: oauth_state.redirect_url,
                 is_bind: true,
+                registration_review_required: false,
+                registration_review_id: None,
             });
         }
 
@@ -353,21 +355,39 @@ impl OAuth2ApiImpl {
                 .await
                 .map_err(ApiError::from)?
         } else {
-            let (user_id, _is_new) = self
+            match self
                 .oauth2_service
-                .find_or_create_and_link(&self.user_service, &provider_type, &user_info)
-                .await
-                .map_err(ApiError::from)?;
-
-            self.user_service
-                .login_oauth2_with_control(
-                    &user_id,
-                    &user_info.provider_user_id,
-                    client_ip,
-                    control,
-                )
+                .find_or_create_and_link(&self.user_service, provider, &provider_type, &user_info)
                 .await
                 .map_err(ApiError::from)?
+            {
+                OAuth2LinkResult::Linked { user_id, .. } => self
+                    .user_service
+                    .login_oauth2_with_control(
+                        &user_id,
+                        &user_info.provider_user_id,
+                        client_ip,
+                        control,
+                    )
+                    .await
+                    .map_err(ApiError::from)?,
+                OAuth2LinkResult::PendingReview(pending) => {
+                    return Ok(ExchangeCodeResult {
+                        access_token: None,
+                        refresh_token: None,
+                        expires_in: 0,
+                        user_info: None,
+                        redirect_url: oauth_state.redirect_url,
+                        is_bind: false,
+                        registration_review_required: true,
+                        registration_review_id: Some(
+                            self.public_id_codec
+                                .encode_user_id(pending.request_id)
+                                .map_err(ApiError::InvalidInput)?,
+                        ),
+                    });
+                }
+            }
         };
 
         // Get the actual access token duration from the JWT service
@@ -385,6 +405,8 @@ impl OAuth2ApiImpl {
                 user_info: Some(user_to_oauth2_user_info(&user, &self.public_id_codec)),
                 redirect_url: oauth_state.redirect_url,
                 is_bind: false,
+                registration_review_required: false,
+                registration_review_id: None,
             }),
             synctv_core::service::AuthenticatedLogin::MfaRequired { .. } => {
                 Err(ApiError::Internal(
@@ -420,18 +442,26 @@ impl OAuth2ApiImpl {
             user_info: result.user_info,
             redirect_url: result.redirect_url.unwrap_or_default(),
             is_bind: result.is_bind,
+            registration_review_required: result.registration_review_required,
+            registration_review_id: result.registration_review_id.unwrap_or_default(),
         })
     }
 
     /// List all available `OAuth2` provider instances
     pub async fn list_available_providers(&self) -> Result<Vec<ProviderInfo>, ApiError> {
-        let providers = self.oauth2_service.list_available_instances().await;
+        let providers = self
+            .oauth2_service
+            .list_available_instances()
+            .await
+            .map_err(ApiError::from)?;
 
         let result = providers
             .into_iter()
-            .map(|(name, provider_type)| ProviderInfo {
+            .map(|(name, provider_type, signup_policy)| ProviderInfo {
                 name,
                 provider_type: provider_type.as_str().to_string(),
+                signup_enabled: signup_policy.enable_signup,
+                signup_need_review: signup_policy.signup_need_review,
             })
             .collect();
 
@@ -587,12 +617,16 @@ pub struct ExchangeCodeResult {
     pub user_info: Option<OAuth2UserInfo>,
     pub redirect_url: Option<String>,
     pub is_bind: bool,
+    pub registration_review_required: bool,
+    pub registration_review_id: Option<String>,
 }
 
 /// `OAuth2` provider information
 pub struct ProviderInfo {
     pub name: String,
     pub provider_type: String,
+    pub signup_enabled: bool,
+    pub signup_need_review: bool,
 }
 
 /// Unlink provider result
@@ -642,6 +676,8 @@ impl From<ProviderInfo> for OAuth2ProviderInstance {
         Self {
             name: info.name,
             r#type: info.provider_type,
+            signup_enabled: info.signup_enabled,
+            signup_need_review: info.signup_need_review,
         }
     }
 }

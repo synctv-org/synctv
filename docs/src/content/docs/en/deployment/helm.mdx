@@ -21,7 +21,8 @@ By default, it can create:
 - ConfigMap.
 - Secret.
 - Ingress.
-- Optional metrics, ServiceMonitor, VMServiceScrape, NetworkPolicy, HPA, and PDB.
+- ServiceAccount, Role, and RoleBinding.
+- Optional metrics, ServiceMonitor, VMServiceScrape, PrometheusRule, NetworkPolicy, HPA, and PDB.
 
 ## Install
 
@@ -108,14 +109,18 @@ existingSecret: "my-external-synctv-secret"
 
 Required keys include:
 
-- `SYNCTV_DATABASE_PASSWORD`
-- `SYNCTV_REDIS_PASSWORD`
+- `SYNCTV_DATABASE_PASSWORD`, unless PostgreSQL uses KubeBlocks mode.
+- `SYNCTV_REDIS_PASSWORD`, unless Redis uses KubeBlocks mode.
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_SERVER_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
-- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when management uses TCP
+- `SYNCTV_EMAIL_SMTP_USERNAME` and `SYNCTV_EMAIL_SMTP_PASSWORD` when `config.email.smtpHost` is set and SMTP authentication is required
+- `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
+- `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
+- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
 
 ## PostgreSQL and Redis Modes
 
@@ -141,6 +146,8 @@ redis:
 
 In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
 
+Note: the KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically configure SyncTV as a `redis.deployment_mode=sentinel` client. The chart still injects a stable Redis Service endpoint into SyncTV, and SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
+
 ## `config.dataDir`
 
 Default:
@@ -150,20 +157,70 @@ config:
   dataDir: "/data"
 ```
 
-The Deployment mounts `/data`. The default storage is appropriate for runtime temporary files. If you need persistent HLS or proxy slice cache, use a PVC or shared storage.
+The Deployment mounts `/data`. The default is `emptyDir`, which is appropriate for runtime temporary files. If runtime files must persist, set `persistence.data.existingClaim`.
 
 ## HLS With Multiple Replicas
 
-If `replicaCount > 1` or HPA is enabled and HLS is used, configure shared storage:
+The chart does not enable cluster mode by default and does not declare HLS shared storage by default. Multi-replica HLS has two models: local backends work through publisher-node HLS proxying; shared filesystem or OSS lets any replica read segments directly and is better for high production traffic.
+
+Local backend example:
 
 ```yaml
 config:
+  cluster:
+    enabled: true
   livestream:
-    hlsSharedStorage: true
-    hlsStoragePath: "/var/lib/synctv/hls"
+    hlsStorageBackend: "memory"
 ```
 
-Mount the path as storage shared by every replica.
+This does not require an HLS PVC, but playlist/segment requests on non-publisher Pods proxy back to the publisher Pod over gRPC.
+
+Shared filesystem example:
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorageBackend: "file"
+    hlsSharedStorage: true
+    hlsStoragePath: "/var/lib/synctv/hls"
+
+persistence:
+  hls:
+    existingClaim: "synctv-hls-rwx"
+```
+
+Helm rejects these combinations during rendering:
+
+- `hlsStorageBackend` is not `memory`, `file`, or `oss`.
+- `hlsStorageBackend=file` with an empty `hlsStoragePath`.
+- `hlsStorageBackend=file` in Kubernetes with a non-absolute `hlsStoragePath`.
+- `hlsSharedStorage=true` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
+
+OSS example:
+
+```yaml
+config:
+  cluster:
+    enabled: true
+  livestream:
+    hlsStorageBackend: "oss"
+    hlsOss:
+      endpoint: "https://s3.example.com"
+      bucket: "synctv-hls"
+      basePath: "synctv/hls/"
+
+secrets:
+  livestream:
+    hlsOss:
+      accessKeyId: "..."
+      secretAccessKey: "..."
+```
+
+Whenever `config.cluster.enabled=true`, application startup validation also requires Redis, a stable `SYNCTV_SERVER_CLUSTER_SECRET` shared by every replica, and a usable `SYNCTV_SERVER_ADVERTISE_HOST` for node-to-node communication. Helm defaults inject Redis connection details, generate the cluster secret, and use the Pod IP as the advertise host; preserve those conditions when trimming values or using external Secrets. If livestream HLS uses a local backend, Pod-to-Pod gRPC reachability is also required because remote segment reads depend on publisher-node proxying.
+
+When `config.cluster.discoveryMode=k8s_dns`, the chart automatically renders a headless Service and injects `HEADLESS_SERVICE_NAME` plus `POD_NAMESPACE`. When `config.cluster.leaderElectionMode=k8s_lease`, the chart injects `POD_NAME` and `POD_NAMESPACE`. Both modes require an image built with the `k8s` feature.
 
 ## Metrics
 
@@ -193,6 +250,8 @@ metrics:
 ```
 
 The metrics selector should target the API component Service and avoid the gRPC Service.
+
+If `metrics.auth.mode=kubernetes` is used, the SyncTV binary in the image must be compiled with the `k8s` feature. Helm renders RBAC, service account token settings, and scrape resources, but cannot change image compile-time features.
 
 ## Render Validation
 

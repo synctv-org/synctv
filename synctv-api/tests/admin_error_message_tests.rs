@@ -55,7 +55,7 @@ fn create_user_service(pool: PgPool) -> UserService {
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
-    UserService::new(
+    let mut service = UserService::new(
         pool,
         jwt,
         username_cache,
@@ -63,7 +63,9 @@ fn create_user_service(pool: PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-    )
+    );
+    service.enable_password_registration_for_tests();
+    service
 }
 
 /// Extract the error message from an ApiError::Authentication variant

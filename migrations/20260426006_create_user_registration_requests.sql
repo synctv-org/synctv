@@ -3,10 +3,15 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
     username VARCHAR(50) NOT NULL,
     email VARCHAR(255),
     legacy_password_hash TEXT,
-    opaque_record BYTEA NOT NULL,
-    opaque_credential_identifier BYTEA NOT NULL,
-    opaque_ciphersuite VARCHAR(64) NOT NULL,
-    opaque_server_setup_version INTEGER NOT NULL,
+    opaque_record BYTEA,
+    opaque_credential_identifier BYTEA,
+    opaque_ciphersuite VARCHAR(64),
+    opaque_server_setup_version INTEGER,
+    oauth2_provider VARCHAR(50),
+    oauth2_provider_user_id VARCHAR(255),
+    oauth2_provider_username VARCHAR(255),
+    oauth2_avatar_url TEXT,
+    oauth2_email_verified BOOLEAN NOT NULL DEFAULT FALSE,
     signup_method SMALLINT NOT NULL DEFAULT 0,
     status SMALLINT NOT NULL,
     requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,6 +31,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_email_pending
     ON user_registration_requests(email)
     WHERE reviewed_at IS NULL
       AND email IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_oauth2_identity_pending
+    ON user_registration_requests(oauth2_provider, oauth2_provider_user_id)
+    WHERE reviewed_at IS NULL
+      AND oauth2_provider IS NOT NULL
+      AND oauth2_provider_user_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_status_requested
     ON user_registration_requests(status, requested_at DESC);

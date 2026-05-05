@@ -253,34 +253,15 @@ async fn build_providers_manager(
     config: &Config,
     provider_instance_manager: Arc<RemoteProviderManager>,
 ) -> Result<Arc<ProvidersManager>, anyhow::Error> {
-    let provider_http_client = synctv_common::http::SsrfSafeClientBuilder::provider()
-        .connect_timeout(std::time::Duration::from_secs(
-            config.media_providers.connect_timeout_seconds,
-        ))
-        .request_timeout(std::time::Duration::from_secs(
-            config.media_providers.request_timeout_seconds,
-        ))
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build provider HTTP client: {e}"))?;
-
-    let mut providers_manager = ProvidersManager::new_with_provider_http_client(
-        provider_instance_manager,
-        provider_http_client,
-        std::time::Duration::from_secs(config.media_providers.connect_timeout_seconds),
-    );
+    let providers_manager = ProvidersManager::new(provider_instance_manager);
     let default_provider_count = providers_manager
-        .create_builtin_defaults()
+        .create_builtin_defaults_with_config(&config.media_providers)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create default media providers: {e}"))?;
-    let loaded_provider_count = providers_manager
-        .load_from_config(config)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to load media providers from configuration: {e}"))?;
 
     info!(
-        "ProvidersManager initialized {} default provider instance(s) and loaded {} configured provider instance(s)",
-        default_provider_count,
-        loaded_provider_count
+        "ProvidersManager initialized {} local provider adapter(s)",
+        default_provider_count
     );
 
     Ok(Arc::new(providers_manager))
@@ -520,25 +501,6 @@ pub async fn init_services_with_options(
     *cache_invalidation_listener_task.lock().await = Some(cache_invalidation_listener_task_handle);
     info!("CacheManager initialized with invalidation listener");
 
-    // Initialize OAuth2 service (optional - requires OAuth2 provider config).
-    // In cluster mode, Redis is required (validated at service creation).
-    // In standalone mode, uses in-memory state store when Redis is not available.
-    let oauth2_configured = config
-        .oauth2
-        .providers
-        .as_object()
-        .is_some_and(|m| !m.is_empty());
-    let oauth2_service = if oauth2_configured {
-        init_oauth2_service(pool.clone(), config, &shared_state_profile).await?
-    } else {
-        None
-    };
-    if oauth2_service.is_some() {
-        info!("OAuth2 service initialized");
-    } else {
-        info!("OAuth2 service not configured (no OAuth2 providers in config)");
-    }
-
     // Initialize Settings service
     info!("Initializing Settings service...");
     let settings_repo = SettingsRepository::new(pool.clone());
@@ -606,6 +568,10 @@ pub async fn init_services_with_options(
     let notification_service = Arc::new(notification_service);
 
     let settings_registry = Arc::new(settings_registry);
+
+    let oauth2_service =
+        init_oauth2_service(&pool, Arc::clone(&settings_registry), &shared_state_profile)?;
+    info!("OAuth2 service initialized");
 
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         pool.clone(),
@@ -752,35 +718,14 @@ pub async fn init_services_with_options(
     })
 }
 
-/// Initialize `OAuth2` service with modular provider system
-///
-/// Uses factory pattern to create providers from configuration.
-/// `OAuth2` configuration is part of the main config file.
-async fn init_oauth2_service(
-    pool: PgPool,
-    config: &Config,
+fn init_oauth2_service(
+    pool: &PgPool,
+    settings_registry: Arc<SettingsRegistry>,
     profile: &SharedStateProfile,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     let provider_registry = crate::oauth2::providers::provider_registry();
     info!("OAuth2 provider registry initialized");
 
-    // 1. Get OAuth2 provider configurations from main config
-    let providers_value = &config.oauth2.providers;
-
-    // Extract provider instance names from the JSON mapping
-    let provider_instances = if let Some(mapping) = providers_value.as_object() {
-        mapping.keys().cloned().collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
-    if provider_instances.is_empty() {
-        info!("No OAuth2 providers configured");
-        return Ok(None);
-    }
-
-    // 2. Create OAuth2 provider repository and service.
-    // Cluster runtime must fail before wiring if shared single-use state is missing.
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
     let state_store = build_oauth_state_store(profile)?;
     let oauth2_service = OAuth2Service::new(
@@ -789,79 +734,14 @@ async fn init_oauth2_service(
         provider_registry.clone(),
         matches!(profile.state_mode(), SharedStateMode::SharedRequired),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
-    let oauth2_service = Arc::new(oauth2_service);
-
-    // 3. Initialize each provider instance using factory pattern
-    let mut registered_provider_count = 0usize;
-    for instance_name in provider_instances {
-        // Get the full config for this instance
-        let full_config = providers_value.get(&instance_name).ok_or_else(|| {
-            anyhow::anyhow!("Provider instance {instance_name} not found in config")
-        })?;
-
-        // Get provider type from config (check for explicit "type" field)
-        let provider_type = full_config
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&instance_name)
-            .to_string();
-
-        let full_config = full_config.clone();
-        if full_config
-            .get("redirect_url")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(anyhow::anyhow!(
-                "OAuth2 provider '{instance_name}' is missing redirect_url. \
-                 Frontend-driven OAuth2 requires an explicit frontend/client callback URI \
-                 (for example https://app.example.com/oauth2/callback or myapp://oauth2/callback)."
-            ));
-        }
-
-        // Use factory to create provider with full config
-        match provider_registry.create_provider(&provider_type, &full_config) {
-            Ok(provider) => {
-                let Some(provider_enum) =
-                    crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type)
-                else {
-                    warn!(
-                        "Skipping unknown OAuth2 provider type '{}' for instance '{}'",
-                        provider_type, instance_name
-                    );
-                    continue;
-                };
-
-                // Store provider for later use
-                oauth2_service
-                    .register_provider(instance_name.clone(), provider_enum, provider)
-                    .await;
-                registered_provider_count += 1;
-                info!(
-                    "Registered OAuth2 provider: {} (type: {})",
-                    instance_name, provider_type
-                );
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to create OAuth2 provider '{instance_name}': {e}"
-                ));
-            }
-        }
-    }
-
-    if registered_provider_count == 0 {
-        return Err(anyhow::anyhow!(
-            "OAuth2 is configured but no providers were registered successfully"
-        ));
-    }
+    .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?
+    .with_settings_registry(settings_registry);
 
     // OAuth2 state cleanup is handled automatically:
     // - Redis: SETEX TTL auto-expires entries
     // - In-memory: sweep_expired on each store/consume call
 
-    Ok(Some(oauth2_service))
+    Ok(Some(Arc::new(oauth2_service)))
 }
 
 fn build_oauth_state_store(
@@ -1724,20 +1604,10 @@ mod tests {
     async fn test_init_oauth2_service_rejects_cluster_mode_without_shared_state_at_bootstrap_layer()
     {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let mut config = Config::default();
-        config.cluster.enabled = true;
-        config.server.cluster_secret = "cluster-secret".to_string();
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "test-client-id",
-                "client_secret": "test-client-secret"
-            }
-        });
+        let settings_registry = test_settings_registry(pool.clone());
 
-        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, true);
-        let error = init_oauth2_service(pool, &config, &profile)
-            .await
+        let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
+        let error = init_oauth2_service(&pool, settings_registry, &profile)
             .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
 
         assert!(
@@ -1749,71 +1619,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_oauth2_service_requires_explicit_redirect_url_for_frontend_flow() {
+    async fn test_init_oauth2_service_starts_without_runtime_providers() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let mut config = Config::default();
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "test-client-id",
-                "client_secret": "test-client-secret"
-            }
-        });
-
-        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
-        let error = init_oauth2_service(pool, &config, &profile)
-            .await
-            .expect_err("frontend-driven OAuth2 must require an explicit redirect_url");
-
-        assert!(
-            error.to_string().contains("redirect_url"),
-            "unexpected error: {error}"
-        );
+        let settings_registry = test_settings_registry(pool.clone());
+        let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
+        let service = init_oauth2_service(&pool, settings_registry, &profile)
+            .expect("OAuth2 service should start before runtime providers are configured");
+        assert!(service.is_some());
     }
 
-    #[tokio::test]
-    async fn test_init_oauth2_service_preserves_explicit_redirect_url() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let mut config = Config::default();
-        let redirect_url = "synctv://oauth2/callback".to_string();
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "test-client-id",
-                "client_secret": "test-client-secret",
-                "redirect_url": redirect_url
-            }
-        });
-
-        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
-        init_oauth2_service(pool, &config, &profile)
-            .await
-            .expect("explicit frontend/client redirect_url should be accepted");
-    }
-
-    #[tokio::test]
-    async fn test_init_oauth2_service_fails_when_configured_provider_cannot_be_created() {
-        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let mut config = Config::default();
-        config.oauth2.providers = serde_json::json!({
-            "github": {
-                "type": "github",
-                "client_id": "test-client-id",
-                "redirect_url": "synctv://oauth2/callback"
-            }
-        });
-
-        let profile = SharedStateProfile::from_runtime(None, &config.redis.key_prefix, false);
-        let error = init_oauth2_service(pool, &config, &profile)
-            .await
-            .expect_err("invalid configured provider must fail startup instead of being skipped");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Failed to create OAuth2 provider"),
-            "unexpected error: {error}"
-        );
+    fn test_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
+        let settings_repo = SettingsRepository::new(pool.clone());
+        let settings_service = Arc::new(SettingsService::new(settings_repo, pool));
+        Arc::new(SettingsRegistry::new(settings_service))
     }
 
     #[test]
@@ -1878,8 +1696,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_providers_manager_loads_defaults_from_config() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
-        let mut config = Config::default();
-        config.media_providers.providers = serde_json::json!({});
+        let config = Config::default();
         let provider_repo = Arc::new(ProviderInstanceRepository::new(pool));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(
             provider_repo,

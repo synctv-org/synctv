@@ -3,11 +3,25 @@ title: Architecture Overview
 description: SyncTV process boundaries, dependencies, network surfaces, storage layers, cache layers, and scaling model.
 ---
 
+import Diagram from '../../../../components/Diagram.astro';
+import architectureDiagramDark from '../../../../assets/diagrams/architecture-dark.svg';
+import architectureDiagramLight from '../../../../assets/diagrams/architecture-light.svg';
+import kubernetesTopologyDark from '../../../../assets/diagrams/kubernetes-topology-dark.svg';
+import kubernetesTopologyLight from '../../../../assets/diagrams/kubernetes-topology-light.svg';
+import productionMinimalDark from '../../../../assets/diagrams/production-minimal-dark.svg';
+import productionMinimalLight from '../../../../assets/diagrams/production-minimal-light.svg';
 import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Mental Model
 
 SyncTV is a single-binary service that combines HTTP APIs, public gRPC, management gRPC, realtime room state, media providers, media proxying, livestreaming, and cluster coordination. Durable state lives in PostgreSQL. Shared ephemeral state and distributed coordination use Redis. Local runtime files live under `data_dir`.
+
+<Diagram
+  light={architectureDiagramLight}
+  dark={architectureDiagramDark}
+  alt="SyncTV architecture overview showing clients, ingress, the SyncTV single binary, PostgreSQL, Redis, external providers, and HLS storage."
+  caption="SyncTV’s main boundaries: one service process hosts business APIs, realtime collaboration, the management plane, media proxying, and livestreaming. Durable state goes to PostgreSQL, and cross-node ephemeral state goes to Redis."
+/>
 
 ## Major Components
 
@@ -112,34 +126,36 @@ For multi-replica deployments, also confirm:
 
 - All replicas share the same PostgreSQL database.
 - All replicas share the same Redis and `redis.key_prefix`.
-- HLS uses shared storage if clients may read segments through different pods.
+- HLS cross-node reads can use publisher-node proxying; high-traffic production deployments should use shared filesystem storage or OSS to reduce publisher-node pressure.
 - Kubernetes termination grace period is longer than `server.shutdown_drain_timeout_seconds`.
+
+For the full runtime design, discovery modes, leader election, and clustered livestreaming boundaries, see [Cluster Configuration](../../configuration/cluster/).
+
+## Livestream Model
+
+The livestream path is separate from the on-demand proxy path. RTMP is the publishing entrypoint; HTTP-FLV serves low-latency playback; HLS remuxing produces playlists and segments into the selected `memory`, `file`, or `oss` backend. In multi-replica deployments, the publisher owner is exposed through a shared registry; non-publisher nodes can read HLS segments through the HLS gRPC proxy, or read them directly when using a shared filesystem or OSS backend.
+
+For the RTMP/StreamHub/HTTP-FLV/HLS pipeline, backend selection, and clustered livestreaming failure boundaries, see [Livestream Configuration](../../configuration/livestream/).
 
 ## Production Topologies
 
 Minimal production topology:
 
-```text
-Client
-  -> TLS reverse proxy / Ingress
-  -> SyncTV
-  -> PostgreSQL
-  -> Redis
-```
+<Diagram
+  light={productionMinimalLight}
+  dark={productionMinimalDark}
+  alt="Minimal production topology showing clients reaching SyncTV through a TLS reverse proxy or Ingress, with SyncTV connected to PostgreSQL and Redis."
+  caption="A minimal production topology needs one SyncTV service entry, PostgreSQL, and Redis. Redis is optional for simple single-node deployments, but recommended in production."
+/>
 
 Kubernetes multi-replica topology:
 
-```text
-Client
-  -> HTTP Ingress -> HTTP Service -> SyncTV pods
-  -> gRPC Ingress -> gRPC Service -> SyncTV pods
-
-SyncTV pods
-  -> PostgreSQL
-  -> Redis
-  -> optional shared HLS storage
-  -> optional external media providers
-```
+<Diagram
+  light={kubernetesTopologyLight}
+  dark={kubernetesTopologyDark}
+  alt="Kubernetes multi-replica topology showing HTTP Ingress, gRPC Ingress, separate Services, multiple SyncTV pods, PostgreSQL, Redis, HLS backend or publisher-node proxy, and external media providers."
+  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. HLS can use publisher-node proxying; high-traffic production should use shared filesystem storage or OSS."
+/>
 
 ## Next Pages
 

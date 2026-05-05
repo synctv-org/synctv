@@ -113,9 +113,13 @@ pub struct ExternalStreamPuller {
     /// Cancellation token for graceful shutdown. When cancelled, the puller
     /// exits the main loop cleanly and unpublishes from the local `StreamHub`.
     cancel_token: CancellationToken,
+    /// Maximum FLV tag data size accepted from external HTTP-FLV sources.
+    max_flv_tag_size_bytes: usize,
 }
 
 impl ExternalStreamPuller {
+    pub const DEFAULT_MAX_FLV_TAG_SIZE_BYTES: usize = 10 * 1024 * 1024;
+
     /// Create with async DNS-resolved SSRF validation (required for all production use).
     /// Resolves the hostname and validates all resolved IPs against blocklists.
     pub async fn new_async(
@@ -216,7 +220,14 @@ impl ExternalStreamPuller {
             http_client: None,
             resolved_addr,
             cancel_token: CancellationToken::new(),
+            max_flv_tag_size_bytes: Self::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         })
+    }
+
+    #[must_use]
+    pub const fn with_max_flv_tag_size_bytes(mut self, max: usize) -> Self {
+        self.max_flv_tag_size_bytes = max;
+        self
     }
 
     /// Set a one-shot confirmation channel. The puller will signal this channel
@@ -731,8 +742,8 @@ impl ExternalStreamPuller {
                     | ((buffer[2] as usize) << 8)
                     | (buffer[3] as usize);
 
-                // Reject unreasonably large tags to prevent OOM (max 10 MB)
-                let max_flv_tag_size: usize = 10 * 1024 * 1024;
+                // Reject unreasonably large tags to prevent OOM.
+                let max_flv_tag_size = self.max_flv_tag_size_bytes;
                 if data_size > max_flv_tag_size {
                     anyhow::bail!(
                         "FLV tag data_size too large: {data_size} bytes (max {max_flv_tag_size}), likely corrupted stream"
@@ -1199,6 +1210,7 @@ mod tests {
             http_client: Some(reqwest::Client::new()),
             resolved_addr: Some(addr),
             cancel_token: CancellationToken::new(),
+            max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         }
     }
 

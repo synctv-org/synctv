@@ -3,11 +3,94 @@ title: 直播与 HLS/FLV
 description: RTMP、HLS、HTTP-FLV、拉流重试、GOP 缓存和直播存储配置。
 ---
 
+import Diagram from '../../../components/Diagram.astro';
+import livestreamPipelineDark from '../../../assets/diagrams/livestream-pipeline-dark.svg';
+import livestreamPipelineLight from '../../../assets/diagrams/livestream-pipeline-light.svg';
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
 ## 直播配置控制什么？
 
 `livestream` 控制 RTMP 推流/拉流、HLS 分片、HTTP-FLV 连接、直播内存缓存和直播文件存储。
 
 如果你只使用点播媒体 Provider，这一页大部分配置可以保持默认。
+
+## 直播子系统的边界
+
+直播能力包含推流入口、实时包分发、FLV 播放、HLS remux、HLS 存储、跨节点 publisher registry。它和点播 Provider/proxy 是两个不同路径：点播主要处理外部媒体 URL 和 Range proxy，直播主要处理正在产生的数据流。
+
+<Diagram
+  light={livestreamPipelineLight}
+  dark={livestreamPipelineDark}
+  alt="SyncTV 直播流水线图，展示 RTMP 推流进入 StreamHub，分发到 HTTP-FLV 与 HLS remuxer，HLS 写入 memory/file/OSS 存储后由 playlist 和 segment 路由读取。"
+  caption="直播数据先进入 RTMP/StreamHub，再按播放协议分流：HTTP-FLV 直接面向低延迟播放，HLS remuxer 生成 playlist/segment 并写入选择的 HLS backend。"
+/>
+
+<CardGrid>
+  <Card title="RTMP ingest" icon="youtube">
+    推流端通过 RTMP 连接进入，认证阶段会把 publisher 注册到本节点或共享 registry。
+  </Card>
+  <Card title="StreamHub" icon="cloud-download">
+    直播包在进程内分发给 FLV session、HLS remuxer 和内部拉流/代理逻辑。
+  </Card>
+  <Card title="HTTP-FLV" icon="rocket">
+    适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
+  </Card>
+  <Card title="HLS" icon="folder">
+    适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
+  </Card>
+</CardGrid>
+
+## 播放协议怎么选？
+
+| 协议 | 优点 | 代价 | 适合场景 |
+| --- | --- | --- | --- |
+| HTTP-FLV | 延迟低、链路短、服务端直接推 chunk | 长连接多，弱网慢客户端需要严格超时 | 互动直播、房间内同步观看 |
+| HLS | 播放器兼容性强，天然按 playlist/segment 拉取，可配共享存储 | 延迟高于 FLV，需要管理分片存储 | 移动端、通用播放器、多副本、对象存储 |
+
+<Aside type="note">
+RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。播放端优先使用 HTTP-FLV 或 HLS。
+</Aside>
+
+## HLS backend 的架构选择
+
+<Tabs syncKey="hls-backend-design">
+  <TabItem label="memory" icon="setting">
+
+`memory` 是默认值，分片只存在当前进程内。它最简单，适合单副本、开发环境和低流量多副本。
+
+限制：进程重启会丢分片；多副本下非 publisher 节点需要通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。它可以工作，但不适合作为高并发生产 HLS 的首选。
+
+  </TabItem>
+  <TabItem label="file" icon="folder">
+
+`file` 把分片写入 `hls_storage_path`。单副本可以用本地磁盘；多副本可以使用本地磁盘并依赖 publisher-node proxy，也可以把该路径挂载成所有副本可读写的共享文件系统。
+
+共享文件系统的典型选择：NFS、RWX PVC、CSI 共享卷。不要把 `emptyDir`、`/tmp` 或节点本地盘声明为共享存储。
+
+  </TabItem>
+  <TabItem label="oss" icon="cloud-download">
+
+`oss` 使用 S3 兼容对象存储保存分片。它是 Kubernetes 多副本和跨节点部署中更明确的共享边界。
+
+典型选择：AWS S3、MinIO、Cloudflare R2 或兼容服务。需要配置 endpoint、bucket、access key 和 secret key。
+
+  </TabItem>
+</Tabs>
+
+## 集群直播如何工作？
+
+<Steps>
+1. Publisher 通过 RTMP 连接到任意一个 SyncTV 节点。
+2. 认证通过后，节点把 `room_id/media_id -> node_id/api_address` 注册到 publisher registry。集群模式下 registry 使用 Redis。
+3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
+4. HLS 分片写入 `memory`、`file` 或 `oss` backend。
+5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
+6. 如果 HLS backend 是 `file + hls_shared_storage=true` 或 `oss`，任意节点也可以直接从共享 backend 读取分片，减少对 publisher 节点的回源压力。
+</Steps>
+
+<Aside type="note">
+多副本 HLS 有两种模型：本地 backend 依赖 publisher-node proxy，部署简单但远端 segment 请求会穿过 publisher 节点；共享文件系统或 OSS 让各节点直接读取分片，更适合生产高并发和滚动升级边界。
+</Aside>
 
 ## `livestream.rtmp_port`
 
@@ -107,41 +190,62 @@ GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快
 
 ## HLS 配置
 
+### `livestream.hls_storage_backend`
+
+默认值：`memory`。
+
+可选值：
+
+| 值 | 作用 | 适用场景 |
+| --- | --- | --- |
+| `memory` | HLS 分片保存在当前进程内存里 | 单副本、临时直播、开发环境 |
+| `file` | HLS 分片写入 `livestream.hls_storage_path` | 单副本文件存储，或多副本共享文件系统 |
+| `oss` | HLS 分片写入 S3 兼容对象存储 | 多副本、Kubernetes、跨节点共享 |
+
+规范值是 `memory`、`file`、`oss`。原始 YAML/env 解析也接受 `filesystem` 作为 `file` 别名，接受 `s3`、`object_storage` 作为 `oss` 别名；Helm values 只允许使用规范值。
+
+集群模式可以使用 `memory`。非 publisher 节点会通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。这个模式适合小规模部署或验证环境；生产高并发 HLS 推荐使用：
+
+- `file`，并且 `hls_storage_path` 是所有副本可读写的共享文件系统。
+- `oss`，并配置 `livestream.hls_oss.*`。
+
 ### `livestream.hls_memory_max_mb`
 
 默认值：`0`，表示使用内置默认。
 
-作用：限制内存 HLS 分片存储占用。
+作用：限制 `hls_storage_backend=memory` 时的 HLS 分片内存占用。`0` 使用内置默认，当前内置默认是 512 MB。
 
 ### `livestream.hls_shared_storage`
 
 默认值：`false`。
 
-作用：声明 HLS 存储路径是否所有副本都能访问。
+作用：声明 `hls_storage_backend=file` 的 `hls_storage_path` 是否所有副本都能访问。
 
-单副本部署保持 `false`。
+这个字段只适用于 `file` backend。`oss` backend 天然是共享存储，不需要设置 `hls_shared_storage`。在 `memory` 或 `oss` backend 下把 `hls_shared_storage` 设置为 `true` 会被配置校验拒绝。
 
-多副本部署时，如果 HLS 文件写在本地磁盘，一个用户可能请求到另一个没有该文件的 Pod，导致播放失败。因此多副本需要：
+多副本部署时，如果 HLS 文件写在本地磁盘，非 publisher 节点会通过 HLS gRPC proxy 向 publisher 节点读取。为了减少跨节点回源、降低 publisher 节点压力并获得更清晰的故障边界，生产多副本文件 backend 推荐：
 
 ```yaml
 livestream:
+  hls_storage_backend: "file"
   hls_shared_storage: true
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
-并确保这个路径是 NFS、共享 PVC、对象存储挂载等所有副本可见的共享存储。
+并确保这个路径是 NFS、RWX PVC、CSI volume 等所有副本可见的共享文件系统。不要把 Pod 本地 `emptyDir`、`/tmp` 或本机磁盘声明为共享存储；如果它只是本地路径，保持 `hls_shared_storage=false`。
 
 ### `livestream.hls_storage_path`
 
 默认值为空。
 
-作用：HLS 分片存储路径。相对路径会相对 `data_dir`。
+作用：`hls_storage_backend=file` 时的 HLS 分片存储路径。相对路径会相对 `data_dir`。
 
 示例：
 
 ```yaml
 data_dir: "/var/lib/synctv"
 livestream:
+  hls_storage_backend: "file"
   hls_storage_path: "livestream/hls"
 ```
 
@@ -150,6 +254,38 @@ livestream:
 ```text
 /var/lib/synctv/livestream/hls
 ```
+
+### `livestream.hls_oss.*`
+
+当 `hls_storage_backend=oss` 时，SyncTV 使用 S3 兼容对象存储保存 HLS 分片。
+
+```yaml
+livestream:
+  hls_storage_backend: "oss"
+  hls_oss:
+    endpoint: "https://s3.example.com"
+    bucket: "synctv-hls"
+    region: "auto"
+    base_path: "synctv/hls/"
+```
+
+secret 建议使用环境变量或 secret 文件注入：
+
+```bash
+export SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID="..."
+export SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY="..."
+```
+
+字段说明：
+
+| 字段 | 默认值 | 作用 |
+| --- | --- | --- |
+| `livestream.hls_oss.endpoint` | `""` | S3/OSS endpoint，例如 AWS S3、MinIO、Cloudflare R2 或兼容服务的 endpoint |
+| `livestream.hls_oss.bucket` | `""` | 存储 HLS 分片的 bucket |
+| `livestream.hls_oss.access_key_id` | `""` | Access key ID，支持 `access_key_id_file` |
+| `livestream.hls_oss.secret_access_key` | `""` | Secret access key，支持 `secret_access_key_file` |
+| `livestream.hls_oss.region` | `null` | S3 region；某些兼容服务可留空或使用服务商要求的值 |
+| `livestream.hls_oss.base_path` | `hls/` | bucket 内对象前缀；会规范化为不以 `/` 开头、以 `/` 结尾 |
 
 ## HTTP-FLV 配置
 

@@ -23,11 +23,12 @@ use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{OAuth2Provider, UserId},
-    repository::{UserOAuthProviderRepository, UserRepository},
+    repository::{SettingsRepository, UserOAuthProviderRepository, UserRepository},
     service::{
         auth::{jwt::JwtService, TestPasswordHasher},
         local_oauth_state_store, AuthenticatedLogin, BruteForceProtection,
-        InMemoryTokenBlacklistStore, OAuth2Service, RateLimiter, TokenBlacklistStore, UserService,
+        InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs, OAuth2Service,
+        RateLimiter, SettingsRegistry, SettingsService, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -66,6 +67,7 @@ fn create_user_service_with_components(
         brute_force,
     );
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
+    svc.enable_password_registration_for_tests();
     svc
 }
 
@@ -2435,7 +2437,7 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
-        synctv_core::oauth2::ProviderRegistry::new(),
+        synctv_core::oauth2::providers::provider_registry(),
         false,
     )
     .expect("OAuth2 service should initialize");
@@ -2453,12 +2455,26 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
         email_verified: true,
     };
 
-    let first = oauth_service.find_or_create_and_link(&user_service, &provider, &user_info);
-    let second = oauth_service.find_or_create_and_link(&user_service, &provider, &user_info);
+    let first =
+        oauth_service.find_or_create_and_link(&user_service, "google", &provider, &user_info);
+    let second =
+        oauth_service.find_or_create_and_link(&user_service, "google", &provider, &user_info);
     let (first_result, second_result) = tokio::join!(first, second);
 
-    let (first_user_id, _) = first_result.expect("first concurrent login must succeed");
-    let (second_user_id, _) = second_result.expect("second concurrent login must succeed");
+    let OAuth2LinkResult::Linked {
+        user_id: first_user_id,
+        ..
+    } = first_result.expect("first concurrent login must succeed")
+    else {
+        panic!("first concurrent login should not require review");
+    };
+    let OAuth2LinkResult::Linked {
+        user_id: second_user_id,
+        ..
+    } = second_result.expect("second concurrent login must succeed")
+    else {
+        panic!("second concurrent login should not require review");
+    };
     assert_eq!(
         first_user_id, second_user_id,
         "Concurrent logins for the same provider identity must converge to one user"
@@ -2509,6 +2525,169 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pending_request() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(pool.clone());
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let oauth2_configs: OAuth2ProviderConfigs = serde_json::json!({
+        "github": {
+            "type": "github",
+            "enable_signup": true,
+            "signup_need_review": true,
+            "config": {
+                "client_id": "github-client-id",
+                "client_secret": "github-client-secret",
+                "redirect_url": "https://app.example.com/oauth2/callback"
+            }
+        }
+    })
+    .to_string()
+    .parse()
+    .expect("OAuth2 provider configs should parse");
+    settings_registry
+        .oauth2_providers
+        .set(oauth2_configs)
+        .await
+        .expect("OAuth2 runtime settings should be persisted");
+    let oauth_service = OAuth2Service::new(
+        UserOAuthProviderRepository::new(pool.clone()),
+        local_oauth_state_store(),
+        synctv_core::oauth2::providers::provider_registry(),
+        false,
+    )
+    .expect("OAuth2 service should initialize")
+    .with_settings_registry(settings_registry);
+
+    let provider = OAuth2Provider::GitHub;
+    let user_info = synctv_core::service::OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: format!("oauth_pending_{}", synctv_common::snanoid!(8)),
+        username: format!("oauth_pending_user_{}", synctv_common::snanoid!(6)),
+        email: Some(format!(
+            "oauth_pending_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        avatar: None,
+        email_verified: true,
+    };
+
+    let first = oauth_service
+        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .await
+        .expect("first OAuth2 review signup should create a pending request");
+    let second = oauth_service
+        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .await
+        .expect("repeated OAuth2 review signup should return existing pending request");
+
+    let OAuth2LinkResult::PendingReview(first_pending) = first else {
+        panic!("first OAuth2 review signup should require review");
+    };
+    let OAuth2LinkResult::PendingReview(second_pending) = second else {
+        panic!("repeated OAuth2 review signup should require review");
+    };
+
+    assert_eq!(
+        first_pending.request_id, second_pending.request_id,
+        "repeated pending OAuth2 signup should converge to the original review request"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
+    let (_container, pool) = create_test_pool().await;
+    let user_service = create_user_service(pool.clone());
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool.clone(),
+    ));
+    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let oauth2_configs: OAuth2ProviderConfigs = serde_json::json!({
+        "github": {
+            "type": "github",
+            "enable_signup": true,
+            "signup_need_review": true,
+            "config": {
+                "client_id": "github-client-id",
+                "client_secret": "github-client-secret",
+                "redirect_url": "https://app.example.com/oauth2/callback"
+            }
+        }
+    })
+    .to_string()
+    .parse()
+    .expect("OAuth2 provider configs should parse");
+    settings_registry
+        .oauth2_providers
+        .set(oauth2_configs)
+        .await
+        .expect("OAuth2 runtime settings should be persisted");
+    let oauth_service = OAuth2Service::new(
+        UserOAuthProviderRepository::new(pool.clone()),
+        local_oauth_state_store(),
+        synctv_core::oauth2::providers::provider_registry(),
+        false,
+    )
+    .expect("OAuth2 service should initialize")
+    .with_settings_registry(settings_registry);
+
+    user_service
+        .register(
+            "oauth_review_collision_user".to_string(),
+            Some("oauth_review_collision_local@test.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("seed local user should be created");
+
+    let provider = OAuth2Provider::GitHub;
+    let user_info = synctv_core::service::OAuth2UserInfo {
+        provider: provider.clone(),
+        provider_user_id: format!("oauth_review_collision_{}", synctv_common::snanoid!(8)),
+        username: "oauth_review_collision_user".to_string(),
+        email: Some(format!(
+            "oauth_review_collision_{}@test.com",
+            synctv_common::snanoid!(6)
+        )),
+        avatar: None,
+        email_verified: true,
+    };
+
+    let OAuth2LinkResult::PendingReview(pending) = oauth_service
+        .find_or_create_and_link(&user_service, "github", &provider, &user_info)
+        .await
+        .expect("OAuth2 review signup should create a pending request with a suffixed username")
+    else {
+        panic!("OAuth2 signup should require review in this test");
+    };
+
+    let pending_username: String = sqlx::query_scalar(
+        r"
+        SELECT username
+        FROM user_registration_requests
+        WHERE id = $1
+        ",
+    )
+    .bind(pending.request_id.as_i64())
+    .fetch_one(&pool)
+    .await
+    .expect("pending registration request should exist");
+
+    assert_ne!(pending_username, "oauth_review_collision_user");
+    assert!(
+        pending_username.starts_with("oauth_review_collision_user_"),
+        "expected suffixed pending username, got {pending_username}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collision() {
     let (_container, pool) = create_test_pool().await;
     let user_service = create_user_service(pool.clone());
@@ -2543,10 +2722,16 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
         email_verified: true,
     };
 
-    let (created_user_id, is_new) = oauth_service
-        .find_or_create_and_link(&user_service, &provider, &user_info)
+    let OAuth2LinkResult::Linked {
+        user_id: created_user_id,
+        is_new,
+    } = oauth_service
+        .find_or_create_and_link(&user_service, "google", &provider, &user_info)
         .await
-        .expect("OAuth2 signup should succeed by choosing a suffixed username");
+        .expect("OAuth2 signup should succeed by choosing a suffixed username")
+    else {
+        panic!("OAuth2 signup should not require review in this test");
+    };
 
     assert!(is_new, "first OAuth2 login should create a new user");
 

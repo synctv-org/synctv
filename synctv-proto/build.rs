@@ -187,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.GetAuthorizationUrlRequest.redirect_url",
         ".synctv.client.GetAuthorizationUrlForBindRequest.provider",
         ".synctv.client.GetAuthorizationUrlForBindRequest.redirect_url",
+        ".synctv.client.ExchangeAuthorizationCodeRequest.provider",
         ".synctv.client.UnlinkProviderRequest.provider",
         ".synctv.client.UnlinkProviderRequest.provider_user_id",
         ".synctv.admin.ListUsersRequest.page",

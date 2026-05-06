@@ -1,28 +1,25 @@
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(scriptDir, '..', '..');
 const mmdc = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'mmdc.cmd' : 'mmdc');
 const sourceDir = path.join(root, 'src', 'diagrams');
 const outputDir = path.join(root, 'src', 'assets', 'diagrams');
-const lightConfig = path.join(root, 'scripts', 'mermaid-light-config.json');
-const darkConfig = path.join(root, 'scripts', 'mermaid-dark-config.json');
-const puppeteerConfig = path.join(root, 'scripts', 'mermaid-puppeteer-config.json');
-
-const diagrams = [
-  'architecture',
-  'security-auth-boundary',
-  'production-minimal',
-  'kubernetes-topology',
-  'cluster-runtime',
-  'livestream-pipeline',
-];
+const lightConfig = path.join(scriptDir, 'mermaid-light-config.json');
+const darkConfig = path.join(scriptDir, 'mermaid-dark-config.json');
+const puppeteerConfig = path.join(scriptDir, 'mermaid-puppeteer-config.json');
 
 await mkdir(outputDir, { recursive: true });
+
+const diagrams = (await readdir(sourceDir, { withFileTypes: true }))
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.mmd'))
+  .map((entry) => path.basename(entry.name, '.mmd'))
+  .sort((left, right) => left.localeCompare(right));
 
 for (const diagram of diagrams) {
   for (const [theme, config] of [

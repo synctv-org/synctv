@@ -269,6 +269,11 @@ export default defineConfig({
               slug: 'operations/upgrades',
             },
             {
+              label: '发布流程',
+              translations: { en: 'Release Process' },
+              slug: 'operations/release',
+            },
+            {
               label: '数据、隐私与保留策略',
               translations: { en: 'Data, Privacy, and Retention' },
               slug: 'operations/data-retention',

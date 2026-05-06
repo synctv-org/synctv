@@ -1,0 +1,70 @@
+name: Helm CI
+
+on:
+  push:
+    branches: ['**']
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/helm-ci.yml"
+      - ".github/workflows/helm.yml"
+      - "Cargo.toml"
+      - "helm/**"
+      - "docs/src/content/docs/**/deployment/helm.mdx"
+      - "docs/src/content/docs/deployment/helm.mdx"
+  pull_request:
+    branches: ['**']
+    paths:
+      - ".github/workflows/helm-ci.yml"
+      - ".github/workflows/helm.yml"
+      - "Cargo.toml"
+      - "helm/**"
+      - "docs/src/content/docs/**/deployment/helm.mdx"
+      - "docs/src/content/docs/deployment/helm.mdx"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Check chart and Cargo versions
+        shell: bash
+        run: |
+          chart_version="$(sed -n 's/^version:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
+          app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
+          cargo_version="$(awk '/^\[workspace.package\]/{in_section=1; next} /^\[/{in_section=0} in_section && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)"
+
+          if [ "$chart_version" != "$cargo_version" ]; then
+            echo "Chart version ($chart_version) must match Cargo workspace version ($cargo_version)." >&2
+            exit 1
+          fi
+          if [ "$app_version" != "$cargo_version" ]; then
+            echo "Chart appVersion ($app_version) must match Cargo workspace version ($cargo_version)." >&2
+            exit 1
+          fi
+
+      - name: Lint chart
+        run: helm lint ./helm/synctv
+
+      - name: Render default manifests
+        run: helm template synctv ./helm/synctv --namespace synctv >/tmp/synctv-default.yaml
+
+      - name: Render gRPC ingress manifests
+        run: helm template synctv ./helm/synctv --namespace synctv --set ingress.grpc.enabled=true >/tmp/synctv-grpc.yaml
+
+      - name: Render KubeBlocks manifests
+        run: helm template synctv ./helm/synctv --namespace synctv --set postgresql.mode=kubeblocks --set redis.mode=kubeblocks >/tmp/synctv-kubeblocks.yaml

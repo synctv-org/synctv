@@ -17,14 +17,29 @@ concurrency:
 
 permissions:
   contents: write
+  packages: write
+  pull-requests: write
 
 jobs:
+  helm:
+    name: Publish Helm Chart
+    uses: ./.github/workflows/helm.yml
+    with:
+      release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+      HELM_OCI_REPOSITORY: ${{ secrets.HELM_OCI_REPOSITORY }}
+      HELM_REPOSITORY_URL: ${{ secrets.HELM_REPOSITORY_URL }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+
   release:
     name: Create GitHub Release
+    needs: helm
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -39,7 +54,16 @@ jobs:
             exit 0
           fi
 
-          gh release create "${RELEASE_TAG}" \
-            --target "${GITHUB_SHA}" \
-            --title "${RELEASE_TAG}" \
+          release_args=(
+            "${RELEASE_TAG}"
+            --target "${GITHUB_SHA}"
+            --title "${RELEASE_TAG}"
             --generate-notes
+          )
+
+          version="${RELEASE_TAG#v}"
+          if [[ "$version" == *-* ]]; then
+            release_args+=(--prerelease --latest=false)
+          fi
+
+          gh release create "${release_args[@]}"

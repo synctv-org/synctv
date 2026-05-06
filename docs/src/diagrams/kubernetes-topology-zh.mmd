@@ -1,0 +1,41 @@
+flowchart TB
+  Client[客户端应用]
+
+  subgraph Edge["Kubernetes 边界入口"]
+    HTTPIngress[HTTP Ingress]
+    GRPCIngress[gRPC Ingress<br/>backend-protocol: GRPC]
+    HTTPService[HTTP Service]
+    GRPCService[gRPC Service]
+  end
+
+  subgraph Workload["SyncTV 工作负载"]
+    PodA[SyncTV Pod]
+    PodB[SyncTV Pod]
+    PodC[SyncTV Pod]
+  end
+
+  PG[(PostgreSQL)]
+  Redis[(Redis)]
+  HLS[(可选共享 HLS 存储<br/>或发布节点代理)]
+  External[外部媒体 Provider]
+
+  Client --> HTTPIngress --> HTTPService
+  Client --> GRPCIngress --> GRPCService
+  HTTPService --> PodA
+  HTTPService --> PodB
+  HTTPService --> PodC
+  GRPCService --> PodA
+  GRPCService --> PodB
+  GRPCService --> PodC
+  PodA --> PG
+  PodB --> PG
+  PodC --> PG
+  PodA --> Redis
+  PodB --> Redis
+  PodC --> Redis
+  PodA --> HLS
+  PodB --> HLS
+  PodC --> HLS
+  PodA --> External
+  PodB --> External
+  PodC --> External

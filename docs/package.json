@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "diagrams": "node scripts/render-diagrams.mjs",
+    "diagrams": "node scripts/diagrams/render-diagrams.mjs",
     "dev": "npm run diagrams && astro dev",
     "build": "npm run diagrams && astro build",
     "preview": "astro preview",

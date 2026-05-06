@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/public/logo-noback.svg" alt="SyncTV" width="320">
+</p>
+
 # SyncTV
 
 [English](./README.md)

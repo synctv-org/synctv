@@ -22,7 +22,7 @@ maintainers:
   - name: SyncTV Team
     email: team@synctv.example.com
 
-icon: https://synctv.example.com/logo.png
+icon: https://synctv.wiki/logo-notext.svg
 
 annotations:
   category: Media

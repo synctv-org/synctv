@@ -15,6 +15,10 @@ export default defineConfig({
       },
       description: 'SyncTV 安装、配置、部署和运维文档',
       titleDelimiter: '·',
+      logo: {
+        src: './public/logo-notext.svg',
+        alt: 'SyncTV',
+      },
       defaultLocale: 'root',
       locales: {
         root: {
@@ -39,14 +43,28 @@ export default defineConfig({
           tag: 'meta',
           attrs: {
             name: 'twitter:card',
-            content: 'summary',
+            content: 'summary_large_image',
+          },
+        },
+        {
+          tag: 'meta',
+          attrs: {
+            property: 'og:image',
+            content: '/og.svg',
+          },
+        },
+        {
+          tag: 'meta',
+          attrs: {
+            name: 'twitter:image',
+            content: '/og.svg',
           },
         },
         {
           tag: 'meta',
           attrs: {
             name: 'theme-color',
-            content: '#0f8f78',
+            content: '#8788fe',
           },
         },
       ],

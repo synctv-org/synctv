@@ -13,6 +13,15 @@
   --sl-color-accent-high: #bdf7e8;
 }
 
+.site-title img {
+  border-radius: 0.45rem;
+  box-shadow: 0 0 0 1px rgba(15, 143, 120, 0.18);
+}
+
+:root[data-theme='dark'] .site-title img {
+  box-shadow: 0 0 0 1px rgba(70, 214, 183, 0.24);
+}
+
 .hero {
   border-radius: 1.5rem;
 }

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/public/logo-noback.svg" alt="SyncTV" width="320">
+  <img src="./docs/public/logo.svg" alt="SyncTV" width="180">
 </p>
 
 # SyncTV

@@ -78,7 +78,7 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
    docker compose exec synctv synctv system stats
    ```
 
-4. 如果生产 Compose 报 required variable missing，先补齐 secret 环境变量，再重新 `docker compose up -d`。
+4. 如果生产 Compose 报 required variable missing，先补齐仓库根目录 `.env.postgres` 和 `.env.synctv` 中的必填项，再重新 `docker compose up -d`。
 </Steps>
 
   </TabItem>
@@ -156,13 +156,12 @@ synctv --config /etc/synctv/synctv.yaml config validate
 
 ### Docker Compose
 
-生产 Compose 会要求显式 secret，这是预期行为。不要为了让服务启动而把弱 secret 写入 compose 文件。
+生产 Compose 会要求仓库根目录存在填好的 `.env.postgres` 和 `.env.synctv`，这是预期行为。不要为了让服务启动而把弱 secret 写入 compose 文件。
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+./scripts/init-compose-env.sh
+# 填写 .env.synctv 中的 SYNCTV_BOOTSTRAP_ROOT_PASSWORD，然后检查渲染结果。
+docker compose config
 docker compose up -d
 ```
 

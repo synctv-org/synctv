@@ -3,6 +3,8 @@ title: 发布流程
 description: 如何在 Cargo、镜像和 Helm chart 之间准备并发布 SyncTV 版本。
 ---
 
+import { helmOciRepository } from '../../../lib/project';
+
 SyncTV 在 Rust workspace、容器镜像和 Helm chart 之间使用同一个应用版本。
 
 ## 准备发布
@@ -40,7 +42,7 @@ git push origin v0.2.0
 workflow 会发布：
 
 - GitHub release。
-- OCI Helm chart。默认位置为 `ghcr.io/<owner>/<repo>/charts`，本仓库默认是 `ghcr.io/synctv-org/synctv/charts`。
+- OCI Helm chart。默认位置为 <code>{helmOciRepository}</code>，由当前仓库和文档构建环境推导。
 - 一个指向 `helm-charts` 分支的 PR，包含打包后的 chart 和更新后的 `index.yaml`。
 
 传统 Helm repository 要在 `helm-charts` PR 合并，并且 GitHub Pages 使用该分支提供内容后才会更新。

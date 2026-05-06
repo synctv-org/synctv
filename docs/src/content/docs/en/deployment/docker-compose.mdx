@@ -4,6 +4,7 @@ description: Deploy SyncTV with docker-compose.yml and docker-compose.dev.yml.
 ---
 
 import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
+import { dockerImageReference } from '../../../../lib/project';
 
 ## Two Compose Files
 
@@ -12,7 +13,7 @@ The repository provides two Compose files:
 | File | Purpose | Behavior |
 | --- | --- | --- |
 | `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes development secrets |
-| `docker-compose.yml` | Image-based deployment | Uses `synctvorg/synctv:0.1.0` and requires explicit production secrets |
+| `docker-compose.yml` | Image-based deployment | Uses <code>{dockerImageReference}</code> and requires explicit production secrets |
 
 ## Startup Modes
 
@@ -36,20 +37,20 @@ It includes development-only JWT, cluster, credential encryption, OPAQUE, and ro
   </TabItem>
   <TabItem label="Production Compose" icon="approve-check-circle">
 
-Set secrets before startup:
+Generate persistent environment files before first startup:
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
-export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+./scripts/init-compose-env.sh
+```
 
+Edit `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`, then start:
+
+```bash
+docker compose config
 docker compose up -d
 ```
 
-If a required variable is missing, Compose refuses to render the final config.
+Docker Compose loads `.env.postgres` and `.env.synctv` through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades.
 
 When upgrading, update the image tag in `docker-compose.yml` or pin the desired image in your own Compose override file.
 

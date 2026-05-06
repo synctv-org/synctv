@@ -56,18 +56,16 @@ Production needs at least these secrets:
   <TabItem label="Production Compose" icon="seti:docker">
 
 <Steps>
-1. Prepare production secrets:
+1. Generate a persistent env files:
 
    ```bash
-   export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-   export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-   export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-   export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+   ./scripts/init-compose-env.sh
    ```
 
-2. Start services:
+2. Edit `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`, then start services:
 
    ```bash
+   docker compose config
    docker compose up -d
    ```
 
@@ -124,20 +122,20 @@ docker compose -f docker-compose.dev.yml logs -f synctv
 
 ## Production Compose
 
-Production Compose intentionally refuses to start without explicit secrets:
+Production Compose intentionally refuses to start without explicit secrets. Generate and keep persistent `.env.postgres` and `.env.synctv` files in the repository root:
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
-export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+./scripts/init-compose-env.sh
+```
 
+Edit `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`, then start:
+
+```bash
+docker compose config
 docker compose up -d
 ```
 
-If a required variable is missing, `docker compose config` or `docker compose up` fails. This prevents weak default secrets from reaching production.
+Docker Compose reads `.env.postgres` and `.env.synctv` through `env_file`. PostgreSQL reads only database variables, and `synctv` reads only application settings.
 
 ## Validate Configuration
 

@@ -3,6 +3,8 @@ title: Release Process
 description: How to prepare and publish SyncTV releases across Cargo, images, and Helm charts.
 ---
 
+import { helmOciRepository } from '../../../../lib/project';
+
 SyncTV uses one application version across the Rust workspace, container image, and Helm chart.
 
 ## Prepare a Release
@@ -40,7 +42,7 @@ The `Release` workflow calls the `Helm Release` workflow, which can only be trig
 The workflow publishes:
 
 - A GitHub release.
-- The Helm chart as an OCI artifact. The default parent repository is `ghcr.io/<owner>/<repo>/charts`; for this repository that is `ghcr.io/synctv-org/synctv/charts`.
+- The Helm chart as an OCI artifact. The default parent repository is <code>{helmOciRepository}</code>, derived from the current repository and docs build environment.
 - A PR into the `helm-charts` branch containing the packaged chart and updated `index.yaml`.
 
 The traditional Helm repository becomes available after the `helm-charts` PR is merged and GitHub Pages serves that branch.

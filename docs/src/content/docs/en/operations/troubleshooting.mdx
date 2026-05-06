@@ -78,7 +78,7 @@ Do not start by reading every configuration field. Classify the failure, then ju
    docker compose exec synctv synctv system stats
    ```
 
-4. If production Compose reports a missing required variable, set the required secrets and run `docker compose up -d` again.
+4. If production Compose reports a missing required variable, fill the required values in the repository root `.env.postgres` and `.env.synctv` and run `docker compose up -d` again.
 </Steps>
 
   </TabItem>
@@ -156,13 +156,12 @@ See [How Configuration Works](../../configuration/how-configuration-works/) for 
 
 ### Docker Compose
 
-Production Compose intentionally requires explicit secrets. Do not write weak secrets into the compose file just to make the service start.
+Production Compose intentionally requires populated `.env.postgres` and `.env.synctv` files in the repository root. Do not write weak secrets into the compose file just to make the service start.
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+./scripts/init-compose-env.sh
+# Fill SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv, then inspect the rendered config.
+docker compose config
 docker compose up -d
 ```
 

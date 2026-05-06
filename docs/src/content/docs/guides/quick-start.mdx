@@ -59,18 +59,16 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 <Steps>
 
-1. 准备生产 secret：
+1. 生成持久化 env files：
 
    ```bash
-   export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-   export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-   export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-   export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="请换成强密码"
+   ./scripts/init-compose-env.sh
    ```
 
-2. 启动服务：
+2. 编辑 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，然后启动服务：
 
    ```bash
+   docker compose config
    docker compose up -d
    ```
 
@@ -130,20 +128,20 @@ docker compose -f docker-compose.dev.yml logs -f synctv
 
 ## 生产 Compose 启动
 
-生产 compose 不会默默使用弱 secret。你需要显式设置：
+生产 compose 不会默默使用弱 secret。你需要生成并长期保存仓库根目录的 `.env.postgres` 和 `.env.synctv`：
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
-export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="请换成强密码"
+./scripts/init-compose-env.sh
+```
 
+编辑 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，再启动：
+
+```bash
+docker compose config
 docker compose up -d
 ```
 
-如果漏掉必填项，`docker compose config` 或 `docker compose up` 会直接报错。这是预期行为，目的是避免生产环境用默认弱密码启动。
+Docker Compose 会通过 `env_file` 分别读取 `.env.postgres` 和 `.env.synctv`。PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。
 
 ## 验证配置
 

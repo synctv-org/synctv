@@ -12,6 +12,8 @@ target/
 *.pem
 *.key
 .env
+.env.postgres
+.env.synctv
 synctv.yaml
 
 AGENTS.md

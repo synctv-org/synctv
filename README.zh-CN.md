@@ -39,13 +39,10 @@ docker compose -f docker-compose.dev.yml up -d
 生产 Compose 需要显式配置 secret：
 
 ```bash
-export SYNCTV_JWT_SECRET="$(openssl rand -base64 32)"
-export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
-export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
-export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="replace-with-a-strong-password"
+./scripts/init-compose-env.sh
 
+# 启动前编辑 .env.synctv 中的 SYNCTV_BOOTSTRAP_ROOT_PASSWORD。
+docker compose config
 docker compose up -d
 ```
 

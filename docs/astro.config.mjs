@@ -2,13 +2,11 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightCodeblockFullscreen from 'starlight-codeblock-fullscreen';
 import starlightLinksValidator from 'starlight-links-validator';
-
-const site = process.env.SYNCTV_DOCS_SITE || 'https://synctv.wiki';
-const base = process.env.SYNCTV_DOCS_BASE || '/';
+import { docsBase, docsSite, githubEditUrl, githubUrl } from './src/lib/project';
 
 export default defineConfig({
-  site,
-  base,
+  site: docsSite,
+  base: docsBase,
   integrations: [
     starlight({
       title: {
@@ -54,7 +52,7 @@ export default defineConfig({
       ],
       customCss: ['./src/styles/custom.css'],
       editLink: {
-        baseUrl: 'https://github.com/synctv-org/synctv/edit/main/docs/',
+        baseUrl: githubEditUrl,
       },
       lastUpdated: true,
       tableOfContents: {
@@ -91,7 +89,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/synctv-org/synctv',
+          href: githubUrl,
         },
       ],
       sidebar: [
@@ -124,6 +122,28 @@ export default defineConfig({
             },
             { label: '文档导览', translations: { en: 'Documentation Map' }, slug: 'guides/documentation-map' },
           ],
+        },
+        {
+          label: '部署',
+          translations: { en: 'Deployment' },
+          items: [
+            {
+              label: 'Docker Compose 部署',
+              translations: { en: 'Docker Compose Deployment' },
+              slug: 'deployment/docker-compose',
+            },
+            {
+              label: 'Helm 部署',
+              translations: { en: 'Helm Deployment' },
+              slug: 'deployment/helm',
+            },
+            {
+              label: '生产部署清单',
+              translations: { en: 'Production Checklist' },
+              slug: 'deployment/production-checklist',
+            },
+          ],
+          collapsed: false,
         },
         {
           label: '配置参考',
@@ -218,28 +238,6 @@ export default defineConfig({
               label: '内部缓冲区',
               translations: { en: 'Internal Buffers' },
               slug: 'configuration/buffer-sizes',
-            },
-          ],
-          collapsed: false,
-        },
-        {
-          label: '部署',
-          translations: { en: 'Deployment' },
-          items: [
-            {
-              label: 'Docker Compose 部署',
-              translations: { en: 'Docker Compose Deployment' },
-              slug: 'deployment/docker-compose',
-            },
-            {
-              label: 'Helm 部署',
-              translations: { en: 'Helm Deployment' },
-              slug: 'deployment/helm',
-            },
-            {
-              label: '生产部署清单',
-              translations: { en: 'Production Checklist' },
-              slug: 'deployment/production-checklist',
             },
           ],
           collapsed: false,

@@ -34,13 +34,13 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 
 ## Quick Start
 
-Development environment:
+Development environment from a full repository checkout:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Production Compose requires explicit secrets:
+Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets:
 
 ```bash
 ./scripts/init-compose-env.sh

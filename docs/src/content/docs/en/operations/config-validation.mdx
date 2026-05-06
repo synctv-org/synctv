@@ -94,6 +94,8 @@ export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 
 ## Compose Debugging
 
+First make sure you got the production Compose files from [Docker Compose Deployment](../../deployment/docker-compose/#get-the-compose-files), then generated `.env.postgres` and `.env.synctv` in the same directory.
+
 Inspect final Compose config:
 
 ```bash
@@ -106,7 +108,7 @@ Inspect logs:
 docker compose logs -f synctv
 ```
 
-If Compose reports a required variable missing, production Compose expects explicit secrets.
+If Compose reports a required variable missing, production Compose expects explicit secrets. Return to the Compose file directory, run `./scripts/init-compose-env.sh`, and fill the root password in `.env.synctv`.
 
 ## Helm Debugging
 

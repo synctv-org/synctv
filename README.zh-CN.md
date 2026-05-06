@@ -34,13 +34,13 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 
 ## 快速开始
 
-开发环境：
+开发环境需要完整源码仓库：
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-生产 Compose 需要显式配置 secret：
+生产 Compose 可以在仓库根目录执行，也可以在只包含 `docker-compose.yml`、`.env.postgres.example`、`.env.synctv.example` 和 `scripts/init-compose-env.sh` 的部署目录执行。它需要显式配置 secret：
 
 ```bash
 ./scripts/init-compose-env.sh

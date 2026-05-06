@@ -4,6 +4,7 @@ description: 用最少步骤启动 SyncTV，并理解启动前必须准备的配
 ---
 
 import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { composeDeploymentDocsUrl } from '../../../lib/project';
 
 ## 你需要准备什么？
 
@@ -59,7 +60,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 <Steps>
 
-1. 生成持久化 env files：
+1. 生成持久化 env files。执行前请先按 <a href={composeDeploymentDocsUrl}>Docker Compose 部署</a> 获取 `docker-compose.yml`、env example 和初始化脚本：
 
    ```bash
    ./scripts/init-compose-env.sh
@@ -111,6 +112,8 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## 本地开发启动
 
+先 clone 源码仓库，再在仓库根目录执行命令。开发 Compose 需要仓库中的 Dockerfile 和源码。
+
 如果只是本地试用：
 
 ```bash
@@ -128,7 +131,9 @@ docker compose -f docker-compose.dev.yml logs -f synctv
 
 ## 生产 Compose 启动
 
-生产 compose 不会默默使用弱 secret。你需要生成并长期保存仓库根目录的 `.env.postgres` 和 `.env.synctv`：
+先按 [Docker Compose 部署](../../deployment/docker-compose/#获取-compose-文件) 获取 `docker-compose.yml`、`.env.postgres.example`、`.env.synctv.example` 和 `scripts/init-compose-env.sh`。
+
+生产 compose 不会默默使用弱 secret。你需要在 Compose 文件目录生成并长期保存 `.env.postgres` 和 `.env.synctv`：
 
 ```bash
 ./scripts/init-compose-env.sh

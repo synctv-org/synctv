@@ -3,8 +3,17 @@ title: Docker Compose Deployment
 description: Deploy SyncTV with docker-compose.yml and docker-compose.dev.yml.
 ---
 
-import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
-import { dockerImageReference } from '../../../../lib/project';
+import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import {
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeDevFileUrl,
+  dockerComposeFileUrl,
+  dockerImageReference,
+  githubCloneUrl,
+  githubTreeUrl,
+} from '../../../../lib/project';
 
 ## Two Compose Files
 
@@ -14,6 +23,26 @@ The repository provides two Compose files:
 | --- | --- | --- |
 | `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes development secrets |
 | `docker-compose.yml` | Image-based deployment | Uses <code>{dockerImageReference}</code> and requires explicit production secrets |
+
+## Get the Compose Files
+
+Development Compose depends on the repository Dockerfile and source tree. Start from a full checkout:
+
+<Code code={`git clone ${githubCloneUrl} synctv
+cd synctv`} lang="bash" />
+
+For production single-node deployment, you can download the minimum required files into an empty directory:
+
+<Code code={`mkdir synctv-compose
+cd synctv-compose
+curl -fsSLO ${dockerComposeFileUrl}
+curl -fsSLO ${composePostgresEnvExampleUrl}
+curl -fsSLO ${composeSynctvEnvExampleUrl}
+mkdir -p scripts
+curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh
+chmod +x scripts/init-compose-env.sh`} lang="bash" />
+
+You can also inspect the files in the <a href={githubTreeUrl}>source repository</a>. The development Compose file is <a href={dockerComposeDevFileUrl}>docker-compose.dev.yml</a>.
 
 ## Startup Modes
 

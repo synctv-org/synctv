@@ -94,6 +94,8 @@ export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 
 ## Compose 排错
 
+先确认你已经按 [Docker Compose 部署](../../deployment/docker-compose/#获取-compose-文件) 获取生产 Compose 文件，并在同一目录生成 `.env.postgres` 和 `.env.synctv`。
+
 查看最终 Compose 配置：
 
 ```bash
@@ -106,7 +108,7 @@ docker compose config
 docker compose logs -f synctv
 ```
 
-如果 Compose 报 required variable missing，说明生产 compose 需要显式设置 secret。
+如果 Compose 报 required variable missing，说明生产 compose 需要显式设置 secret。回到 Compose 文件所在目录，运行 `./scripts/init-compose-env.sh` 并填写 `.env.synctv` 中的 root 密码。
 
 ## Helm 排错
 

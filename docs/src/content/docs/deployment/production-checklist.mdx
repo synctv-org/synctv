@@ -243,6 +243,8 @@ helm lint ./helm/synctv
 helm template synctv ./helm/synctv
 ```
 
+如果使用生产 Docker Compose，先按 [Docker Compose 部署](../docker-compose/#获取-compose-文件) 获取 `docker-compose.yml` 和 env 初始化脚本，并在 Compose 文件目录保存 `.env.postgres` 与 `.env.synctv`。
+
 启动后检查：
 
 ```bash

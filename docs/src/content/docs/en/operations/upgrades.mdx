@@ -58,6 +58,8 @@ Running `synctv db migrate` separately in production is a release-process choice
 
 ## Docker Compose Upgrade
 
+Run these commands from the production Compose file directory. If you do not have a deployment directory yet, first get `docker-compose.yml`, env examples, and the init script from [Docker Compose Deployment](../../deployment/docker-compose/#get-the-compose-files).
+
 <Steps>
 1. Pull the new image.
 2. Back up database and secrets.

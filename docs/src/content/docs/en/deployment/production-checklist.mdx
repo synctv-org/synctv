@@ -234,6 +234,8 @@ helm lint ./helm/synctv
 helm template synctv ./helm/synctv
 ```
 
+For production Docker Compose, first get `docker-compose.yml` and the env init script from [Docker Compose Deployment](../docker-compose/#get-the-compose-files), then keep `.env.postgres` and `.env.synctv` in the Compose file directory.
+
 After startup:
 
 ```bash

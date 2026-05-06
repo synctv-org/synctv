@@ -3,8 +3,17 @@ title: Docker Compose 部署
 description: 使用 docker-compose.yml 和 docker-compose.dev.yml 部署 SyncTV。
 ---
 
-import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
-import { dockerImageReference } from '../../../lib/project';
+import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import {
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeDevFileUrl,
+  dockerComposeFileUrl,
+  dockerImageReference,
+  githubCloneUrl,
+  githubTreeUrl,
+} from '../../../lib/project';
 
 ## 两个 Compose 文件的区别
 
@@ -14,6 +23,26 @@ import { dockerImageReference } from '../../../lib/project';
 | --- | --- | --- |
 | `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
 | `docker-compose.yml` | 预构建镜像部署 | 使用 <code>{dockerImageReference}</code>，需要显式提供生产 secret |
+
+## 获取 Compose 文件
+
+开发 Compose 依赖仓库中的 Dockerfile 和源码，请先获取完整仓库：
+
+<Code code={`git clone ${githubCloneUrl} synctv
+cd synctv`} lang="bash" />
+
+如果只做生产单机部署，可以在空目录下载最少文件：
+
+<Code code={`mkdir synctv-compose
+cd synctv-compose
+curl -fsSLO ${dockerComposeFileUrl}
+curl -fsSLO ${composePostgresEnvExampleUrl}
+curl -fsSLO ${composeSynctvEnvExampleUrl}
+mkdir -p scripts
+curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh
+chmod +x scripts/init-compose-env.sh`} lang="bash" />
+
+文件也可以从源码仓库页面查看：<a href={githubTreeUrl}>源码仓库</a>。开发 Compose 文件地址是 <a href={dockerComposeDevFileUrl}>docker-compose.dev.yml</a>。
 
 ## 开发 Compose
 

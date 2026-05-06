@@ -50,7 +50,7 @@ docker compose config
 docker compose up -d
 ```
 
-Docker Compose loads `.env.postgres` and `.env.synctv` through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades.
+Docker Compose loads required `.env.postgres` and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades. If either file is missing, `docker compose config` fails immediately.
 
 When upgrading, update the image tag in `docker-compose.yml` or pin the desired image in your own Compose override file.
 

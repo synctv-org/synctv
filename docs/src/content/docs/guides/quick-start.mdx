@@ -141,7 +141,7 @@ docker compose config
 docker compose up -d
 ```
 
-Docker Compose 会通过 `env_file` 分别读取 `.env.postgres` 和 `.env.synctv`。PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。
+Docker Compose 会通过 `env_file` 分别读取必需的 `.env.postgres` 和 `.env.synctv`。PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。缺少任一文件时，`docker compose config` 会直接失败。
 
 ## 验证配置
 

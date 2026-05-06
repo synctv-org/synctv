@@ -58,7 +58,7 @@ docker compose config
 docker compose up -d
 ```
 
-Docker Compose 会通过 `env_file` 分别加载 `.env.postgres` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。请备份这两个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。
+Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。请备份这两个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
 
 升级镜像时同步修改 `docker-compose.yml` 中的镜像 tag，或在自己的 Compose 覆盖文件中指定镜像版本。
 

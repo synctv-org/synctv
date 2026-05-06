@@ -135,7 +135,7 @@ docker compose config
 docker compose up -d
 ```
 
-Docker Compose reads `.env.postgres` and `.env.synctv` through `env_file`. PostgreSQL reads only database variables, and `synctv` reads only application settings.
+Docker Compose reads required `.env.postgres` and `.env.synctv` files through `env_file`. PostgreSQL reads only database variables, and `synctv` reads only application settings. If either file is missing, `docker compose config` fails immediately.
 
 ## Validate Configuration
 

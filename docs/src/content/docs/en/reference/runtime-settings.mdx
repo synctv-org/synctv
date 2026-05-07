@@ -60,11 +60,17 @@ Semantics:
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `permissions.admin_default` | u64 bitmask | `1073741823` | Global default permissions for room admin |
-| `permissions.member_default` | u64 bitmask | `262143` | Global default permissions for room member |
-| `permissions.guest_default` | u64 bitmask | `511` | Global default permissions for room guest |
+| `permissions.admin_default` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
+| `permissions.member_default` | Permission-name array | Built-in member permission set | Global default permissions for room member |
+| `permissions.guest_default` | Permission-name array | Built-in guest permission set | Global default permissions for room guest |
 
-Permission bitmask semantics are described in [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/).
+These settings are stored as JSON arrays of stable permission names, for example:
+
+```json
+["send_chat", "add_media", "view_playlist", "view_member_list"]
+```
+
+See [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/) for permission names, role defaults, and room override rules.
 
 ### Room
 
@@ -136,7 +142,7 @@ User-level 2FA, notification preferences, and provider defaults are user prefere
 | `proxy.live_proxy` | bool | `true` | Allow livestream proxy paths |
 | `proxy.allow_proxy_to_local` | bool | `true` | Allow proxying to local or private targets |
 
-These are business proxy policy switches, not startup setting `cache.proxy_slice_cache_enabled`. Slice-cache enablement is startup-only.
+These are business proxy policy switches, not startup setting `proxy_slice_cache.enabled`. Slice-cache enablement is startup-only.
 
 ### RTMP
 

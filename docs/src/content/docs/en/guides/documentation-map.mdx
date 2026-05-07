@@ -15,19 +15,13 @@ For a first deployment, follow the deployment path. For an existing service, jum
 
 <Tabs syncKey="reader-path">
   <TabItem label="Deployer" icon="rocket">
-    <Steps>
-      1. Start with [Quick Start](../quick-start/) and confirm the minimal Compose stack can boot.
-      2. Read [Architecture Overview](../architecture/) to understand the main service, management, metrics, Redis, PostgreSQL, and provider proxy boundaries.
-      3. Read [How Configuration Works](../../configuration/how-configuration-works/) to understand defaults, config files, environment variables, and CLI overrides.
-      4. Start from the [Full Configuration Example](../../configuration/full-example/) minimal production skeleton, then copy feature sections from the full template as needed.
-      5. Read [Security and Secrets](../../configuration/security/) to replace example secrets and keep long-lived keys stable across restarts and upgrades.
-      6. Use [Docker Compose Deployment](../../deployment/docker-compose/) or [Helm Deployment](../../deployment/helm/) depending on your runtime.
-      7. Before launch, run through the [Production Checklist](../../deployment/production-checklist/).
-      8. Complete [Backup and Restore](../../operations/backup-restore/), [Upgrades and Migrations](../../operations/upgrades/), and [Observability Runbook](../../operations/observability/).
-      9. If you are building a client, SDK, or third-party integration, read the [Client Integration Guide](../client-integration/).
-      10. If you are designing data governance, privacy, or retention policy docs, read [Data, Privacy, and Retention](../../operations/data-retention/).
-      11. For startup, Ingress, authentication, or media playback failures, start from [Troubleshooting](../../operations/troubleshooting/).
-    </Steps>
+    **First-start loop**: Complete [Quick Start](../quick-start/) with single-node production Compose. Success means `.env.postgres` and `.env.synctv` are preserved, `/health/ready` succeeds, and the root user can log in.
+
+    **Production hardening**: Use the [Production Checklist](../../deployment/production-checklist/) for TLS, backups, metrics, alerts, and upgrade planning. Read [Docker Compose Deployment](../../deployment/docker-compose/) when you need file, volume, and port details.
+
+    **Understanding and expansion**: Read [Architecture Overview](../architecture/) for service, management, metrics, Redis, PostgreSQL, and provider proxy boundaries. When changing configuration, use [How Configuration Works](../../configuration/how-configuration-works/), the [Configuration Index](../../reference/configuration-index/), and [Full Configuration Example](../../configuration/full-example/).
+
+    **Multi-replica and operations**: Only move to [Helm Deployment](../../deployment/helm/) and [Cluster Configuration](../../configuration/cluster/) when you need Kubernetes or multiple replicas. After launch, use [Backup and Restore](../../operations/backup-restore/), [Upgrades and Migrations](../../operations/upgrades/), [Observability Runbook](../../operations/observability/), and [Troubleshooting](../../operations/troubleshooting/).
   </TabItem>
   <TabItem label="Administrator" icon="setting">
     <Steps>
@@ -58,7 +52,7 @@ For a first deployment, follow the deployment path. For an existing service, jum
   <LinkCard
     title="Run the service"
     href="../quick-start/"
-    description="Start PostgreSQL, Redis, and SyncTV, then verify that the service is reachable."
+    description="Start PostgreSQL, Redis, and SyncTV with single-node production Compose, then verify reachability."
   />
   <LinkCard
     title="Prepare production"
@@ -123,7 +117,7 @@ For a first deployment, follow the deployment path. For an existing service, jum
   <LinkCard
     title="Use a config template"
     href="../../configuration/full-example/"
-    description="Use the minimal production skeleton and the full YAML example covering all static fields."
+    description="Use the Compose env entrypoint, minimal production YAML skeleton, and full static field example."
   />
   <LinkCard
     title="Understand config loading"
@@ -142,8 +136,8 @@ For a first deployment, follow the deployment path. For an existing service, jum
   />
   <LinkCard
     title="Troubleshoot proxy cache"
-    href="../../configuration/cache-and-proxy/"
-    description="Understand business caches, proxy slice cache, Range behavior, storage, TTL, and capacity controls."
+    href="../../configuration/proxy-slice-cache/"
+    description="Understand proxy slice cache, Range behavior, file backend storage, and cache boundaries."
   />
   <LinkCard
     title="Integrate with the API"
@@ -175,17 +169,3 @@ The configuration pages are detailed. Read them by dependency and enabled featur
     For multi-replica deployments, read cluster, Redis, Helm, Ingress, HLS storage, and metrics pages.
   </Card>
 </CardGrid>
-
-## Documentation Maintenance Checklist
-
-- When adding a configuration field, update the [Configuration Index](../../reference/configuration-index/), the [Full Configuration Example](../../configuration/full-example/), and the matching configuration topic.
-- When adding a CLI command, update the [CLI Reference](../../reference/cli/).
-- When changing deployment templates, update [Docker Compose Deployment](../../deployment/docker-compose/) or [Helm Deployment](../../deployment/helm/).
-- When changing common errors, ports, Ingress behavior, authentication, or proxy behavior, update [Troubleshooting](../../operations/troubleshooting/).
-- When changing runtime surfaces, dependencies, provider/proxy boundaries, or cluster behavior, update [Architecture Overview](../architecture/).
-- When changing login, 2FA, OAuth2, token, management, or permission boundaries, update [Authentication and Security Model](../security-model/).
-- When changing users, rooms, reviews, providers, runtime settings, or management CLI semantics, update [Administration Runbook](../administration/).
-- When changing room roles, permission bits, room settings, member overrides, or user preferences, update [Rooms, Permissions, and Preferences](../rooms-permissions/).
-- When changing hot-reload fields registered in `SettingsRegistry`, update [Runtime Settings Reference](../../reference/runtime-settings/).
-- When changing the OpenAPI feature, Swagger UI path, or OpenAPI JSON path, update [OpenAPI Access](../../reference/openapi/).
-- When changing cluster, admin, or service protobuf files, update [gRPC Debugging](../../reference/grpc/).

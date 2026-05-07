@@ -1,9 +1,12 @@
 ---
 title: 房间、权限与用户偏好
-description: SyncTV 的全局用户角色、房间角色、权限位、房间设置、成员权限覆盖和用户偏好语义。
+description: SyncTV 的全局用户角色、房间角色、权限名称、房间设置、成员权限覆盖和用户偏好语义。
 ---
 
 import { Aside, Card, CardGrid, TabItem, Tabs } from '@astrojs/starlight/components';
+import Diagram from '../../../components/Diagram.astro';
+import permissionEvaluationDark from '../../../assets/diagrams/permission-evaluation-zh-dark.svg';
+import permissionEvaluationLight from '../../../assets/diagrams/permission-evaluation-zh-light.svg';
 
 ## 两层角色模型
 
@@ -46,11 +49,12 @@ SyncTV 有两层角色，不能混为一谈。
 
 有效权限按三层计算：
 
-```text
-全局角色默认权限
-  -> 房间设置 added/removed 权限
-  -> 成员个人 added/removed 权限
-```
+<Diagram
+  light={permissionEvaluationLight}
+  dark={permissionEvaluationDark}
+  alt="房间有效权限计算模型图，展示房间角色基础权限、房间设置 added 和 removed 权限、成员个人 added 和 removed 权限，以及 creator 始终拥有全部权限的特例。"
+  caption="有效权限从房间角色基础权限开始，依次叠加房间设置和成员个人覆盖；同一权限同时 add 和 remove 时，remove 生效。"
+/>
 
 规则：
 
@@ -60,34 +64,34 @@ SyncTV 有两层角色，不能混为一谈。
 - `guest_added_permissions` 不能超过 member 级别上限。
 - `DELETE_ROOM` 不属于房间内可委派权限，房间删除应由创建者或平台管理面处理。
 
-## 主要权限位
+## 主要权限名称
 
-| 权限 | 含义 |
+运行时设置和管理界面使用稳定的 snake_case 权限名称。
+
+| 权限名称 | 含义 |
 | --- | --- |
-| `SEND_CHAT` | 发送聊天和弹幕消息 |
-| `ADD_MEDIA` | 添加媒体 |
-| `DELETE_MEDIA_SELF` / `DELETE_MEDIA_ANY` | 删除自己添加的媒体 / 删除任意媒体 |
-| `EDIT_MEDIA_SELF` / `EDIT_MEDIA_ANY` | 编辑自己添加的媒体 / 编辑任意媒体 |
-| `REORDER_PLAYLIST` | 调整播放列表顺序 |
-| `CLEAR_PLAYLIST` | 清空播放列表 |
-| `START_LIVE` | 开始直播推流 |
-| `PLAY_CONTROL` | 播放、暂停、seek |
-| `CHANGE_CURRENT_MEDIA` | 切换当前播放媒体 |
-| `CHANGE_PLAYBACK_RATE` | 修改播放速度 |
-| `APPROVE_MEMBER` | 审批加入房间请求 |
-| `KICK_MEMBER` | 踢出成员 |
-| `BAN_MEMBER` | 封禁或解封成员 |
-| `SET_MEMBER_PERMISSIONS` | 修改成员权限 |
-| `ADD_MEMBER` | 主动添加成员 |
-| `SET_ROOM_SETTINGS` | 修改房间设置 |
-| `DELETE_CHAT` | 删除聊天消息 |
-| `DELETE_ROOM` | 删除房间，不可作为普通房间内委派权限 |
-| `VIEW_PLAYLIST` | 查看播放列表 |
-| `VIEW_MEMBER_LIST` | 查看成员列表 |
-| `VIEW_CHAT_HISTORY` | 查看聊天历史 |
-| `USE_WEBRTC` | 使用 WebRTC 语音/视频能力 |
-
-权限值在 API/CLI 中通常以 `u64` bitmask 表达。修改 bitmask 前应先确认目标角色和当前有效权限。
+| `send_chat` | 发送聊天和弹幕消息 |
+| `add_media` | 添加媒体 |
+| `delete_media_self` / `delete_media_any` | 删除自己添加的媒体 / 删除任意媒体 |
+| `edit_media_self` / `edit_media_any` | 编辑自己添加的媒体 / 编辑任意媒体 |
+| `reorder_playlist` | 调整播放列表顺序 |
+| `clear_playlist` | 清空播放列表 |
+| `start_live` | 开始直播推流 |
+| `play_control` | 播放、暂停、seek |
+| `change_current_media` | 切换当前播放媒体 |
+| `change_playback_rate` | 修改播放速度 |
+| `approve_member` | 审批加入房间请求 |
+| `kick_member` | 踢出成员 |
+| `ban_member` | 封禁或解封成员 |
+| `set_member_permissions` | 修改成员权限 |
+| `add_member` | 主动添加成员 |
+| `set_room_settings` | 修改房间设置 |
+| `delete_chat` | 删除聊天消息 |
+| `delete_room` | 删除房间，不可作为普通房间内委派权限 |
+| `view_playlist` | 查看播放列表 |
+| `view_member_list` | 查看成员列表 |
+| `view_chat_history` | 查看聊天历史 |
+| `use_webrtc` | 使用 WebRTC 语音/视频能力 |
 
 ## 房间设置
 
@@ -103,9 +107,9 @@ SyncTV 有两层角色，不能混为一谈。
 | `chat_enabled` | `true` | 是否启用聊天 |
 | `danmaku_enabled` | `true` | 是否启用弹幕 |
 | `auto_play` | `{}` | 自动播放策略，JSON 结构 |
-| `admin_added_permissions` / `admin_removed_permissions` | `0` | 房间 admin 默认权限增减 |
-| `member_added_permissions` / `member_removed_permissions` | `0` | 房间 member 默认权限增减 |
-| `guest_added_permissions` / `guest_removed_permissions` | `0` | 房间 guest 默认权限增减 |
+| `admin_added_permissions` / `admin_removed_permissions` | 空权限集合 | 房间 admin 默认权限增减 |
+| `member_added_permissions` / `member_removed_permissions` | 空权限集合 | 房间 member 默认权限增减 |
+| `guest_added_permissions` / `guest_removed_permissions` | 空权限集合 | 房间 guest 默认权限增减 |
 
 示例：
 
@@ -160,8 +164,8 @@ synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}
 ## 推荐管理策略
 
 <CardGrid>
-  <Card title="少用 bitmask 直改" icon="setting">
-    能用角色表达的权限不要直接改 bitmask。必须改 bitmask 时，先记录当前值和变更原因。
+  <Card title="使用权限名称" icon="setting">
+    权限配置应使用稳定的权限名称集合，便于审查、复制和回滚。
   </Card>
   <Card title="区分全局和房间" icon="puzzle">
     平台 admin 和房间 admin 是两套概念，排查权限问题时先确认操作发生在哪一层。

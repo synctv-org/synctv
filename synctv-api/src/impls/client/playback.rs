@@ -77,11 +77,11 @@ pub(crate) fn build_start_playback_request(
     } = req;
 
     Ok(StartPlaybackTarget {
-        media_id: crate::impls::proto_validated_optional_media_id(media_id, public_id_codec),
+        media_id: crate::impls::proto_validated_optional_media_id(media_id, public_id_codec)?,
         playlist_id: crate::impls::proto_validated_optional_playlist_id(
             playlist_id,
             public_id_codec,
-        ),
+        )?,
         target,
     })
 }

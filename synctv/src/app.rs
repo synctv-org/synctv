@@ -1313,8 +1313,8 @@ mod tests {
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
         ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig,
         HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-        PasswordComplexityConfig, PublicIdsConfig, RedisConfig, ServerConfig, WebAuthnConfig,
-        WebRTCConfig,
+        PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig, RedisConfig,
+        ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
@@ -1466,6 +1466,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),

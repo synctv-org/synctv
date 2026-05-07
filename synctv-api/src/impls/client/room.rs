@@ -146,10 +146,7 @@ fn build_transfer_room_ownership_request(
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<UserId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    Ok(crate::impls::proto_validated_user_id(
-        req.new_owner_user_id,
-        public_id_codec,
-    ))
+    crate::impls::proto_validated_user_id(req.new_owner_user_id, public_id_codec)
 }
 
 fn build_check_room_request(
@@ -157,10 +154,7 @@ fn build_check_room_request(
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    Ok(crate::impls::proto_validated_room_id(
-        req.room_id,
-        public_id_codec,
-    ))
+    crate::impls::proto_validated_room_id(req.room_id, public_id_codec)
 }
 
 pub(crate) fn build_create_websocket_ticket_request(
@@ -168,10 +162,7 @@ pub(crate) fn build_create_websocket_ticket_request(
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    Ok(crate::impls::proto_validated_room_id(
-        req.room_id.clone(),
-        public_id_codec,
-    ))
+    crate::impls::proto_validated_room_id(req.room_id.clone(), public_id_codec)
 }
 
 fn websocket_ticket_service_unavailable_error() -> ApiError {
@@ -1416,6 +1407,25 @@ mod tests {
         .expect("valid room id");
 
         assert_eq!(parsed, room_id);
+    }
+
+    #[test]
+    fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id() {
+        let codec = crate::PublicIdCodec::default_for_tests();
+        let error = build_create_websocket_ticket_request(
+            &crate::proto::client::CreateWebSocketTicketRequest {
+                room_id: "room_abc".to_string(),
+            },
+            &codec,
+        )
+        .expect_err("plain public ID body must decode");
+
+        match error {
+            crate::impls::ApiError::InvalidInput(message) => {
+                assert!(message.contains("RoomId"), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
     }
 
     #[test]

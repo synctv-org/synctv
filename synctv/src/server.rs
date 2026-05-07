@@ -142,9 +142,9 @@ fn build_proxy_slice_cache_config(
     config: &Config,
     _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
 ) -> synctv_proxy::slice_cache::SliceCacheConfig {
-    let backend = if config.cache.proxy_slice_file_backend_enabled {
+    let backend = if config.proxy_slice_cache.file_backend_enabled {
         synctv_proxy::slice_cache::CacheBackendConfig::File {
-            cache_dir: std::path::PathBuf::from(&config.cache.proxy_slice_file_cache_dir),
+            cache_dir: std::path::PathBuf::from(&config.proxy_slice_cache.file_cache_dir),
             dir_levels: (2, 2),
         }
     } else {
@@ -152,7 +152,7 @@ fn build_proxy_slice_cache_config(
     };
 
     synctv_proxy::slice_cache::SliceCacheConfig {
-        enabled: config.cache.proxy_slice_cache_enabled,
+        enabled: config.proxy_slice_cache.enabled,
         backend,
         ..synctv_proxy::slice_cache::SliceCacheConfig::default()
     }
@@ -2033,7 +2033,7 @@ mod tests {
             "proxy slice cache should be enabled by default at startup"
         );
 
-        app_config.cache.proxy_slice_cache_enabled = false;
+        app_config.proxy_slice_cache.enabled = false;
         let disabled_config = build_proxy_slice_cache_config(&app_config, &registry);
         assert!(
             !disabled_config.enabled,
@@ -2045,8 +2045,8 @@ mod tests {
     async fn test_proxy_slice_cache_config_uses_file_backend_when_enabled() {
         let registry = test_settings_registry();
         let mut config = Config::default();
-        config.cache.proxy_slice_file_backend_enabled = true;
-        config.cache.proxy_slice_file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
+        config.proxy_slice_cache.file_backend_enabled = true;
+        config.proxy_slice_cache.file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
 
         let slice_cache_config = build_proxy_slice_cache_config(&config, &registry);
 

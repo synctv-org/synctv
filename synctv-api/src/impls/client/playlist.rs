@@ -55,7 +55,7 @@ pub(crate) fn build_create_playlist_request(
         provider_instance_name,
     } = req;
 
-    let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec);
+    let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec)?;
     let source_provider = normalize_non_empty_filter(&source_provider);
     let source_config = if source_config.is_empty() {
         None
@@ -89,7 +89,7 @@ pub(crate) fn build_update_playlist_request(
     }
 
     Ok(CoreSetPlaylistRequest {
-        playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec),
+        playlist_id: crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec)?,
         name: Some(req.name),
     })
 }
@@ -115,7 +115,7 @@ pub(crate) fn build_move_playlist_request(
             Some(crate::impls::proto_validated_playlist_id(
                 anchor_id,
                 public_id_codec,
-            )),
+            )?),
             None,
         ),
         crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(anchor_id) => (
@@ -123,12 +123,12 @@ pub(crate) fn build_move_playlist_request(
             Some(crate::impls::proto_validated_playlist_id(
                 anchor_id,
                 public_id_codec,
-            )),
+            )?),
         ),
     };
 
     Ok(CoreMovePlaylistRequest {
-        playlist_id: crate::impls::proto_validated_playlist_id(playlist_id, public_id_codec),
+        playlist_id: crate::impls::proto_validated_playlist_id(playlist_id, public_id_codec)?,
         before_playlist_id,
         after_playlist_id,
     })
@@ -141,7 +141,7 @@ pub(crate) fn build_delete_playlist_request(
     crate::impls::validate_proto_request(&req)?;
 
     Ok((
-        crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec),
+        crate::impls::proto_validated_playlist_id(req.playlist_id, public_id_codec)?,
         req.force,
     ))
 }
@@ -467,7 +467,7 @@ impl ClientApiImpl {
             let parent_id = crate::impls::proto_validated_playlist_id(
                 req.parent_id.clone(),
                 &self.public_id_codec,
-            );
+            )?;
             let parent = self
                 .room_service
                 .playlist_service()

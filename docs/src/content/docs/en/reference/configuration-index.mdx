@@ -16,6 +16,52 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 - [Full Configuration Example](../../configuration/full-example/): minimal production skeleton, full YAML template covering all static fields, and URL/split configuration examples.
 - `synctv config show --output yaml`: prints the current binary's complete effective configuration with secrets redacted.
 
+## Make Configuration Decisions First
+
+If you are not looking up a specific field, use this table to decide what actually needs changing. Most fields can keep their defaults. Production launch should prioritize secrets, database, entrypoints, security boundaries, and backups.
+
+| Setting | When to change it | Common mistake | After change | Production guidance |
+| --- | --- | --- | --- | --- |
+| `jwt.secret` | Any production deployment | Keeping `change-me-in-production` or committing it | Restart required; old tokens may become invalid | Inject through Secret Manager or secret file |
+| `security.opaque_server_setup_secret` | Local password/OPAQUE login | Regenerating it on every deployment | Restart required; casual changes can break password records | Generate once and back it up |
+| `security.credential_encryption_key` | Storing encrypted provider credentials | Not 64 hex chars, or losing the key | Restart required; losing it breaks encrypted credential reads | Use `openssl rand -hex 32` and back it up |
+| `database.url` / split fields | Production PostgreSQL | Pointing at local dev DB or oversizing the pool | Restart required | PostgreSQL must be persistent and backed up |
+| `redis.url` / split fields | Production, OAuth2, multi-replica, rate limits, L2 cache | Different replicas use different Redis or key prefixes collide | Restart required | Recommended in production, required for multi-replica mode |
+| `server.cors_allowed_origins` | Web frontend and API use different origins | Using `*` or adding a path | Restart required | Use exact origins such as `https://app.example.com` |
+| `server.trusted_proxies` | A reverse proxy or Ingress sits in front | Trusting the whole internet | Restart required | Trust only proxy networks you control |
+| `management.*` | CLI or operations control plane is needed | Exposing TCP management publicly without a token | Restart required | Prefer Unix socket; TCP must be authenticated |
+| `metrics.*` | Prometheus or alerting is used | Exposing `/metrics` publicly | Restart required | Use auth and network isolation |
+| `webauthn.*` | Passkeys are enabled | `rp_origin` does not match the real origin | Restart required | Use only production HTTPS origins |
+| `email.*` | Email verification, password reset, email MFA, notifications | TLS/port/from address mismatch | Restart required | Verify with `synctv settings test-email` |
+| `cluster.*` / `server.cluster_secret` | Multi-replica cluster | Cluster enabled without Redis or cluster secret | Restart required | All replicas share PostgreSQL, Redis, and secrets |
+| `livestream.*` | RTMP/FLV/HLS livestreaming | HLS storage model differs between replicas | Restart required | Use shared filesystem or OSS for high traffic |
+| `proxy_slice_cache.*` | Proxy Range slice cache is needed | Expecting full-file cache | Restart required | Mount enough storage; only Range slices are cached |
+
+Shortest verification loop:
+
+```bash
+synctv config validate
+synctv config show --output yaml
+curl -fsS http://localhost:8080/health/ready
+```
+
+## Single-node Production Focus
+
+If you use production Compose, maintain `.env.postgres` and `.env.synctv` first. You usually do not need to hand-write a full YAML file. Before launch, confirm:
+
+| Goal | Compose/env focus | Config field |
+| --- | --- | --- |
+| Initial administrator | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
+| Token signing | `SYNCTV_JWT_SECRET` | `jwt.secret` |
+| OPAQUE password login | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | `security.opaque_server_setup_secret` |
+| Provider credential encryption | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
+| Web frontend CORS | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
+| PostgreSQL | `.env.postgres` and Compose volume | `database.*` |
+| Redis | Compose Redis service and key prefix | `redis.*` |
+| Runtime files | Compose `/data` volume | `data_dir` |
+
+Use the full field index below when you leave the Compose path for bare-metal, Kubernetes, secret files, or custom YAML.
+
 ## Top-Level Configuration
 
 | Field | Type | Default | Details |
@@ -41,7 +87,8 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 | `cluster` | object | see below | [Cluster Configuration](../../configuration/cluster/) |
 | `password_complexity` | object | see below | [Security and Secrets](../../configuration/security/) |
 | `buffer_sizes` | object | see below | [Internal Buffers](../../configuration/buffer-sizes/) |
-| `cache` | object | see below | [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) |
+| `cache` | object | see below | [Business Cache](../../configuration/cache/) |
+| `proxy_slice_cache` | object | see below | [Proxy Slice Cache](../../configuration/proxy-slice-cache/) |
 | `messaging_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
 | `http_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
 | `grpc_rate_limits` | object | see below | [Rate Limits and Connection Limits](../../configuration/rate-limits/) |
@@ -253,9 +300,9 @@ The full YAML template is kept on a dedicated page so this index stays scannable
 | `cache.username_cache_ttl_seconds` | seconds | `3600` | Username cache TTL |
 | `cache.permission_cache_capacity` | integer | `1000` | Permission cache capacity |
 | `cache.permission_cache_ttl_seconds` | seconds | `300` | Permission cache TTL |
-| `cache.proxy_slice_cache_enabled` | boolean | `true` | Enable proxy slice cache at startup |
-| `cache.proxy_slice_file_backend_enabled` | boolean | `false` | Enable file backend for proxy slice cache |
-| `cache.proxy_slice_file_cache_dir` | path | `""` | Proxy slice cache file directory |
+| `proxy_slice_cache.enabled` | boolean | `true` | Enable proxy slice cache at startup |
+| `proxy_slice_cache.file_backend_enabled` | boolean | `false` | Enable file backend for proxy slice cache |
+| `proxy_slice_cache.file_cache_dir` | path | `""` | Proxy slice cache file directory |
 
 ## `messaging_rate_limits`
 

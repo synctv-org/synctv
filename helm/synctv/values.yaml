@@ -265,7 +265,8 @@ topologySpread:
 
 ## ============================================================================
 ## Application Configuration
-## All field names match the Rust Config struct in synctv-core/src/config.rs
+## Values use chart-friendly camelCase and templates render SyncTV's Rust
+## snake_case config file fields.
 ## ============================================================================
 config:
   ## Shared root directory for runtime-owned local files.
@@ -273,7 +274,7 @@ config:
   ## - management.unix_socket_path
   ## - logging.file_path
   ## - livestream.hls_storage_path
-  ## - cache.proxy_slice_file_cache_dir
+  ## - proxy_slice_cache.file_cache_dir
   ## It does NOT rebase *_file secrets or metrics TLS cert/key paths.
   ## Leave empty to use SyncTV's built-in platform/container defaults.
   dataDir: "/data"
@@ -352,7 +353,7 @@ config:
     filter: ""
     backtrace: false
 
-  ## CacheConfig
+  ## CacheConfig: business L1/L2 caches.
   cache:
     l1Capacity: 500
     l1TtlSeconds: 300
@@ -361,9 +362,12 @@ config:
     usernameCacheTtlSeconds: 3600
     permissionCacheCapacity: 1000
     permissionCacheTtlSeconds: 300
-    proxySliceCacheEnabled: true
-    proxySliceFileBackendEnabled: false
-    proxySliceFileCacheDir: ""
+
+  ## ProxySliceCacheConfig: media proxy Range-slice cache.
+  proxySliceCache:
+    enabled: true
+    fileBackendEnabled: false
+    fileCacheDir: ""
 
   ## LivestreamConfig
   livestream:
@@ -401,7 +405,7 @@ config:
     enabled: false
     criticalChannelCapacity: 1000
     publishChannelCapacity: 10000
-    ## Discovery mode: "redis" (default) or "k8s_dns" (uses headless service DNS)
+    ## Discovery mode: "redis" (default), "static", or "k8s_dns" (uses headless service DNS)
     ## The chart defaults to Redis discovery so config validation does not
     ## depend on pod-local DNS environment variables.
     discoveryMode: "redis"

@@ -1357,10 +1357,10 @@ mod validation_coverage {
     /// `validate_room_id` accepts valid IDs
     #[test]
     fn test_validate_room_id_accepts_valid() {
-        assert!(validate_room_id("AbC123xYz890").is_ok());
-        assert!(validate_room_id("1234567890Ab").is_ok());
-        assert!(validate_room_id("ABCDEFGHIJKL").is_ok());
-        assert!(validate_room_id("abcdefghijkl").is_ok());
+        assert!(validate_room_id("room_1").is_ok());
+        assert!(validate_room_id("room_123").is_ok());
+        assert!(validate_room_id("room_AbC123xYz890").is_ok());
+        assert!(validate_room_id("AbC123xYz890").is_err());
     }
 
     /// `validate_email` rejects invalid formats

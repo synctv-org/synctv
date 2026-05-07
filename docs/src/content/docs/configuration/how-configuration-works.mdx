@@ -42,7 +42,7 @@ synctv serve --config /path/to/synctv.yaml
 | `redis.password` | `SYNCTV_REDIS_PASSWORD` |
 | `jwt.secret` | `SYNCTV_JWT_SECRET` |
 | `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
-| `cache.proxy_slice_cache_enabled` | `SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED` |
+| `proxy_slice_cache.enabled` | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` |
 
 布尔值可以使用：
 
@@ -99,7 +99,7 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 - `management.unix_socket_path`
 - `logging.file_path`
 - `livestream.hls_storage_path`
-- `cache.proxy_slice_file_cache_dir`
+- `proxy_slice_cache.file_cache_dir`
 
 不会受 `data_dir` 影响的路径：
 
@@ -112,8 +112,8 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 ```yaml
 data_dir: "/var/lib/synctv"
 
-cache:
-  proxy_slice_file_cache_dir: "cache/proxy-slice"
+proxy_slice_cache:
+  file_cache_dir: "cache/proxy-slice"
 ```
 
 实际 slice cache 目录会是：

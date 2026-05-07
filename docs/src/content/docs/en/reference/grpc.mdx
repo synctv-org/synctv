@@ -34,7 +34,7 @@ grpcurl -plaintext localhost:8080 list
 grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 ```
 
-Public client services include `synctv.client.AuthService`, `UserService`, `RoomService`, `PublicService`, `EmailService`, `NotificationService`, and `OAuth2Service`. The public admin gRPC service is `synctv.admin.AdminService`. The management gRPC service is a separate endpoint named `synctv.management.ManagementService`; it is not served on `server.port`.
+Public client services include `synctv.client.AuthService`, `UserService`, `RoomService`, `PublicService`, `EmailService`, `NotificationService`, `OAuth2Service`, `ProviderCommonService`, `AlistProviderService`, `BilibiliProviderService`, `EmbyProviderService`, and `RtmpProviderService`. The public admin gRPC service is `synctv.admin.AdminService`. The management gRPC service is a separate endpoint named `synctv.management.ManagementService`; it is not served on `server.port`.
 
   </TabItem>
   <TabItem label="Protobuf Files" icon="document">
@@ -60,7 +60,7 @@ grpcurl -plaintext \
 grpcurl -plaintext -d '{
   "username": "alice",
   "email": "alice@example.com",
-  "password": "securepassword123"
+  "password": "SecurePassword123"
 }' localhost:8080 synctv.client.AuthService/Register
 ```
 
@@ -69,7 +69,7 @@ grpcurl -plaintext -d '{
 ```bash
 grpcurl -plaintext -d '{
   "username": "alice",
-  "password": "securepassword123"
+  "password": "SecurePassword123"
 }' localhost:8080 synctv.client.AuthService/Login
 ```
 

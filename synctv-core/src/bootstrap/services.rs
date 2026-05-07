@@ -869,7 +869,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
     let permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
-        None,
+        settings_registry.clone(),
         PermissionService::DEFAULT_CACHE_SIZE,
         PermissionService::DEFAULT_CACHE_TTL_SECS,
         Some(RoomSettingsRepo::new(pool.clone())),
@@ -1459,6 +1459,10 @@ mod tests {
         });
 
         assert!(room_service.has_settings_registry());
+        assert!(
+            room_service.permission_service().has_settings_registry(),
+            "room permission service must use runtime permission defaults from SettingsRegistry"
+        );
     }
 
     #[tokio::test]

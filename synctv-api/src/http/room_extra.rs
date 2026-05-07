@@ -420,11 +420,11 @@ mod tests {
     #[test]
     fn test_room_member_target_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::RoomMemberTargetPathRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890","user_id":"ZyX098wVu765"}"#)
+            serde_json::from_str(r#"{"room_id":"room_1","user_id":"usr_1"}"#)
                 .expect("deserialize path request");
 
-        assert_eq!(req.room_id, "AbC123xYz890");
-        assert_eq!(req.user_id, "ZyX098wVu765");
+        assert_eq!(req.room_id, "room_1");
+        assert_eq!(req.user_id, "usr_1");
     }
 
     #[test]

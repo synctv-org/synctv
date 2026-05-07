@@ -126,80 +126,84 @@ pub fn parse_playlist_id_param(
     parse_id_param(value, field, public_id_codec)
 }
 
-pub fn proto_validated_id<T>(value: impl AsRef<str>, public_id_codec: &crate::PublicIdCodec) -> T
+pub fn proto_validated_id<T>(
+    value: impl AsRef<str>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> Result<T, ApiError>
 where
     T: synctv_core::PublicIdType,
 {
-    let value = value.as_ref();
-    public_id_codec
-        .decode::<T>(value)
-        .unwrap_or_else(|_| panic!("validated {} must be a valid public ID", T::TYPE_NAME))
+    parse_id_param(value.as_ref(), T::TYPE_NAME, public_id_codec)
 }
 
 pub fn proto_validated_user_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_core::models::UserId {
+) -> Result<synctv_core::models::UserId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_room_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_core::models::RoomId {
+) -> Result<synctv_core::models::RoomId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_core::models::MediaId {
+) -> Result<synctv_core::models::MediaId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_playlist_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> synctv_core::models::PlaylistId {
+) -> Result<synctv_core::models::PlaylistId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_id<T>(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Option<T>
+) -> Result<Option<T>, ApiError>
 where
     T: synctv_core::PublicIdType,
 {
     let value = value.as_ref();
-    (!value.is_empty()).then(|| proto_validated_id(value, public_id_codec))
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        proto_validated_id(value, public_id_codec).map(Some)
+    }
 }
 
 pub fn proto_validated_optional_media_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Option<synctv_core::models::MediaId> {
+) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_playlist_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Option<synctv_core::models::PlaylistId> {
+) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_room_id(
     value: impl AsRef<str>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Option<synctv_core::models::RoomId> {
+) -> Result<Option<synctv_core::models::RoomId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_ids(
     values: Vec<String>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Vec<synctv_core::models::MediaId> {
+) -> Result<Vec<synctv_core::models::MediaId>, ApiError> {
     values
         .into_iter()
         .map(|value| proto_validated_media_id(&value, public_id_codec))
@@ -209,7 +213,7 @@ pub fn proto_validated_media_ids(
 pub fn proto_validated_playlist_ids(
     values: Vec<String>,
     public_id_codec: &crate::PublicIdCodec,
-) -> Vec<synctv_core::models::PlaylistId> {
+) -> Result<Vec<synctv_core::models::PlaylistId>, ApiError> {
     values
         .into_iter()
         .map(|value| proto_validated_playlist_id(&value, public_id_codec))

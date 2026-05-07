@@ -185,7 +185,7 @@ synctv slice-cache purge
 
 Notes:
 
-- Slice cache enablement is controlled by startup setting `cache.proxy_slice_cache_enabled`.
+- Slice cache enablement is controlled by startup setting `proxy_slice_cache.enabled`.
 - The CLI cannot dynamically enable or disable slice cache. It only provides stats, expired eviction, and purge operations.
 - `purge` removes cache data and lowers future hit rate, but does not affect durable PostgreSQL business data.
 

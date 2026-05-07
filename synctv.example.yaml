@@ -11,7 +11,6 @@
 #   SYNCTV_SERVER_HOST=0.0.0.0
 #   SYNCTV_DATABASE_URL=postgresql://...
 #   SYNCTV_DATABASE_URL_FILE=/run/secrets/database_url
-#   SYNCTV_OAUTH2_REDIRECT_SCHEME=https
 #
 # Secret-like settings support two file-based forms:
 #   1. Config file sibling keys: jwt.secret_file, management.auth_token_file, ...
@@ -158,7 +157,7 @@ management:
 #   - management.unix_socket_path
 #   - logging.file_path
 #   - livestream.hls_storage_path
-#   - cache.proxy_slice_file_cache_dir
+#   - proxy_slice_cache.file_cache_dir
 # It does NOT affect:
 #   - *_file secret paths (they stay relative to this config file)
 #   - metrics.tls.cert_path / metrics.tls.key_path
@@ -276,7 +275,7 @@ logging:
   # file_path: "/var/log/synctv/app.log"
 
 cache:
-  # User/room cache capacities and TTLs.
+  # Business L1/L2 cache capacities and TTLs.
   l1_capacity: 500
   l1_ttl_seconds: 300
   l2_ttl_seconds: 300
@@ -284,14 +283,16 @@ cache:
   username_cache_ttl_seconds: 3600
   permission_cache_capacity: 1000
   permission_cache_ttl_seconds: 300
+
+proxy_slice_cache:
   # Enable range-based proxy slice caching at process startup.
   # This is not dynamically toggled at runtime.
-  proxy_slice_cache_enabled: true
+  enabled: true
   # Enable persisted proxy slice files on local/shared storage.
-  proxy_slice_file_backend_enabled: false
-  # Relative proxy_slice_file_cache_dir values are resolved from data_dir.
+  file_backend_enabled: false
+  # Relative file_cache_dir values are resolved from data_dir.
   # Leave empty to use the built-in default under data_dir/cache/proxy-slice when enabled.
-  # proxy_slice_file_cache_dir: "cache/proxy-slice"
+  # file_cache_dir: "cache/proxy-slice"
 
 livestream:
   rtmp_port: 1935
@@ -545,7 +546,7 @@ media_providers:
 
 # OAuth2/OIDC providers are runtime settings, not static startup config.
 # Configure them with the management API or CLI:
-#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enabled":true,"enable_signup":false,"signup_need_review":false,"config":{"client_id":"...","client_secret":"...","redirect_url":"https://app.example.com/oauth2/callback"}}}'
+#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enable_signup":false,"signup_need_review":false,"config":{"client_id":"...","client_secret":"...","redirect_url":"https://app.example.com/oauth2/callback"}}}'
 
 webauthn:
   # Enables passkey/security-key registration and login endpoints:

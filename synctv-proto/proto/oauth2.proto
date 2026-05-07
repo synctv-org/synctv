@@ -19,7 +19,8 @@ import "proto/common.proto";
 // 8. Backend returns JWT token to frontend
 //
 // Authentication:
-// - GetAuthorizationUrl, GetAuthorizationUrlForBind, ExchangeAuthorizationCode: None (public)
+// - GetAuthorizationUrl, ExchangeAuthorizationCode: None (public)
+// - GetAuthorizationUrlForBind: JWT Authorization header (user_id)
 // - ListAvailableProviders: None (public)
 // - UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
 //

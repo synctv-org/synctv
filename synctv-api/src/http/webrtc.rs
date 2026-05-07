@@ -51,7 +51,8 @@ pub async fn get_ice_servers(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
-    let room_id = crate::impls::proto_validated_room_id(path.room_id, &state.public_id_codec);
+    let room_id = crate::impls::proto_validated_room_id(path.room_id, &state.public_id_codec)
+        .map_err(map_api_error)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let client_api = state.client_api.clone();
 

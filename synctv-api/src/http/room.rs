@@ -2104,37 +2104,35 @@ mod tests {
     #[test]
     fn test_check_room_path_deserializes_proto_field_name() {
         let req: crate::proto::client::CheckRoomRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).unwrap();
+            serde_json::from_str(r#"{"room_id":"room_1"}"#).unwrap();
 
-        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.room_id, "room_1");
     }
 
     #[test]
     fn test_room_path_request_deserializes_proto_field_name() {
         let req: crate::proto::client::RoomPathRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).unwrap();
+            serde_json::from_str(r#"{"room_id":"room_1"}"#).unwrap();
 
-        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.room_id, "room_1");
     }
 
     #[test]
     fn test_room_media_target_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::RoomMediaTargetPathRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890","media_id":"ZyX098wVu765"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"room_id":"room_1","media_id":"med_1"}"#).unwrap();
 
-        assert_eq!(req.room_id, "AbC123xYz890");
-        assert_eq!(req.media_id, "ZyX098wVu765");
+        assert_eq!(req.room_id, "room_1");
+        assert_eq!(req.media_id, "med_1");
     }
 
     #[test]
     fn test_room_playlist_target_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::RoomPlaylistTargetPathRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890","playlist_id":"ZyX098wVu765"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"room_id":"room_1","playlist_id":"pl_1"}"#).unwrap();
 
-        assert_eq!(req.room_id, "AbC123xYz890");
-        assert_eq!(req.playlist_id, "ZyX098wVu765");
+        assert_eq!(req.room_id, "room_1");
+        assert_eq!(req.playlist_id, "pl_1");
     }
 
     #[test]

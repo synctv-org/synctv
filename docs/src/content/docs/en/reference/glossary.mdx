@@ -1,0 +1,50 @@
+---
+title: Glossary
+description: Short definitions for common SyncTV security, deployment, media, realtime, and cluster terms.
+---
+
+## Why This Page Exists
+
+SyncTV spans self-hosting, media proxying, realtime collaboration, authentication security, and multi-node deployment. Use this page as a vocabulary map before going deep into configuration and operations.
+
+## Core Terms
+
+| Term | Short definition | Where you see it |
+| --- | --- | --- |
+| SyncTV single binary | One process hosts HTTP, public gRPC, WebSocket, management, providers, proxying, livestreaming, and cluster logic | Architecture, deployment, ports |
+| PostgreSQL | Durable business data store for users, rooms, permissions, provider instances, preferences, and audit data | All deployments |
+| Redis | Shared short-lived state and distributed coordination layer | Production, rate limits, OAuth2, multi-replica, cluster |
+| `data_dir` | Root directory for runtime-owned local files | management socket, logs, HLS, slice cache |
+| Provider | Adapter that resolves external media into a playable URL or SyncTV proxy URL | Media integration and playback debugging |
+| Provider credentials | Tokens, cookies, API keys, or accounts needed by providers | Provider administration and security |
+| Provider header | Upstream request headers explicitly selected by a provider, such as `User-Agent`, `Referer`, or `Range` | Media proxying and Range playback |
+| proxy | Controlled forwarding layer where SyncTV fetches upstream media for clients | Clients cannot direct-fetch or set required headers |
+| slice cache | Proxy cache for Range slices only, not full files | seeking, Range, media performance |
+| HLS | HTTP Live Streaming using playlists and segments | livestreaming, multi-replica HLS storage |
+| RTMP | Livestream ingest protocol | publishing and firewall rules |
+| HTTP-FLV | Low-latency livestream playback format | livestream playback |
+| STUN | WebRTC NAT assistance service | WebRTC and built-in STUN |
+| management gRPC | Control plane used by CLI and operations commands | administration and production security |
+| public gRPC | Business gRPC API usable by clients and SDKs | SDKs and typed internal clients |
+| WebSocket ticket | Short-lived, one-time, room-bound credential for WebSocket authentication | browser realtime room connections |
+| OPAQUE | Password authentication protocol where the server does not receive plaintext password verification material | local password login and security |
+| OPAQUE setup secret | Long-lived server secret for OPAQUE; keep stable across restarts and upgrades | production secrets and login failures |
+| JWT secret | Key used to sign access, refresh, and guest tokens | login and token rotation |
+| credential encryption key | 64-character hex key used to encrypt provider credentials | provider credential storage |
+| CORS origin | Browser origin consisting of scheme, host, and port, without a path | split frontend/API deployments |
+| trusted proxy | Reverse proxy or Ingress trusted to provide real client IP | rate limits, audit, security |
+| runtime settings | Database-backed settings changed through management API/CLI | OAuth2 providers and hot-updated system settings |
+| cluster secret | Shared secret used to authenticate inter-node gRPC calls | multi-replica clusters |
+| leader election | Mechanism that selects one node to run certain background jobs | cluster and background tasks |
+| Redis Stream catch-up | Mechanism for replaying missed events after a short node disconnect | cluster realtime events |
+| publisher-node proxy | HLS model where non-publisher nodes read segments from the publishing node over gRPC | multi-replica livestreaming |
+| fail-closed | Rejecting a business request when a critical dependency or event write fails, avoiding split database/cache state | write operations, cluster events, transactional outbox |
+| fanout | Distributing one business change to local connections, nodes, or subscribers | WebSocket and cluster realtime events |
+
+## Next Pages
+
+- [Architecture Overview](../../guides/architecture/)
+- [Quick Start](../../guides/quick-start/)
+- [Configuration Index](../configuration-index/)
+- [Client Integration Guide](../../guides/client-integration/)
+- [Troubleshooting](../../operations/troubleshooting/)

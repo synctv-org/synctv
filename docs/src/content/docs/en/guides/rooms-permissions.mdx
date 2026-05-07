@@ -1,9 +1,12 @@
 ---
 title: Rooms, Permissions, and Preferences
-description: SyncTV global user roles, room roles, permission bits, room settings, member overrides, and user preferences.
+description: SyncTV global user roles, room roles, permission names, room settings, member overrides, and user preferences.
 ---
 
 import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
+import Diagram from '../../../../components/Diagram.astro';
+import permissionEvaluationDark from '../../../../assets/diagrams/permission-evaluation-dark.svg';
+import permissionEvaluationLight from '../../../../assets/diagrams/permission-evaluation-light.svg';
 
 ## Two Role Layers
 
@@ -46,11 +49,12 @@ Room roles provide base permissions. Room settings and member overrides then add
 
 Effective permissions are evaluated in three layers:
 
-```text
-global role default permissions
-  -> room settings added/removed permissions
-  -> member-specific added/removed permissions
-```
+<Diagram
+  light={permissionEvaluationLight}
+  dark={permissionEvaluationDark}
+  alt="Room effective permission evaluation model showing room role base permissions, room settings added and removed permissions, member added and removed overrides, and the creator special case that always keeps all room permissions."
+  caption="Effective permissions start from the room role base, then apply room settings and member-specific overrides. If the same bit is both added and removed, removal wins."
+/>
 
 Rules:
 
@@ -60,34 +64,34 @@ Rules:
 - `guest_added_permissions` cannot exceed the member-level ceiling.
 - `DELETE_ROOM` is not a room-delegable permission. Room deletion belongs to the creator or the platform management plane.
 
-## Major Permission Bits
+## Major Permission Names
 
-| Permission | Meaning |
+Runtime settings and administration surfaces use stable snake_case permission names.
+
+| Permission name | Meaning |
 | --- | --- |
-| `SEND_CHAT` | Send chat and danmaku messages |
-| `ADD_MEDIA` | Add media |
-| `DELETE_MEDIA_SELF` / `DELETE_MEDIA_ANY` | Delete own media / delete any media |
-| `EDIT_MEDIA_SELF` / `EDIT_MEDIA_ANY` | Edit own media / edit any media |
-| `REORDER_PLAYLIST` | Reorder playlist |
-| `CLEAR_PLAYLIST` | Clear playlist |
-| `START_LIVE` | Start livestream publishing |
-| `PLAY_CONTROL` | Play, pause, and seek |
-| `CHANGE_CURRENT_MEDIA` | Switch current media |
-| `CHANGE_PLAYBACK_RATE` | Change playback speed |
-| `APPROVE_MEMBER` | Approve or reject join requests |
-| `KICK_MEMBER` | Kick members |
-| `BAN_MEMBER` | Ban or unban members |
-| `SET_MEMBER_PERMISSIONS` | Change member permissions |
-| `ADD_MEMBER` | Add members directly |
-| `SET_ROOM_SETTINGS` | Modify room settings |
-| `DELETE_CHAT` | Delete chat messages |
-| `DELETE_ROOM` | Delete room; not a normal room-delegable permission |
-| `VIEW_PLAYLIST` | View playlist |
-| `VIEW_MEMBER_LIST` | View member list |
-| `VIEW_CHAT_HISTORY` | View chat history |
-| `USE_WEBRTC` | Use WebRTC voice/video features |
-
-Permission values are usually represented as `u64` bitmasks in APIs and CLI commands. Before changing a bitmask, confirm target role and current effective permissions.
+| `send_chat` | Send chat and danmaku messages |
+| `add_media` | Add media |
+| `delete_media_self` / `delete_media_any` | Delete own media / delete any media |
+| `edit_media_self` / `edit_media_any` | Edit own media / edit any media |
+| `reorder_playlist` | Reorder playlist |
+| `clear_playlist` | Clear playlist |
+| `start_live` | Start livestream publishing |
+| `play_control` | Play, pause, and seek |
+| `change_current_media` | Switch current media |
+| `change_playback_rate` | Change playback speed |
+| `approve_member` | Approve or reject join requests |
+| `kick_member` | Kick members |
+| `ban_member` | Ban or unban members |
+| `set_member_permissions` | Change member permissions |
+| `add_member` | Add members directly |
+| `set_room_settings` | Modify room settings |
+| `delete_chat` | Delete chat messages |
+| `delete_room` | Delete room; not a normal room-delegable permission |
+| `view_playlist` | View playlist |
+| `view_member_list` | View member list |
+| `view_chat_history` | View chat history |
+| `use_webrtc` | Use WebRTC voice/video features |
 
 ## Room Settings
 
@@ -103,9 +107,9 @@ Room settings control join policy, room features, and default permissions.
 | `chat_enabled` | `true` | Enable chat |
 | `danmaku_enabled` | `true` | Enable danmaku |
 | `auto_play` | `{}` | Auto-play policy JSON |
-| `admin_added_permissions` / `admin_removed_permissions` | `0` | Admin default permission changes |
-| `member_added_permissions` / `member_removed_permissions` | `0` | Member default permission changes |
-| `guest_added_permissions` / `guest_removed_permissions` | `0` | Guest default permission changes |
+| `admin_added_permissions` / `admin_removed_permissions` | Empty permission set | Admin default permission changes |
+| `member_added_permissions` / `member_removed_permissions` | Empty permission set | Member default permission changes |
+| `guest_added_permissions` / `guest_removed_permissions` | Empty permission set | Guest default permission changes |
 
 Example:
 
@@ -160,8 +164,8 @@ The database table also has a `settings` JSONB extension payload for low-priorit
 ## Administration Strategy
 
 <CardGrid>
-  <Card title="Avoid Raw Bitmasks" icon="setting">
-    Prefer roles over direct bitmask edits. If a bitmask change is necessary, record the current value and reason.
+  <Card title="Use Permission Names" icon="setting">
+    Permission configuration should use stable permission-name sets so changes are readable, reviewable, and easy to roll back.
   </Card>
   <Card title="Separate Scopes" icon="puzzle">
     Platform admin and room admin are separate concepts. Diagnose permission issues by layer first.

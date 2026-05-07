@@ -8,17 +8,17 @@ flowchart LR
   Playlist[HLS playlist 路由]
   Segment[HLS segment 路由]
   Viewer[观看客户端]
-  Redis[(Redis<br/>集群 publisher registry)]
+  Registry[(publisher registry<br/>单机内存 / 集群 Redis)]
   Remote[远端节点<br/>HLS/FLV 请求]
   HLSProxy[发布节点<br/>HLS gRPC 代理]
 
   Publisher --> RTMP --> Hub
-  RTMP --> Redis
+  RTMP --> Registry
   Hub --> FLV --> Viewer
   Hub --> Remux --> Storage
   Viewer --> Playlist --> Storage
   Viewer --> Segment --> Storage
-  Remote -. 查找 publisher .-> Redis
+  Remote -. 查找 publisher .-> Registry
   Remote -. FLV relay .-> Hub
   Remote -. playlist/segment 代理 .-> HLSProxy
   HLSProxy -. 本地读取 .-> Storage

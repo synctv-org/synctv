@@ -85,11 +85,11 @@ RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。
 3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
 4. HLS 分片写入 `memory`、`file` 或 `oss` backend。
 5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
-6. 如果 HLS backend 是 `file + hls_shared_storage=true` 或 `oss`，任意节点也可以直接从共享 backend 读取分片，减少对 publisher 节点的回源压力。
+6. 当前跨节点 HLS 读取以 publisher-node HLS gRPC proxy 为主路径；共享 `file` 或 `oss` backend 表示分片存储边界更稳定，但不等于非 publisher 节点会绕过 publisher 直接读取。
 </Steps>
 
 <Aside type="note">
-多副本 HLS 有两种模型：本地 backend 依赖 publisher-node proxy，部署简单但远端 segment 请求会穿过 publisher 节点；共享文件系统或 OSS 让各节点直接读取分片，更适合生产高并发和滚动升级边界。
+多副本 HLS 的当前实现依赖 publisher registry 定位推流节点，并通过 HLS gRPC proxy 读取远端 playlist/segment。共享文件系统或 OSS 可以让存储更持久、更适合滚动升级后的恢复边界，但容量规划仍要把 publisher-node proxy 的回源压力算进去。
 </Aside>
 
 ## `livestream.rtmp_port`
@@ -223,7 +223,7 @@ GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快
 
 这个字段只适用于 `file` backend。`oss` backend 天然是共享存储，不需要设置 `hls_shared_storage`。在 `memory` 或 `oss` backend 下把 `hls_shared_storage` 设置为 `true` 会被配置校验拒绝。
 
-多副本部署时，如果 HLS 文件写在本地磁盘，非 publisher 节点会通过 HLS gRPC proxy 向 publisher 节点读取。为了减少跨节点回源、降低 publisher 节点压力并获得更清晰的故障边界，生产多副本文件 backend 推荐：
+多副本部署时，如果 HLS 文件写在本地磁盘，非 publisher 节点会通过 HLS gRPC proxy 向 publisher 节点读取。共享文件 backend 可以避免把分片锁死在单个 Pod 的本地磁盘上，并让重启后的节点仍能看到同一份 HLS 文件；但当前请求路径仍以 publisher-node proxy 为准。
 
 ```yaml
 livestream:

@@ -181,7 +181,8 @@ The application currently uses split database/Redis configuration rather than re
 | `config.bootstrap` | Bootstrap root-user settings |
 | `config.email` | SMTP base settings; credentials can come from a secret |
 | `config.livestream` | RTMP/HLS/pull timeout and cache settings |
-| `config.cache` | L1/L2 cache and startup-only proxy slice cache settings |
+| `config.cache` | Business L1/L2 cache settings |
+| `config.proxySliceCache` | Startup-only media proxy Range-slice cache settings |
 | `config.mediaProviders` | Local built-in provider adapter request and connect timeouts |
 | `config.webauthn` | Passkey relying-party settings |
 | `config.webrtc` | Built-in STUN and WebRTC settings; external ICE servers are runtime settings |

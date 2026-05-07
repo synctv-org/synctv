@@ -42,7 +42,7 @@ Runtime environment variables use the `SYNCTV_` prefix and convert the configura
 | `redis.password` | `SYNCTV_REDIS_PASSWORD` |
 | `jwt.secret` | `SYNCTV_JWT_SECRET` |
 | `security.opaque_server_setup_secret` | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` |
-| `cache.proxy_slice_cache_enabled` | `SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED` |
+| `proxy_slice_cache.enabled` | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` |
 
 Boolean values accept:
 
@@ -103,7 +103,7 @@ Paths affected by `data_dir`:
 - `management.unix_socket_path`
 - `logging.file_path`
 - `livestream.hls_storage_path`
-- `cache.proxy_slice_file_cache_dir`
+- `proxy_slice_cache.file_cache_dir`
 
 Paths not affected by `data_dir`:
 
@@ -116,8 +116,8 @@ Example:
 ```yaml
 data_dir: "/var/lib/synctv"
 
-cache:
-  proxy_slice_file_cache_dir: "cache/proxy-slice"
+proxy_slice_cache:
+  file_cache_dir: "cache/proxy-slice"
 ```
 
 The actual slice cache path becomes:

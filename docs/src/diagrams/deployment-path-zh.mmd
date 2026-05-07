@@ -1,0 +1,17 @@
+flowchart TB
+  Start[我要部署或运行 SyncTV]
+  LongRunning{是否要长期运行<br/>或对外提供服务?}
+  CodeWork{是否要改代码<br/>或调试源码?}
+  MultiReplica{是否需要 Kubernetes<br/>多副本 / 平台化运维?}
+  Compose[默认路径<br/>单机生产 Compose]
+  Dev[本地试用<br/>开发 Compose]
+  Source[源码运行<br/>本机 SyncTV + 容器依赖]
+  Helm[平台路径<br/>Helm / Kubernetes]
+
+  Start --> LongRunning
+  LongRunning -- 否 --> CodeWork
+  CodeWork -- 否 --> Dev
+  CodeWork -- 是 --> Source
+  LongRunning -- 是 --> MultiReplica
+  MultiReplica -- 否 --> Compose
+  MultiReplica -- 是 --> Helm

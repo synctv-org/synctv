@@ -16,7 +16,7 @@ flowchart TB
   end
 
   PG[(PostgreSQL)]
-  Redis[(Redis)]
+  Redis[(Redis<br/>coordination / short-lived state / catch-up)]
   External[External media services]
   HLS[(HLS backend<br/>local / shared / OSS)]
 
@@ -29,10 +29,9 @@ flowchart TB
   HTTP --> PG
   GRPC --> PG
   MGMT --> PG
-  WS --> Redis
+  WS --> Cluster
   Cluster --> Redis
   Provider --> External
   Proxy --> External
-  Proxy --> Redis
   Live --> HLS
-  Live -. publisher-node HLS proxy .-> Redis
+  Live -. publisher registry .-> Cluster

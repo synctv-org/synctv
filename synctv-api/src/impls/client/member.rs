@@ -373,7 +373,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
@@ -559,7 +559,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
         // Fetch current target member state BEFORE any mutations.
         // This prevents partial mutation when role change + permission update
@@ -726,7 +726,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
         self.room_service
             .kick_member(rid, uid, target_uid)
@@ -763,7 +763,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
         let reason = if reason.is_empty() {
             None
         } else {
@@ -804,7 +804,7 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
-            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
         self.room_service
             .member_service()

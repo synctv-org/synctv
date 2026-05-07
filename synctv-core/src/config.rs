@@ -390,7 +390,7 @@ pub struct Config {
     /// This affects default runtime paths and relative overrides for
     /// `management.unix_socket_path`, `logging.file_path`,
     /// `livestream.hls_storage_path`, and
-    /// `cache.proxy_slice_file_cache_dir`.
+    /// `proxy_slice_cache.file_cache_dir`.
     ///
     /// It does not rebase static input files such as `*_file` secrets or
     /// `metrics.tls.cert_path` / `metrics.tls.key_path`.
@@ -412,6 +412,7 @@ pub struct Config {
     pub password_complexity: PasswordComplexityConfig,
     pub buffer_sizes: BufferSizesConfig,
     pub cache: CacheConfig,
+    pub proxy_slice_cache: ProxySliceCacheConfig,
     pub messaging_rate_limits: MessagingRateLimitConfig,
     pub http_rate_limits: HttpRateLimitConfig,
     pub grpc_rate_limits: GrpcRateLimitConfig,
@@ -442,6 +443,7 @@ impl std::fmt::Debug for Config {
             .field("password_complexity", &self.password_complexity)
             .field("buffer_sizes", &self.buffer_sizes)
             .field("cache", &self.cache)
+            .field("proxy_slice_cache", &self.proxy_slice_cache)
             .field("messaging_rate_limits", &self.messaging_rate_limits)
             .field("http_rate_limits", &self.http_rate_limits)
             .field("grpc_rate_limits", &self.grpc_rate_limits)
@@ -474,6 +476,7 @@ impl Default for Config {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
@@ -2529,16 +2532,16 @@ impl Config {
             &mut self.cache.permission_cache_ttl_seconds,
         )?;
         env_override_bool(
-            "SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED",
-            &mut self.cache.proxy_slice_cache_enabled,
+            "SYNCTV_PROXY_SLICE_CACHE_ENABLED",
+            &mut self.proxy_slice_cache.enabled,
         )?;
         env_override_bool(
-            "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED",
-            &mut self.cache.proxy_slice_file_backend_enabled,
+            "SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED",
+            &mut self.proxy_slice_cache.file_backend_enabled,
         )?;
         env_override_str(
-            "SYNCTV_CACHE_PROXY_SLICE_FILE_CACHE_DIR",
-            &mut self.cache.proxy_slice_file_cache_dir,
+            "SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR",
+            &mut self.proxy_slice_cache.file_cache_dir,
         );
 
         env_override_parse(
@@ -2751,9 +2754,9 @@ impl Config {
             format!("{hls_oss_base_path}/")
         };
 
-        let proxy_slice_cache_dir = self.cache.proxy_slice_file_cache_dir.trim();
-        self.cache.proxy_slice_file_cache_dir = if proxy_slice_cache_dir.is_empty() {
-            if self.cache.proxy_slice_file_backend_enabled {
+        let proxy_slice_cache_dir = self.proxy_slice_cache.file_cache_dir.trim();
+        self.proxy_slice_cache.file_cache_dir = if proxy_slice_cache_dir.is_empty() {
+            if self.proxy_slice_cache.file_backend_enabled {
                 data_dir
                     .join(default_proxy_slice_cache_relative_path())
                     .display()
@@ -3500,15 +3503,15 @@ impl Config {
             }
         }
 
-        if self.cache.proxy_slice_file_backend_enabled {
-            if self.cache.proxy_slice_file_cache_dir.trim().is_empty() {
+        if self.proxy_slice_cache.file_backend_enabled {
+            if self.proxy_slice_cache.file_cache_dir.trim().is_empty() {
                 errors.push(
-                    "cache.proxy_slice_file_cache_dir must not be empty when cache.proxy_slice_file_backend_enabled=true"
+                    "proxy_slice_cache.file_cache_dir must not be empty when proxy_slice_cache.file_backend_enabled=true"
                         .to_string(),
                 );
-            } else if !Path::new(&self.cache.proxy_slice_file_cache_dir).is_absolute() {
+            } else if !Path::new(&self.proxy_slice_cache.file_cache_dir).is_absolute() {
                 errors
-                    .push("cache.proxy_slice_file_cache_dir must be an absolute path".to_string());
+                    .push("proxy_slice_cache.file_cache_dir must be an absolute path".to_string());
             }
         }
 
@@ -4065,10 +4068,11 @@ impl Default for BufferSizesConfig {
     }
 }
 
-/// Cache layer configuration
+/// Business cache layer configuration.
 ///
-/// Controls cache capacities and TTLs for the L1 (in-memory) and L2 (Redis) tiers.
-/// All values have sensible defaults matching the previously hardcoded values.
+/// Controls cache capacities and TTLs for the L1 (in-memory) and L2 (Redis)
+/// tiers used by application data such as rooms, users, usernames, and
+/// permissions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CacheConfig {
@@ -4086,14 +4090,6 @@ pub struct CacheConfig {
     pub permission_cache_capacity: u64,
     /// Permission cache TTL in seconds (reserved for future use)
     pub permission_cache_ttl_seconds: u64,
-    /// Whether proxy slice caching is enabled at process startup.
-    pub proxy_slice_cache_enabled: bool,
-    /// Whether the proxy slice cache should persist entries to disk.
-    pub proxy_slice_file_backend_enabled: bool,
-    /// Root directory for persisted proxy slice cache entries.
-    ///
-    /// Relative paths are resolved against the effective `data_dir`.
-    pub proxy_slice_file_cache_dir: String,
 }
 
 impl Default for CacheConfig {
@@ -4106,9 +4102,34 @@ impl Default for CacheConfig {
             username_cache_ttl_seconds: 3600, // 1 hour
             permission_cache_capacity: 1000,
             permission_cache_ttl_seconds: 300,
-            proxy_slice_cache_enabled: true,
-            proxy_slice_file_backend_enabled: false,
-            proxy_slice_file_cache_dir: String::new(),
+        }
+    }
+}
+
+/// Proxy Range slice cache configuration.
+///
+/// This cache belongs to media proxying, not the business L1/L2 cache layer.
+/// It stores byte-range slices only and never turns upstream responses into a
+/// full-file cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProxySliceCacheConfig {
+    /// Whether proxy slice caching is enabled at process startup.
+    pub enabled: bool,
+    /// Whether the proxy slice cache should persist entries to disk.
+    pub file_backend_enabled: bool,
+    /// Root directory for persisted proxy slice cache entries.
+    ///
+    /// Relative paths are resolved against the effective `data_dir`.
+    pub file_cache_dir: String,
+}
+
+impl Default for ProxySliceCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file_backend_enabled: false,
+            file_cache_dir: String::new(),
         }
     }
 }
@@ -4352,6 +4373,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
@@ -4394,6 +4416,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
@@ -4708,6 +4731,7 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: MessagingRateLimitConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
             grpc_rate_limits: GrpcRateLimitConfig::default(),
@@ -5132,10 +5156,10 @@ metrics:
   tls:
     cert_path: "tls/metrics.crt"
     key_path: "tls/metrics.key"
-cache:
-  proxy_slice_cache_enabled: false
-  proxy_slice_file_backend_enabled: true
-  proxy_slice_file_cache_dir: "proxy-cache"
+proxy_slice_cache:
+  enabled: false
+  file_backend_enabled: true
+  file_cache_dir: "proxy-cache"
 logging:
   file_path: "logs/server.log"
 livestream:
@@ -5165,10 +5189,10 @@ livestream:
             Path::new(&config.metrics.tls.key_path),
             config_dir.join("tls").join("metrics.key")
         );
-        assert!(!config.cache.proxy_slice_cache_enabled);
-        assert!(config.cache.proxy_slice_file_backend_enabled);
+        assert!(!config.proxy_slice_cache.enabled);
+        assert!(config.proxy_slice_cache.file_backend_enabled);
         assert_eq!(
-            Path::new(&config.cache.proxy_slice_file_cache_dir),
+            Path::new(&config.proxy_slice_cache.file_cache_dir),
             expected_data_dir.join("proxy-cache")
         );
         assert_eq!(
@@ -5260,11 +5284,11 @@ management:
         let env = HashMap::from([
             ("SYNCTV_DATA_DIR".to_string(), "var/synctv".to_string()),
             (
-                "SYNCTV_CACHE_PROXY_SLICE_FILE_BACKEND_ENABLED".to_string(),
+                "SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED".to_string(),
                 "true".to_string(),
             ),
             (
-                "SYNCTV_CACHE_PROXY_SLICE_CACHE_ENABLED".to_string(),
+                "SYNCTV_PROXY_SLICE_CACHE_ENABLED".to_string(),
                 "false".to_string(),
             ),
         ]);
@@ -5272,10 +5296,10 @@ management:
         let config = Config::from_env_map(&env).expect("env-backed config should load");
         let expected_data_dir = cwd.join("var").join("synctv");
 
-        assert!(!config.cache.proxy_slice_cache_enabled);
-        assert!(config.cache.proxy_slice_file_backend_enabled);
+        assert!(!config.proxy_slice_cache.enabled);
+        assert!(config.proxy_slice_cache.file_backend_enabled);
         assert_eq!(
-            Path::new(&config.cache.proxy_slice_file_cache_dir),
+            Path::new(&config.proxy_slice_cache.file_cache_dir),
             expected_data_dir.join("cache").join("proxy-slice")
         );
     }

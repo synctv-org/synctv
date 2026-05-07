@@ -1,0 +1,14 @@
+flowchart TB
+  Role[房间角色基础权限<br/>creator / admin / member / guest]
+  RoomAdd[房间设置<br/>added_permissions]
+  RoomRemove[房间设置<br/>removed_permissions]
+  MemberAdd[成员个人覆盖<br/>added_permissions]
+  MemberRemove[成员个人覆盖<br/>removed_permissions]
+  Effective[最终有效权限]
+  Creator[creator 特例<br/>始终拥有全部房间权限]
+
+  Role --> RoomAdd --> RoomRemove --> MemberAdd --> MemberRemove --> Effective
+  Creator -. 绕过削弱 .-> Effective
+
+  RoomRemove -. 同一权限同时 add/remove 时<br/>remove 生效 .-> Effective
+  MemberRemove -. 最后一层覆盖 .-> Effective

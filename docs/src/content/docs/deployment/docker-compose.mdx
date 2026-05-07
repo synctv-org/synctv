@@ -1,6 +1,6 @@
 ---
 title: Docker Compose 部署
-description: 使用 docker-compose.yml 和 docker-compose.dev.yml 部署 SyncTV。
+description: 使用生产 docker-compose.yml 部署单机 SyncTV，并了解开发 Compose 的边界。
 ---
 
 import { Aside, Code, TabItem, Tabs } from '@astrojs/starlight/components';
@@ -15,36 +15,83 @@ import {
   githubTreeUrl,
 } from '../../../lib/project';
 
-## 两个 Compose 文件的区别
+## 默认使用生产 Compose
 
-仓库提供两个 Compose 文件：
+单机部署优先使用 `docker-compose.yml`。它使用预构建镜像、显式生产 secret、持久化 env 文件和数据卷，适合一台服务器或本机长期运行。
+
+开发 Compose 只用于改代码或临时本地试用。它会从本地 Dockerfile 构建镜像，并内置开发 secret，不适合公网或长期运行。
+
+还没有确定部署方式时，先读 [部署路径选择](../choose-path/)。只要是长期运行且不需要 Kubernetes，多数情况下都应该留在生产 Compose 路径。
+
+## Compose 文件区别
 
 | 文件 | 用途 | 特点 |
 | --- | --- | --- |
-| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
 | `docker-compose.yml` | 预构建镜像部署 | 使用 <code>{dockerImageReference}</code>，需要显式提供生产 secret |
+| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
 
-## 获取 Compose 文件
+## 获取生产 Compose 文件
 
-开发 Compose 依赖仓库中的 Dockerfile 和源码，请先获取完整仓库：
+在空目录下载单机生产部署所需的最少文件：
 
-<Code code={`git clone ${githubCloneUrl} synctv
-cd synctv`} lang="bash" />
-
-如果只做生产单机部署，可以在空目录下载最少文件：
-
-<Code code={`mkdir synctv-compose
-cd synctv-compose
-curl -fsSLO ${dockerComposeFileUrl}
-curl -fsSLO ${composePostgresEnvExampleUrl}
-curl -fsSLO ${composeSynctvEnvExampleUrl}
-mkdir -p scripts
-curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh
-chmod +x scripts/init-compose-env.sh`} lang="bash" />
+<Code
+  code={[
+    'mkdir synctv-compose',
+    'cd synctv-compose',
+    `curl -fsSLO ${dockerComposeFileUrl}`,
+    `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+    `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+    'mkdir -p scripts',
+    `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+    'chmod +x scripts/init-compose-env.sh',
+  ].join('\n')}
+  lang="bash"
+/>
 
 文件也可以从源码仓库页面查看：<a href={githubTreeUrl}>源码仓库</a>。开发 Compose 文件地址是 <a href={dockerComposeDevFileUrl}>docker-compose.dev.yml</a>。
 
-## 开发 Compose
+## 生产 Compose 启动
+
+首次启动前生成持久化环境文件：
+
+```bash
+./scripts/init-compose-env.sh
+```
+
+编辑 `.env.synctv`，至少设置：
+
+```dotenv
+SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+# 如果前端和 API 不同 origin，使用 JSON 数组。
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
+```
+
+然后启动：
+
+```bash
+docker compose config
+docker compose up -d
+```
+
+启动成功后立即验证：
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8080/health/ready
+```
+
+浏览器打开 `http://localhost:8080`。默认 root 用户名是 `root`，密码来自 `.env.synctv` 里的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+
+Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。请备份这两个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
+
+升级镜像时同步修改 `docker-compose.yml` 中的镜像 tag，或在自己的 Compose 覆盖文件中指定镜像版本。
+
+## 开发 Compose 边界
+
+开发 Compose 依赖仓库中的 Dockerfile 和源码。只有需要本地构建或改代码时，才先获取完整仓库：
+
+<Code code={`git clone ${githubCloneUrl} synctv
+cd synctv`} lang="bash" />
 
 <Tabs syncKey="compose-mode">
   <TabItem label="开发 Compose" icon="rocket">
@@ -70,26 +117,6 @@ docker compose -f docker-compose.dev.yml up -d
 - root 密码
 
 这些值只适合开发，不适合生产。
-
-  </TabItem>
-  <TabItem label="生产 Compose" icon="approve-check-circle">
-
-首次启动前生成持久化环境文件：
-
-```bash
-./scripts/init-compose-env.sh
-```
-
-编辑 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` 后启动：
-
-```bash
-docker compose config
-docker compose up -d
-```
-
-Docker Compose 会通过 `env_file` 分别加载必需的 `.env.postgres` 和 `.env.synctv`：PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。请备份这两个文件；重启、换 shell、服务器重启或升级时都应复用同一组环境文件。缺少任一文件时，`docker compose config` 会直接失败。
-
-升级镜像时同步修改 `docker-compose.yml` 中的镜像 tag，或在自己的 Compose 覆盖文件中指定镜像版本。
 
   </TabItem>
 </Tabs>

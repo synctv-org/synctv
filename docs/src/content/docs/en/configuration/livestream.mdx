@@ -85,11 +85,11 @@ Typical choices: AWS S3, MinIO, Cloudflare R2, or compatible services. Configure
 3. The local StreamHub receives live packets. HTTP-FLV can subscribe directly, and the HLS remuxer keeps producing segments.
 4. HLS segments are written to the selected `memory`, `file`, or `oss` backend.
 5. If a viewer request lands on a non-publisher node, that node uses the shared registry to locate the publisher owner. HTTP-FLV uses cross-node relay; HLS playlist/segment reads can be proxied to the publisher node through the HLS gRPC proxy.
-6. If the HLS backend is `file + hls_shared_storage=true` or `oss`, any node can also read segments directly from the shared backend, reducing publisher-node fan-out pressure.
+6. Today, cross-node HLS reads use the publisher-node HLS gRPC proxy as the main path. A shared `file` or `oss` backend gives the stream a more stable storage boundary, but it does not make non-publisher nodes bypass the publisher and read directly.
 </Steps>
 
 <Aside type="note">
-Multi-replica HLS has two models: local backends rely on publisher-node proxying, which is simple but routes remote segment requests through the publisher node; shared filesystem or OSS backends let each node read segments directly and are better for high-traffic production and rolling-upgrade boundaries.
+Multi-replica HLS uses the publisher registry to locate the publishing node, then reads remote playlists and segments through the HLS gRPC proxy. Shared filesystems or OSS make segment storage more durable and easier to reason about across restarts, but capacity planning must still include publisher-node proxy traffic.
 </Aside>
 
 ## RTMP
@@ -175,7 +175,7 @@ This only applies when `hls_storage_backend=memory`. The current built-in defaul
 
 This only applies when `hls_storage_backend=file`. It declares whether `hls_storage_path` is mounted from storage visible to every replica. `oss` is inherently shared and does not use this flag. Setting `hls_shared_storage=true` with the `memory` or `oss` backend is rejected by configuration validation.
 
-With local file-backed HLS in multi-replica deployments, non-publisher nodes use the HLS gRPC proxy to read from the publisher node. To reduce cross-node origin pressure and get cleaner failure boundaries, production multi-replica file-backed HLS should use shared storage:
+With local file-backed HLS in multi-replica deployments, non-publisher nodes use the HLS gRPC proxy to read from the publisher node. Shared storage keeps segments from being tied to one pod's local disk and gives cleaner restart and recovery boundaries, but the request path still goes through publisher-node proxying:
 
 ```yaml
 livestream:

@@ -62,6 +62,11 @@ mod patterns {
     pub static CONTROL_CHARS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]").expect("Invalid control char regex")
     });
+
+    /// Public ID syntax: typed prefix plus runtime-configured encoded body.
+    pub static PUBLIC_ID: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(usr|room|med|pl|rev|ban)_[A-Za-z0-9]+$").expect("Invalid public ID regex")
+    });
 }
 
 /// Common weak passwords rejected on exact match (case-insensitive).
@@ -410,14 +415,19 @@ pub fn validate_room_description(description: &str) -> ValidationResult<String> 
 
 /// Validate room ID format
 pub fn validate_room_id(id: &str) -> ValidationResult<String> {
-    validate_nanoid_id(id, "room_id")
+    validate_public_id_with_prefix(id, "room_id", "room_")
 }
 
 /// Validate externally visible entity IDs.
 ///
-/// Public IDs are sqids strings. Decoding depends on runtime configuration, so
-/// this format check only rejects empty, too-long, and non-base62 input.
+/// Public IDs carry a type prefix (`room_`, `usr_`, `med_`, etc.). Decoding
+/// depends on runtime configuration, so this format check only validates the
+/// shared wire syntax before the impl layer decodes with `PublicIdCodec`.
 pub fn validate_nanoid_id(id: &str, field_name: &'static str) -> ValidationResult<String> {
+    validate_public_id(id, field_name)
+}
+
+pub fn validate_public_id(id: &str, field_name: &'static str) -> ValidationResult<String> {
     let sanitized = sanitize_string(id);
 
     let len = sanitized.len();
@@ -431,11 +441,23 @@ pub fn validate_nanoid_id(id: &str, field_name: &'static str) -> ValidationResul
             actual: len,
         });
     }
-    if !synctv_common::id::is_valid(&sanitized) {
+    if !patterns::PUBLIC_ID.is_match(&sanitized) {
         return Err(ValidationError::InvalidFormat { field: field_name });
     }
 
     Ok(sanitized.into_owned())
+}
+
+fn validate_public_id_with_prefix(
+    id: &str,
+    field_name: &'static str,
+    prefix: &'static str,
+) -> ValidationResult<String> {
+    let sanitized = validate_public_id(id, field_name)?;
+    if !sanitized.starts_with(prefix) {
+        return Err(ValidationError::InvalidFormat { field: field_name });
+    }
+    Ok(sanitized)
 }
 
 /// Validate media title
@@ -1093,8 +1115,10 @@ mod tests {
 
     #[test]
     fn test_validate_room_id() {
-        assert!(validate_room_id("AbC123xYz890").is_ok());
-        assert!(validate_room_id("1234567890Ab").is_ok());
+        assert!(validate_room_id("room_1").is_ok());
+        assert!(validate_room_id("room_123").is_ok());
+        assert!(validate_room_id("room_AbC123xYz890").is_ok());
+        assert!(validate_room_id("AbC123xYz890").is_err());
         assert!(validate_room_id("room1234_abx").is_err());
         assert!(validate_room_id("room@123").is_err()); // Invalid character
         assert!(validate_room_id("").is_err()); // Empty
@@ -1372,10 +1396,12 @@ mod tests {
 
     #[test]
     fn test_validate_nanoid_id() {
-        assert!(validate_nanoid_id("AbC123xYz890", "user_id").is_ok());
-        assert!(validate_nanoid_id("A", "user_id").is_ok());
+        assert!(validate_nanoid_id("usr_1", "user_id").is_ok());
+        assert!(validate_nanoid_id("room_AbC123xYz890", "room_id").is_ok());
+        assert!(validate_nanoid_id("med_A", "media_id").is_ok());
+        assert!(validate_nanoid_id("AbC123xYz890", "user_id").is_err());
         assert!(validate_nanoid_id(&"A".repeat(limits::ID_MAX + 1), "user_id").is_err());
-        assert!(validate_nanoid_id("AbC123xYz8_0", "user_id").is_err()); // Invalid character
+        assert!(validate_nanoid_id("usr_AbC123xYz8_0", "user_id").is_err()); // Invalid character
         assert!(validate_nanoid_id("", "user_id").is_err()); // Empty
     }
 

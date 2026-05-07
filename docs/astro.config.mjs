@@ -119,24 +119,9 @@ export default defineConfig({
             { label: '快速开始', translations: { en: 'Quick Start' }, slug: 'guides/quick-start' },
             { label: '架构总览', translations: { en: 'Architecture Overview' }, slug: 'guides/architecture' },
             {
-              label: '认证与安全模型',
-              translations: { en: 'Authentication and Security Model' },
-              slug: 'guides/security-model',
-            },
-            {
-              label: '管理员操作手册',
-              translations: { en: 'Administration Runbook' },
-              slug: 'guides/administration',
-            },
-            {
-              label: '房间、权限与用户偏好',
-              translations: { en: 'Rooms, Permissions, and Preferences' },
-              slug: 'guides/rooms-permissions',
-            },
-            {
-              label: '客户端集成指南',
-              translations: { en: 'Client Integration Guide' },
-              slug: 'guides/client-integration',
+              label: '术语速查',
+              translations: { en: 'Glossary' },
+              slug: 'reference/glossary',
             },
             { label: '文档导览', translations: { en: 'Documentation Map' }, slug: 'guides/documentation-map' },
           ],
@@ -145,6 +130,11 @@ export default defineConfig({
           label: '部署',
           translations: { en: 'Deployment' },
           items: [
+            {
+              label: '部署路径选择',
+              translations: { en: 'Choose a Deployment Path' },
+              slug: 'deployment/choose-path',
+            },
             {
               label: 'Docker Compose 部署',
               translations: { en: 'Docker Compose Deployment' },
@@ -159,6 +149,33 @@ export default defineConfig({
               label: '生产部署清单',
               translations: { en: 'Production Checklist' },
               slug: 'deployment/production-checklist',
+            },
+          ],
+          collapsed: false,
+        },
+        {
+          label: '使用与集成',
+          translations: { en: 'Use and Integrate' },
+          items: [
+            {
+              label: '管理员操作手册',
+              translations: { en: 'Administration Runbook' },
+              slug: 'guides/administration',
+            },
+            {
+              label: '认证与安全模型',
+              translations: { en: 'Authentication and Security Model' },
+              slug: 'guides/security-model',
+            },
+            {
+              label: '房间、权限与用户偏好',
+              translations: { en: 'Rooms, Permissions, and Preferences' },
+              slug: 'guides/rooms-permissions',
+            },
+            {
+              label: '客户端集成指南',
+              translations: { en: 'Client Integration Guide' },
+              slug: 'guides/client-integration',
             },
           ],
           collapsed: false,
@@ -198,9 +215,14 @@ export default defineConfig({
               slug: 'configuration/database-and-redis',
             },
             {
-              label: '缓存与代理 slice cache',
-              translations: { en: 'Cache and Proxy Slice Cache' },
-              slug: 'configuration/cache-and-proxy',
+              label: '业务缓存',
+              translations: { en: 'Business Cache' },
+              slug: 'configuration/cache',
+            },
+            {
+              label: 'Proxy slice cache',
+              translations: { en: 'Proxy Slice Cache' },
+              slug: 'configuration/proxy-slice-cache',
             },
             {
               label: 'Metrics 监控',

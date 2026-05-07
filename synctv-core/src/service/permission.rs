@@ -278,6 +278,11 @@ impl PermissionService {
     }
 
     #[cfg(test)]
+    pub(crate) const fn has_settings_registry(&self) -> bool {
+        self.settings_registry.is_some()
+    }
+
+    #[cfg(test)]
     fn invalidation_tasks_started(&self) -> bool {
         self.invalidation_runtime.started.load(Ordering::Acquire)
     }
@@ -563,19 +568,25 @@ impl PermissionService {
                     registry
                         .admin_default_permissions
                         .get()
-                        .unwrap_or(PermissionBits::DEFAULT_ADMIN),
+                        .map_or(PermissionBits::DEFAULT_ADMIN, |permissions| {
+                            permissions.bits().0
+                        }),
                 ),
                 crate::models::RoomRole::Member => PermissionBits(
                     registry
                         .member_default_permissions
                         .get()
-                        .unwrap_or(PermissionBits::DEFAULT_MEMBER),
+                        .map_or(PermissionBits::DEFAULT_MEMBER, |permissions| {
+                            permissions.bits().0
+                        }),
                 ),
                 crate::models::RoomRole::Guest => PermissionBits(
                     registry
                         .guest_default_permissions
                         .get()
-                        .unwrap_or(PermissionBits::DEFAULT_GUEST),
+                        .map_or(PermissionBits::DEFAULT_GUEST, |permissions| {
+                            permissions.bits().0
+                        }),
                 ),
                 crate::models::RoomRole::Creator => {
                     PermissionBits(crate::models::PermissionBits::ALL)

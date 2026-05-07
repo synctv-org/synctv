@@ -27,7 +27,7 @@
 //! }
 //! ```
 
-use crate::models::room_settings::MaxMembers;
+use crate::models::{room_settings::MaxMembers, PermissionBits};
 use crate::service::{
     settings_vars::{Setting, SettingsStorage},
     SettingsService,
@@ -40,6 +40,110 @@ use std::sync::Arc;
 
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionSet(PermissionBits);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionSetParseError(String);
+
+impl fmt::Display for PermissionSetParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PermissionSetParseError {}
+
+impl PermissionSet {
+    #[must_use]
+    pub const fn admin_default() -> Self {
+        Self(PermissionBits(PermissionBits::DEFAULT_ADMIN))
+    }
+
+    #[must_use]
+    pub const fn member_default() -> Self {
+        Self(PermissionBits(PermissionBits::DEFAULT_MEMBER))
+    }
+
+    #[must_use]
+    pub const fn guest_default() -> Self {
+        Self(PermissionBits(PermissionBits::DEFAULT_GUEST))
+    }
+
+    #[must_use]
+    pub const fn bits(&self) -> PermissionBits {
+        self.0
+    }
+}
+
+const NAMED_PERMISSIONS: &[(&str, u64)] = &[
+    ("send_chat", PermissionBits::SEND_CHAT),
+    ("add_media", PermissionBits::ADD_MEDIA),
+    ("delete_media_self", PermissionBits::DELETE_MEDIA_SELF),
+    ("delete_media_any", PermissionBits::DELETE_MEDIA_ANY),
+    ("edit_media_self", PermissionBits::EDIT_MEDIA_SELF),
+    ("edit_media_any", PermissionBits::EDIT_MEDIA_ANY),
+    ("reorder_playlist", PermissionBits::REORDER_PLAYLIST),
+    ("clear_playlist", PermissionBits::CLEAR_PLAYLIST),
+    ("start_live", PermissionBits::START_LIVE),
+    ("play_control", PermissionBits::PLAY_CONTROL),
+    ("change_current_media", PermissionBits::CHANGE_CURRENT_MEDIA),
+    ("change_playback_rate", PermissionBits::CHANGE_PLAYBACK_RATE),
+    ("approve_member", PermissionBits::APPROVE_MEMBER),
+    ("kick_member", PermissionBits::KICK_MEMBER),
+    ("ban_member", PermissionBits::BAN_MEMBER),
+    (
+        "set_member_permissions",
+        PermissionBits::SET_MEMBER_PERMISSIONS,
+    ),
+    ("add_member", PermissionBits::ADD_MEMBER),
+    ("set_room_settings", PermissionBits::SET_ROOM_SETTINGS),
+    ("delete_chat", PermissionBits::DELETE_CHAT),
+    ("delete_room", PermissionBits::DELETE_ROOM),
+    ("view_playlist", PermissionBits::VIEW_PLAYLIST),
+    ("view_member_list", PermissionBits::VIEW_MEMBER_LIST),
+    ("view_chat_history", PermissionBits::VIEW_CHAT_HISTORY),
+    ("use_webrtc", PermissionBits::USE_WEBRTC),
+];
+
+impl fmt::Display for PermissionSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = NAMED_PERMISSIONS
+            .iter()
+            .filter_map(|(name, bit)| self.0.has(*bit).then_some(*name))
+            .collect::<Vec<_>>();
+        let json = serde_json::to_string(&names).map_err(|_| fmt::Error)?;
+        f.write_str(&json)
+    }
+}
+
+impl std::str::FromStr for PermissionSet {
+    type Err = PermissionSetParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let names = serde_json::from_str::<Vec<String>>(s).map_err(|error| {
+            PermissionSetParseError(format!(
+                "permission set must be a JSON array of permission names: {error}"
+            ))
+        })?;
+
+        let mut bits = PermissionBits::empty();
+        for name in names {
+            let Some((_, bit)) = NAMED_PERMISSIONS
+                .iter()
+                .find(|(permission_name, _)| *permission_name == name)
+            else {
+                return Err(PermissionSetParseError(format!(
+                    "unknown permission name '{name}'"
+                )));
+            };
+            bits.grant(*bit);
+        }
+
+        Ok(Self(bits))
+    }
+}
 
 /// A statically configured ICE server entry exposed to native clients.
 ///
@@ -358,9 +462,9 @@ pub struct SettingsRegistry {
     pub max_chat_messages: Setting<u64>,
 
     // Permission settings - global defaults for each role
-    pub admin_default_permissions: Setting<u64>,
-    pub member_default_permissions: Setting<u64>,
-    pub guest_default_permissions: Setting<u64>,
+    pub admin_default_permissions: Setting<PermissionSet>,
+    pub member_default_permissions: Setting<PermissionSet>,
+    pub guest_default_permissions: Setting<PermissionSet>,
 
     // Room settings
     pub disable_create_room: Setting<bool>,
@@ -477,28 +581,26 @@ impl SettingsRegistry {
                 }
             ),
 
-            // Permission settings - global defaults for each role
-            // These are base permissions that rooms can override with added/removed permissions
-            // Admin default: All permissions except System::ADMIN (1073741823 = 0x3FFFFFFF)
+            // Permission settings - global defaults for each room role.
+            // These must stay aligned with PermissionBits::DEFAULT_* because
+            // PermissionService reads these runtime settings as its base role permissions.
             admin_default_permissions: setting!(
-                u64,
+                PermissionSet,
                 "permissions.admin_default",
                 storage.clone(),
-                1_073_741_823
+                PermissionSet::admin_default()
             ),
-            // Member default: Basic member permissions (262143 = 0x3FFFF)
             member_default_permissions: setting!(
-                u64,
+                PermissionSet,
                 "permissions.member_default",
                 storage.clone(),
-                262_143
+                PermissionSet::member_default()
             ),
-            // Guest default: Read-only permissions (511 = 0x1FF)
             guest_default_permissions: setting!(
-                u64,
+                PermissionSet,
                 "permissions.guest_default",
                 storage.clone(),
-                511
+                PermissionSet::guest_default()
             ),
 
             // Room settings

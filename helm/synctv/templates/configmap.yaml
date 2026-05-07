@@ -16,6 +16,7 @@ metadata:
 {{- $mediaProviderEmby := $mediaProviders.emby | default dict }}
 {{- $webauthn := .Values.config.webauthn | default dict }}
 {{- $cache := .Values.config.cache | default dict }}
+{{- $proxySliceCache := .Values.config.proxySliceCache | default dict }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -130,10 +131,12 @@ data:
       username_cache_ttl_seconds: {{ $cache.usernameCacheTtlSeconds | default 3600 }}
       permission_cache_capacity: {{ $cache.permissionCacheCapacity | default 1000 }}
       permission_cache_ttl_seconds: {{ $cache.permissionCacheTtlSeconds | default 300 }}
-      proxy_slice_cache_enabled: {{ if hasKey $cache "proxySliceCacheEnabled" }}{{ $cache.proxySliceCacheEnabled }}{{ else }}true{{ end }}
-      proxy_slice_file_backend_enabled: {{ $cache.proxySliceFileBackendEnabled | default false }}
-      {{- if .Values.config.cache.proxySliceFileCacheDir }}
-      proxy_slice_file_cache_dir: {{ .Values.config.cache.proxySliceFileCacheDir | quote }}
+
+    proxy_slice_cache:
+      enabled: {{ if hasKey $proxySliceCache "enabled" }}{{ $proxySliceCache.enabled }}{{ else }}true{{ end }}
+      file_backend_enabled: {{ $proxySliceCache.fileBackendEnabled | default false }}
+      {{- if $proxySliceCache.fileCacheDir }}
+      file_cache_dir: {{ $proxySliceCache.fileCacheDir | quote }}
       {{- end }}
 
     livestream:

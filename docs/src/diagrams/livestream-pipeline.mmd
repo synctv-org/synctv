@@ -8,17 +8,17 @@ flowchart LR
   Playlist[HLS playlist route]
   Segment[HLS segment route]
   Viewer[Viewer client]
-  Redis[(Redis<br/>cluster publisher registry)]
+  Registry[(publisher registry<br/>in-memory or Redis)]
   Remote[Remote node<br/>HLS/FLV request]
   HLSProxy[Publisher-node<br/>HLS gRPC proxy]
 
   Publisher --> RTMP --> Hub
-  RTMP --> Redis
+  RTMP --> Registry
   Hub --> FLV --> Viewer
   Hub --> Remux --> Storage
   Viewer --> Playlist --> Storage
   Viewer --> Segment --> Storage
-  Remote -. lookup publisher .-> Redis
+  Remote -. lookup publisher .-> Registry
   Remote -. FLV relay .-> Hub
   Remote -. playlist/segment proxy .-> HLSProxy
   HLSProxy -. local read .-> Storage

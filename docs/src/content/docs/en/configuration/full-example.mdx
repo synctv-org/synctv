@@ -3,7 +3,7 @@ title: Full Configuration Example
 description: SyncTV minimal production skeleton and a full YAML template covering all static configuration fields.
 ---
 
-import { TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Usage Principles
 
@@ -19,9 +19,43 @@ Recommended workflow:
 ## Configuration Templates
 
 <Tabs syncKey="config-example">
+  <TabItem label="Compose env" icon="seti:docker">
+
+If you followed [Quick Start](../../guides/quick-start/) with production Compose, you usually do not need to start with `synctv.yaml`. Your default entrypoint is `.env.postgres` and `.env.synctv`.
+
+Minimum values to confirm:
+
+```dotenv
+# .env.synctv
+SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+
+# If frontend and API use different origins, use a JSON array.
+SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
+
+# init-compose-env.sh generates these long-lived secrets. Back them up and reuse the same files.
+SYNCTV_JWT_SECRET=...
+SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
+SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
+```
+
+Start and verify:
+
+```bash
+docker compose config
+docker compose up -d
+curl -fsS http://localhost:8080/health/ready
+```
+
+Use the YAML templates below when you need bare-metal, Kubernetes, custom secret files, or a full YAML configuration.
+
+  </TabItem>
   <TabItem label="Minimal Production" icon="rocket">
 
 Use `_file` keys for secrets whenever possible.
+
+<Aside type="note">
+This YAML skeleton is better suited for bare-metal, Kubernetes, or custom secret-file deployments. Production Compose users should maintain `.env.postgres` and `.env.synctv` first.
+</Aside>
 
 ```yaml
 server:
@@ -130,6 +164,7 @@ metrics:
     bearer_token_file: "/run/secrets/metrics_bearer_token"
     basic_username: ""
     basic_password: ""
+    basic_password_file: "/run/secrets/metrics_basic_password"
     kubernetes:
       audience: ""
       authentication_cache_ttl_seconds: 60
@@ -298,9 +333,11 @@ cache:
   username_cache_ttl_seconds: 3600
   permission_cache_capacity: 1000
   permission_cache_ttl_seconds: 300
-  proxy_slice_cache_enabled: true
-  proxy_slice_file_backend_enabled: false
-  proxy_slice_file_cache_dir: ""
+
+proxy_slice_cache:
+  enabled: true
+  file_backend_enabled: false
+  file_cache_dir: ""
 
 messaging_rate_limits:
   chat_per_second: 10

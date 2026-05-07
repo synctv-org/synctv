@@ -1,109 +1,165 @@
 ---
 title: SyncTV Documentation
-description: Official SyncTV documentation for deployment, administration, and development.
+description: Official SyncTV documentation for self-hosted users, deployment administrators, and client developers.
 template: splash
 hero:
-  tagline: Real-time synchronized watching, livestreaming, media aggregation, and horizontally scalable collaboration.
+  tagline: Self-hosted synchronized watching, media aggregation, livestreaming, and multi-node realtime collaboration.
   actions:
-    - text: Quick Start
+    - text: Single-node Production
       link: guides/quick-start/
-      icon: right-arrow
+      icon: rocket
       variant: primary
+    - text: Production Checklist
+      link: deployment/production-checklist/
+      icon: approve-check-circle
     - text: Architecture
       link: guides/architecture/
       icon: puzzle
-    - text: Configuration Reference
+    - text: Configuration Index
       link: reference/configuration-index/
       icon: document
-    - text: Client Integration
-      link: guides/client-integration/
-      icon: puzzle
 ---
 
-import { Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Card, CardGrid, Code, LinkCard } from '@astrojs/starlight/components';
 import LocaleChoiceTracker from '../../../components/LocaleChoiceTracker.astro';
+import {
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeFileUrl,
+} from '../../../lib/project';
 
 <LocaleChoiceTracker />
 
-## Documentation Layout
+## What SyncTV Is
 
-SyncTV can run as a self-hosted single-node service or as a multi-node cluster. The documentation is organized around four workflows:
+SyncTV is a self-hosted synchronized watching and media collaboration service. Think of it as an independent Watch Party backend: users join rooms with shared playback state, chat, danmaku, membership, and permissions. Administrators can attach media providers and enable proxying, slice cache, livestreaming, OAuth2, WebAuthn, metrics, and multi-node clustering as needed.
 
-- **Deployment**: Docker Compose, Helm, production checklist, secrets, domains, ports, storage, and Ingress.
-- **Configuration**: Redis, PostgreSQL, CORS, rate limits, metrics, WebAuthn, OAuth2, cluster mode, cache, and providers.
-- **Operations**: backup and restore, upgrades, observability, logs, troubleshooting, and incident data collection.
-- **Development**: configuration precedence, environment variables, CLI, OpenAPI, gRPC, provider configuration, and deployment templates.
+It can run as a simple single-node service or as a multi-replica production cluster.
+
+## Who It Is For
 
 <CardGrid>
-  <Card title="Start Quickly" icon="rocket">
-    Bring up PostgreSQL, Redis, and SyncTV with Docker Compose, then verify the required production secrets.
+  <Card title="Self-hosted users" icon="rocket">
+    Run a synchronized watching service quickly with Docker Compose, PostgreSQL, Redis, and SyncTV.
   </Card>
-  <Card title="Understand Boundaries" icon="puzzle">
-    Learn how HTTP/gRPC, management, metrics, Redis, PostgreSQL, provider proxying, and clustering fit together.
+  <Card title="Media administrators" icon="puzzle">
+    Connect Emby/Jellyfin, Alist, Bilibili, or custom providers to rooms, permissions, and playback.
   </Card>
-  <Card title="Understand Configuration" icon="setting">
-    Every configuration page explains what the field controls, when to change it, and what operational risk it carries.
+  <Card title="Production teams" icon="cloud-download">
+    Plan TLS, Ingress, gRPC, metrics, backups, secrets, multi-replica realtime events, and HLS storage.
   </Card>
-  <Card title="Deploy to Production" icon="rocket">
-    Review Helm, Ingress, split HTTP/gRPC services, metrics, Redis, HLS storage, and multi-replica constraints.
-  </Card>
-  <Card title="Security Defaults" icon="approve-check-circle">
-    JWT, OPAQUE, provider credential encryption, CORS, trusted proxies, rate limits, and WebAuthn have dedicated pages.
+  <Card title="Client developers" icon="document">
+    Integrate HTTP/OpenAPI, gRPC, WebSocket, OAuth2, MFA, media URLs, and error handling.
   </Card>
 </CardGrid>
 
+## Recommended Fastest Path: Single-node Production Compose
+
+Start with the production-ready single-node path: download production Compose files, generate persistent env files, explicitly set the root password and long-lived secrets, then start the service.
+
 <Aside type="tip">
-For first-time deployment, start with the quick start. For production, use the production checklist and the configuration index.
+The default answer for a long-running service is single-node production Compose. Use the deployment section for Helm and cluster deployment details when you need Kubernetes or multiple replicas.
 </Aside>
 
-## Core Configuration Principles
+<Code
+  code={[
+    'mkdir synctv-compose',
+    'cd synctv-compose',
+    `curl -fsSLO ${dockerComposeFileUrl}`,
+    `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+    `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+    'mkdir -p scripts',
+    `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+    'chmod +x scripts/init-compose-env.sh',
+    './scripts/init-compose-env.sh',
+  ].join('\n')}
+  lang="bash"
+/>
 
-SyncTV configuration is built around three rules: keep stable secrets stable, inject sensitive values through secret mechanisms, and put runtime-owned files under a persistent data directory.
+Then edit `.env.synctv` and set at least:
 
-Key concepts:
+```dotenv
+SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+```
 
-- `jwt.secret`: signs login tokens. Rotate it if it leaks; existing sessions may be invalidated.
-- `security.opaque_server_setup_secret`: used by OPAQUE password authentication. Keep it stable across restarts and upgrades.
-- `security.credential_encryption_key`: encrypts media provider credentials. Back it up securely before storing encrypted credentials.
-- `data_dir`: root directory for runtime-owned files such as the management socket, logs, HLS files, and proxy slice cache.
-- `server.cors_allowed_origins`: allowed browser origins for cross-origin API access.
-- `cluster.enabled`: enables multi-node coordination. Redis and `server.cluster_secret` become required.
+After saving the file, start and verify:
 
-## Recommended Reading Order
+<Code
+  code={[
+    'docker compose config',
+    'docker compose up -d',
+    'curl -fsS http://localhost:8080/health/ready',
+  ].join('\n')}
+  lang="bash"
+/>
 
-1. Read [Quick Start](guides/quick-start/) and confirm the service can start.
-2. When writing configuration, use the [Full Configuration Example](configuration/full-example/) and [Configuration Index](reference/configuration-index/).
-3. Read [How Configuration Works](configuration/how-configuration-works/) to understand precedence and environment variable naming.
-4. For server deployments, read [Security and Secrets](configuration/security/).
-5. For Docker or Kubernetes, read [Docker Compose Deployment](deployment/docker-compose/) or [Helm Deployment](deployment/helm/).
-6. Before production launch, read [Backup and Restore](operations/backup-restore/), [Upgrades and Migrations](operations/upgrades/), and [Observability Runbook](operations/observability/).
-7. Before managing users, rooms, permissions, or providers, read [Administration Runbook](guides/administration/) and [Rooms, Permissions, and Preferences](guides/rooms-permissions/).
-8. Before building a client or SDK, read the [Client Integration Guide](guides/client-integration/).
-9. For production data governance, read [Data, Privacy, and Retention](operations/data-retention/).
-10. For startup, Ingress, authentication, or media playback failures, start from [Troubleshooting](operations/troubleshooting/).
+Then open:
+
+```text
+http://localhost:8080
+```
+
+This path uses the prebuilt image and persistent env files, and is suitable for long-running single-node deployments. Production deployments must preserve `jwt.secret`, `security.opaque_server_setup_secret`, `security.credential_encryption_key`, and the root password.
+
+<Aside type="tip">
+Even for first-time use, prefer single-node production Compose. Use the development Compose path only for temporary UI preview or code work.
+</Aside>
+
+## Choose Your Task
+
+| Task | Start here | Success signal |
+| --- | --- | --- |
+| Single-node production | [Quick Start](guides/quick-start/) and [Production Checklist](deployment/production-checklist/) | Secrets are preserved, `/health/ready` returns 200, database backups exist |
+| Temporary local evaluation | [Quick Start](guides/quick-start/) | Development Compose runs, but is not used publicly or long term |
+| Kubernetes or multi-replica | [Architecture Overview](guides/architecture/) and [Helm Deployment](deployment/helm/) | Pods share PostgreSQL and Redis, HTTP/gRPC Ingresses are tested separately |
+| Write configuration | [Configuration Index](reference/configuration-index/) and [Full Configuration Example](configuration/full-example/) | `synctv config validate` passes and effective config matches intent |
+| Build a client | [Client Integration Guide](guides/client-integration/) | Login, ticket, WebSocket, and error handling flows work |
+| Troubleshoot | [Troubleshooting](operations/troubleshooting/) | You can map the error text or symptom to a concrete action |
+
+## Concepts To Know First
+
+- **PostgreSQL**: the durable business data store.
+- **Redis**: shared short-lived state, rate limits, OAuth2 state, WebAuthn challenges, L2 cache, and cluster coordination. Optional for simple single-node mode, recommended in production, required for multi-replica mode.
+- **Provider**: resolves external media into a playable URL or a SyncTV proxy URL.
+- **management gRPC**: the control plane used by CLI and operations commands; do not expose it to normal clients.
+- **OPAQUE setup secret**: long-lived server secret for password authentication; do not regenerate it on every deployment.
+- **slice cache**: caches Range slices, not whole files.
+
+See [Glossary](reference/glossary/) for short definitions.
 
 ## Common Entry Points
 
 <CardGrid>
   <LinkCard
-    title="Documentation Map"
-    href="guides/documentation-map/"
-    description="Task-oriented entry points for deployment, configuration, operations, development, and troubleshooting."
+    title="Quick Start"
+    href="guides/quick-start/"
+    description="Production Compose first, with secondary paths for local evaluation and source development."
   />
   <LinkCard
-    title="Configuration Index"
-    href="reference/configuration-index/"
-    description="All configuration fields, types, defaults, and links to detailed explanations."
+    title="Production Checklist"
+    href="deployment/production-checklist/"
+    description="Required, recommended, and as-needed checks for secrets, database, Redis, Ingress, monitoring, backups, and upgrades."
   />
   <LinkCard
     title="Architecture Overview"
     href="guides/architecture/"
-    description="Single-binary service, network surfaces, state layers, provider proxying, slice cache, and cluster model."
+    description="Understand the process, network surfaces, state layers, and media boundaries from single-node to Kubernetes."
   />
   <LinkCard
-    title="Authentication and Security Model"
-    href="guides/security-model/"
-    description="Local login, OAuth2, user 2FA, token context, management control plane, and provider header boundaries."
+    title="Configuration Index"
+    href="reference/configuration-index/"
+    description="Start with the decision table, then look up every field, type, default, and detailed page."
+  />
+  <LinkCard
+    title="Full Configuration Example"
+    href="configuration/full-example/"
+    description="Minimal production skeleton, full YAML template, and URL/split configuration examples."
+  />
+  <LinkCard
+    title="Security and Secrets"
+    href="configuration/security/"
+    description="JWT, OPAQUE, provider credential encryption, password complexity, tokens, and local 2FA boundaries."
   />
   <LinkCard
     title="Administration Runbook"
@@ -111,24 +167,9 @@ Key concepts:
     description="Management boundaries for users, rooms, reviews, providers, runtime settings, system state, and slice cache."
   />
   <LinkCard
-    title="Rooms, Permissions, and Preferences"
-    href="guides/rooms-permissions/"
-    description="Global roles, room roles, permission bits, room settings, member overrides, and user preferences."
-  />
-  <LinkCard
     title="Client Integration Guide"
     href="guides/client-integration/"
     description="HTTP, gRPC, WebSocket, login, MFA, OAuth2, tokens, and media header integration guidance."
-  />
-  <LinkCard
-    title="Production Checklist"
-    href="deployment/production-checklist/"
-    description="Review secrets, database, Redis, Ingress, metrics, backups, and upgrades before launch."
-  />
-  <LinkCard
-    title="Data, Privacy, and Retention"
-    href="operations/data-retention/"
-    description="PostgreSQL, Redis, logs, backups, PII, provider credentials, and background cleanup behavior."
   />
   <LinkCard
     title="Observability Runbook"
@@ -138,17 +179,12 @@ Key concepts:
   <LinkCard
     title="Troubleshooting"
     href="operations/troubleshooting/"
-    description="Diagnose startup, configuration, Ingress, authentication, provider, cache, livestream, and cluster issues."
+    description="Diagnose startup, configuration, Ingress, authentication, media, and cluster issues by error text and symptom."
   />
   <LinkCard
     title="CLI Reference"
     href="reference/cli/"
     description="Manage users, rooms, providers, settings, system state, and slice cache from the CLI."
-  />
-  <LinkCard
-    title="Runtime Settings Reference"
-    href="reference/runtime-settings/"
-    description="Database hot-reload setting keys, defaults, validation rules, and scope."
   />
   <LinkCard
     title="OpenAPI Access"

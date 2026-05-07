@@ -3,7 +3,7 @@ title: Client Integration Guide
 description: HTTP, gRPC, WebSocket, authentication, MFA, OAuth2, and realtime integration guidance for clients, SDKs, and third-party integrations.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 ## Purpose
 
@@ -20,16 +20,63 @@ OpenAPI and protobuf definitions describe request and response shapes. This page
 | Operations management | management gRPC or CLI | Do not expose the management endpoint to normal clients. Prefer the CLI. |
 | Media playback | Direct provider URL or SyncTV proxy URL | Providers decide headers, proxy policy, and Range behavior. Clients should not infer upstream rules. |
 
-## Transport Security
+## Minimal HTTP Flow
 
-Production deployments must use TLS. Password-related RPCs in `client.proto` carry password or new-password fields in protobuf payloads. The server does not force HTTPS so local, private, or test deployments remain possible, but public deployments must not expose these APIs over plaintext transport.
+The examples show how to compose calls. Exact fields are defined by `/api-docs/openapi.json` and protobuf.
 
-Requirements:
+<Tabs syncKey="client-http-flow">
+  <TabItem label="Login" icon="approve-check-circle">
 
-- Login, registration, password changes, password reset, and MFA password verification must use HTTPS or a trusted encrypted tunnel.
-- Access and refresh tokens should only be used through `Authorization: Bearer <token>` or controlled client storage.
-- Do not write tokens, OAuth2 codes, email codes, provider tokens, or cookies to logs.
-- Use `wss://` for WebSocket connections outside local development.
+```bash
+curl -sS http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "root",
+    "password": "change-this-password"
+  }'
+```
+
+A typical success response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in.
+
+  </TabItem>
+  <TabItem label="Create WebSocket ticket" icon="document">
+
+```bash
+ACCESS_TOKEN='paste-access-token-here'
+ROOM_ID='room_1' # Use the room.id returned by create/list room APIs
+
+curl -sS http://localhost:8080/api/tickets \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"room_id\":\"${ROOM_ID}\"}"
+```
+
+The returned `ticket` is short-lived, one-time-use, and room-bound.
+
+  </TabItem>
+  <TabItem label="Connect WebSocket" icon="puzzle">
+
+Browsers cannot reliably set a WebSocket `Authorization` header, so use a ticket:
+
+```js
+const roomId = 'room_1'; // Use the room.id returned by create/list room APIs
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  console.log(message);
+};
+```
+
+Native clients and server-side SDKs can use:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+  </TabItem>
+</Tabs>
 
 ## Token Usage
 
@@ -46,6 +93,8 @@ Client guidance:
 - After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
 - When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
 
+Production deployments must use TLS. Login, registration, password changes, password reset, and MFA password verification must use HTTPS or a trusted encrypted tunnel.
+
 ## Local Login and MFA
 
 `LoginResponse` always has the same shape. It can return final tokens directly or return `mfa.required=true`.
@@ -57,7 +106,7 @@ Client flow:
 2. Read `LoginResponse.mfa.required`.
 3. If `required=false`, store `access_token` and `refresh_token`.
 4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
-5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` immediately when the user chooses email.
+5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` when the user chooses email.
 6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
 7. If `MFA_METHOD_PASSWORD` is available, call `VerifyMfaPassword`. Failures are tracked by brute-force protection.
 8. After the second factor succeeds, the final response returns usable tokens.
@@ -73,35 +122,70 @@ OPAQUE is a password login protocol, but clients must not infer password MFA ava
 
 Email codes can be used for login, MFA, email verification, and password reset. Keep those flows separate in client state.
 
-Standalone email login flow:
+Standalone email login request:
 
-<Steps>
-1. Call `RequestEmailLogin` to send a login code. The API returns a generic message and does not reveal whether the email exists.
-2. After the user enters the code, call the login API with `email` and `email_token`.
-3. Do not mix email-login tokens with MFA email codes; MFA email codes are bound to `mfa_session_id`.
-</Steps>
+```bash
+curl -sS http://localhost:8080/api/auth/email/request \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com"}'
+```
 
-Recommendations:
-
-- After sending a code, show a resend countdown to avoid rate-limit loops.
-- Treat rate-limit errors as authoritative and back off.
-- MFA email codes use `mfa_session_id`; they are not normal email-login tokens.
+Then call login with `email` and `email_token`. Do not mix email-login tokens with MFA email codes; MFA email codes are bound to `mfa_session_id`.
 
 ## OAuth2
 
 OAuth2/OIDC is frontend-driven:
 
 <Steps>
-1. Call `ListAvailableProviders` to discover provider instances, `signup_enabled`, and `signup_need_review`.
-2. Call `GetAuthorizationUrl` to get the provider authorization URL and state.
+1. Call `GET /api/oauth2/providers` to discover provider instances, `signup_enabled`, and `signup_need_review`.
+2. Call `GET /api/oauth2/{provider}/authorize?redirect_url=<callback>` to get the provider authorization URL and state.
 3. Redirect the user to the provider.
 4. The provider redirects back to the client URL with `code` and `state`.
-5. Call `ExchangeAuthorizationCode`.
-5. If the response has `registration_review_required=true`, show pending-review state and keep `registration_review_id`; do not treat it as logged in.
-6. If the response contains tokens, store the SyncTV access and refresh tokens.
+5. Call `POST /api/oauth2/{provider}/exchange`.
+6. If the response has `registration_review_required=true`, show pending-review state and keep `registration_review_id`; do not treat it as logged in.
+7. If the response contains tokens, store the SyncTV access and refresh tokens.
 </Steps>
 
-Use `GetAuthorizationUrlForBind` when binding a provider to an existing authenticated account. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+Minimal exchange:
+
+```bash
+curl -sS http://localhost:8080/api/oauth2/github/exchange \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "code": "code-from-callback",
+    "state": "stateFromAuthorizeResponse123456"
+  }'
+```
+
+Use `GET /api/oauth2/{provider}/bind?redirect_url=<callback>` when binding a provider to an existing authenticated account. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+
+## gRPC Examples
+
+Public gRPC uses the same main port. With reflection:
+
+```bash
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+Login:
+
+```bash
+grpcurl -plaintext \
+  -d '{"username":"root","password":"change-this-password"}' \
+  localhost:8080 synctv.client.AuthService/Login
+```
+
+Room-scoped RPCs need both user identity and room context:
+
+```bash
+grpcurl -plaintext \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "x-room-id: ${ROOM_ID}" \
+  -d '{}' \
+  localhost:8080 synctv.client.RoomService/GetPlayback
+```
+
+Do not put the room id only in the request body and expect the server to infer it. RPCs marked with `x-room-id metadata` in `client.proto` should send that metadata explicitly.
 
 ## WebSocket
 
@@ -127,15 +211,6 @@ Browser-style flow:
 4. Do not reuse tickets after success or failure. Request a new one instead.
 </Steps>
 
-## gRPC Room Context
-
-Room-scoped public gRPC APIs use two metadata values:
-
-- `Authorization: Bearer <access_token>` for user identity.
-- `x-room-id: <room_id>` for room context.
-
-Do not put the room id only in the request body and expect the server to infer it. RPCs marked with `x-room-id metadata` in `client.proto` should send that metadata explicitly.
-
 ## Media URLs and Headers
 
 Provider playback results may include URLs, proxy mode, direct mode, and required headers. Client rules:
@@ -145,17 +220,32 @@ Provider playback results may include URLs, proxy mode, direct mode, and require
 - If the client cannot set required headers, use the provider proxy URL or request proxy mode.
 - Range playback depends on the provider and upstream origin. SyncTV proxy does not automatically forward raw client headers.
 
-See [Media Providers](../../configuration/media-providers/) and [Cache and Proxy Slice Cache](../../configuration/cache-and-proxy/) for provider and proxy behavior.
+See [Media Providers](../../configuration/media-providers/) and [Proxy Slice Cache](../../configuration/proxy-slice-cache/) for provider and proxy behavior.
 
 ## Error Handling
 
-Clients should handle errors by category, not by matching exact text:
+HTTP error body:
 
-- `401`: token expired, ticket invalid, or unauthenticated. Start login or refresh.
-- `403`: authenticated but not authorized. Show a permission error.
-- `409`: state conflict, such as concurrent modification or invalid business state.
-- `429`: rate-limited. Back off according to the server response.
-- `5xx`: server or dependency failure. Show retry and collect request id, time, and path.
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": null,
+  "request_id": "..."
+}
+```
+
+Handle errors by category, not by exact text:
+
+| Status | Meaning | Client action |
+| --- | --- | --- |
+| `400` | Invalid request shape or fields | Fix input and show field errors when useful |
+| `401` | Expired token, invalid ticket, or unauthenticated | Start login or refresh |
+| `403` | Authenticated but not authorized | Show permission error and do not retry endlessly |
+| `404` | Resource not found | Refresh local lists or navigate back |
+| `409` | State conflict | Re-fetch the resource before submitting again |
+| `429` | Rate-limited | Back off using `Retry-After` or server guidance |
+| `5xx` | Server or dependency failure | Show retry and collect `request_id`, time, and path |
 
 ## Development Entry Points
 

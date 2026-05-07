@@ -1693,17 +1693,17 @@ mod tests {
     #[test]
     fn test_admin_user_path_request_deserializes_proto_field_name() {
         let req: admin::UserPathRequest =
-            serde_json::from_str(r#"{"user_id":"AbC123xYz890"}"#).expect("deserialize");
+            serde_json::from_str(r#"{"user_id":"usr_1"}"#).expect("deserialize");
 
-        assert_eq!(req.user_id, "AbC123xYz890");
+        assert_eq!(req.user_id, "usr_1");
     }
 
     #[test]
     fn test_admin_room_path_request_deserializes_proto_field_name() {
         let req: admin::RoomPathRequest =
-            serde_json::from_str(r#"{"room_id":"AbC123xYz890"}"#).expect("deserialize");
+            serde_json::from_str(r#"{"room_id":"room_1"}"#).expect("deserialize");
 
-        assert_eq!(req.room_id, "AbC123xYz890");
+        assert_eq!(req.room_id, "room_1");
     }
 
     #[test]

@@ -16,6 +16,52 @@ description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类�
 - [完整配置示例](../../configuration/full-example/)：最小生产配置骨架、覆盖全部静态字段的全量 YAML 模板、URL/拆分配置示例。
 - `synctv config show --output yaml`：输出当前二进制支持的完整有效配置，并自动打码 secret。
 
+## 先做配置决策
+
+如果你不是在查某个字段，先用这张表判断“现在该不该改”。绝大多数字段保留默认值即可，生产上线优先处理 secret、数据库、入口、安全边界和备份。
+
+| 配置 | 什么时候要改 | 常见错误 | 改动后 | 生产建议 |
+| --- | --- | --- | --- | --- |
+| `jwt.secret` | 任何生产部署 | 使用 `change-me-in-production` 或提交到 Git | 需要重启；旧 token 可能失效 | 用 Secret Manager 或 secret file 注入 |
+| `security.opaque_server_setup_secret` | 启用本地密码/OPAQUE 登录 | 每次部署随机生成 | 需要重启；随意变更会影响密码记录 | 生成一次，长期备份 |
+| `security.credential_encryption_key` | 保存加密 Provider 凭据 | 不是 64 个十六进制字符，或丢失 key | 需要重启；丢失会影响已加密凭据读取 | `openssl rand -hex 32`，加密备份 |
+| `database.url` / 拆分字段 | 连接生产 PostgreSQL | 指向本机开发库或连接数过大 | 需要重启 | PostgreSQL 必须持久化并备份 |
+| `redis.url` / 拆分字段 | 生产、OAuth2、多副本、限流、L2 缓存 | 多副本使用不同 Redis 或 key prefix 冲突 | 需要重启 | 生产推荐，多副本必需 |
+| `server.cors_allowed_origins` | Web 前端和 API 不同 origin | 填 `*` 或带 path | 需要重启 | 只填真实 origin，例如 `https://app.example.com` |
+| `server.trusted_proxies` | 前面有反向代理或 Ingress | 信任全网，导致客户端 IP 可伪造 | 需要重启 | 只填你控制的代理网段 |
+| `management.*` | 需要 CLI 或运维控制面 | TCP 暴露公网且无 token | 需要重启 | 优先 Unix socket；TCP 必须鉴权 |
+| `metrics.*` | 接入 Prometheus 或告警 | `/metrics` 裸露公网 | 需要重启 | 启用鉴权和网络隔离 |
+| `webauthn.*` | 启用 passkey | `rp_origin` 与真实访问 origin 不一致 | 需要重启 | 只使用 HTTPS 生产 origin |
+| `email.*` | 邮箱验证、找回密码、邮箱 MFA、通知 | TLS/端口/from_email 不匹配 | 需要重启 | 用 `synctv settings test-email` 验证 |
+| `cluster.*` / `server.cluster_secret` | 多副本集群 | 开了集群但没 Redis 或 cluster secret | 需要重启 | 所有副本共享 PostgreSQL、Redis、secret |
+| `livestream.*` | RTMP/FLV/HLS 直播 | 多副本 HLS 存储模型不一致 | 需要重启 | 高流量使用共享文件系统或 OSS |
+| `proxy_slice_cache.*` | 需要代理 Range slice 缓存 | 误以为会缓存完整文件 | 需要重启 | 挂载容量足够的目录，只缓存 Range slice |
+
+最短验证闭环：
+
+```bash
+synctv config validate
+synctv config show --output yaml
+curl -fsS http://localhost:8080/health/ready
+```
+
+## 单机生产重点字段
+
+如果你使用生产 Compose，优先维护 `.env.postgres` 和 `.env.synctv`，通常不需要手写完整 YAML。上线前重点确认：
+
+| 目标 | Compose/env 重点 | 对应配置字段 |
+| --- | --- | --- |
+| 初始管理员 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | `bootstrap.root_password` |
+| token 签名 | `SYNCTV_JWT_SECRET` | `jwt.secret` |
+| OPAQUE 密码登录 | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | `security.opaque_server_setup_secret` |
+| Provider 凭据加密 | `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | `security.credential_encryption_key` |
+| Web 前端跨域 | `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'` | `server.cors_allowed_origins` |
+| PostgreSQL | `.env.postgres` 和 Compose 数据卷 | `database.*` |
+| Redis | Compose Redis 服务和 key prefix | `redis.*` |
+| 运行时文件 | Compose `/data` volume | `data_dir` |
+
+当你离开 Compose 路径，改用裸机、Kubernetes、secret file 或自定义配置文件时，再使用下面的字段索引逐项查配置。
+
 ## 顶层配置
 
 | 字段 | 类型 | 默认值 | 详细说明 |
@@ -41,7 +87,8 @@ description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类�
 | `cluster` | 对象 | 见下方 | [集群配置](../../configuration/cluster/) |
 | `password_complexity` | 对象 | 见下方 | [安全与密钥](../../configuration/security/) |
 | `buffer_sizes` | 对象 | 见下方 | [内部缓冲区](../../configuration/buffer-sizes/) |
-| `cache` | 对象 | 见下方 | [缓存与代理 slice cache](../../configuration/cache-and-proxy/) |
+| `cache` | 对象 | 见下方 | [业务缓存](../../configuration/cache/) |
+| `proxy_slice_cache` | 对象 | 见下方 | [Proxy slice cache](../../configuration/proxy-slice-cache/) |
 | `messaging_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
 | `http_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
 | `grpc_rate_limits` | 对象 | 见下方 | [限流与连接限制](../../configuration/rate-limits/) |
@@ -68,7 +115,7 @@ description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类�
 | `public_ids.sqids` | 对象或空 | `null` | 是否启用 sqids 公开 ID |
 | `public_ids.sqids.alphabet` | 字符串或空 | `null` | sqids alphabet |
 | `public_ids.sqids.min_length` | 整数 | `12` | sqids 最小长度 |
-| `security.credential_encryption_key` | 64 位 hex secret | `""` | Provider 凭据加密 key |
+| `security.credential_encryption_key` | 64 个十六进制字符 | `""` | Provider 凭据加密 key |
 | `security.opaque_server_setup_secret` | secret 字符串 | `""` | OPAQUE 密码认证服务端 setup secret |
 
 ## `metrics`
@@ -253,9 +300,9 @@ description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类�
 | `cache.username_cache_ttl_seconds` | 秒数 | `3600` | 用户名缓存 TTL |
 | `cache.permission_cache_capacity` | 整数 | `1000` | 权限缓存容量 |
 | `cache.permission_cache_ttl_seconds` | 秒数 | `300` | 权限缓存 TTL |
-| `cache.proxy_slice_cache_enabled` | 布尔值 | `true` | 是否启用代理 slice cache |
-| `cache.proxy_slice_file_backend_enabled` | 布尔值 | `false` | 是否启用文件后端 |
-| `cache.proxy_slice_file_cache_dir` | 路径 | `""` | slice cache 文件目录 |
+| `proxy_slice_cache.enabled` | 布尔值 | `true` | 是否启用代理 slice cache |
+| `proxy_slice_cache.file_backend_enabled` | 布尔值 | `false` | 是否启用文件后端 |
+| `proxy_slice_cache.file_cache_dir` | 路径 | `""` | slice cache 文件目录 |
 
 ## `messaging_rate_limits`
 

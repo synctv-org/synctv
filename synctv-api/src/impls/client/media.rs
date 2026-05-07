@@ -454,16 +454,20 @@ pub(crate) fn build_move_media_request(
     } = req;
 
     Ok(CoreMoveMediaRequest {
-        media_ids: crate::impls::proto_validated_media_ids(media_ids, public_id_codec),
+        media_ids: crate::impls::proto_validated_media_ids(media_ids, public_id_codec)?,
         source_playlist_id: source_playlist_id
-            .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec)),
+            .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
+            .transpose()?,
         target_playlist_id: target_playlist_id
-            .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec)),
+            .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
+            .transpose()?,
         all_from_scope,
         before_media_id: before_media_id
-            .map(|id| crate::impls::proto_validated_media_id(id, public_id_codec)),
+            .map(|id| crate::impls::proto_validated_media_id(id, public_id_codec))
+            .transpose()?,
         after_media_id: after_media_id
-            .map(|id| crate::impls::proto_validated_media_id(id, public_id_codec)),
+            .map(|id| crate::impls::proto_validated_media_id(id, public_id_codec))
+            .transpose()?,
     })
 }
 
@@ -480,8 +484,9 @@ pub(crate) fn build_add_media_request(
         title,
     } = req;
 
-    let playlist_id =
-        playlist_id.map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec));
+    let playlist_id = playlist_id
+        .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
+        .transpose()?;
 
     let source_config: serde_json::Value = if source_config.is_empty() {
         serde_json::json!({})
@@ -522,8 +527,11 @@ pub(crate) fn build_delete_entries_request(
     let playlist_id_strings = playlist_ids.clone();
     Ok((
         CoreDeleteEntriesRequest {
-            playlist_ids: crate::impls::proto_validated_playlist_ids(playlist_ids, public_id_codec),
-            media_ids: crate::impls::proto_validated_media_ids(media_ids, public_id_codec),
+            playlist_ids: crate::impls::proto_validated_playlist_ids(
+                playlist_ids,
+                public_id_codec,
+            )?,
+            media_ids: crate::impls::proto_validated_media_ids(media_ids, public_id_codec)?,
             force,
         },
         media_id_strings,
@@ -561,7 +569,8 @@ fn build_add_media_batch_request(
         .into_iter()
         .next()
         .ok_or_else(|| ApiError::InvalidInput("Batch add must target one location".to_string()))?
-        .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec));
+        .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
+        .transpose()?;
 
     Ok(AddMediaBatchBuildResult { items, playlist_id })
 }
@@ -594,7 +603,7 @@ pub(crate) fn build_edit_media_request(
     };
 
     Ok(synctv_core::service::media::EditMediaRequest {
-        media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec),
+        media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
         name: title,
     })
 }
@@ -954,11 +963,13 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
 
-        let Some(playlist_id) = (!req.playlist_id.is_empty()).then(|| {
-            crate::impls::proto_validated_playlist_id(
+        let Some(playlist_id) = (if req.playlist_id.is_empty() {
+            None
+        } else {
+            Some(crate::impls::proto_validated_playlist_id(
                 req.playlist_id.clone(),
                 &self.public_id_codec,
-            )
+            )?)
         }) else {
             if !req.target.is_empty() {
                 return Err(ApiError::InvalidInput(

@@ -1,0 +1,45 @@
+---
+title: 业务缓存
+description: SyncTV 的 L1/L2、用户名和权限缓存配置。
+---
+
+## 这页解决什么问题？
+
+`cache` 只负责业务数据缓存：用户、房间、用户名、权限等小对象。它的目标是减少数据库查询，不负责缓存媒体字节。
+
+媒体代理的 Range 分片缓存已经独立到 [proxy slice cache](../proxy-slice-cache/)。
+
+## 配置示例
+
+```yaml
+cache:
+  l1_capacity: 500
+  l1_ttl_seconds: 300
+  l2_ttl_seconds: 300
+  username_cache_capacity: 1000
+  username_cache_ttl_seconds: 3600
+  permission_cache_capacity: 1000
+  permission_cache_ttl_seconds: 300
+```
+
+## 字段
+
+| 字段 | 默认值 | 什么时候修改 | 填错表现 |
+| --- | --- | --- | --- |
+| `cache.l1_capacity` | `500` | 单节点内存充足且用户/房间对象 churn 明显时 | 太小会增加数据库查询；太大增加内存占用 |
+| `cache.l1_ttl_seconds` | `300` | 希望进程内缓存更快过期或更长保留时 | 太长会让变更可见性变慢；太短会增加数据库压力 |
+| `cache.l2_ttl_seconds` | `300` | 已配置 Redis，希望跨请求复用业务缓存时 | 未配置 Redis 时不生效 |
+| `cache.username_cache_capacity` | `1000` | 登录、成员列表或展示页频繁按用户名查询时 | 太小会造成用户名查询反复回源数据库 |
+| `cache.username_cache_ttl_seconds` | `3600` | 用户名变更频率和查询压力不匹配时 | 太长会让用户名变更传播慢；太短会降低命中率 |
+| `cache.permission_cache_capacity` | `1000` | 权限相关缓存容量需要统一调优时 | 太小会增加权限读取开销 |
+| `cache.permission_cache_ttl_seconds` | `300` | 权限变更需要更快或更慢传播时 | 太长会延迟权限变更可见性 |
+
+## 单机生产建议
+
+默认值适合大多数单机生产部署。优先把 PostgreSQL、Redis 和索引状态确认稳定，再考虑调大缓存容量。
+
+如果 Redis 未配置，SyncTV 仍可运行，L2 缓存不会启用；这不影响基础功能，只会降低跨请求复用能力。
+
+## 需要重启吗？
+
+需要。`cache` 是启动配置，修改后重启 SyncTV 生效。

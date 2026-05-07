@@ -1,0 +1,17 @@
+flowchart TB
+  Start[I want to run SyncTV]
+  LongRunning{Will it run long term<br/>or face users?}
+  CodeWork{Will you change code<br/>or debug from source?}
+  MultiReplica{Do you need Kubernetes<br/>multi-replica operations?}
+  Compose[Default path<br/>single-node production Compose]
+  Dev[Local evaluation<br/>development Compose]
+  Source[Source run<br/>local SyncTV + container dependencies]
+  Helm[Platform path<br/>Helm / Kubernetes]
+
+  Start --> LongRunning
+  LongRunning -- No --> CodeWork
+  CodeWork -- No --> Dev
+  CodeWork -- Yes --> Source
+  LongRunning -- Yes --> MultiReplica
+  MultiReplica -- No --> Compose
+  MultiReplica -- Yes --> Helm

@@ -1,6 +1,6 @@
 ---
 title: Architecture Overview
-description: SyncTV process boundaries, dependencies, network surfaces, storage layers, cache layers, and scaling model.
+description: Understand SyncTV process boundaries, network surfaces, state layers, and media capabilities from single-node to production cluster.
 ---
 
 import Diagram from '../../../../components/Diagram.astro';
@@ -12,31 +12,50 @@ import productionMinimalDark from '../../../../assets/diagrams/production-minima
 import productionMinimalLight from '../../../../assets/diagrams/production-minimal-light.svg';
 import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Mental Model
+## Start With the Model
 
-SyncTV is a single-binary service that combines HTTP APIs, public gRPC, management gRPC, realtime room state, media providers, media proxying, livestreaming, and cluster coordination. Durable state lives in PostgreSQL. Shared ephemeral state and distributed coordination use Redis. Local runtime files live under `data_dir`.
+SyncTV is a single-binary service. One process contains HTTP APIs, public gRPC, WebSocket realtime rooms, management gRPC, media providers, proxying, livestreaming, and cluster coordination.
+
+Start with the single-node production model: clients reach SyncTV through a TLS reverse proxy or Ingress, SyncTV connects to PostgreSQL, and Redis is recommended for shared short-lived state.
+
+<Diagram
+  light={productionMinimalLight}
+  dark={productionMinimalDark}
+  alt="Minimal production topology showing clients reaching SyncTV through a TLS reverse proxy or Ingress, with SyncTV connected to PostgreSQL and Redis."
+  caption="Recommended first production model: one SyncTV service entrypoint, PostgreSQL, and Redis. Redis is optional for simple single-node deployments, but recommended in production."
+/>
+
+PostgreSQL is durable business state. Redis is shared short-lived state and coordination. `data_dir` is the local runtime file directory. When you need horizontal scaling, add multiple SyncTV replicas, shared PostgreSQL/Redis, a unified edge entrypoint, and an explicit HLS storage or publisher-node proxy model.
 
 <Diagram
   light={architectureDiagramLight}
   dark={architectureDiagramDark}
   alt="SyncTV architecture overview showing clients, ingress, the SyncTV single binary, PostgreSQL, Redis, external providers, and HLS storage."
-  caption="SyncTV’s main boundaries: one service process hosts business APIs, realtime collaboration, the management plane, media proxying, and livestreaming. Durable state goes to PostgreSQL, and cross-node ephemeral state goes to Redis."
+  caption="SyncTV’s main boundaries: one process hosts business APIs, realtime collaboration, the management plane, media proxying, and livestreaming. Durable state goes to PostgreSQL, and cross-node short-lived state goes to Redis."
 />
+
+## Deployment Levels
+
+| Level | Use case | Required components | Extra attention |
+| --- | --- | --- | --- |
+| Single-node production | Small team or one server | SyncTV, PostgreSQL, production secrets | Redis is recommended, backups are required |
+| Temporary local evaluation | UI preview or development preflight | SyncTV, PostgreSQL | Development Compose secrets are acceptable only locally; do not use publicly or long term |
+| Multi-replica production | Horizontal scaling, rolling updates, highly available entrypoints | Multiple SyncTV instances, PostgreSQL, Redis, cluster secret | Split HTTP/gRPC Ingresses and choose an HLS model |
 
 ## Major Components
 
 <CardGrid>
-  <Card title="API and Realtime" icon="document">
-    HTTP REST, public gRPC, WebSocket, and room realtime events share the same service and permission model.
+  <Card title="API and realtime" icon="document">
+    HTTP REST, public gRPC, WebSocket, and room realtime events share the same business services and permission model.
   </Card>
   <Card title="Authentication" icon="approve-check-circle">
-    Password, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
+    Password, OPAQUE, passkey/WebAuthn, email codes, OAuth2, user-level 2FA, and JWT tokens make up the login layer.
   </Card>
   <Card title="Media" icon="puzzle">
     Providers resolve external media, the proxy performs controlled forwarding, and slice cache stores Range slices only.
   </Card>
-  <Card title="Horizontal Scaling" icon="cloud-download">
-    Multi-node deployments use Redis pub/sub, Redis Streams, discovery, and leader election for coordination.
+  <Card title="Horizontal scaling" icon="cloud-download">
+    Multi-node deployments use Redis, discovery, leader election, and transactional outbox delivery boundaries.
   </Card>
 </CardGrid>
 
@@ -50,9 +69,9 @@ SyncTV is a single-binary service that combines HTTP APIs, public gRPC, manageme
 | Management gRPC | Unix socket or `management.port=50052` | CLI, administration, operational control plane | Prefer Unix socket; TCP requires a token |
 | Metrics | `metrics.port=9090` | Prometheus metrics | Keep private and authenticated |
 | RTMP | `livestream.rtmp_port=1935` | Livestream publishing | Expose only when livestreaming is used |
-| STUN UDP | `webrtc.stun_port=3478` | WebRTC NAT assistance | Expose only when the built-in STUN server is used |
+| STUN UDP | `webrtc.stun_port=3478` | WebRTC NAT assistance | Expose only when built-in STUN is used |
 
-HTTP REST and public gRPC share the main port, but Kubernetes deployments should still use separate Services and Ingresses. This lets the gRPC Ingress set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` independently.
+HTTP REST and public gRPC share the main process port, but Kubernetes deployments should still use separate Services and Ingresses. This lets the gRPC Ingress set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` independently.
 
 ## State and Storage
 
@@ -66,9 +85,9 @@ Production requirements: startup runs embedded SQLx migrations automatically; ma
   </TabItem>
   <TabItem label="Redis" icon="seti:redis">
 
-Redis stores shared ephemeral state and distributed coordination data. Single-node deployments can run without Redis, but production and multi-replica deployments should configure it.
+Redis stores shared short-lived state and distributed coordination data. Single-node deployments can run without Redis, but production and multi-replica deployments should configure it.
 
-Redis affects rate limits and brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, email verification short-lived state, L2 cache, cluster pub/sub, node registration, and event catch-up.
+Redis affects rate limits, brute-force protection, token blacklist, OAuth2 state, WebAuthn challenges, email verification state, L2 cache, cluster node registry, and event catch-up.
 
 Redis is usually not a long-term backup target, but restarting or clearing it affects in-flight authentication, rate windows, and cluster short-term state.
 
@@ -92,7 +111,7 @@ Static input files such as `*_file` secrets and TLS certificates are not rebased
 1. A client calls SyncTV through HTTP or gRPC.
 2. The API layer performs authentication, rate limiting, permission checks, and request parsing.
 3. Services read and write PostgreSQL, using Redis and L1 caches when configured.
-4. Realtime changes are pushed over WebSocket; in cluster mode, Redis distributes them to other nodes.
+4. After transactional business changes commit, realtime changes are pushed to local WebSocket connections. In multi-replica mode, database outbox records and shared event channels deliver the event to other nodes. Some membership or runtime events use best-effort fanout and do not share the same database transaction boundary.
 </Steps>
 
 ### Media Provider and Proxy Requests
@@ -120,33 +139,25 @@ Key settings:
 | `cluster.leader_election_mode` | Background task leader election: `redis` or `k8s_lease` |
 | `server.advertise_host` | Address other nodes use to reach this node |
 | `server.cluster_secret` | Authentication for inter-node gRPC calls |
-| `cluster.catchup_window_secs` | Redis Stream event catch-up window after short disconnects |
+| `cluster.catchup_window_secs` | Event replay window after short disconnects |
 
 For multi-replica deployments, also confirm:
 
 - All replicas share the same PostgreSQL database.
 - All replicas share the same Redis and `redis.key_prefix`.
-- HLS cross-node reads can use publisher-node proxying; high-traffic production deployments should use shared filesystem storage or OSS to reduce publisher-node pressure.
+- WebSocket tickets must be cross-node capable, not node-local memory only.
+- HLS cross-node reads currently use publisher-node proxying. Shared filesystem storage or OSS improves storage, recovery, and cleanup boundaries, but capacity planning should still include the publisher-node proxy request path.
 - Kubernetes termination grace period is longer than `server.shutdown_drain_timeout_seconds`.
 
 For the full runtime design, discovery modes, leader election, and clustered livestreaming boundaries, see [Cluster Configuration](../../configuration/cluster/).
 
 ## Livestream Model
 
-The livestream path is separate from the on-demand proxy path. RTMP is the publishing entrypoint; HTTP-FLV serves low-latency playback; HLS remuxing produces playlists and segments into the selected `memory`, `file`, or `oss` backend. In multi-replica deployments, the publisher owner is exposed through a shared registry; non-publisher nodes can read HLS segments through the HLS gRPC proxy, or read them directly when using a shared filesystem or OSS backend.
+The livestream path is separate from the on-demand proxy path. RTMP is the publishing entrypoint; HTTP-FLV serves low-latency playback; HLS remuxing produces playlists and segments into the selected `memory`, `file`, or `oss` backend. In multi-replica deployments, the publisher owner is exposed through a shared registry; today non-publisher nodes read playlists and segments through the HLS gRPC proxy to the publisher node. Shared filesystem storage or OSS is a storage and recovery boundary, not a signal that non-publisher nodes bypass the publisher and read segments directly.
 
 For the RTMP/StreamHub/HTTP-FLV/HLS pipeline, backend selection, and clustered livestreaming failure boundaries, see [Livestream Configuration](../../configuration/livestream/).
 
 ## Production Topologies
-
-Minimal production topology:
-
-<Diagram
-  light={productionMinimalLight}
-  dark={productionMinimalDark}
-  alt="Minimal production topology showing clients reaching SyncTV through a TLS reverse proxy or Ingress, with SyncTV connected to PostgreSQL and Redis."
-  caption="A minimal production topology needs one SyncTV service entry, PostgreSQL, and Redis. Redis is optional for simple single-node deployments, but recommended in production."
-/>
 
 Kubernetes multi-replica topology:
 
@@ -154,11 +165,12 @@ Kubernetes multi-replica topology:
   light={kubernetesTopologyLight}
   dark={kubernetesTopologyDark}
   alt="Kubernetes multi-replica topology showing HTTP Ingress, gRPC Ingress, separate Services, multiple SyncTV pods, PostgreSQL, Redis, HLS backend or publisher-node proxy, and external media providers."
-  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. HLS can use publisher-node proxying; high-traffic production should use shared filesystem storage or OSS."
+  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. HLS cross-node reads currently use publisher-node proxying; shared filesystem storage or OSS provides a more stable storage and recovery boundary."
 />
 
 ## Next Pages
 
+- [Quick Start](../quick-start/)
 - [Configuration Index](../../reference/configuration-index/)
 - [Production Checklist](../../deployment/production-checklist/)
 - [Backup and Restore](../../operations/backup-restore/)

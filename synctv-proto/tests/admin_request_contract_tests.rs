@@ -127,7 +127,7 @@ fn test_admin_list_users_request_rejects_too_long_search() {
 #[test]
 fn test_admin_get_user_rooms_request_rejects_too_long_search() {
     let request = GetUserRoomsRequest {
-        user_id: "ABCDEFGHIJKL".to_string(),
+        user_id: "usr_1".to_string(),
         page: 1,
         page_size: 20,
         status: 0,
@@ -317,7 +317,7 @@ fn test_admin_list_rooms_request_rejects_too_long_search() {
 #[test]
 fn test_admin_get_room_members_request_rejects_too_long_search() {
     let request = GetRoomMembersRequest {
-        room_id: "ABCDEFGHIJKL".to_string(),
+        room_id: "room_1".to_string(),
         page: 1,
         page_size: 20,
         search: "a".repeat(101),
@@ -417,7 +417,7 @@ fn test_admin_list_active_streams_request_rejects_too_long_search() {
 fn test_admin_kick_stream_request_rejects_invalid_room_id() {
     let request = KickStreamRequest {
         room_id: "bad-room".to_string(),
-        media_id: "ABCDEFGHIJKL".to_string(),
+        media_id: "med_1".to_string(),
         reason: String::new(),
     };
 
@@ -429,7 +429,7 @@ fn test_admin_kick_stream_request_rejects_invalid_room_id() {
 #[test]
 fn test_admin_kick_stream_request_rejects_invalid_media_id() {
     let request = KickStreamRequest {
-        room_id: "ABCDEFGHIJKL".to_string(),
+        room_id: "room_1".to_string(),
         media_id: "bad-media".to_string(),
         reason: String::new(),
     };
@@ -442,7 +442,7 @@ fn test_admin_kick_stream_request_rejects_invalid_media_id() {
 #[test]
 fn test_admin_batch_ban_users_request_rejects_invalid_user_id() {
     let request = BatchBanUsersRequest {
-        user_ids: vec!["ABCDEFGHIJKL".to_string(), "bad-user".to_string()],
+        user_ids: vec!["usr_1".to_string(), "bad-user".to_string()],
         reason: String::new(),
     };
 
@@ -465,7 +465,7 @@ fn test_admin_batch_delete_users_request_rejects_invalid_user_id() {
 #[test]
 fn test_admin_batch_ban_rooms_request_rejects_invalid_room_id() {
     let request = BatchBanRoomsRequest {
-        room_ids: vec!["ABCDEFGHIJKL".to_string(), "bad-room".to_string()],
+        room_ids: vec!["room_1".to_string(), "bad-room".to_string()],
         reason: String::new(),
     };
 

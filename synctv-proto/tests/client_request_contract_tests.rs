@@ -113,7 +113,7 @@ fn test_room_path_request_rejects_invalid_room_id() {
 fn test_room_member_target_path_request_rejects_invalid_room_id() {
     let request = RoomMemberTargetPathRequest {
         room_id: "bad-room".to_string(),
-        user_id: "AbC123xYz890".to_string(),
+        user_id: "usr_1".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -124,7 +124,7 @@ fn test_room_member_target_path_request_rejects_invalid_room_id() {
 #[test]
 fn test_room_member_target_path_request_rejects_invalid_user_id() {
     let request = RoomMemberTargetPathRequest {
-        room_id: "AbC123xYz890".to_string(),
+        room_id: "room_1".to_string(),
         user_id: "bad-user".to_string(),
     };
 
@@ -136,7 +136,7 @@ fn test_room_member_target_path_request_rejects_invalid_user_id() {
 #[test]
 fn test_room_join_review_path_request_rejects_invalid_request_id() {
     let request = RoomJoinReviewPathRequest {
-        room_id: "AbC123xYz890".to_string(),
+        room_id: "room_1".to_string(),
         request_id: "bad-request".to_string(),
     };
 
@@ -195,7 +195,7 @@ fn test_reject_room_join_review_request_allows_reason_without_target_user_id() {
 #[test]
 fn test_room_media_target_path_request_rejects_invalid_media_id() {
     let request = RoomMediaTargetPathRequest {
-        room_id: "AbC123xYz890".to_string(),
+        room_id: "room_1".to_string(),
         media_id: "bad-media".to_string(),
     };
 
@@ -207,7 +207,7 @@ fn test_room_media_target_path_request_rejects_invalid_media_id() {
 #[test]
 fn test_room_playlist_target_path_request_rejects_invalid_playlist_id() {
     let request = RoomPlaylistTargetPathRequest {
-        room_id: "AbC123xYz890".to_string(),
+        room_id: "room_1".to_string(),
         playlist_id: "bad-playlist".to_string(),
     };
 
@@ -293,7 +293,7 @@ fn test_delete_entries_request_serializes_force_flag() {
 fn test_delete_entries_request_rejects_invalid_playlist_id() {
     let request = DeleteEntriesRequest {
         playlist_ids: vec!["bad-playlist".to_string()],
-        media_ids: vec!["AbC123xYz890".to_string()],
+        media_ids: vec!["med_1".to_string()],
         force: false,
     };
 
@@ -305,7 +305,7 @@ fn test_delete_entries_request_rejects_invalid_playlist_id() {
 #[test]
 fn test_delete_entries_request_rejects_invalid_media_id() {
     let request = DeleteEntriesRequest {
-        playlist_ids: vec!["AbC123xYz890".to_string()],
+        playlist_ids: vec!["pl_1".to_string()],
         media_ids: vec!["bad-media".to_string()],
         force: false,
     };
@@ -764,7 +764,7 @@ fn test_update_playlist_request_rejects_invalid_playlist_id() {
 #[test]
 fn test_move_playlist_request_rejects_invalid_anchor_playlist_id() {
     let request = MovePlaylistRequest {
-        playlist_id: "AbC123xYz890".to_string(),
+        playlist_id: "pl_1".to_string(),
         anchor: Some(
             synctv_proto::client::move_playlist_request::Anchor::BeforePlaylistId(
                 "bad-playlist".to_string(),
@@ -812,7 +812,7 @@ fn test_move_media_request_rejects_invalid_source_playlist_id() {
 #[test]
 fn test_move_media_request_rejects_invalid_target_playlist_id() {
     let request = MoveMediaRequest {
-        media_ids: vec!["AbC123xYz890".to_string()],
+        media_ids: vec!["med_1".to_string()],
         source_playlist_id: None,
         target_playlist_id: Some("bad-playlist".to_string()),
         all_from_scope: false,
@@ -828,7 +828,7 @@ fn test_move_media_request_rejects_invalid_target_playlist_id() {
 #[test]
 fn test_move_media_request_rejects_invalid_anchor_media_id() {
     let request = MoveMediaRequest {
-        media_ids: vec!["AbC123xYz890".to_string()],
+        media_ids: vec!["med_1".to_string()],
         source_playlist_id: None,
         target_playlist_id: None,
         all_from_scope: false,

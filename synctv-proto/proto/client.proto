@@ -59,7 +59,7 @@ service UserService {
 
 // ==================== Room Service ====================
 // Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-// Routes: /api/room/*
+// HTTP routes: /api/rooms/* with room context supplied by path, body, or x-room-id metadata.
 service RoomService {
     // Room Settings Management
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
@@ -124,7 +124,7 @@ service RoomService {
 
 // ==================== Public Service ====================
 // Authentication: None (public access)
-// Routes: /api/public/*
+// HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings.
 service PublicService {
     rpc CheckRoom(CheckRoomRequest) returns (CheckRoomResponse);
     rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);

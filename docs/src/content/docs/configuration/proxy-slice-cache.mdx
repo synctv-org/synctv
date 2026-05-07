@@ -1,0 +1,91 @@
+---
+title: Proxy slice cache
+description: 媒体代理 Range 分片缓存的启动配置、存储路径和工作边界。
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import proxySliceCacheDark from '../../../assets/diagrams/proxy-slice-cache-zh-dark.svg';
+import proxySliceCacheLight from '../../../assets/diagrams/proxy-slice-cache-zh-light.svg';
+
+## 这页解决什么问题？
+
+`proxy_slice_cache` 只服务媒体代理。它把上游媒体按 HTTP Range 切成片段缓存，减少重复拉取同一段视频的带宽和延迟。
+
+它不是业务缓存，不放在 `cache` 下面；业务 L1/L2 缓存见 [业务缓存](../cache/)。
+
+## 工作模型
+
+客户端常见请求：
+
+```http
+Range: bytes=1048576-2097151
+```
+
+SyncTV 代理会把可按 Range 访问的上游媒体拆成固定 slice。后续请求命中相同 slice 时，可以从内存或文件后端返回。
+
+<Diagram
+  light={proxySliceCacheLight}
+  dark={proxySliceCacheDark}
+  alt="SyncTV 代理 slice cache 模型图，展示客户端请求进入 SyncTV proxy，proxy 按固定 slice 请求上游 Provider，支持 Range 时写入或命中内存/文件 slice cache，不支持 Range 时直接透传且不做 full-file cache。"
+  caption="proxy slice cache 只缓存可按 Range 切片的媒体字节；上游不支持 Range 时直接 bypass，不会把完整大文件写入缓存。"
+/>
+
+## 配置示例
+
+```yaml
+data_dir: "/var/lib/synctv"
+
+proxy_slice_cache:
+  enabled: true
+  file_backend_enabled: true
+  file_cache_dir: "cache/proxy-slice"
+```
+
+上面配置的实际文件路径是：
+
+```text
+/var/lib/synctv/cache/proxy-slice
+```
+
+## 字段
+
+| 字段 | 默认值 | 什么时候修改 | 填错表现 |
+| --- | --- | --- | --- |
+| `proxy_slice_cache.enabled` | `true` | 需要完全关闭媒体 Range 分片缓存时 | 关闭后代理仍可工作，但重复播放会更多回源 |
+| `proxy_slice_cache.file_backend_enabled` | `false` | 希望缓存跨进程重启保留，且有持久化目录时 | 容器无可写卷时会启动失败或写入失败 |
+| `proxy_slice_cache.file_cache_dir` | `""` | 文件后端要放到指定目录时 | 文件后端启用后为空会使用 `data_dir/cache/proxy-slice` 默认目录 |
+
+环境变量：
+
+```bash
+SYNCTV_PROXY_SLICE_CACHE_ENABLED=true
+SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED=true
+SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR=cache/proxy-slice
+```
+
+## 生产建议
+
+单机生产如果启用文件后端，挂载 `data_dir` 或 `file_cache_dir` 到持久化卷，并预留清理策略和容量监控。
+
+Kubernetes 多副本可以使用共享存储让文件跨副本可见，但当前索引是进程内维护，没有跨进程共享索引或分布式锁。不要把它当成强一致的多副本实时缓存。
+
+## 工作边界
+
+- 只缓存支持 Range 的上游响应。
+- 不做 full-body cache。
+- 上游不支持 Range 时直接 bypass；如果客户端请求完整内容，SyncTV 可以流式透传完整上游响应，但不会把它写成完整文件缓存。
+- 是否启用只在进程启动时读取，不支持 CLI 或 runtime settings 动态启停。
+
+## 常见问题
+
+### 客户端不带 Range 时会缓存吗？
+
+SyncTV 可以尝试用 Range 请求上游。上游支持 Range 时可进入 slice cache；上游拒绝或忽略 Range 时会 bypass。
+
+### `bytes=-N` 这种 suffix range 怎么办？
+
+如果已有元数据能知道文件总大小，可以换算成具体范围并使用 slice cache。没有足够元数据时，SyncTV 不会为了 suffix range 额外强制 HEAD 探测，而是让上游原生处理。
+
+### 缓存会不会返回旧文件？
+
+SyncTV 会尽量使用 ETag、Content-Range 等信息判断一致性。流式返回过程中如果发现后续 slice 与前面缓存不一致，会中断连接，避免继续拼接混合版本的数据。

@@ -185,7 +185,7 @@ synctv slice-cache purge
 
 注意：
 
-- slice cache 是否启用由 `cache.proxy_slice_cache_enabled` 启动配置决定。
+- slice cache 是否启用由 `proxy_slice_cache.enabled` 启动配置决定。
 - CLI 不支持动态启停 slice cache，只提供统计、过期驱逐和清空。
 - `purge` 会清理缓存数据，不影响 PostgreSQL 持久业务数据，但会降低后续缓存命中率。
 

@@ -60,11 +60,17 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `permissions.admin_default` | u64 bitmask | `1073741823` | 房间 admin 全局默认权限 |
-| `permissions.member_default` | u64 bitmask | `262143` | 房间 member 全局默认权限 |
-| `permissions.guest_default` | u64 bitmask | `511` | 房间 guest 全局默认权限 |
+| `permissions.admin_default` | 权限名称数组 | 内置 admin 权限集合 | 房间 admin 全局默认权限 |
+| `permissions.member_default` | 权限名称数组 | 内置 member 权限集合 | 房间 member 全局默认权限 |
+| `permissions.guest_default` | 权限名称数组 | 内置 guest 权限集合 | 房间 guest 全局默认权限 |
 
-权限 bitmask 语义见 [房间、权限与用户偏好](../../guides/rooms-permissions/)。
+这些设置使用 JSON 数组保存稳定的权限名称，例如：
+
+```json
+["send_chat", "add_media", "view_playlist", "view_member_list"]
+```
+
+完整权限名称、角色默认集合和房间覆盖规则见 [房间、权限与用户偏好](../../guides/rooms-permissions/)。
 
 ### Room
 
@@ -136,7 +142,7 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | `proxy.live_proxy` | bool | `true` | 是否允许直播代理路径 |
 | `proxy.allow_proxy_to_local` | bool | `true` | 是否允许代理访问本地/内网目标 |
 
-这些是业务代理策略，不等同于启动配置 `cache.proxy_slice_cache_enabled`。slice cache 启用只能在启动时配置。
+这些是业务代理策略，不等同于启动配置 `proxy_slice_cache.enabled`。slice cache 启用只能在启动时配置。
 
 ### RTMP
 

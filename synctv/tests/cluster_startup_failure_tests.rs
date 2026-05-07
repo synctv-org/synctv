@@ -11,8 +11,8 @@ use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
     ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HlsStorageBackend,
     HttpRateLimitConfig, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-    MessagingRateLimitConfig, PasswordComplexityConfig, PublicIdsConfig, RedisConfig,
-    SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
+    MessagingRateLimitConfig, PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig,
+    RedisConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -61,6 +61,7 @@ fn standalone_test_config() -> Config {
         password_complexity: PasswordComplexityConfig::default(),
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
+        proxy_slice_cache: ProxySliceCacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         http_rate_limits: HttpRateLimitConfig {
@@ -162,6 +163,7 @@ fn cluster_test_config() -> Config {
         password_complexity: PasswordComplexityConfig::default(),
         buffer_sizes: BufferSizesConfig::default(),
         cache: CacheConfig::default(),
+        proxy_slice_cache: ProxySliceCacheConfig::default(),
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         http_rate_limits: HttpRateLimitConfig {

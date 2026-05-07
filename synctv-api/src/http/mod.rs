@@ -1184,18 +1184,18 @@ mod tests {
             user_id: String::new(),
             reason: "spam".to_string(),
         }
-        .with_user_id("AbC123xYz890".to_string());
+        .with_user_id("usr_1".to_string());
 
-        assert_eq!(req.user_id, "AbC123xYz890");
+        assert_eq!(req.user_id, "usr_1");
         assert_eq!(req.reason, "spam");
     }
 
     #[test]
     fn test_with_user_id_injects_client_single_field_requests() {
-        let req = crate::proto::client::KickMemberRequest::default()
-            .with_user_id("AbC123xYz890".to_string());
+        let req =
+            crate::proto::client::KickMemberRequest::default().with_user_id("usr_1".to_string());
 
-        assert_eq!(req.user_id, "AbC123xYz890");
+        assert_eq!(req.user_id, "usr_1");
     }
 
     #[test]
@@ -1211,9 +1211,9 @@ mod tests {
             sort_by: 0,
             sort_direction: 0,
         }
-        .with_room_id("ZyX098wVu765".to_string());
+        .with_room_id("room_1".to_string());
 
-        assert_eq!(req.room_id, "ZyX098wVu765");
+        assert_eq!(req.room_id, "room_1");
         assert_eq!(req.page, 2);
         assert_eq!(req.page_size, 25);
         assert_eq!(req.search, "alice");
@@ -1225,17 +1225,17 @@ mod tests {
             media_id: String::new(),
             title: "Episode 1".to_string(),
         }
-        .with_media_id("AbC123xYz890".to_string());
+        .with_media_id("med_1".to_string());
 
         let move_playlist = crate::proto::client::MovePlaylistRequest {
             playlist_id: String::new(),
             anchor: Some(
                 crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(
-                    "QwErTy123456".to_string(),
+                    "pl_2".to_string(),
                 ),
             ),
         }
-        .with_playlist_id("ZyX098wVu765".to_string());
+        .with_playlist_id("pl_1".to_string());
 
         let update_provider = crate::proto::providers::common::UpdateProviderInstanceRequest {
             name: String::new(),
@@ -1253,9 +1253,9 @@ mod tests {
         }
         .with_provider_instance_name("alist_main".to_string());
 
-        assert_eq!(edit_media.media_id, "AbC123xYz890");
+        assert_eq!(edit_media.media_id, "med_1");
         assert_eq!(edit_media.title, "Episode 1");
-        assert_eq!(move_playlist.playlist_id, "ZyX098wVu765");
+        assert_eq!(move_playlist.playlist_id, "pl_1");
         assert_eq!(update_provider.name, "alist_main");
         assert_eq!(
             update_provider.endpoint.as_deref(),
@@ -1940,7 +1940,7 @@ mod tests {
             (
                 "POST",
                 "/api/rooms/room1234_abx/members",
-                Some(r#"{"user_id":"AbC123xYz890","role":1,"notify":true}"#),
+                Some(r#"{"user_id":"usr_1","role":1,"notify":true}"#),
             ),
             ("GET", "/api/rooms/room1234_abx/reviews/joins", None),
             (
@@ -1951,7 +1951,7 @@ mod tests {
             (
                 "POST",
                 "/api/rooms/room1234_abx/reviews/joins/AbC123xYz890/reject",
-                Some(r#"{"request_id":"AbC123xYz890","reason":"no longer eligible"}"#),
+                Some(r#"{"request_id":"usr_1","reason":"no longer eligible"}"#),
             ),
         ] {
             let builder = Request::builder().method(method).uri(uri);

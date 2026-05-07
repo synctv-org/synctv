@@ -42,7 +42,7 @@ cluster:
     `server.cluster_secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
   </Card>
   <Card title="直播可达性" icon="youtube">
-    RTMP publisher 可能在任意节点上，HLS segment 也可能被任意节点读取；因此直播需要 publisher registry，并在本地 backend 与共享 backend 之间选择合适模型。
+    RTMP publisher 可能在任意节点上，观众请求也可能落到任意节点；因此直播需要 publisher registry、HLS gRPC proxy 和明确的 HLS 存储边界。
   </Card>
 </CardGrid>
 
@@ -50,7 +50,7 @@ cluster:
   light={clusterRuntimeLight}
   dark={clusterRuntimeDark}
   alt="SyncTV 集群运行时架构图，展示客户端通过 HTTP/gRPC 入口访问多个节点，节点共享 PostgreSQL 和 Redis，并通过 HLS backend 或 publisher-node proxy 读取直播分片。"
-  caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。HLS 可以使用本地 backend 加 publisher-node proxy，也可以使用共享文件系统或 OSS 让各节点直接读取分片。"
+  caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。HLS 跨节点读取当前以 publisher-node proxy 为主，file/OSS backend 决定分片的存储与恢复边界。"
 />
 
 ## 工作原理
@@ -58,14 +58,14 @@ cluster:
 <Steps>
 1. 每个节点启动后使用相同配置连接 PostgreSQL 和 Redis，并生成或读取自己的节点 ID。
 2. 节点通过 `cluster.discovery_mode` 注册和发现其他节点。默认 `redis` 模式适合大多数环境；Kubernetes 可以选择 `k8s_dns` 辅助发现 Pod。
-3. 房间事件、权限变更、缓存失效、踢人等运行时事件通过 Redis pub/sub 分发。节点短暂断线后通过 Redis Stream 在 `cluster.catchup_window_secs` 窗口内补事件。
+3. 房间事件、踢人、权限变化等 cluster realtime event 通过 Redis Pub/Sub 分发，并通过 Redis Stream 在 `cluster.catchup_window_secs` 窗口内补事件；业务缓存失效另有专用 Redis Stream/XREADGROUP runtime。
 4. 后台任务通过 `cluster.leader_election_mode` 选出一个 leader，避免多个副本重复执行同一类全局任务。
 5. 直播 publisher 会登记到共享 registry，其他节点可以知道某个房间/媒体当前由哪个节点持有。
-6. HLS 请求落到非 publisher 节点时，如果本地没有可直接读取的分片，会通过 HLS gRPC proxy 向 publisher 节点读取 playlist/segment。
+6. HLS 请求落到非 publisher 节点时，当前实现通过 HLS gRPC proxy 向 publisher 节点读取 playlist/segment；共享 `file` 或 `oss` backend 不会让该节点绕过 publisher 直接读取。
 </Steps>
 
 <Aside type="caution">
-集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `server.cluster_secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，但 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；共享文件系统或 OSS 可以降低这类跨节点依赖。
+集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `server.cluster_secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，但 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；共享文件系统或 OSS 可以改善存储恢复边界，但当前请求路径仍要考虑 publisher-node proxy。
 </Aside>
 
 ## 选择部署形态
@@ -232,6 +232,8 @@ livestream:
 
 ### 共享 backend
 
+共享 backend 表示 HLS 分片不会只存在于 publisher 节点本地磁盘。它有利于持久化、重启恢复和统一清理策略；但当前跨节点读取仍通过 publisher-node HLS gRPC proxy，不应按“任意副本直接读取分片”来做容量假设。
+
 文件系统方案：
 
 ```yaml
@@ -258,11 +260,11 @@ livestream:
 
 ## Helm 中的集群建议
 
-Helm chart 默认不启用集群模式。扩容前必须显式开启 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy 模型；如果直播 HLS 流量较高，建议配置 `file` 共享存储或 `oss` 对象存储。
+Helm chart 默认不启用集群模式。扩容前必须显式开启 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy 模型；如果需要更稳定的分片存储和恢复边界，建议配置 `file` 共享存储或 `oss` 对象存储。
 
 扩容前必须确认：
 
 - Redis 可用。
 - `server.cluster_secret` 已设置。
-- HLS 模型已明确：小规模使用本地 backend + publisher-node proxy，生产高流量使用 `file + hls_shared_storage=true + RWX/PVC` 或 `oss`。
+- HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `file + hls_shared_storage=true + RWX/PVC` 或 `oss`，并继续为 publisher-node proxy 预留容量。
 - gRPC Service/Ingress 与内部节点访问符合你的网络设计。

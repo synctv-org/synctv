@@ -35,7 +35,7 @@ export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
 
 ### credential key 格式错误
 
-`security.credential_encryption_key` 必须是 64 位十六进制。
+`security.credential_encryption_key` 必须是 64 个十六进制字符。
 
 正确生成：
 
@@ -94,7 +94,7 @@ export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 
 ## Compose 排错
 
-先确认你已经按 [Docker Compose 部署](../../deployment/docker-compose/#获取-compose-文件) 获取生产 Compose 文件，并在同一目录生成 `.env.postgres` 和 `.env.synctv`。
+先确认你已经按 [Docker Compose 部署](../../deployment/docker-compose/#获取生产-compose-文件) 获取生产 Compose 文件，并在同一目录生成 `.env.postgres` 和 `.env.synctv`。
 
 查看最终 Compose 配置：
 

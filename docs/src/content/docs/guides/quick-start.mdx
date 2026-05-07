@@ -1,154 +1,206 @@
 ---
 title: 快速开始
-description: 用最少步骤启动 SyncTV，并理解启动前必须准备的配置。
+description: 优先按单机生产可用模式启动 SyncTV，并知道成功后应该看到什么。
 ---
 
-import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
-import { composeDeploymentDocsUrl } from '../../../lib/project';
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import {
+  composeDeploymentDocsUrl,
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeFileUrl,
+} from '../../../lib/project';
 
-## 你需要准备什么？
+## 默认选择：单机生产 Compose
 
-本地开发或单机部署建议使用 Docker Compose。它会启动：
+SyncTV 的推荐入门路径是单机生产可用部署：使用预构建镜像、显式 secret、持久化 env 文件、PostgreSQL/Redis 数据卷和 readiness 验收。开发 Compose 只适合改代码或临时本地试用，不作为默认路径。
 
-- `postgres`：SyncTV 的主数据库。
-- `redis`：缓存、限流、OAuth2 state、集群协调等共享状态。
-- `synctv`：主服务进程，HTTP、gRPC、RTMP、STUN 都在同一个二进制里。
+默认从单机生产 Compose 开始。只有需要 Kubernetes、多副本或更细的部署模型时，才进入部署章节阅读 Docker Compose、Helm 和集群配置。
 
-生产环境至少需要准备四类 secret：
+| 路径 | 适合场景 | 会启动什么 | 是否可用于生产 |
+| --- | --- | --- | --- |
+| A. 单机生产 Compose | 在一台服务器或本机长期运行 | PostgreSQL、Redis、SyncTV | 是，需要自管 secret 和备份 |
+| B. 本地试用 | 只想快速看界面和功能 | PostgreSQL、Redis、SyncTV | 否，内置开发 secret |
+| C. 本机源码运行 | 参与开发、调试 API 或改代码 | Docker 中的 PostgreSQL/Redis，加本机 SyncTV | 否，开发环境 |
 
-| 名称 | 用途 | 推荐生成方式 |
+## A. 单机生产 Compose
+
+**前置条件**
+
+- Docker 和 Docker Compose 可用。
+- 已准备一个持久化目录保存 Compose 文件、`.env.postgres`、`.env.synctv` 和数据卷。
+- 知道你的访问地址；公网部署时还需要 TLS 入口和备份位置。
+
+**必须长期保存的 secret**
+
+| 环境变量 | 用途 | 推荐生成方式 |
 | --- | --- | --- |
 | `SYNCTV_JWT_SECRET` | 签发访问 token 和刷新 token | `openssl rand -base64 32` |
 | `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | OPAQUE 密码认证的稳定服务端 secret | `openssl rand -base64 48` |
-| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据，必须是 64 位十六进制 | `openssl rand -hex 32` |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据，必须是 64 个十六进制字符 | `openssl rand -hex 32` |
 | `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 第一次启动时创建 root 用户的密码 | 使用密码管理器生成强密码 |
 
 <Aside type="caution">
-`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 不是一次性启动密码。它们必须长期稳定保存，不能每次部署重新生成。
+`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 和 `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` 不是一次性启动密码。它们必须跨重启、升级和回滚保持稳定。
 </Aside>
 
-## 选择启动方式
-
-<Tabs syncKey="deploy-mode">
-  <TabItem label="开发 Compose" icon="rocket">
+**启动**
 
 <Steps>
+1. 在空目录下载生产 Compose 所需文件：
 
-1. 启动开发 Compose：
+   <Code
+     code={[
+       'mkdir synctv-compose',
+       'cd synctv-compose',
+       `curl -fsSLO ${dockerComposeFileUrl}`,
+       `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+       `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+       'mkdir -p scripts',
+       `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+       'chmod +x scripts/init-compose-env.sh',
+     ].join('\n')}
+     lang="bash"
+   />
 
-   ```bash
-   docker compose -f docker-compose.dev.yml up -d
-   ```
-
-2. 查看服务状态：
-
-   ```bash
-   docker compose -f docker-compose.dev.yml ps
-   docker compose -f docker-compose.dev.yml logs -f synctv
-   ```
-
-3. 进入容器执行管理命令：
-
-   ```bash
-   docker compose -f docker-compose.dev.yml exec synctv synctv system stats
-   ```
-
-</Steps>
-
-  </TabItem>
-  <TabItem label="生产 Compose" icon="seti:docker">
-
-<Steps>
-
-1. 生成持久化 env files。执行前请先按 <a href={composeDeploymentDocsUrl}>Docker Compose 部署</a> 获取 `docker-compose.yml`、env example 和初始化脚本：
+2. 生成持久化 `.env.postgres` 和 `.env.synctv`：
 
    ```bash
    ./scripts/init-compose-env.sh
    ```
 
-2. 编辑 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，然后启动服务：
+3. 编辑 `.env.synctv`，至少设置 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。如果前端和 API 不同 origin，同时设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`。
+
+4. 先检查渲染结果，再启动：
 
    ```bash
    docker compose config
    docker compose up -d
    ```
 
-3. 检查健康状态：
+5. 查看状态和日志：
 
    ```bash
    docker compose ps
    docker compose logs -f synctv
    ```
-
 </Steps>
 
-  </TabItem>
-  <TabItem label="本机运行" icon="laptop">
+**成功后应该看到**
+
+- `docker compose config` 不再报 required variable missing。
+- `docker compose ps` 中 `synctv` 为 running 或 healthy。
+- readiness 成功：
+
+  ```bash
+  curl -fsS http://localhost:8080/health/ready
+  ```
+
+- 浏览器可以打开 `http://localhost:8080` 或你的真实入口。
+- root 用户名默认是 `root`，密码来自 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+
+**下一步**
+
+- 按 [生产部署清单](../../deployment/production-checklist/) 补齐 TLS、备份、metrics、告警和升级策略。
+- 需要解释 Compose 文件和数据卷时读 <a href={composeDeploymentDocsUrl}>Docker Compose 部署</a>。
+- 配置反向代理、CORS、management 和 `data_dir` 时读 [服务监听与运行时路径](../../configuration/server-and-runtime/)。
+
+## B. 本地试用
+
+这条路径只用于临时体验或开发前预览。它会使用开发 Compose 内置 secret，不要用于公网或长期运行。
+
+**前置条件**
+
+- Docker 和 Docker Compose 可用。
+- 已 clone SyncTV 仓库，并在仓库根目录执行命令。
 
 <Steps>
+1. 启动开发 Compose：
 
-1. 启动 PostgreSQL 和 Redis：
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d
+   ```
+
+2. 查看容器状态：
+
+   ```bash
+   docker compose -f docker-compose.dev.yml ps
+   ```
+
+3. 验证 readiness：
+
+   ```bash
+   curl -fsS http://localhost:8080/health/ready
+   ```
+</Steps>
+
+成功后，浏览器可以打开 `http://localhost:8080`，也可以执行：
+
+```bash
+docker compose -f docker-compose.dev.yml exec synctv synctv system stats
+```
+
+## C. 本机源码运行
+
+**前置条件**
+
+- Rust toolchain 可用。
+- Docker 和 Docker Compose 可用。
+- 已 clone 仓库，并在仓库根目录执行命令。
+
+<Steps>
+1. 只启动依赖服务：
 
    ```bash
    docker compose -f docker-compose.dev.yml up -d postgres redis
    ```
 
-2. 校验配置：
+2. 校验当前配置：
 
    ```bash
    cargo run -p synctv --bin synctv -- config validate
    ```
 
-3. 启动服务。服务启动阶段会自动执行 embedded SQLx migrations：
+3. 启动 SyncTV。启动阶段会自动执行 embedded SQLx migrations：
 
    ```bash
    cargo run -p synctv --bin synctv -- serve
    ```
 
+4. 另开终端检查 readiness：
+
+   ```bash
+   curl -fsS http://localhost:8080/health/ready
+   ```
 </Steps>
 
-  </TabItem>
-</Tabs>
+成功后可以继续读：
 
-## 本地开发启动
+- [OpenAPI 文档入口](../../reference/openapi/)
+- [gRPC 调试](../../reference/grpc/)
+- [配置文件如何工作](../../configuration/how-configuration-works/)
 
-先 clone 源码仓库，再在仓库根目录执行命令。开发 Compose 需要仓库中的 Dockerfile 和源码。
+## 第一次登录
 
-如果只是本地试用：
+当 `bootstrap.create_root_user=true` 时，SyncTV 会在数据库还没有 root 用户时创建一个 root 账号。
 
-```bash
-docker compose -f docker-compose.dev.yml up -d
+默认用户名：
+
+```yaml
+bootstrap:
+  root_username: "root"
 ```
 
-开发 compose 已经内置可工作的开发 secret。不要把这些值用于生产环境。
+密码来源按优先级来自：
 
-查看服务状态：
+- 配置文件里的 `bootstrap.root_password`
+- 环境变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
+- 文件变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`
 
-```bash
-docker compose -f docker-compose.dev.yml ps
-docker compose -f docker-compose.dev.yml logs -f synctv
-```
+生产环境建议只用环境变量或 secret 文件，不要把 root 密码写进公开仓库。
 
-## 生产 Compose 启动
-
-先按 [Docker Compose 部署](../../deployment/docker-compose/#获取-compose-文件) 获取 `docker-compose.yml`、`.env.postgres.example`、`.env.synctv.example` 和 `scripts/init-compose-env.sh`。
-
-生产 compose 不会默默使用弱 secret。你需要在 Compose 文件目录生成并长期保存 `.env.postgres` 和 `.env.synctv`：
-
-```bash
-./scripts/init-compose-env.sh
-```
-
-编辑 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，再启动：
-
-```bash
-docker compose config
-docker compose up -d
-```
-
-Docker Compose 会通过 `env_file` 分别读取必需的 `.env.postgres` 和 `.env.synctv`。PostgreSQL 只读取数据库变量，`synctv` 只读取应用配置。缺少任一文件时，`docker compose config` 会直接失败。
-
-## 验证配置
+## 配置验证
 
 如果使用本地 `synctv.yaml`：
 
@@ -156,29 +208,4 @@ Docker Compose 会通过 `env_file` 分别读取必需的 `.env.postgres` 和 `.
 cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
 ```
 
-这个命令会检查：
-
-- YAML 是否能解析。
-- JWT secret 是否足够强。
-- OPAQUE secret 是否存在且不是占位值。
-- Redis、OAuth2、WebAuthn、集群等依赖关系是否合理。
-- 端口、路径、超时、限流等数值是否在合理范围内。
-
-## 第一次登录
-
-当 `bootstrap.create_root_user=true` 时，SyncTV 会在数据库还没有 root 用户时创建一个 root 账号。
-
-默认用户名来自：
-
-```yaml
-bootstrap:
-  root_username: "root"
-```
-
-密码来自：
-
-- 配置文件里的 `bootstrap.root_password`
-- 或环境变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`
-- 或文件变量 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD_FILE`
-
-生产环境建议只用环境变量或 secret 文件，不要把 root 密码写进公开仓库。
+它会检查 YAML、secret 强度、Redis/OAuth2/WebAuthn/集群依赖关系，以及端口、路径、超时、限流等数值是否合理。

@@ -1,0 +1,15 @@
+flowchart LR
+  Client[客户端播放器]
+  Proxy[SyncTV proxy]
+  Provider[外部媒体 Provider]
+  Cache[(slice cache<br/>内存 / 文件)]
+  Bypass[直接透传<br/>不写完整文件]
+
+  Client -->|Range 请求或普通 GET| Proxy
+  Proxy -->|按固定 slice 请求上游| Provider
+  Provider -->|支持 Range| Proxy
+  Proxy -->|写入 / 命中 slice| Cache
+  Cache -->|返回已缓存片段| Proxy
+  Proxy --> Client
+  Provider -. 不支持 Range .-> Bypass
+  Bypass -. stream .-> Client

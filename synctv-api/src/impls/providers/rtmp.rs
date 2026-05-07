@@ -40,7 +40,7 @@ fn build_create_publish_key_request(
     crate::impls::validate_proto_request(&req)?;
     Ok((
         req.room_id,
-        crate::impls::proto_validated_media_id(req.media_id, public_id_codec),
+        crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
     ))
 }
 
@@ -51,7 +51,7 @@ fn build_get_stream_info_request(
     crate::impls::validate_proto_request(&req)?;
     Ok((
         req.room_id,
-        crate::impls::proto_validated_media_id(req.media_id, public_id_codec),
+        crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
     ))
 }
 

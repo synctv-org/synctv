@@ -15,25 +15,19 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
 
 <Tabs syncKey="reader-path">
   <TabItem label="部署者" icon="rocket">
-    <Steps>
-      1. 先看 [快速开始](../quick-start/)，确认最小 Compose 环境可以启动。
-      2. 阅读 [架构总览](../architecture/)，明确主服务、management、metrics、Redis、PostgreSQL 和 Provider proxy 的边界。
-      3. 阅读 [配置文件如何工作](../../configuration/how-configuration-works/)，理解默认值、配置文件、环境变量和 CLI 覆盖顺序。
-      4. 从 [完整配置示例](../../configuration/full-example/) 复制最小生产骨架，再按需取用全量模板里的功能段落。
-      5. 阅读 [安全与密钥](../../configuration/security/)，替换示例 secret，并确认长期稳定的密钥不会在重启或升级时丢失。
-      6. 按部署方式阅读 [Docker Compose 部署](../../deployment/docker-compose/) 或 [Helm 部署](../../deployment/helm/)。
-      7. 上线前使用 [生产部署清单](../../deployment/production-checklist/) 做最后检查。
-      8. 补齐 [备份与恢复](../../operations/backup-restore/)、[升级与迁移](../../operations/upgrades/) 和 [观测与运行手册](../../operations/observability/)。
-      9. 如果你要写客户端、SDK 或第三方集成，阅读 [客户端集成指南](../client-integration/)。
-      10. 如果你要做数据治理、隐私评估或保留策略说明，阅读 [数据、隐私与保留策略](../../operations/data-retention/)。
-      11. 遇到启动、Ingress、认证或媒体播放问题时，从 [排障入口](../../operations/troubleshooting/) 按现象定位。
-    </Steps>
+    **首启闭环**：先按 [快速开始](../quick-start/) 完成单机生产 Compose。成功标准是 `.env.postgres`、`.env.synctv` 已持久保存，`/health/ready` 返回成功，root 用户可以登录。
+
+    **生产加固**：按 [生产部署清单](../../deployment/production-checklist/) 补齐 TLS、备份、metrics、告警和升级策略；需要 Compose 文件、数据卷和端口细节时，再读 [Docker Compose 部署](../../deployment/docker-compose/)。
+
+    **理解和扩展**：读 [架构总览](../architecture/) 明确主服务、management、metrics、Redis、PostgreSQL 和 Provider proxy 的边界。修改配置时进入 [配置文件如何工作](../../configuration/how-configuration-works/)、[配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
+
+    **多副本和运维**：只有需要 Kubernetes 或多副本时，再进入 [Helm 部署](../../deployment/helm/) 和 [集群配置](../../configuration/cluster/)。上线后用 [备份与恢复](../../operations/backup-restore/)、[升级与迁移](../../operations/upgrades/)、[观测与运行手册](../../operations/observability/) 和 [排障入口](../../operations/troubleshooting/) 维护服务。
   </TabItem>
   <TabItem label="管理员" icon="setting">
     <Steps>
       1. 阅读 [CLI 参考](../../reference/cli/)，确认如何管理用户、房间、Provider、系统状态和配置校验。
       2. 阅读 [管理员操作手册](../administration/)，理解用户、房间、审核、Provider、runtime settings 和系统运维的操作边界。
-      3. 阅读 [房间、权限与用户偏好](../rooms-permissions/)，确认全局角色、房间角色、权限位、房间设置和用户偏好语义。
+      3. 阅读 [房间、权限与用户偏好](../rooms-permissions/)，确认全局角色、房间角色、权限名称、房间设置和用户偏好语义。
       4. 阅读 [认证与安全模型](../security-model/)，确认本地登录、OAuth2、2FA、token 和 management 控制面的关系。
       5. 阅读 [Runtime settings 参考](../../reference/runtime-settings/)，确认哪些策略可以热更新，哪些必须改启动配置。
       6. 阅读 [邮件与 OAuth2](../../configuration/email-oauth2/) 和 [WebAuthn 配置](../../configuration/webauthn/)，确认登录方式、邮箱验证码和两步验证依赖。
@@ -58,7 +52,7 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
   <LinkCard
     title="我要把服务跑起来"
     href="../quick-start/"
-    description="最短路径启动 PostgreSQL、Redis 和 SyncTV，并验证服务可访问。"
+    description="按单机生产 Compose 启动 PostgreSQL、Redis 和 SyncTV，并验证服务可访问。"
   />
   <LinkCard
     title="我要准备生产环境"
@@ -83,7 +77,7 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
   <LinkCard
     title="我要理解权限"
     href="../rooms-permissions/"
-    description="解释全局角色、房间角色、权限位、房间设置、成员权限覆盖和用户偏好。"
+    description="解释全局角色、房间角色、权限名称、房间设置、成员权限覆盖和用户偏好。"
   />
   <LinkCard
     title="我要排查故障"
@@ -123,7 +117,7 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
   <LinkCard
     title="我要一份配置模板"
     href="../../configuration/full-example/"
-    description="提供最小生产配置骨架和覆盖全部静态字段的全量 YAML 示例。"
+    description="提供 Compose env 入口、最小生产 YAML 骨架和覆盖全部静态字段的全量示例。"
   />
   <LinkCard
     title="我要理解配置来源"
@@ -142,8 +136,8 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
   />
   <LinkCard
     title="我要排查代理缓存"
-    href="../../configuration/cache-and-proxy/"
-    description="解释业务缓存、代理 slice cache、Range 行为、存储目录、TTL 和容量控制。"
+    href="../../configuration/proxy-slice-cache/"
+    description="解释代理 slice cache、Range 行为、文件后端、存储目录和缓存边界。"
   />
   <LinkCard
     title="我要接入 API"
@@ -175,17 +169,3 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
     如果多副本运行，阅读 cluster、Redis、Helm、Ingress、HLS 存储和 metrics 文档。
   </Card>
 </CardGrid>
-
-## 维护文档时的检查点
-
-- 新增配置字段时，同时更新 [配置总索引](../../reference/configuration-index/)、[完整配置示例](../../configuration/full-example/) 和对应配置专题页。
-- 新增 CLI 命令时，同时更新 [CLI 参考](../../reference/cli/)。
-- 修改部署模板时，同时更新 [Docker Compose 部署](../../deployment/docker-compose/) 或 [Helm 部署](../../deployment/helm/)。
-- 修改常见错误、端口、Ingress、认证或代理行为时，同步更新 [排障入口](../../operations/troubleshooting/)。
-- 修改运行时入口、依赖关系、Provider/proxy 边界或集群模型时，同步更新 [架构总览](../architecture/)。
-- 修改登录、2FA、OAuth2、token、management 或权限边界时，同步更新 [认证与安全模型](../security-model/)。
-- 修改用户、房间、审核、Provider、runtime settings 或管理 CLI 语义时，同步更新 [管理员操作手册](../administration/)。
-- 修改房间角色、权限位、room settings、成员覆盖或用户偏好时，同步更新 [房间、权限与用户偏好](../rooms-permissions/)。
-- 修改 `SettingsRegistry` 注册的热更新字段时，同步更新 [Runtime settings 参考](../../reference/runtime-settings/)。
-- 修改 API feature、Swagger UI 路径或 OpenAPI JSON 路径时，同时更新 [OpenAPI 文档入口](../../reference/openapi/)。
-- 修改 cluster/admin/service protobuf 时，同时更新 [gRPC 调试](../../reference/grpc/)。

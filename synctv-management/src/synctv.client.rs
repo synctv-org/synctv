@@ -3231,7 +3231,7 @@ pub mod room_service_client {
     use tonic::codegen::http::Uri;
     /// ==================== Room Service ====================
     /// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-    /// Routes: /api/room/\*
+    /// HTTP routes: /api/rooms/\* with room context supplied by path, body, or x-room-id metadata.
     #[derive(Debug, Clone)]
     pub struct RoomServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -4614,7 +4614,7 @@ pub mod room_service_server {
     }
     /// ==================== Room Service ====================
     /// Authentication: JWT Authorization header (user_id) + x-room-id metadata (room context)
-    /// Routes: /api/room/\*
+    /// HTTP routes: /api/rooms/\* with room context supplied by path, body, or x-room-id metadata.
     #[derive(Debug)]
     pub struct RoomServiceServer<T> {
         inner: Arc<T>,
@@ -6584,7 +6584,7 @@ pub mod public_service_client {
     use tonic::codegen::http::Uri;
     /// ==================== Public Service ====================
     /// Authentication: None (public access)
-    /// Routes: /api/public/\*
+    /// HTTP routes: public room discovery uses /api/rooms/\*, public settings uses /api/public/settings.
     #[derive(Debug, Clone)]
     pub struct PublicServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -6811,7 +6811,7 @@ pub mod public_service_server {
     }
     /// ==================== Public Service ====================
     /// Authentication: None (public access)
-    /// Routes: /api/public/\*
+    /// HTTP routes: public room discovery uses /api/rooms/\*, public settings uses /api/public/settings.
     #[derive(Debug)]
     pub struct PublicServiceServer<T> {
         inner: Arc<T>,

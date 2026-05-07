@@ -1,156 +1,194 @@
 ---
 title: SyncTV 文档
-description: 面向部署者、管理员和开发者的 SyncTV 官方文档。
+description: 面向自托管用户、部署管理员和客户端开发者的 SyncTV 官方文档。
 template: splash
 hero:
-  tagline: 多人同步观影、直播、媒体聚合与可横向扩展的实时协作平台。
+  tagline: 自托管同步观影、媒体聚合、直播与多节点实时协作服务。
   actions:
-    - text: 快速开始
+    - text: 单机生产启动
       link: guides/quick-start/
-      icon: right-arrow
+      icon: rocket
       variant: primary
+    - text: 生产部署清单
+      link: deployment/production-checklist/
+      icon: approve-check-circle
     - text: 架构总览
       link: guides/architecture/
       icon: puzzle
-    - text: 配置参考
+    - text: 配置索引
       link: reference/configuration-index/
       icon: document
-    - text: 客户端集成
-      link: guides/client-integration/
-      icon: puzzle
 ---
 
-import { Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Card, CardGrid, Code, LinkCard } from '@astrojs/starlight/components';
 import LocaleRedirect from '../../components/LocaleRedirect.astro';
 import LocaleChoiceTracker from '../../components/LocaleChoiceTracker.astro';
+import {
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeFileUrl,
+} from '../../lib/project';
 
 <LocaleRedirect />
 <LocaleChoiceTracker />
 
-## 文档结构
+## SyncTV 是什么
 
-SyncTV 可以作为个人自托管服务，也可以部署成多节点集群。文档按四类任务组织：
+SyncTV 是一个可以自托管的多人同步观影和媒体协作服务。你可以把它理解成一个独立的 Watch Party 后端：用户进入房间后共享播放状态、聊天、弹幕和成员权限；管理员可以接入多个媒体 Provider，按需要启用代理、slice cache、直播、OAuth2、WebAuthn、metrics 和多节点集群。
 
-- **部署路径**：Docker Compose、Helm、生产部署清单，重点覆盖 secret、域名、端口、存储和 Ingress。
-- **配置参考**：Redis、PostgreSQL、CORS、限流、监控、WebAuthn、OAuth2、集群、缓存和 Provider。
-- **运维手册**：备份恢复、升级迁移、观测指标、日志、排障入口和事故信息收集。
-- **开发参考**：配置优先级、环境变量规则、CLI、OpenAPI、gRPC、Provider 配置和部署模板约定。
+它既可以作为个人或小团队的单机服务运行，也可以部署成多副本生产集群。
+
+## 适合谁
 
 <CardGrid>
-  <Card title="从快速开始部署" icon="rocket">
-    用 Docker Compose 启动 PostgreSQL、Redis 和 SyncTV，并理解最少必须配置的 secret。
+  <Card title="自托管用户" icon="rocket">
+    想快速启动一个多人同步观影服务，并通过 Docker Compose 管理 PostgreSQL、Redis 和 SyncTV。
   </Card>
-  <Card title="先理解架构边界" icon="puzzle">
-    明确 HTTP/gRPC、management、metrics、Redis、PostgreSQL、Provider proxy 和集群的职责。
+  <Card title="媒体服务管理员" icon="puzzle">
+    想把 Emby/Jellyfin、Alist、Bilibili 或自定义 Provider 接到统一的房间、权限和播放体验里。
   </Card>
-  <Card title="逐项理解配置" icon="setting">
-    配置文档不会只列字段名，会解释“这个配置控制什么、什么时候需要改、填错会怎样”。
+  <Card title="生产部署团队" icon="cloud-download">
+    需要 TLS、Ingress、gRPC、metrics、备份、Secret 管理、多副本实时事件和 HLS 存储边界。
   </Card>
-  <Card title="生产部署建议" icon="rocket">
-    了解 Helm、Ingress、HTTP/gRPC Service、metrics、Redis、HLS 存储和多副本限制。
-  </Card>
-  <Card title="安全默认值" icon="approve-check-circle">
-    JWT、OPAQUE、Provider 凭据加密、CORS、可信代理、限流和 WebAuthn 都有单独说明。
+  <Card title="客户端或 SDK 开发者" icon="document">
+    需要 HTTP/OpenAPI、gRPC、WebSocket、OAuth2、MFA、媒体 URL 和错误处理的集成约定。
   </Card>
 </CardGrid>
 
+## 推荐最快路径：单机生产 Compose
+
+默认先按单机生产可用模式启动：下载生产 Compose 文件，生成持久化 env，显式设置 root 密码和长期 secret，再启动服务。
+
 <Aside type="tip">
-如果你只是想把服务跑起来，直接从快速开始进入；如果你在准备生产上线，先看生产部署清单，再按配置总索引逐项确认。
+长期运行的默认答案是单机生产 Compose。需要 Kubernetes 或多副本时，再进入部署章节阅读 Helm 和集群配置。
 </Aside>
 
-## 最重要的配置原则
+<Code
+  code={[
+    'mkdir synctv-compose',
+    'cd synctv-compose',
+    `curl -fsSLO ${dockerComposeFileUrl}`,
+    `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+    `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+    'mkdir -p scripts',
+    `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+    'chmod +x scripts/init-compose-env.sh',
+    './scripts/init-compose-env.sh',
+  ].join('\n')}
+  lang="bash"
+/>
 
-SyncTV 的配置目标是：**把必须稳定的内容写清楚，把敏感内容交给 secret，把运行时数据放到可持久化目录。**
+然后编辑 `.env.synctv`，至少设置：
 
-你至少应该理解这些概念：
+```dotenv
+SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+```
 
-- `jwt.secret`：用来签发登录 token。泄露后需要轮换，并会影响用户登录状态。
-- `security.opaque_server_setup_secret`：用于 OPAQUE 密码认证。必须长期稳定，随便改会导致 OPAQUE 密码记录不可用。
-- `security.credential_encryption_key`：用于加密媒体 Provider 凭据。启用后要妥善保存，丢失会影响已加密凭据读取。
-- `data_dir`：SyncTV 自己写入运行时文件的位置，例如管理 socket、日志文件、HLS 文件、slice cache 文件。
-- `server.cors_allowed_origins`：浏览器或 Web 客户端跨域访问白名单。生产环境不能随意放开。
-- `cluster.enabled`：是否启用多节点集群模式。开启后 Redis 和 cluster secret 都是必需项。
+保存后再启动并验证：
 
-## 推荐阅读顺序
+<Code
+  code={[
+    'docker compose config',
+    'docker compose up -d',
+    'curl -fsS http://localhost:8080/health/ready',
+  ].join('\n')}
+  lang="bash"
+/>
 
-1. 先看 [快速开始](guides/quick-start/)，确认服务能启动。
-2. 需要写配置时，看 [完整配置示例](configuration/full-example/) 和 [配置总索引](reference/configuration-index/)。
-3. 再看 [配置文件如何工作](configuration/how-configuration-works/)，理解配置优先级和环境变量命名。
-4. 如果部署到服务器，阅读 [安全与密钥配置](configuration/security/)。
-5. 如果使用 Docker 或 Kubernetes，阅读 [Docker Compose 部署](deployment/docker-compose/) 或 [Helm 部署](deployment/helm/)。
-6. 生产上线前补读 [备份与恢复](operations/backup-restore/)、[升级与迁移](operations/upgrades/) 和 [观测与运行手册](operations/observability/)。
-7. 管理用户、房间、权限或 Provider 前，阅读 [管理员操作手册](guides/administration/) 和 [房间、权限与用户偏好](guides/rooms-permissions/)。
-8. 开发客户端或 SDK 前，阅读 [客户端集成指南](guides/client-integration/)。
-9. 准备生产数据治理时，阅读 [数据、隐私与保留策略](operations/data-retention/)。
-10. 遇到启动、Ingress、认证或媒体播放问题时，从 [排障入口](operations/troubleshooting/) 进入。
+成功后打开：
+
+```text
+http://localhost:8080
+```
+
+这条路径使用预构建镜像和持久化 env 文件，适合单机长期运行。生产部署必须长期保存 `jwt.secret`、`security.opaque_server_setup_secret`、`security.credential_encryption_key` 和 root 密码。
+
+<Aside type="tip">
+第一次接触 SyncTV 时，也优先走单机生产 Compose。只想临时看界面时，再使用快速开始里的开发 Compose 路径。
+</Aside>
+
+## 选择你的任务
+
+| 你现在要做什么 | 先读哪一页 | 成功标志 |
+| --- | --- | --- |
+| 单机生产部署 | [快速开始](guides/quick-start/) 和 [生产部署清单](deployment/production-checklist/) | Secret 已持久保存，`/health/ready` 返回 200，数据库有备份 |
+| 本地临时试用 | [快速开始](guides/quick-start/) | 开发 Compose 跑通，但不会用于公网或长期运行 |
+| Kubernetes 或多副本 | [架构总览](guides/architecture/) 和 [Helm 部署](deployment/helm/) | 所有 Pod 共享 PostgreSQL、Redis，HTTP/gRPC Ingress 分开验证 |
+| 写配置 | [配置总索引](reference/configuration-index/) 和 [完整配置示例](configuration/full-example/) | `synctv config validate` 通过，最终配置符合预期 |
+| 接入客户端 | [客户端集成指南](guides/client-integration/) | 登录、ticket、WebSocket、错误处理流程能跑通 |
+| 排查问题 | [排障入口](operations/troubleshooting/) | 能用错误文本或现象定位到具体动作 |
+
+## 必须先理解的少数概念
+
+这些概念会在后续页面反复出现：
+
+- **PostgreSQL**：唯一必须持久化的业务数据源。
+- **Redis**：共享短期状态、限流、OAuth2 state、WebAuthn challenge、L2 缓存和集群协调；单机可选，生产推荐，多副本必需。
+- **Provider**：把外部媒体源解析成可播放 URL 或 SyncTV 代理 URL 的适配层。
+- **management gRPC**：CLI 和运维命令使用的管理控制面，不应暴露给普通客户端。
+- **OPAQUE setup secret**：密码认证协议的服务端长期 secret，不能每次部署随机变化。
+- **slice cache**：只缓存 Range 请求片段，不缓存完整文件。
+
+更多短定义见 [术语速查](reference/glossary/)。
 
 ## 常用入口
 
 <CardGrid>
   <LinkCard
-    title="文档导览"
-    href="guides/documentation-map/"
-    description="按部署、配置、运维、开发和排障任务快速定位该读哪一页。"
-  />
-  <LinkCard
-    title="配置总索引"
-    href="reference/configuration-index/"
-    description="按源码配置结构列出所有字段、类型、默认值和详细说明入口。"
-  />
-  <LinkCard
-    title="架构总览"
-    href="guides/architecture/"
-    description="解释单二进制服务、网络入口、状态层、Provider/proxy、slice cache 和集群模型。"
-  />
-  <LinkCard
-    title="认证与安全模型"
-    href="guides/security-model/"
-    description="说明本地登录、OAuth2、用户 2FA、token 上下文、management 控制面和 Provider header 边界。"
-  />
-  <LinkCard
-    title="管理员操作手册"
-    href="guides/administration/"
-    description="解释用户、房间、审核、Provider、runtime settings、system 和 slice cache 的管理边界。"
-  />
-  <LinkCard
-    title="房间、权限与用户偏好"
-    href="guides/rooms-permissions/"
-    description="解释全局角色、房间角色、权限位、房间设置、成员覆盖和用户偏好。"
-  />
-  <LinkCard
-    title="客户端集成指南"
-    href="guides/client-integration/"
-    description="说明 HTTP、gRPC、WebSocket、登录、MFA、OAuth2、token 和媒体 header 集成方式。"
+    title="快速开始"
+    href="guides/quick-start/"
+    description="优先给出单机生产 Compose 路径，同时保留本地试用和源码开发路径。"
   />
   <LinkCard
     title="生产部署清单"
     href="deployment/production-checklist/"
-    description="上线前逐项确认 secret、数据库、Redis、Ingress、监控、备份和升级。"
+    description="按必须、推荐和按需分级确认 secret、数据库、Redis、Ingress、监控、备份和升级。"
   />
   <LinkCard
-    title="数据、隐私与保留策略"
-    href="operations/data-retention/"
-    description="说明 PostgreSQL、Redis、日志、备份、PII、Provider 凭据和后台清理策略。"
+    title="架构总览"
+    href="guides/architecture/"
+    description="从最小单机模型到 Kubernetes 多副本模型理解进程、网络、状态层和媒体边界。"
+  />
+  <LinkCard
+    title="配置总索引"
+    href="reference/configuration-index/"
+    description="先看配置决策表，再查所有字段、类型、默认值和详细说明入口。"
+  />
+  <LinkCard
+    title="完整配置示例"
+    href="configuration/full-example/"
+    description="最小生产配置骨架、全量 YAML 模板、URL 与拆分配置示例。"
+  />
+  <LinkCard
+    title="安全与密钥"
+    href="configuration/security/"
+    description="JWT、OPAQUE、Provider 凭据加密、密码复杂度、token 和本地 2FA 边界。"
+  />
+  <LinkCard
+    title="管理员操作手册"
+    href="guides/administration/"
+    description="用户、房间、审核、Provider、runtime settings、system 和 slice cache 的管理边界。"
+  />
+  <LinkCard
+    title="客户端集成指南"
+    href="guides/client-integration/"
+    description="HTTP、gRPC、WebSocket、登录、MFA、OAuth2、token 和媒体 header 集成方式。"
   />
   <LinkCard
     title="观测与运行手册"
     href="operations/observability/"
-    description="覆盖健康检查、metrics、日志、关键告警和事故信息收集。"
+    description="健康检查、metrics、日志、关键告警和事故信息收集。"
   />
   <LinkCard
     title="排障入口"
     href="operations/troubleshooting/"
-    description="按现象定位启动、配置、Ingress、认证、Provider、缓存、直播和集群问题。"
+    description="按错误文本、HTTP 状态码和运行现象定位启动、配置、Ingress、认证、媒体和集群问题。"
   />
   <LinkCard
     title="CLI 参考"
     href="reference/cli/"
     description="管理用户、房间、Provider、settings、system 和 slice cache 的命令入口。"
-  />
-  <LinkCard
-    title="Runtime settings 参考"
-    href="reference/runtime-settings/"
-    description="列出数据库热更新设置的 key、默认值、校验规则和适用范围。"
   />
   <LinkCard
     title="OpenAPI 文档入口"

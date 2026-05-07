@@ -1669,7 +1669,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetRoomRequest,
     ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let (room, settings) = self
             .room_service
             .get_room_with_settings(&rid)
@@ -1749,7 +1749,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let prepared_outbox_fanout = self
             .room_lifecycle_fanout
@@ -1793,7 +1793,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let room_id =
-            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
+            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let new_password = if req.new_password.is_empty() {
             None
         } else {
@@ -1854,7 +1854,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
+        let rid =
+            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let role = match synctv_proto::common::RoomMemberRole::try_from(req.role) {
             Ok(synctv_proto::common::RoomMemberRole::Guest) => {
                 Some(synctv_core::models::RoomRole::Guest)
@@ -1935,8 +1936,8 @@ impl AdminApiImpl {
             notify,
         } = req;
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             synctv_core::models::RoomRole::Member
         } else {
@@ -2020,7 +2021,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let changed_by = *admin_user_id;
 
         let member = self
@@ -2098,7 +2099,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<bool, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
         let changed_by = *admin_user_id;
 
@@ -2154,8 +2155,8 @@ impl AdminApiImpl {
             admin_added_permissions,
             admin_removed_permissions,
         } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let role = if role == synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             None
         } else {
@@ -2263,8 +2264,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::KickMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let crate::proto::admin::KickMemberRequest { room_id, user_id } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
@@ -2322,8 +2323,8 @@ impl AdminApiImpl {
             reason,
         } = req;
 
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let reason = if reason.is_empty() {
             None
         } else {
@@ -2391,8 +2392,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UnbanMemberResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let crate::proto::admin::UnbanMemberRequest { room_id, user_id } = req;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec);
-        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
         let admin_username = self
             .load_admin_actor(admin_user_id)
             .await
@@ -2513,7 +2514,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetUserRequest,
     ) -> Result<crate::proto::admin::GetUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
             .get_user(&uid)
@@ -2530,7 +2531,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetUserPreferencesRequest,
     ) -> Result<crate::proto::admin::GetUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
             .get_user(&uid)
@@ -2556,7 +2557,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
         let update = user_preferences_update_from_proto(
             crate::proto::client::UpdateUserPreferencesRequest {
                 two_factor_enabled: req.two_factor_enabled,
@@ -2617,7 +2619,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserRoleResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
         let user = self
             .user_service
             .get_user(&uid)
@@ -2704,7 +2707,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
 
         // Fetch target user to check role hierarchy
         let target_user = self
@@ -2990,7 +2994,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let owned_room_ids = list_owned_room_ids(&self.room_service, &uid)
             .await
             .map_err(ApiError::from)?;
@@ -3034,7 +3038,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
 
         // Apply the same validation rules as client-facing set_username:
         // trim, check length, charset, and leading character restrictions.
@@ -3107,7 +3112,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
         let reason = req.reason.trim();
         let reason = (!reason.is_empty()).then(|| reason.to_string());
         let updated = self
@@ -3142,7 +3148,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
             .get_user(&uid)
@@ -3321,7 +3327,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ApproveUserRegistrationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user_request_id =
-            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec)?;
         let user = self
             .approve_user_registration_request(user_request_id, admin_user_id, ctx)
             .await?;
@@ -3339,7 +3345,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let user_request_id =
-            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec);
+            crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec)?;
         let reviewed_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         let result = sqlx::query(
@@ -3445,7 +3451,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ApproveRoomCreationReviewResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let room_request_id =
-            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec);
+            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec)?;
         let room = self
             .approve_room_creation_request(room_request_id, admin_user_id, ctx)
             .await?;
@@ -3463,7 +3469,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let room_request_id =
-            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec);
+            crate::impls::proto_validated_room_id(req.request_id, &self.public_id_codec)?;
         let reviewed_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
         self.room_service
@@ -3775,7 +3781,8 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetUserRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let uid = crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec);
+        let uid =
+            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
         let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
             Ok(synctv_proto::common::RoomStatus::Active) => {
                 Some(synctv_core::models::RoomStatus::Active)
@@ -3877,7 +3884,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
+        let rid =
+            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let room = self
             .room_service
             .get_room(&rid)
@@ -3934,7 +3942,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let room = self
             .room_service
             .get_room(&rid)
@@ -4008,7 +4016,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetRoomSettingsRequest,
     ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let (settings, version) = self
             .room_service
             .get_room_settings_with_version(&rid)
@@ -4028,7 +4036,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec);
+        let rid =
+            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
         let admin_username = self
@@ -4083,7 +4092,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec);
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let default_settings = synctv_core::models::RoomSettings::default();
         let admin_username = self
             .load_admin_actor(admin_user_id)
@@ -4138,7 +4147,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -4186,7 +4195,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec);
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -4864,7 +4873,7 @@ impl AdminApiImpl {
             let parent_id = crate::impls::proto_validated_playlist_id(
                 req.parent_id.clone(),
                 &self.public_id_codec,
-            );
+            )?;
             let parent = self
                 .room_service
                 .playlist_service()
@@ -5153,11 +5162,13 @@ impl AdminApiImpl {
 
         self.require_admin_actor(admin_user_id).await?;
 
-        let Some(playlist_id) = (!req.playlist_id.is_empty()).then(|| {
-            crate::impls::proto_validated_playlist_id(
+        let Some(playlist_id) = (if req.playlist_id.is_empty() {
+            None
+        } else {
+            Some(crate::impls::proto_validated_playlist_id(
                 req.playlist_id.clone(),
                 &self.public_id_codec,
-            )
+            )?)
         }) else {
             if !req.target.is_empty() {
                 return Err(ApiError::InvalidInput(
@@ -5942,7 +5953,8 @@ impl AdminApiImpl {
         let mut failed = 0i32;
 
         for room_id in &req.room_ids {
-            let rid = crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec);
+            let rid =
+                crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec)?;
             let result = async {
                 let room = self
                     .room_service
@@ -6034,7 +6046,8 @@ impl AdminApiImpl {
         let mut failed = 0i32;
 
         for room_id in &req.room_ids {
-            let rid = crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec);
+            let rid =
+                crate::impls::proto_validated_room_id(room_id.clone(), &self.public_id_codec)?;
             let result = async {
                 let prepared_outbox_fanout = self
                     .room_lifecycle_fanout

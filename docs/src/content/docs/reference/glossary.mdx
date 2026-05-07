@@ -1,0 +1,50 @@
+---
+title: 术语速查
+description: SyncTV 文档中常见安全、部署、媒体、实时协作和集群术语的简短解释。
+---
+
+## 为什么需要这页
+
+SyncTV 同时覆盖自托管、媒体代理、实时协作、认证安全和多节点部署。第一次阅读时，可以先用这页建立词汇表，再进入配置和运维细节。
+
+## 核心术语
+
+| 术语 | 简短解释 | 什么时候会遇到 |
+| --- | --- | --- |
+| SyncTV 单二进制 | 一个进程同时承载 HTTP、公开 gRPC、WebSocket、management、Provider、代理、直播和集群逻辑 | 架构、部署、端口规划 |
+| PostgreSQL | 持久业务数据源，保存用户、房间、权限、Provider 实例、偏好和审计数据 | 所有部署 |
+| Redis | 共享短期状态和分布式协调层 | 生产、限流、OAuth2、多副本、集群 |
+| `data_dir` | SyncTV 写入本地运行时文件的根目录 | management socket、日志、HLS、slice cache |
+| Provider | 把外部媒体源解析成可播放 URL 或 SyncTV 代理 URL 的适配层 | 媒体接入、代理、播放失败排查 |
+| Provider 凭据 | Provider 访问外部服务需要的 token、cookie、API key 或账号信息 | Provider 管理、安全配置 |
+| Provider header | Provider 明确指定给上游的请求头，例如 `User-Agent`、`Referer`、`Range` | 媒体代理、Range 播放 |
+| proxy | SyncTV 代表客户端访问上游媒体的受控转发层 | 客户端不能直连或不能设置必要 header 时 |
+| slice cache | 只缓存 Range 请求片段的代理缓存，不缓存完整文件 | seek、Range、媒体性能 |
+| HLS | HTTP Live Streaming，直播或转码后的 playlist/segment 播放方式 | 直播、多副本 HLS 存储 |
+| RTMP | 直播推流入口协议 | 主播推流、端口放行 |
+| HTTP-FLV | 低延迟直播拉流方式 | 直播播放 |
+| STUN | WebRTC NAT 辅助服务 | WebRTC 或内置 STUN |
+| management gRPC | CLI 和运维命令使用的管理控制面 | 管理命令、生产安全边界 |
+| 公开 gRPC | 客户端或 SDK 可使用的业务 gRPC API | SDK、内部强类型客户端 |
+| WebSocket ticket | 短期、一次性、房间绑定的 WebSocket 登录凭据 | 浏览器连接房间实时事件 |
+| OPAQUE | 密码认证协议，服务端不直接接收明文密码验证材料 | 本地密码登录、安全配置 |
+| OPAQUE setup secret | OPAQUE 服务端长期 secret，必须跨重启和升级保持稳定 | 生产 secret、登录故障 |
+| JWT secret | 签发 access token、refresh token、guest token 的密钥 | 登录、token 轮换 |
+| credential encryption key | 加密 Provider 凭据的 64 个十六进制字符 key（32 bytes） | Provider 凭据存储 |
+| CORS origin | 浏览器跨域请求的协议、域名和端口组合，不包含路径 | Web 前端和 API 分域部署 |
+| trusted proxy | 被 SyncTV 信任、可提供真实客户端 IP 的反向代理或 Ingress | 限流、审计、安全 |
+| runtime settings | 保存在数据库中、可通过管理 API/CLI 修改的运行时设置 | OAuth2 provider、系统热更新配置 |
+| cluster secret | SyncTV 节点间 gRPC 调用认证用的共享 secret | 多副本集群 |
+| leader election | 多副本中选出一个节点执行某些后台任务的机制 | 集群、后台任务 |
+| Redis Stream catch-up | 节点短暂断开后从共享事件流补回遗漏事件的机制 | 集群实时事件 |
+| publisher-node proxy | HLS 分片在推流节点本地时，其他节点通过 gRPC 向 publisher 节点读取 | 多副本直播 |
+| fail-closed | 关键依赖或事件写入失败时拒绝业务请求，避免数据库状态和实时缓存状态分叉 | 写操作、集群事件、事务型 outbox |
+| fanout | 一次业务变更向多个本地连接、节点或订阅者分发事件的过程 | WebSocket、集群实时事件 |
+
+## 继续阅读
+
+- [架构总览](../../guides/architecture/)
+- [快速开始](../../guides/quick-start/)
+- [配置总索引](../configuration-index/)
+- [客户端集成指南](../../guides/client-integration/)
+- [排障入口](../../operations/troubleshooting/)

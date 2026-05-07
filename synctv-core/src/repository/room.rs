@@ -1,4 +1,4 @@
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{FromRow, PgConnection, PgPool, Row};
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
@@ -818,6 +818,77 @@ impl RoomRepository {
             .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
 
         Ok(room)
+    }
+
+    pub async fn update_ban_status_with_executor(
+        room_id: &RoomId,
+        is_banned: bool,
+        executor: &mut PgConnection,
+    ) -> Result<Room> {
+        if is_banned {
+            sqlx::query!(
+                r"
+                INSERT INTO room_bans (room_id, starts_at)
+                SELECT r.id, CURRENT_TIMESTAMP
+                FROM rooms r
+                WHERE r.id = $1 AND r.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM room_bans rb
+                      WHERE rb.room_id = r.id
+                        AND rb.revoked_at IS NULL
+                        AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                      )
+                ",
+                room_id as &RoomId,
+            )
+            .execute(&mut *executor)
+            .await?;
+        } else {
+            sqlx::query!(
+                r"
+                UPDATE room_bans rb
+                SET revoked_at = CURRENT_TIMESTAMP
+                FROM rooms r
+                WHERE rb.room_id = r.id
+                  AND r.id = $1
+                  AND r.deleted_at IS NULL
+                  AND rb.revoked_at IS NULL
+                  AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                ",
+                room_id as &RoomId,
+            )
+            .execute(&mut *executor)
+            .await?;
+        }
+
+        let room = sqlx::query_as::<_, RoomRow>(
+            r#"
+            SELECT r.id,
+                   r.name,
+                   r.description,
+                   r.created_by,
+                   r.closed_at,
+                   r.created_at,
+                   r.updated_at,
+                   r.deleted_at,
+                   r.version,
+                   r.last_activity_at,
+                   EXISTS (
+                       SELECT 1 FROM room_bans rb
+                       WHERE rb.room_id = r.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS is_banned
+            FROM rooms r
+            WHERE r.id = $1 AND r.deleted_at IS NULL
+            "#,
+        )
+        .bind(room_id.as_i64())
+        .fetch_optional(&mut *executor)
+        .await?
+        .ok_or_else(|| crate::Error::NotFound(format!("Room {room_id} not found")))?;
+
+        Ok(room.into())
     }
 
     /// Update room description

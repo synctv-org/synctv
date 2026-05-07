@@ -4,32 +4,20 @@ use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 use synctv_core::models::{PermissionBits, RoomId, RoomRole, UserId};
 use synctv_core::service::{RoomService, UserService};
 
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
+use crate::impls::ApiError;
 use crate::runtime::RealtimeEventService;
 
 #[async_trait]
 pub trait MembershipEventFanoutService: Send + Sync {
-    async fn reserve_permission_changed(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
     async fn publish_permission_changed(
         &self,
         room_id: &RoomId,
         target_user_id: &UserId,
         changed_by: &UserId,
-        reservation: Option<ClusterEventPublishReservation>,
     ) -> Result<(), ApiError>;
 
-    async fn reserve_user_left(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    async fn publish_user_left(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        reservation: Option<ClusterEventPublishReservation>,
-    ) -> Result<(), ApiError>;
+    async fn publish_user_left(&self, room_id: &RoomId, user_id: &UserId) -> Result<(), ApiError>;
 }
 
 pub struct DefaultMembershipEventFanoutService {
@@ -86,20 +74,11 @@ impl std::fmt::Debug for DefaultMembershipEventFanoutService {
 
 #[async_trait]
 impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
-    async fn reserve_permission_changed(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out permission changes to cluster replicas")
-            .await
-    }
-
     async fn publish_permission_changed(
         &self,
         room_id: &RoomId,
         target_user_id: &UserId,
         changed_by: &UserId,
-        reservation: Option<ClusterEventPublishReservation>,
     ) -> Result<(), ApiError> {
         let room_settings = self
             .room_service
@@ -171,41 +150,11 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
                 event_service.broadcast_local(room_id, &request.event);
             }
         }
-        if let Some(reservation) = reservation {
-            reservation.publish(request);
-            return Ok(());
-        }
-
-        self.cluster_fanout
-            .reserve("failed to fan out permission changes to cluster replicas")
-            .await
-            .map(|reservation| {
-                if let Some(reservation) = reservation {
-                    reservation.publish(request);
-                }
-            })
-            .inspect_err(|error| {
-                tracing::warn!(
-                    room_id = %room_id,
-                    target_user_id = %target_user_id,
-                    error = %error.message(),
-                    "Permission change fanout failed"
-                );
-            })
+        publish_best_effort(self.cluster_fanout.clone(), request);
+        Ok(())
     }
 
-    async fn reserve_user_left(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out UserLeft to cluster replicas")
-            .await
-    }
-
-    async fn publish_user_left(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        reservation: Option<ClusterEventPublishReservation>,
-    ) -> Result<(), ApiError> {
+    async fn publish_user_left(&self, room_id: &RoomId, user_id: &UserId) -> Result<(), ApiError> {
         let username = self
             .user_service
             .get_user(user_id)
@@ -222,7 +171,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
                 timestamp: chrono::Utc::now(),
             },
         };
-        self.cluster_fanout.publish(reservation, request);
+        publish_best_effort(self.cluster_fanout.clone(), request);
 
         Ok(())
     }
@@ -248,9 +197,11 @@ mod tests {
     use super::default_membership_event_fanout_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
+    use crate::test_support::channel_cluster_fanout_service;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use synctv_cluster::sync::{BroadcastResult, ClusterEvent, ConnectionId};
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
@@ -335,9 +286,13 @@ mod tests {
     }
 
     fn test_services() -> (Arc<RoomService>, Arc<UserService>) {
+        let connect_options = <sqlx::postgres::PgConnectOptions as std::str::FromStr>::from_str(
+            "postgresql://synctv:synctv@127.0.0.1:1/synctv",
+        )
+        .expect("test connect options should parse");
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool should initialize");
+            .acquire_timeout(Duration::from_millis(20))
+            .connect_lazy_with(connect_options);
         let jwt_service =
             JwtService::new("membership-fanout-test-secret-key-minimum-32-chars").expect("jwt");
         let username_cache = UsernameCache::local_only("membership:username:".to_string(), 128, 60);
@@ -366,7 +321,7 @@ mod tests {
         );
 
         service
-            .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"), None)
+            .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
             .expect("standalone permission change publish should succeed");
 
@@ -398,7 +353,7 @@ mod tests {
         let user = user_id("self-joiner");
 
         service
-            .publish_permission_changed(&room_id(), &user, &user, None)
+            .publish_permission_changed(&room_id(), &user, &user)
             .await
             .expect("standalone self-join publish should succeed");
 
@@ -424,23 +379,13 @@ mod tests {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_membership_event_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
+            channel_cluster_fanout_service(tx),
             room_service,
             user_service,
             Some(event_service.clone()),
         );
-        let reservation = service
-            .reserve_permission_changed()
-            .await
-            .expect("cluster reservation should succeed");
-
         service
-            .publish_permission_changed(
-                &room_id(),
-                &user_id("target"),
-                &user_id("actor"),
-                reservation,
-            )
+            .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
             .expect("cluster permission change publish should succeed");
 
@@ -469,18 +414,13 @@ mod tests {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_membership_event_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
+            channel_cluster_fanout_service(tx),
             room_service,
             user_service,
             Some(event_service.clone()),
         );
-        let reservation = service
-            .reserve_user_left()
-            .await
-            .expect("cluster reservation should succeed");
-
         service
-            .publish_user_left(&room_id(), &user_id("target"), reservation)
+            .publish_user_left(&room_id(), &user_id("target"))
             .await
             .expect("cluster user-left publish should succeed");
 
@@ -512,7 +452,7 @@ mod tests {
         );
 
         service
-            .publish_user_left(&room_id(), &user_id("target"), None)
+            .publish_user_left(&room_id(), &user_id("target"))
             .await
             .expect("standalone user-left publish should succeed");
 

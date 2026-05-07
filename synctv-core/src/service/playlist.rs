@@ -12,12 +12,16 @@ use std::sync::Arc;
 use crate::{
     models::{PermissionBits, Playlist, PlaylistId, RoomId, UserId},
     provider::ProviderContext,
+    repository::cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
     repository::PlaylistRepository,
     repository::{UserProviderCredentialRepository, UserRepository},
     service::{permission::PermissionService, ProvidersManager},
     Error, Result,
 };
 use serde_json::Value as JsonValue;
+
+pub type ClusterOutboxPlaylistEventFactory =
+    Arc<dyn Fn(&Playlist) -> Option<NewClusterOutboxEvent> + Send + Sync>;
 
 /// Trait for broadcasting playlist changes to cluster replicas.
 ///
@@ -142,6 +146,7 @@ pub struct PlaylistService {
     providers_manager: Arc<ProvidersManager>,
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
 }
@@ -186,6 +191,7 @@ impl PlaylistService {
             providers_manager,
             credential_encryption: None,
             credential_repo: None,
+            cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
@@ -205,8 +211,13 @@ impl PlaylistService {
             providers_manager,
             credential_encryption,
             credential_repo,
+            cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
+    }
+
+    pub fn set_cluster_outbox(&mut self, cluster_outbox: Option<Arc<ClusterOutboxRepository>>) {
+        self.cluster_outbox = cluster_outbox;
     }
 
     /// Set the cluster broadcaster for cross-replica playlist sync
@@ -285,7 +296,18 @@ impl PlaylistService {
         user_id: UserId,
         request: CreatePlaylistRequest,
     ) -> Result<Playlist> {
-        self.create_playlist_internal(room_id, user_id, request, false)
+        self.create_playlist_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn create_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: CreatePlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.create_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
     }
 
@@ -296,7 +318,18 @@ impl PlaylistService {
         actor_user_id: UserId,
         request: CreatePlaylistRequest,
     ) -> Result<Playlist> {
-        self.create_playlist_internal(room_id, actor_user_id, request, true)
+        self.admin_create_playlist_with_outbox(room_id, actor_user_id, request, None)
+            .await
+    }
+
+    pub async fn admin_create_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: CreatePlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.create_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
             .await
     }
 
@@ -306,6 +339,7 @@ impl PlaylistService {
         user_id: UserId,
         request: CreatePlaylistRequest,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if request.name.chars().count() > 255 {
             return Err(Error::InvalidInput(
@@ -401,6 +435,14 @@ impl PlaylistService {
             .playlist_repo
             .create_with_executor(&playlist, &mut *tx)
             .await?;
+        if let Some(event) = outbox_event_factory
+            .as_ref()
+            .and_then(|factory| factory(&created_playlist))
+        {
+            if let Some(outbox) = &self.cluster_outbox {
+                outbox.insert_with_executor(&event, &mut *tx).await?;
+            }
+        }
         tx.commit().await?;
 
         tracing::info!(
@@ -506,7 +548,18 @@ impl PlaylistService {
         user_id: UserId,
         request: SetPlaylistRequest,
     ) -> Result<Playlist> {
-        self.set_playlist_internal(room_id, user_id, request, false)
+        self.set_playlist_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn set_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: SetPlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.set_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
     }
 
@@ -517,7 +570,18 @@ impl PlaylistService {
         actor_user_id: UserId,
         request: SetPlaylistRequest,
     ) -> Result<Playlist> {
-        self.set_playlist_internal(room_id, actor_user_id, request, true)
+        self.admin_set_playlist_with_outbox(room_id, actor_user_id, request, None)
+            .await
+    }
+
+    pub async fn admin_set_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: SetPlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.set_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
             .await
     }
 
@@ -527,6 +591,7 @@ impl PlaylistService {
         user_id: UserId,
         request: SetPlaylistRequest,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
@@ -566,12 +631,22 @@ impl PlaylistService {
                 playlist.name = name.clone();
             }
             // Save with optimistic locking
+            let mut tx = self.playlist_repo.pool().begin().await?;
             match self
                 .playlist_repo
-                .update_with_version(&playlist, expected_version)
+                .update_with_version_with_executor(&playlist, expected_version, &mut *tx)
                 .await
             {
                 Ok(updated_playlist) => {
+                    if let Some(event) = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(&updated_playlist))
+                    {
+                        if let Some(outbox) = &self.cluster_outbox {
+                            outbox.insert_with_executor(&event, &mut *tx).await?;
+                        }
+                    }
+                    tx.commit().await?;
                     tracing::info!(
                         room_id = %room_id,
                         playlist_id = %request.playlist_id,
@@ -589,6 +664,7 @@ impl PlaylistService {
                     return Ok(updated_playlist);
                 }
                 Err(Error::OptimisticLockConflict) => {
+                    tx.rollback().await?;
                     if attempt + 1 < OPTIMISTIC_LOCK_MAX_RETRIES {
                         // Exponential backoff with jitter
                         let backoff = OPTIMISTIC_LOCK_BACKOFF_BASE_MS * (1 << attempt);
@@ -623,7 +699,18 @@ impl PlaylistService {
         user_id: UserId,
         request: MovePlaylistRequest,
     ) -> Result<Playlist> {
-        self.move_playlist_internal(room_id, user_id, request, false)
+        self.move_playlist_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn move_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: MovePlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.move_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
     }
 
@@ -633,7 +720,18 @@ impl PlaylistService {
         actor_user_id: UserId,
         request: MovePlaylistRequest,
     ) -> Result<Playlist> {
-        self.move_playlist_internal(room_id, actor_user_id, request, true)
+        self.admin_move_playlist_with_outbox(room_id, actor_user_id, request, None)
+            .await
+    }
+
+    pub async fn admin_move_playlist_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_user_id: UserId,
+        request: MovePlaylistRequest,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+    ) -> Result<Playlist> {
+        self.move_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
             .await
     }
 
@@ -643,6 +741,7 @@ impl PlaylistService {
         user_id: UserId,
         request: MovePlaylistRequest,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             self.permission_service
@@ -675,6 +774,14 @@ impl PlaylistService {
             ));
         }
 
+        if let Some(event) = outbox_event_factory
+            .as_ref()
+            .and_then(|factory| factory(&moved))
+        {
+            if let Some(outbox) = &self.cluster_outbox {
+                outbox.insert_with_executor(&event, &mut *tx).await?;
+            }
+        }
         tx.commit().await?;
         let actor_username = self.resolve_actor_username(&user_id).await;
         if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {

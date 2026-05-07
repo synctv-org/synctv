@@ -4,7 +4,6 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
-use std::time::Duration;
 use synctv_livestream::error::StreamError;
 
 pub mod admin;
@@ -33,65 +32,6 @@ pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderCommonAp
 pub use request_context::{
     EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata, TransportProtocol,
 };
-
-const CLUSTER_EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(250);
-fn record_cluster_event_publish_failure(reason: &'static str, message: &str) {
-    synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-        .with_label_values(&[reason])
-        .inc();
-    tracing::warn!(reason, "{message}");
-}
-
-/// Try to publish a cluster event via the Redis publish channel.
-///
-/// On success, the event is queued for publication. When the channel is
-/// temporarily full, wait briefly for capacity instead of dropping immediately.
-/// Returns `true` on success, `false` on timeout or closed channel.
-pub async fn try_publish_cluster_event(
-    tx: &tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>,
-    request: synctv_cluster::sync::PublishRequest,
-) -> bool {
-    match tx.try_send(request) {
-        Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(request)) => {
-            match tokio::time::timeout(CLUSTER_EVENT_SEND_TIMEOUT, tx.send(request)).await {
-                Ok(Ok(())) => true,
-                Ok(Err(_)) => {
-                    record_cluster_event_publish_failure(
-                        "channel_closed",
-                        "Cluster event publish channel closed, event dropped",
-                    );
-                    false
-                }
-                Err(_) => {
-                    record_cluster_event_publish_failure(
-                        "channel_timeout",
-                        "Cluster event publish channel remained full until timeout, event dropped",
-                    );
-                    false
-                }
-            }
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            record_cluster_event_publish_failure(
-                "channel_closed",
-                "Cluster event publish channel closed, event dropped",
-            );
-            false
-        }
-    }
-}
-
-pub const fn cluster_fanout_required(
-    cluster_mode: bool,
-    redis_publish_tx_configured: bool,
-) -> bool {
-    cluster_mode && redis_publish_tx_configured
-}
-
-pub fn cluster_fanout_failure(message: impl Into<String>) -> ApiError {
-    ApiError::ServiceUnavailable(message.into())
-}
 
 const LIVESTREAM_NOT_AVAILABLE_MESSAGE: &str = "Live stream is not currently available";
 const LIVESTREAM_PERMISSION_DENIED_MESSAGE: &str =
@@ -135,75 +75,6 @@ pub(crate) fn proto_page_size_usize(
 ) -> usize {
     usize::try_from(proto_page_params(1, page_size, default_page_size, max_page_size).page_size)
         .unwrap_or(usize::MAX)
-}
-
-#[derive(Debug)]
-pub struct ClusterEventPublishReservation {
-    permit: tokio::sync::mpsc::OwnedPermit<synctv_cluster::sync::PublishRequest>,
-}
-
-impl ClusterEventPublishReservation {
-    pub fn publish(self, request: synctv_cluster::sync::PublishRequest) {
-        let _ = self.permit.send(request);
-    }
-}
-
-pub async fn reserve_cluster_event_publish(
-    tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
-    cluster_mode: bool,
-    failure_message: &'static str,
-) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-    if !cluster_fanout_required(cluster_mode, tx.is_some()) {
-        return Ok(None);
-    }
-
-    let tx = tx
-        .expect("cluster_fanout_required checked tx presence")
-        .clone();
-    match tx.try_reserve_owned() {
-        Ok(permit) => Ok(Some(ClusterEventPublishReservation { permit })),
-        Err(tokio::sync::mpsc::error::TrySendError::Full(tx)) => {
-            match tokio::time::timeout(CLUSTER_EVENT_SEND_TIMEOUT, tx.reserve_owned()).await {
-                Ok(Ok(permit)) => Ok(Some(ClusterEventPublishReservation { permit })),
-                Ok(Err(_)) => {
-                    record_cluster_event_publish_failure(
-                        "channel_closed",
-                        "Cluster event publish channel closed, event dropped",
-                    );
-                    Err(cluster_fanout_failure(failure_message))
-                }
-                Err(_) => {
-                    record_cluster_event_publish_failure(
-                        "channel_timeout",
-                        "Cluster event publish channel remained full until timeout, event dropped",
-                    );
-                    Err(cluster_fanout_failure(failure_message))
-                }
-            }
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            record_cluster_event_publish_failure(
-                "channel_closed",
-                "Cluster event publish channel closed, event dropped",
-            );
-            Err(cluster_fanout_failure(failure_message))
-        }
-    }
-}
-
-pub async fn require_cluster_event_publish(
-    tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
-    request: synctv_cluster::sync::PublishRequest,
-    cluster_mode: bool,
-    failure_message: &'static str,
-) -> Result<(), ApiError> {
-    if let Some(reservation) =
-        reserve_cluster_event_publish(tx, cluster_mode, failure_message).await?
-    {
-        reservation.publish(request);
-    }
-
-    Ok(())
 }
 
 fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiError {
@@ -1196,94 +1067,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_try_publish_cluster_event_waits_for_capacity_instead_of_dropping() {
-        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        tx.send(PublishRequest {
-            event: ClusterEvent::CacheInvalidate {
-                event_id: "existing_event_1".to_string(),
-                targets: vec![CacheTarget::Room {
-                    room_id: synctv_core::models::RoomId::from(12_345_678),
-                }],
-                timestamp: chrono::Utc::now(),
-            },
-        })
-        .await
-        .unwrap();
-
-        let publish_request = PublishRequest {
-            event: ClusterEvent::CacheInvalidate {
-                event_id: "delayed_event_1".to_string(),
-                targets: vec![CacheTarget::Room {
-                    room_id: synctv_core::models::RoomId::from(87_654_321),
-                }],
-                timestamp: chrono::Utc::now(),
-            },
-        };
-
-        let sender = tx.clone();
-        let publish_task = tokio::spawn(async move {
-            super::try_publish_cluster_event(&sender, publish_request).await
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        let first = rx.recv().await.expect("buffered message should exist");
-        match first.event {
-            ClusterEvent::CacheInvalidate { event_id, .. } => {
-                assert_eq!(event_id, "existing_event_1");
-            }
-            other => panic!("unexpected first event: {other:?}"),
-        }
-
-        assert!(publish_task.await.unwrap());
-
-        let second = rx.recv().await.expect("second message should be delivered");
-        match second.event {
-            ClusterEvent::CacheInvalidate { event_id, .. } => {
-                assert_eq!(event_id, "delayed_event_1");
-            }
-            other => panic!("unexpected second event: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_cluster_fanout_required_only_in_cluster_mode_with_publish_channel() {
-        assert!(super::cluster_fanout_required(true, true));
-        assert!(!super::cluster_fanout_required(true, false));
-        assert!(!super::cluster_fanout_required(false, true));
-        assert!(!super::cluster_fanout_required(false, false));
-    }
-
-    #[tokio::test]
-    async fn test_require_cluster_event_publish_fails_closed_in_cluster_mode() {
-        use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
-
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        drop(rx);
-
-        let err = super::require_cluster_event_publish(
-            Some(&tx),
-            PublishRequest {
-                event: ClusterEvent::CacheInvalidate {
-                    event_id: "closed_channel_event".to_string(),
-                    targets: vec![CacheTarget::Room {
-                        room_id: synctv_core::models::RoomId::from(12_345_679),
-                    }],
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-            true,
-            "critical cluster event fanout failed",
-        )
-        .await
-        .expect_err("cluster mode must fail closed when fanout cannot be queued");
-
-        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
-        assert_eq!(err.message(), "critical cluster event fanout failed");
-    }
-
     #[test]
     fn test_classify_error_room_capacity_is_rate_limited() {
         assert!(matches!(
@@ -1332,23 +1115,6 @@ mod tests {
             ),
             ErrorKind::ServiceUnavailable
         ));
-    }
-
-    #[tokio::test]
-    async fn test_reserve_cluster_event_publish_fails_closed_in_cluster_mode() {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        drop(rx);
-
-        let err = super::reserve_cluster_event_publish(
-            Some(&tx),
-            true,
-            "critical cluster event fanout failed",
-        )
-        .await
-        .expect_err("cluster mode must fail closed when reservation cannot be acquired");
-
-        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
-        assert_eq!(err.message(), "critical cluster event fanout failed");
     }
 
     #[test]

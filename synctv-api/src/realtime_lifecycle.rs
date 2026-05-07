@@ -8,12 +8,11 @@ use synctv_core::service::RoomService;
 use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::ClusterEventPublishReservation;
 use crate::runtime::RealtimeConnectionService;
 
-pub struct DeletedRoomFanoutReservation {
+pub struct DeletedRoomAfterCommitFanout {
     pub room_id: RoomId,
-    pub reservation: Option<ClusterEventPublishReservation>,
+    pub event: ClusterEvent,
 }
 
 #[async_trait]
@@ -32,9 +31,9 @@ pub trait RealtimeLifecycleService: Send + Sync {
         &self,
         room_service: &RoomService,
         summary: &UserDeletionSummary,
-        deleted_by: &UserId,
+        _deleted_by: &UserId,
         disconnect_reason: &str,
-        deleted_room_fanout: Vec<DeletedRoomFanoutReservation>,
+        deleted_room_fanout: Vec<DeletedRoomAfterCommitFanout>,
     );
 }
 
@@ -227,9 +226,9 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         &self,
         room_service: &RoomService,
         summary: &UserDeletionSummary,
-        deleted_by: &UserId,
+        _deleted_by: &UserId,
         disconnect_reason: &str,
-        deleted_room_fanout: Vec<DeletedRoomFanoutReservation>,
+        deleted_room_fanout: Vec<DeletedRoomAfterCommitFanout>,
     ) {
         for room_id in &summary.membership_room_ids {
             room_service
@@ -259,17 +258,8 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 .finalize_deleted_room_after_commit(&room_id)
                 .await;
 
-            self.cluster_fanout.publish(
-                deleted_room.reservation,
-                PublishRequest {
-                    event: ClusterEvent::RoomDeleted {
-                        event_id: synctv_common::snanoid!(16),
-                        room_id,
-                        deleted_by: *deleted_by,
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
+            self.cluster_fanout
+                .publish_after_outbox_commit(deleted_room.event);
 
             self.disconnect_room(&room_id, "room_deleted").await;
         }
@@ -297,6 +287,7 @@ mod tests {
     use super::default_realtime_lifecycle_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
     use crate::runtime::RealtimeConnectionService;
+    use crate::test_support::channel_cluster_fanout_service;
     use std::sync::Arc;
     use synctv_cluster::sync::{ClusterEvent, ConnectionLimits, ConnectionManager};
     use synctv_core::models::{MediaId, RoomId, UserId};
@@ -310,7 +301,7 @@ mod tests {
         let service = default_realtime_lifecycle_service(
             connection_service,
             None,
-            default_cluster_fanout_service(Some(publish_tx), true),
+            channel_cluster_fanout_service(publish_tx),
         );
 
         service
@@ -340,7 +331,7 @@ mod tests {
         let service = default_realtime_lifecycle_service(
             Arc::clone(&connection_service),
             None,
-            default_cluster_fanout_service(Some(publish_tx), true),
+            channel_cluster_fanout_service(publish_tx),
         );
         let user_id = UserId::from(101_001);
 

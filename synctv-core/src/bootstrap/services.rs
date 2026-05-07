@@ -11,8 +11,9 @@ use crate::{
         CacheManager, RoomCache, UserCache, UsernameCache,
     },
     repository::{
-        ChatRepository, NotificationRepository, ProviderInstanceRepository, RoomMemberRepository,
-        RoomRepository, RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
+        cluster_outbox::ClusterOutboxRepository, ChatRepository, NotificationRepository,
+        ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
+        RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
         WebAuthnCredentialRepository,
     },
@@ -119,6 +120,7 @@ pub struct InitServicesOptions {
     pub provider_test_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_hex_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    pub cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
 }
 
 impl std::fmt::Debug for InitServicesOptions {
@@ -138,6 +140,10 @@ impl std::fmt::Debug for InitServicesOptions {
             .field(
                 "password_hasher_override",
                 &self.password_hasher_override.as_ref().map(|_| "<injected>"),
+            )
+            .field(
+                "cluster_outbox",
+                &self.cluster_outbox.as_ref().map(|_| "<injected>"),
             )
             .finish()
     }
@@ -589,6 +595,7 @@ pub async fn init_services_with_options(
             email_verification_required,
             settings_registry: Some(Arc::clone(&settings_registry)),
             password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+            cluster_outbox: options.cluster_outbox.clone(),
             opaque_password_service: Some(Arc::new(
                 crate::service::auth::OpaquePasswordService::derive_from_secret(
                     config.security.opaque_server_setup_secret.as_bytes(),
@@ -643,6 +650,7 @@ pub async fn init_services_with_options(
         settings_registry: Some(Arc::clone(&settings_registry)),
         user_notification_service: Some(Arc::clone(&notification_service)),
         password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
+        cluster_outbox: options.cluster_outbox.clone(),
         runtime: room_runtime,
     });
     info!("RoomService initialized with construction-time dependencies");
@@ -791,6 +799,7 @@ struct RoomServiceBuildArgs {
     settings_registry: Option<Arc<SettingsRegistry>>,
     user_notification_service: Option<Arc<UserNotificationService>>,
     password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
     runtime: RoomServiceRuntime,
 }
 
@@ -854,6 +863,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         settings_registry,
         user_notification_service,
         password_hasher,
+        cluster_outbox,
         runtime,
     } = args;
     let permission_service = PermissionService::new_with_runtime(
@@ -881,6 +891,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
             settings_registry,
             user_notification_service,
             password_hasher,
+            cluster_outbox,
         },
     )
 }
@@ -1256,6 +1267,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1334,6 +1346,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1364,6 +1377,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1435,6 +1449,7 @@ mod tests {
             settings_registry: Some(Arc::clone(&settings_registry)),
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1490,6 +1505,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1549,6 +1565,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
+            cluster_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,

@@ -106,6 +106,10 @@ pub trait RealtimeEventService: Send + Sync {
 
     fn broadcast_local(&self, room_id: &RoomId, event: &ClusterEvent) -> usize;
 
+    fn broadcast_admin_local(&self, _event: &ClusterEvent) -> usize {
+        0
+    }
+
     fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent>;
 
     fn metrics(&self) -> RealtimeMetrics;
@@ -171,6 +175,12 @@ impl RealtimeEventService for ClusterManager {
         ClusterManager::message_hub(self).broadcast(room_id, event)
     }
 
+    fn broadcast_admin_local(&self, event: &ClusterEvent) -> usize {
+        ClusterManager::admin_event_tx(self)
+            .send(event.clone())
+            .unwrap_or_default()
+    }
+
     fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
         ClusterManager::subscribe_admin_events(self)
     }
@@ -227,6 +237,13 @@ impl RealtimeEventService for ClusterRealtimeEventService {
         <ClusterManager as RealtimeEventService>::broadcast_local(
             self.cluster_manager.as_ref(),
             room_id,
+            event,
+        )
+    }
+
+    fn broadcast_admin_local(&self, event: &ClusterEvent) -> usize {
+        <ClusterManager as RealtimeEventService>::broadcast_admin_local(
+            self.cluster_manager.as_ref(),
             event,
         )
     }

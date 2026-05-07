@@ -753,6 +753,19 @@ impl PlaylistRepository {
         playlist: &Playlist,
         expected_version: i32,
     ) -> Result<Playlist> {
+        self.update_with_version_with_executor(playlist, expected_version, &self.pool)
+            .await
+    }
+
+    pub async fn update_with_version_with_executor<'e, E>(
+        &self,
+        playlist: &Playlist,
+        expected_version: i32,
+        executor: E,
+    ) -> Result<Playlist>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let source_provider_str = playlist.source_provider.as_deref();
         let row = sqlx::query_as!(
             PlaylistRow,
@@ -782,7 +795,7 @@ impl PlaylistRepository {
             ),
             expected_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         match row {

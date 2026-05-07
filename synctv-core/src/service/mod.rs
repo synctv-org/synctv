@@ -88,7 +88,7 @@ pub use passkey::{
 };
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
-pub use playlist::{PlaylistBroadcaster, PlaylistService};
+pub use playlist::{ClusterOutboxPlaylistEventFactory, PlaylistBroadcaster, PlaylistService};
 pub use providers_manager::ProvidersManager;
 pub use proxy_signature::{
     build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
@@ -102,7 +102,10 @@ pub use rate_limit::{
     RateLimitError, RateLimiter, RequestRateLimiterService,
 };
 pub use remote_provider_manager::RemoteProviderManager;
-pub use room::{AuthorizedAdminActor, RoomService};
+pub use room::{
+    AuthorizedAdminActor, ClusterOutboxDeleteEntriesEventFactory, ClusterOutboxRoomEventFactory,
+    ClusterOutboxSettingsEventFactory, RoomService,
+};
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};
 pub use settings_vars::{Setting, SettingsStorage};

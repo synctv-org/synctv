@@ -3,20 +3,11 @@ use std::sync::Arc;
 use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
 use synctv_core::models::RoomId;
 
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
 
 #[async_trait]
 pub trait RoomCacheFanoutService: Send + Sync {
-    async fn reserve_invalidation(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    fn publish_invalidation(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-    );
+    fn publish_invalidation(&self, room_id: &RoomId);
 
     async fn try_publish_all_invalidation(&self) -> bool;
 }
@@ -45,21 +36,9 @@ impl std::fmt::Debug for DefaultRoomCacheFanoutService {
 
 #[async_trait]
 impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
-    async fn reserve_invalidation(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out room cache invalidation to cluster replicas")
-            .await
-    }
-
-    fn publish_invalidation(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
+    fn publish_invalidation(&self, room_id: &RoomId) {
+        publish_best_effort(
+            self.cluster_fanout.clone(),
             PublishRequest {
                 event: ClusterEvent::CacheInvalidate {
                     event_id: synctv_common::snanoid!(16),
@@ -94,6 +73,7 @@ pub fn default_room_cache_fanout_service(
 mod tests {
     use super::default_room_cache_fanout_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
+    use crate::test_support::channel_cluster_fanout_service;
     use synctv_cluster::sync::{CacheTarget, ClusterEvent};
     use synctv_core::models::RoomId;
 
@@ -101,26 +81,17 @@ mod tests {
     async fn test_room_cache_fanout_is_noop_when_cluster_fanout_is_local() {
         let service =
             default_room_cache_fanout_service(default_cluster_fanout_service(None, false));
-        let reservation = service
-            .reserve_invalidation()
-            .await
-            .expect("local room cache fanout should not fail");
 
-        service.publish_invalidation(reservation, &RoomId::from(109_001));
+        service.publish_invalidation(&RoomId::from(109_001));
     }
 
     #[tokio::test]
     async fn test_room_cache_fanout_publishes_room_target_invalidation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service =
-            default_room_cache_fanout_service(default_cluster_fanout_service(Some(tx), true));
-        let reservation = service
-            .reserve_invalidation()
-            .await
-            .expect("cluster room cache fanout should reserve");
+        let service = default_room_cache_fanout_service(channel_cluster_fanout_service(tx));
         let room_id = RoomId::from(109_002);
 
-        service.publish_invalidation(reservation, &room_id);
+        service.publish_invalidation(&room_id);
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
@@ -143,8 +114,7 @@ mod tests {
     #[tokio::test]
     async fn test_room_cache_fanout_publishes_all_target_invalidation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service =
-            default_room_cache_fanout_service(default_cluster_fanout_service(Some(tx), true));
+        let service = default_room_cache_fanout_service(channel_cluster_fanout_service(tx));
 
         assert!(
             service.try_publish_all_invalidation().await,

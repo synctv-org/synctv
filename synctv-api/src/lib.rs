@@ -24,6 +24,11 @@ mod room_cache_fanout;
 mod room_lifecycle_fanout;
 pub mod runtime;
 
+#[doc(hidden)]
+pub mod test_support {
+    pub use crate::cluster_fanout::channel_cluster_fanout_service;
+}
+
 // Re-export commonly used types
 pub use http::AppState;
 pub use synctv_core::PublicIdCodec;

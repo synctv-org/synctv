@@ -384,16 +384,23 @@ impl ClientApiImpl {
             settings.as_ref(),
             password.is_some(),
         );
-        let cluster_event = self.room_lifecycle_fanout.reserve_room_created().await?;
-
+        let prepared_outbox_fanout = self
+            .room_lifecycle_fanout
+            .prepare_room_created_outbox_fanout(uid);
         let (room, _member) = self
             .room_service
-            .create_room(req.name, req.description, uid, password, settings)
+            .create_room_with_outbox(
+                req.name,
+                req.description,
+                uid,
+                password,
+                settings,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
 
-        self.room_lifecycle_fanout
-            .publish_room_created(cluster_event, &room.id, &room.name, &uid);
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::CreateRoomResponse {
             room: Some(room_to_proto_basic(
@@ -471,10 +478,6 @@ impl ClientApiImpl {
 
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
 
         let password = if req.password.is_empty() {
             None
@@ -528,7 +531,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &uid, &uid, permission_fanout)
+            .publish_permission_changed(&rid, &uid, &uid)
             .await?;
 
         // Get updated room and playback state
@@ -639,8 +642,6 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
-        let cluster_event = self.membership_event_fanout.reserve_user_left().await?;
-
         self.room_service
             .leave_room(rid, uid)
             .await
@@ -653,7 +654,7 @@ impl ClientApiImpl {
             .await;
 
         self.membership_event_fanout
-            .publish_user_left(&rid, &uid, cluster_event)
+            .publish_user_left(&rid, &uid)
             .await?;
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
@@ -666,17 +667,18 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let cluster_event = self.room_lifecycle_fanout.reserve_room_deleted().await?;
+        let prepared_outbox_fanout = self
+            .room_lifecycle_fanout
+            .prepare_room_deleted_outbox_fanout(&rid, &uid);
 
         // 1. Delete the DB record first. If this fails, no cluster event is
         //    published and no connections are dropped -- the room remains intact.
         self.room_service
-            .delete_room(rid, uid)
+            .delete_room_with_outbox(rid, uid, prepared_outbox_fanout.outbox_event.clone())
             .await
             .map_err(ApiError::from)?;
 
-        self.room_lifecycle_fanout
-            .publish_room_deleted(cluster_event, &rid, &uid);
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         // Force disconnect room members and any active publishers tied to this room.
         self.realtime_lifecycle
@@ -705,32 +707,40 @@ impl ClientApiImpl {
 
         let settings_patch: serde_json::Value = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
-        let snapshot = self
-            .room_service
-            .patch_settings(rid, uid, settings_patch)
-            .await
-            .map_err(ApiError::from)?;
-        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
-
         let username = self
             .user_service
             .get_user(&uid)
             .await
             .map(|u| u.username)
             .unwrap_or_default();
-
-        self.room_settings_fanout.publish_settings_changed(
-            room_settings_fanout,
+        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
+            &rid,
+            &uid,
+            &username,
+            Vec::new(),
+            0,
+        );
+        let snapshot = self
+            .room_service
+            .patch_settings_with_outbox(
+                rid,
+                uid,
+                settings_patch,
+                prepared_settings_fanout.settings_outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
+        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             &uid,
             &username,
             settings_json,
             snapshot.version,
         );
-        self.room_cache_fanout
-            .publish_invalidation(cache_invalidation, &rid);
+        self.room_settings_fanout
+            .publish_prepared_after_outbox_commit(prepared_settings_fanout);
+        self.room_cache_fanout.publish_invalidation(&rid);
 
         // Get updated room
         let room = self
@@ -783,36 +793,42 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::Internal(format!("Failed to hash password: {e}")))?;
             Some(hash)
         };
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
         let username = self
             .user_service
             .get_user(&uid)
             .await
             .map(|u| u.username)
             .unwrap_or_default();
+        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
+            &rid,
+            &uid,
+            &username,
+            Vec::new(),
+            0,
+        );
 
         let snapshot = self
             .room_service
-            .update_room_password_as(&rid, Some(&uid), &username, password_hash)
+            .update_room_password_as_with_outbox(
+                &rid,
+                Some(&uid),
+                &username,
+                password_hash,
+                prepared_settings_fanout.settings_outbox_factory(),
+            )
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         // Invalidate room cache on other replicas so password check uses fresh data
-        if let Some(cache_invalidation) = cache_invalidation {
-            self.room_cache_fanout
-                .publish_invalidation(Some(cache_invalidation), &rid);
-        }
-        let settings_json = serde_json::to_vec(&snapshot.settings)
-            .map_err(|e| ApiError::Internal(format!("Failed to serialize settings: {e}")))?;
-        self.room_settings_fanout.publish_settings_changed(
-            room_settings_fanout,
-            &rid,
-            &uid,
-            &username,
-            settings_json,
-            snapshot.version,
-        );
+        self.room_cache_fanout.publish_invalidation(&rid);
+        self.room_settings_fanout
+            .publish_prepared_after_outbox_commit(
+                prepared_settings_fanout
+                    .with_settings_and_version(&snapshot.settings, snapshot.version)
+                    .ok_or_else(|| {
+                        ApiError::Internal("Failed to serialize room settings".to_string())
+                    })?,
+            );
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
@@ -857,31 +873,40 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::ResetRoomSettingsResponse, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-        let room_settings_fanout = self.room_settings_fanout.reserve_settings_changed().await?;
-        let snapshot = self
-            .room_service
-            .reset_room_settings(&rid, &uid)
-            .await
-            .map_err(ApiError::from)?;
-        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
-
         let username = self
             .user_service
             .get_user(&uid)
             .await
             .map(|u| u.username)
             .unwrap_or_default();
-        self.room_settings_fanout.publish_settings_changed(
-            room_settings_fanout,
+        let default_settings = synctv_core::models::RoomSettings::default();
+        let (_, current_version) = self
+            .room_service
+            .get_room_settings_with_version(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let settings_json = serde_json::to_vec(&default_settings).map_err(ApiError::from)?;
+        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             &uid,
             &username,
             settings_json.clone(),
-            snapshot.version,
+            current_version + 1,
         );
-        self.room_cache_fanout
-            .publish_invalidation(cache_invalidation, &rid);
+        let snapshot = self
+            .room_service
+            .reset_room_settings_with_outbox(
+                &rid,
+                &uid,
+                prepared_settings_fanout.settings_outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        self.room_settings_fanout
+            .publish_prepared_after_outbox_commit(
+                prepared_settings_fanout.with_version(snapshot.version),
+            );
+        self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
             settings: settings_json,
@@ -897,15 +922,6 @@ impl ClientApiImpl {
         let current_owner_id = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
-        let old_owner_permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
-        let new_owner_permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
-        let room_cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
 
         let room = self
             .room_service
@@ -913,23 +929,12 @@ impl ClientApiImpl {
             .await
             .map_err(Self::map_room_access_error)?;
         self.membership_event_fanout
-            .publish_permission_changed(
-                &rid,
-                &current_owner_id,
-                &current_owner_id,
-                old_owner_permission_fanout,
-            )
+            .publish_permission_changed(&rid, &current_owner_id, &current_owner_id)
             .await?;
         self.membership_event_fanout
-            .publish_permission_changed(
-                &rid,
-                &new_owner_id,
-                &current_owner_id,
-                new_owner_permission_fanout,
-            )
+            .publish_permission_changed(&rid, &new_owner_id, &current_owner_id)
             .await?;
-        self.room_cache_fanout
-            .publish_invalidation(room_cache_invalidation, &rid);
+        self.room_cache_fanout.publish_invalidation(&rid);
         let settings = self
             .room_service
             .get_room_settings(&rid)

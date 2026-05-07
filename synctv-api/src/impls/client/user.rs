@@ -2,7 +2,8 @@
 
 use crate::impls::ApiError;
 use crate::proto::client::OpaquePasswordUpdateVerificationMethod;
-use crate::realtime_lifecycle::DeletedRoomFanoutReservation;
+use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
+use std::collections::HashMap;
 use synctv_core::models::{PageParams, RoomId, UserId};
 use synctv_core::validation::UsernameValidator;
 
@@ -119,20 +120,40 @@ async fn list_owned_room_ids(
     Ok(room_ids)
 }
 
+fn prepare_deleted_room_outbox_fanout(
+    api: &ClientApiImpl,
+    room_ids: &[RoomId],
+    deleted_by: &UserId,
+) -> (
+    HashMap<RoomId, synctv_core::repository::cluster_outbox::NewClusterOutboxEvent>,
+    Vec<DeletedRoomAfterCommitFanout>,
+) {
+    let mut outbox_events = HashMap::with_capacity(room_ids.len());
+    let mut fanout = Vec::with_capacity(room_ids.len());
+    for room_id in room_ids {
+        let prepared = api
+            .room_lifecycle_fanout
+            .prepare_room_deleted_outbox_fanout(room_id, deleted_by);
+        if let Some(outbox_event) = prepared.outbox_event {
+            outbox_events.insert(*room_id, outbox_event);
+        }
+        fanout.push(DeletedRoomAfterCommitFanout {
+            room_id: *room_id,
+            event: prepared.event,
+        });
+    }
+    (outbox_events, fanout)
+}
+
 impl ClientApiImpl {
     pub async fn delete_current_user(&self, user_id: &UserId) -> Result<(), ApiError> {
         let uid = *user_id;
         let owned_room_ids = list_owned_room_ids(self, &uid).await?;
-        let mut deleted_room_fanout = Vec::with_capacity(owned_room_ids.len());
-        for room_id in owned_room_ids {
-            deleted_room_fanout.push(DeletedRoomFanoutReservation {
-                room_id,
-                reservation: self.room_lifecycle_fanout.reserve_room_deleted().await?,
-            });
-        }
+        let (deleted_room_outbox_events, deleted_room_fanout) =
+            prepare_deleted_room_outbox_fanout(self, &owned_room_ids, &uid);
         let summary = self
             .user_service
-            .delete_user_with_summary(&uid)
+            .delete_user_with_summary_and_outbox(&uid, deleted_room_outbox_events)
             .await
             .map_err(ApiError::from)?;
 

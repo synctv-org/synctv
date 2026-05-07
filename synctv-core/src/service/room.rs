@@ -79,9 +79,12 @@ use crate::{
         UserListQuery, UserRole, UserStatus,
     },
     repository::{
-        media::MediaListItem, playlist::PlaylistListItem, ChatRepository, MediaRepository,
-        PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository,
-        RoomSettingsRepository, UserProviderCredentialRepository,
+        cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
+        media::MediaListItem,
+        playlist::PlaylistListItem,
+        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
+        RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+        UserProviderCredentialRepository,
     },
     service::{
         audit::{AuditAction, AuditService, AuditTargetType},
@@ -110,6 +113,13 @@ struct PendingRoomCreationRequest {
 }
 use std::{future::Future, sync::Arc};
 use synctv_common::ExecutionControl;
+
+pub type ClusterOutboxSettingsEventFactory =
+    Arc<dyn Fn(&RoomSettings, i64) -> Option<NewClusterOutboxEvent> + Send + Sync>;
+pub type ClusterOutboxRoomEventFactory =
+    Arc<dyn Fn(&Room) -> Option<NewClusterOutboxEvent> + Send + Sync>;
+pub type ClusterOutboxDeleteEntriesEventFactory =
+    Arc<dyn Fn(&DeleteEntriesPlan) -> Vec<NewClusterOutboxEvent> + Send + Sync>;
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -190,6 +200,7 @@ pub struct RoomServiceOptions {
     pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
     pub password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
+    pub cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
 }
 
 /// Room service for business logic
@@ -242,6 +253,8 @@ pub struct RoomService {
     /// Password hasher (Argon2id). Defaults to production params;
     /// inject `TestPasswordHasher` in integration tests for speed.
     password_hasher: Arc<dyn crate::service::auth::PasswordHasherService>,
+
+    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -889,13 +902,14 @@ impl RoomService {
             notification_service.clone(),
         );
 
-        let playlist_service = PlaylistService::new_with_provider_credentials(
+        let mut playlist_service = PlaylistService::new_with_provider_credentials(
             playlist_repo.clone(),
             permission_service.clone(),
             providers_manager.clone(),
             options.credential_encryption.clone(),
             options.credential_repo.clone(),
         );
+        playlist_service.set_cluster_outbox(options.cluster_outbox.clone());
         let media_service = MediaService::new_with_provider_credentials(
             media_repo.clone(),
             playlist_repo.clone(),
@@ -947,6 +961,7 @@ impl RoomService {
             password_hasher: options
                 .password_hasher
                 .unwrap_or_else(|| Arc::new(crate::service::auth::ProdPasswordHasher::default())),
+            cluster_outbox: options.cluster_outbox,
         }
     }
 
@@ -1066,6 +1081,19 @@ impl RoomService {
         password: Option<String>,
         settings: Option<RoomSettings>,
     ) -> Result<(Room, RoomMember)> {
+        self.create_room_with_outbox(name, description, created_by, password, settings, None)
+            .await
+    }
+
+    pub async fn create_room_with_outbox(
+        &self,
+        name: String,
+        description: String,
+        created_by: UserId,
+        password: Option<String>,
+        settings: Option<RoomSettings>,
+        outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
+    ) -> Result<(Room, RoomMember)> {
         // Acquire distributed lock to prevent duplicate creation by the same user
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("create_room:{created_by}");
@@ -1078,17 +1106,32 @@ impl RoomService {
                     let description = description.clone();
                     let password = password.clone();
                     let settings = settings.clone();
+                    let outbox_event_factory = outbox_event_factory.clone();
                     async move {
-                        self.do_create_room(name, description, created_by, password, settings)
-                            .await
+                        self.do_create_room(
+                            name,
+                            description,
+                            created_by,
+                            password,
+                            settings,
+                            outbox_event_factory,
+                        )
+                        .await
                     }
                 },
             )
             .await;
         }
 
-        self.do_create_room(name, description, created_by, password, settings)
-            .await
+        self.do_create_room(
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+            outbox_event_factory,
+        )
+        .await
     }
 
     /// Internal room creation implementation
@@ -1099,9 +1142,18 @@ impl RoomService {
         created_by: UserId,
         password: Option<String>,
         settings: Option<RoomSettings>,
+        outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
-        self.do_create_room_with_policy(name, description, created_by, password, settings, true)
-            .await
+        self.do_create_room_with_policy(
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+            true,
+            outbox_event_factory,
+        )
+        .await
     }
 
     async fn do_create_room_with_policy(
@@ -1112,6 +1164,7 @@ impl RoomService {
         password: Option<String>,
         settings: Option<RoomSettings>,
         enforce_creation_policy: bool,
+        outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
         tracing::info!(
             user_id = %created_by,
@@ -1289,6 +1342,15 @@ impl RoomService {
             .create_or_get_with_executor(&created_room.id, &mut tx)
             .await?;
 
+        if let Some(event) = outbox_event_factory
+            .as_ref()
+            .and_then(|factory| factory(&created_room))
+        {
+            if let Some(outbox) = &self.cluster_outbox {
+                outbox.insert_with_executor(&event, &mut *tx).await?;
+            }
+        }
+
         // Commit — all or nothing
         tx.commit().await?;
 
@@ -1423,6 +1485,19 @@ impl RoomService {
         password: Option<String>,
         settings: Option<RoomSettings>,
     ) -> Result<(Room, RoomMember)> {
+        self.admin_create_room_with_outbox(name, description, created_by, password, settings, None)
+            .await
+    }
+
+    pub async fn admin_create_room_with_outbox(
+        &self,
+        name: String,
+        description: String,
+        created_by: UserId,
+        password: Option<String>,
+        settings: Option<RoomSettings>,
+        outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
+    ) -> Result<(Room, RoomMember)> {
         let admin_user = self.user_service.get_user(&created_by).await?;
         if !admin_user.role.is_admin_or_above() {
             return Err(Error::Authorization(
@@ -1430,8 +1505,16 @@ impl RoomService {
             ));
         }
 
-        self.do_create_room_with_policy(name, description, created_by, password, settings, false)
-            .await
+        self.do_create_room_with_policy(
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+            false,
+            outbox_event_factory,
+        )
+        .await
     }
 
     /// Join a room
@@ -2483,6 +2566,15 @@ impl RoomService {
     /// - global admin/root can delete any room
     /// - room-scoped admins cannot delete a room unless they are also a global admin
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
+        self.delete_room_with_outbox(room_id, user_id, None).await
+    }
+
+    pub async fn delete_room_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        outbox_event: Option<NewClusterOutboxEvent>,
+    ) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "Soft-deleting room");
 
         let room = self
@@ -2509,6 +2601,9 @@ impl RoomService {
 
         let mut tx = self.pool.begin().await?;
         let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await?;
+        if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+            outbox.insert_with_executor(event, &mut *tx).await?;
+        }
 
         // Commit transaction - all or nothing
         tx.commit().await?;
@@ -2960,6 +3055,16 @@ impl RoomService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.set_room_settings_with_outbox(room_id, settings, None)
+            .await
+    }
+
+    pub async fn set_room_settings_with_outbox(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         settings.validate_permissions()?;
 
         let (previous_settings, updated_settings, updated_version) =
@@ -2968,12 +3073,23 @@ impl RoomService {
                 Self::BACKOFF_BASE_MS,
                 "Settings update failed after maximum retry attempts",
                 || async {
+                    let outbox_event_factory = outbox_event_factory.clone();
                     let (current, version) =
                         self.room_settings_repo.get_with_version(room_id).await?;
+                    let mut tx = self.pool.begin().await?;
                     let new_version = self
                         .room_settings_repo
-                        .set_settings_with_version(room_id, settings, version)
+                        .set_settings_with_version_with_executor(
+                            room_id, settings, version, &mut *tx,
+                        )
                         .await?;
+                    let outbox_event = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(settings, new_version));
+                    if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+                        outbox.insert_with_executor(event, &mut *tx).await?;
+                    }
+                    tx.commit().await?;
                     Ok((current, settings.clone(), new_version))
                 },
             )
@@ -3000,6 +3116,17 @@ impl RoomService {
         user_id: UserId,
         patch: serde_json::Value,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.patch_settings_with_outbox(room_id, user_id, patch, None)
+            .await
+    }
+
+    pub async fn patch_settings_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        patch: serde_json::Value,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
@@ -3009,7 +3136,6 @@ impl RoomService {
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        let room_settings_repo = self.room_settings_repo.clone();
         let patch = std::sync::Arc::new(patch);
 
         let (previous_settings, updated_settings, updated_version) =
@@ -3019,11 +3145,11 @@ impl RoomService {
                 std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
                 "Settings patch failed after maximum retry attempts",
                 || {
-                    let room_settings_repo = room_settings_repo.clone();
                     let patch = patch.clone();
+                    let outbox_event_factory = outbox_event_factory.clone();
                     async move {
                         let (current, version) =
-                            room_settings_repo.get_with_version(&room_id).await?;
+                            self.room_settings_repo.get_with_version(&room_id).await?;
                         let mut merged_json = serde_json::to_value(&current)
                             .internal_with_err("Failed to serialize current room settings")?;
                         merge_json_object_patch(&mut merged_json, (*patch).clone())?;
@@ -3032,9 +3158,23 @@ impl RoomService {
                                 Error::InvalidInput(format!("Invalid settings JSON: {e}"))
                             })?;
                         merged_settings.validate_permissions()?;
-                        let new_version = room_settings_repo
-                            .set_settings_with_version(&room_id, &merged_settings, version)
+                        let mut tx = self.pool.begin().await?;
+                        let new_version = self
+                            .room_settings_repo
+                            .set_settings_with_version_with_executor(
+                                &room_id,
+                                &merged_settings,
+                                version,
+                                &mut *tx,
+                            )
                             .await?;
+                        let outbox_event = outbox_event_factory
+                            .as_ref()
+                            .and_then(|factory| factory(&merged_settings, new_version));
+                        if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+                            outbox.insert_with_executor(event, &mut *tx).await?;
+                        }
+                        tx.commit().await?;
                         Ok((current, merged_settings, new_version))
                     }
                 },
@@ -3223,6 +3363,16 @@ impl RoomService {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.reset_room_settings_with_outbox(room_id, user_id, None)
+            .await
+    }
+
+    pub async fn reset_room_settings_with_outbox(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         self.permission_service
             .check_permission(room_id, user_id, PermissionBits::SET_ROOM_SETTINGS)
             .await?;
@@ -3235,12 +3385,26 @@ impl RoomService {
                 Self::BACKOFF_BASE_MS,
                 "Settings reset failed after maximum retry attempts",
                 || async {
+                    let outbox_event_factory = outbox_event_factory.clone();
                     let (current, version) =
                         self.room_settings_repo.get_with_version(room_id).await?;
+                    let mut tx = self.pool.begin().await?;
                     let new_version = self
                         .room_settings_repo
-                        .set_settings_with_version(room_id, &default_settings, version)
+                        .set_settings_with_version_with_executor(
+                            room_id,
+                            &default_settings,
+                            version,
+                            &mut *tx,
+                        )
                         .await?;
+                    let outbox_event = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(&default_settings, new_version));
+                    if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+                        outbox.insert_with_executor(event, &mut *tx).await?;
+                    }
+                    tx.commit().await?;
                     Ok((current, default_settings.clone(), new_version))
                 },
             )
@@ -3422,8 +3586,27 @@ impl RoomService {
         actor_username: &str,
         password_hash: Option<String>,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.update_room_password_as_with_outbox(
+            room_id,
+            actor_user_id,
+            actor_username,
+            password_hash,
+            None,
+        )
+        .await
+    }
+
+    pub async fn update_room_password_as_with_outbox(
+        &self,
+        room_id: &RoomId,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+        password_hash: Option<String>,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         let password_was_set = password_hash.is_some();
-        self.do_set_password_hash(room_id, password_hash).await?;
+        self.do_set_password_hash(room_id, password_hash, outbox_event_factory)
+            .await?;
         self.room_settings_service.invalidate_local(room_id).await;
 
         if password_was_set {
@@ -3462,6 +3645,7 @@ impl RoomService {
         &self,
         room_id: &RoomId,
         password_hash: Option<String>,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
     ) -> Result<()> {
         for attempt in 0..Self::MAX_RETRIES {
             // Read current settings and version
@@ -3515,6 +3699,13 @@ impl RoomService {
             };
 
             if cas_result.is_some() {
+                let new_version = cas_result.expect("cas_result checked as some");
+                let outbox_event = outbox_event_factory
+                    .as_ref()
+                    .and_then(|factory| factory(&settings, new_version));
+                if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+                    outbox.insert_with_executor(event, &mut *tx).await?;
+                }
                 tx.commit().await?;
                 return Ok(());
             }
@@ -3848,8 +4039,25 @@ impl RoomService {
         user_id: UserId,
         request: DeleteEntriesRequest,
     ) -> Result<DeleteEntriesResult> {
+        self.delete_entries_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn delete_entries_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: DeleteEntriesRequest,
+        outbox_event_factory: Option<ClusterOutboxDeleteEntriesEventFactory>,
+    ) -> Result<DeleteEntriesResult> {
         let (result, ()) = self
-            .delete_entries_with_precommit(room_id, user_id, request, |_| async { Ok(()) })
+            .delete_entries_with_precommit_and_outbox(
+                room_id,
+                user_id,
+                request,
+                |_| async { Ok(()) },
+                outbox_event_factory,
+            )
             .await?;
         Ok(result)
     }
@@ -3860,6 +4068,22 @@ impl RoomService {
         user_id: UserId,
         request: DeleteEntriesRequest,
         precommit: F,
+    ) -> Result<(DeleteEntriesResult, T)>
+    where
+        F: FnOnce(DeleteEntriesPlan) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.delete_entries_with_precommit_and_outbox(room_id, user_id, request, precommit, None)
+            .await
+    }
+
+    async fn delete_entries_with_precommit_and_outbox<T, F, Fut>(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: DeleteEntriesRequest,
+        precommit: F,
+        outbox_event_factory: Option<ClusterOutboxDeleteEntriesEventFactory>,
     ) -> Result<(DeleteEntriesResult, T)>
     where
         F: FnOnce(DeleteEntriesPlan) -> Fut,
@@ -3972,13 +4196,21 @@ impl RoomService {
         let impact =
             plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
-        let precommit_result = precommit(DeleteEntriesPlan {
+        let plan = DeleteEntriesPlan {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
             playback_reset: impact.playback_reset,
-        })
-        .await?;
+        };
+        let precommit_result = precommit(plan.clone()).await?;
+        let outbox_events = outbox_event_factory
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&plan));
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
+        if let Some(outbox) = &self.cluster_outbox {
+            for event in &outbox_events {
+                outbox.insert_with_executor(event, &mut *tx).await?;
+            }
+        }
 
         tx.commit().await?;
 
@@ -4057,6 +4289,24 @@ impl RoomService {
         F: FnOnce(DeleteEntriesPlan) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
+        self.admin_delete_entries_as_with_precommit_and_outbox(
+            room_id, actor, request, precommit, None,
+        )
+        .await
+    }
+
+    async fn admin_delete_entries_as_with_precommit_and_outbox<T, F, Fut>(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        request: DeleteEntriesRequest,
+        precommit: F,
+        outbox_event_factory: Option<ClusterOutboxDeleteEntriesEventFactory>,
+    ) -> Result<(DeleteEntriesResult, T)>
+    where
+        F: FnOnce(DeleteEntriesPlan) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
         let admin_user_id = *actor.user_id();
 
         let playlist_ids = dedup_ids(request.playlist_ids);
@@ -4118,13 +4368,21 @@ impl RoomService {
         let impact =
             plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
                 .await?;
-        let precommit_result = precommit(DeleteEntriesPlan {
+        let plan = DeleteEntriesPlan {
             deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
             deleted_media_ids: impact.deleted_media_ids.clone(),
             playback_reset: impact.playback_reset,
-        })
-        .await?;
+        };
+        let precommit_result = precommit(plan.clone()).await?;
+        let outbox_events = outbox_event_factory
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&plan));
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &impact).await?;
+        if let Some(outbox) = &self.cluster_outbox {
+            for event in &outbox_events {
+                outbox.insert_with_executor(event, &mut *tx).await?;
+            }
+        }
 
         tx.commit().await?;
 
@@ -4187,6 +4445,25 @@ impl RoomService {
     ) -> Result<DeleteEntriesResult> {
         let (result, ()) = self
             .admin_delete_entries_as_with_precommit(room_id, actor, request, |_| async { Ok(()) })
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn admin_delete_entries_as_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor: &AuthorizedAdminActor,
+        request: DeleteEntriesRequest,
+        outbox_event_factory: Option<ClusterOutboxDeleteEntriesEventFactory>,
+    ) -> Result<DeleteEntriesResult> {
+        let (result, ()) = self
+            .admin_delete_entries_as_with_precommit_and_outbox(
+                room_id,
+                actor,
+                request,
+                |_| async { Ok(()) },
+                outbox_event_factory,
+            )
             .await?;
         Ok(result)
     }
@@ -4554,8 +4831,21 @@ impl RoomService {
         room_id: &RoomId,
         actor: &AuthorizedAdminActor,
     ) -> Result<()> {
+        self.admin_delete_room_as_with_outbox(room_id, actor, None)
+            .await
+    }
+
+    pub async fn admin_delete_room_as_with_outbox(
+        &self,
+        room_id: &RoomId,
+        actor: &AuthorizedAdminActor,
+        outbox_event: Option<NewClusterOutboxEvent>,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let impact = soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await?;
+        if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+            outbox.insert_with_executor(event, &mut *tx).await?;
+        }
 
         tx.commit().await?;
 
@@ -4814,6 +5104,24 @@ impl RoomService {
         actor_user_id: Option<&UserId>,
         actor_username: &str,
     ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
+        self.admin_set_room_password_as_with_outbox(
+            room_id,
+            new_password,
+            actor_user_id,
+            actor_username,
+            None,
+        )
+        .await
+    }
+
+    pub async fn admin_set_room_password_as_with_outbox(
+        &self,
+        room_id: &RoomId,
+        new_password: Option<&str>,
+        actor_user_id: Option<&UserId>,
+        actor_username: &str,
+        outbox_event_factory: Option<ClusterOutboxSettingsEventFactory>,
+    ) -> Result<crate::service::room_settings::RoomSettingsSnapshot> {
         // Verify room exists
         let _room = self
             .room_repo
@@ -4828,7 +5136,8 @@ impl RoomService {
             None => None,
         };
 
-        self.do_set_password_hash(room_id, hashed_password).await?;
+        self.do_set_password_hash(room_id, hashed_password, outbox_event_factory)
+            .await?;
         self.room_settings_service.invalidate_local(room_id).await;
 
         if password_is_being_set {
@@ -4947,6 +5256,16 @@ impl RoomService {
     /// Sets the `is_banned` flag. The room retains its previous status (Active/Closed/etc).
     /// Only global admins can ban rooms.
     pub async fn ban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
+        self.ban_room_with_outbox(room_id, admin_user_id, None)
+            .await
+    }
+
+    pub async fn ban_room_with_outbox(
+        &self,
+        room_id: &RoomId,
+        admin_user_id: &UserId,
+        outbox_event: Option<NewClusterOutboxEvent>,
+    ) -> Result<Room> {
         let room = self
             .room_repo
             .get_by_id(room_id)
@@ -4957,7 +5276,15 @@ impl RoomService {
             return Err(Error::InvalidInput("Room is already banned".to_string()));
         }
 
-        let updated_room = self.room_repo.update_ban_status(room_id, true).await?;
+        let mut tx = self.pool.begin().await?;
+        let updated_room = crate::repository::RoomRepository::update_ban_status_with_executor(
+            room_id, true, &mut *tx,
+        )
+        .await?;
+        if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {
+            outbox.insert_with_executor(event, &mut *tx).await?;
+        }
+        tx.commit().await?;
         self.notify_room_invalidation(room_id).await;
 
         // Audit log

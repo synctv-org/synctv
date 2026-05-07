@@ -18,6 +18,7 @@ use crate::{
         UserPreferences, UserStatus,
     },
     repository::{
+        cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
         PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
         UserPreferencesRepository, UserRepository,
     },
@@ -895,6 +896,7 @@ pub struct UserService {
     /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
     refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
     refresh_rate_limit_config: RefreshRateLimitConfig,
+    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
     /// Optional settings registry for registration policy and email whitelist.
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
     /// Explicit registration policy override for tests that exercise public
@@ -920,6 +922,7 @@ pub struct UserServiceRuntimeOptions {
     pub opaque_login_session_store: Option<Arc<dyn OpaqueLoginSessionStore>>,
     pub opaque_registration_session_store: Option<Arc<dyn OpaqueRegistrationSessionStore>>,
     pub mfa_session_store: Option<Arc<dyn MfaSessionStore>>,
+    pub cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
 }
 
 pub struct UserServiceDependencies {
@@ -1581,6 +1584,7 @@ impl UserService {
     async fn cleanup_transactional_user_resources(
         &self,
         user_id: &UserId,
+        deleted_room_outbox_events: &HashMap<RoomId, NewClusterOutboxEvent>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<(
         UserDeletionCleanupStats,
@@ -1627,6 +1631,12 @@ impl UserService {
         for room_id in &owned_room_ids {
             let impact =
                 crate::service::room::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
+            if let (Some(outbox), Some(event)) = (
+                &self.cluster_outbox,
+                deleted_room_outbox_events.get(room_id),
+            ) {
+                outbox.insert_with_executor(event, &mut **tx).await?;
+            }
             deleted_playlists += impact.deleted_playlist_ids.len();
             deleted_media += impact.deleted_media_ids.len();
             if impact.playback_rows_deleted > 0 {
@@ -1918,6 +1928,7 @@ impl UserService {
             key_builder,
             refresh_rate_limiter,
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
+            cluster_outbox: runtime.cluster_outbox,
             settings_registry: runtime.settings_registry,
             password_registration_policy_override_for_tests: None,
             password_hasher: runtime
@@ -4206,6 +4217,15 @@ impl UserService {
     /// **Token Invalidation**: Tokens are invalidated implicitly because the
     /// security pipeline checks for deleted users (`deleted_at` IS NOT NULL).
     pub async fn delete_user_with_summary(&self, user_id: &UserId) -> Result<UserDeletionSummary> {
+        self.delete_user_with_summary_and_outbox(user_id, HashMap::new())
+            .await
+    }
+
+    pub async fn delete_user_with_summary_and_outbox(
+        &self,
+        user_id: &UserId,
+        deleted_room_outbox_events: HashMap<RoomId, NewClusterOutboxEvent>,
+    ) -> Result<UserDeletionSummary> {
         // 1. Transactional DB cleanup + soft-delete
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
@@ -4219,7 +4239,7 @@ impl UserService {
         };
 
         let (cleanup, deleted_room_ids, membership_room_ids, mut modified_rooms) = self
-            .cleanup_transactional_user_resources(user_id, &mut tx)
+            .cleanup_transactional_user_resources(user_id, &deleted_room_outbox_events, &mut tx)
             .await?;
 
         let deleted = self

@@ -162,37 +162,33 @@ impl ClientApiImpl {
             .check_permission(&rid, &uid, PermissionBits::ADD_MEDIA)
             .await
             .map_err(Self::map_room_access_error)?;
-
         let service_req = build_create_playlist_request(&rid, req, &self.public_id_codec)?;
-        let playlist_cluster_event = self.playlist_fanout.reserve_created().await?;
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-
-        let playlist = self
-            .room_service
-            .playlist_service()
-            .create_playlist(rid, actor_id, service_req)
-            .await
-            .map_err(ApiError::from)?;
-
         let actor_username = self
             .user_service
             .get_user(&actor_id)
             .await
             .map(|user| user.username)
             .unwrap_or_default();
-        self.playlist_fanout.publish_created(
-            playlist_cluster_event,
-            &rid,
-            &actor_id,
-            &actor_username,
-            &playlist,
+
+        let prepared_outbox_fanout = self.playlist_fanout.prepare_created_outbox_fanout(
+            rid,
+            actor_id,
+            actor_username.clone(),
         );
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .create_playlist_with_outbox(
+                rid,
+                actor_id,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist structure change
-        if let Some(cache_invalidation) = cache_invalidation {
-            self.room_cache_fanout
-                .publish_invalidation(Some(cache_invalidation), &rid);
-        }
+        self.room_cache_fanout.publish_invalidation(&rid);
 
         let item_count = self
             .room_service
@@ -227,37 +223,33 @@ impl ClientApiImpl {
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
             .map_err(Self::map_room_access_error)?;
-
         let service_req = build_update_playlist_request(req, &self.public_id_codec)?;
-        let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-
-        let playlist = self
-            .room_service
-            .playlist_service()
-            .set_playlist(rid, actor_id, service_req)
-            .await
-            .map_err(ApiError::from)?;
-
         let actor_username = self
             .user_service
             .get_user(&actor_id)
             .await
             .map(|user| user.username)
             .unwrap_or_default();
-        self.playlist_fanout.publish_updated(
-            playlist_cluster_event,
-            &rid,
-            &actor_id,
-            &actor_username,
-            &playlist,
+
+        let prepared_outbox_fanout = self.playlist_fanout.prepare_updated_outbox_fanout(
+            rid,
+            actor_id,
+            actor_username.clone(),
         );
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .set_playlist_with_outbox(
+                rid,
+                actor_id,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist update
-        if let Some(cache_invalidation) = cache_invalidation {
-            self.room_cache_fanout
-                .publish_invalidation(Some(cache_invalidation), &rid);
-        }
+        self.room_cache_fanout.publish_invalidation(&rid);
 
         let item_count = self
             .room_service
@@ -291,36 +283,32 @@ impl ClientApiImpl {
             .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
             .await
             .map_err(Self::map_room_access_error)?;
-
         let service_req = build_move_playlist_request(req, &self.public_id_codec)?;
-        let playlist_cluster_event = self.playlist_fanout.reserve_updated().await?;
-        let cache_invalidation = self.room_cache_fanout.reserve_invalidation().await?;
-
-        let playlist = self
-            .room_service
-            .playlist_service()
-            .move_playlist(rid, actor_id, service_req)
-            .await
-            .map_err(ApiError::from)?;
-
         let actor_username = self
             .user_service
             .get_user(&actor_id)
             .await
             .map(|user| user.username)
             .unwrap_or_default();
-        self.playlist_fanout.publish_updated(
-            playlist_cluster_event,
-            &rid,
-            &actor_id,
-            &actor_username,
-            &playlist,
-        );
 
-        if let Some(cache_invalidation) = cache_invalidation {
-            self.room_cache_fanout
-                .publish_invalidation(Some(cache_invalidation), &rid);
-        }
+        let prepared_outbox_fanout = self.playlist_fanout.prepare_updated_outbox_fanout(
+            rid,
+            actor_id,
+            actor_username.clone(),
+        );
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .move_playlist_with_outbox(
+                rid,
+                actor_id,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        self.room_cache_fanout.publish_invalidation(&rid);
 
         let item_count = self
             .room_service

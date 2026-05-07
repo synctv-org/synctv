@@ -3,22 +3,11 @@ use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 use synctv_core::models::{RoomId, UserId};
 
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
 
 #[async_trait]
 pub trait MemberFanoutService: Send + Sync {
-    async fn reserve_kick_user_from_room(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    fn publish_kick_user_from_room(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-        user_id: &UserId,
-        reason: &str,
-    );
+    fn publish_kick_user_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str);
 }
 
 pub struct DefaultMemberFanoutService {
@@ -45,23 +34,9 @@ impl std::fmt::Debug for DefaultMemberFanoutService {
 
 #[async_trait]
 impl MemberFanoutService for DefaultMemberFanoutService {
-    async fn reserve_kick_user_from_room(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out KickUserFromRoom to cluster replicas")
-            .await
-    }
-
-    fn publish_kick_user_from_room(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-        user_id: &UserId,
-        reason: &str,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
+    fn publish_kick_user_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str) {
+        publish_best_effort(
+            self.cluster_fanout.clone(),
             PublishRequest {
                 event: ClusterEvent::KickUserFromRoom {
                     event_id: synctv_common::snanoid!(16),
@@ -86,6 +61,7 @@ pub fn default_member_fanout_service(
 mod tests {
     use super::default_member_fanout_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
+    use crate::test_support::channel_cluster_fanout_service;
     use synctv_cluster::sync::ClusterEvent;
     use synctv_core::models::{RoomId, UserId};
 
@@ -100,25 +76,15 @@ mod tests {
     #[tokio::test]
     async fn test_member_fanout_is_noop_when_cluster_fanout_is_local() {
         let service = default_member_fanout_service(default_cluster_fanout_service(None, false));
-        let reservation = service
-            .reserve_kick_user_from_room()
-            .await
-            .expect("local member fanout should not fail");
-
-        service.publish_kick_user_from_room(reservation, &room_id(), &user_id(), "kicked");
+        service.publish_kick_user_from_room(&room_id(), &user_id(), "kicked");
     }
 
     #[tokio::test]
     async fn test_member_fanout_publishes_kick_user_from_room_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_member_fanout_service(default_cluster_fanout_service(Some(tx), true));
+        let service = default_member_fanout_service(channel_cluster_fanout_service(tx));
 
-        let reservation = service
-            .reserve_kick_user_from_room()
-            .await
-            .expect("cluster member fanout should reserve");
-
-        service.publish_kick_user_from_room(reservation, &room_id(), &user_id(), "banned");
+        service.publish_kick_user_from_room(&room_id(), &user_id(), "banned");
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {

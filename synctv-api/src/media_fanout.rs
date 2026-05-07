@@ -2,37 +2,28 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 use synctv_core::models::{MediaId, RoomId, UserId};
+use synctv_core::repository::cluster_outbox::NewClusterOutboxEvent;
 
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
 use crate::runtime::RealtimeEventService;
+
+#[derive(Clone)]
+pub struct PreparedMediaRemovedFanout {
+    pub event: ClusterEvent,
+    pub outbox_event: Option<NewClusterOutboxEvent>,
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+}
+
+impl PreparedMediaRemovedFanout {
+    pub fn publish_after_outbox_commit(self) {
+        self.cluster_fanout.publish_after_outbox_commit(self.event);
+    }
+}
 
 #[async_trait]
 pub trait MediaFanoutService: Send + Sync {
-    async fn reserve_added(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_removed(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_updated(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_removed_batch(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_reordered(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
     fn publish_added(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -42,7 +33,6 @@ pub trait MediaFanoutService: Send + Sync {
 
     fn publish_removed(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -51,7 +41,6 @@ pub trait MediaFanoutService: Send + Sync {
 
     fn publish_updated(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -61,7 +50,6 @@ pub trait MediaFanoutService: Send + Sync {
 
     fn publish_removed_batch(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -70,12 +58,19 @@ pub trait MediaFanoutService: Send + Sync {
 
     fn publish_reordered(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
         media_ids: Vec<MediaId>,
     );
+
+    fn prepare_removed_outbox_fanout(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        username: &str,
+        media_id: &MediaId,
+    ) -> PreparedMediaRemovedFanout;
 }
 
 pub struct DefaultMediaFanoutService {
@@ -89,20 +84,6 @@ impl DefaultMediaFanoutService {
         _event_service: Option<Arc<dyn RealtimeEventService>>,
     ) -> Self {
         Self { cluster_fanout }
-    }
-
-    async fn reserve_many(
-        &self,
-        count: usize,
-        failure_message: &'static str,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError> {
-        let mut reservations = Vec::with_capacity(count);
-        for _ in 0..count {
-            if let Some(reservation) = self.cluster_fanout.reserve(failure_message).await? {
-                reservations.push(reservation);
-            }
-        }
-        Ok(reservations)
     }
 }
 
@@ -119,47 +100,8 @@ impl std::fmt::Debug for DefaultMediaFanoutService {
 
 #[async_trait]
 impl MediaFanoutService for DefaultMediaFanoutService {
-    async fn reserve_added(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError> {
-        self.reserve_many(count, "failed to fan out MediaAdded to cluster replicas")
-            .await
-    }
-
-    async fn reserve_removed(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError> {
-        self.reserve_many(count, "failed to fan out MediaRemoved to cluster replicas")
-            .await
-    }
-
-    async fn reserve_updated(
-        &self,
-        count: usize,
-    ) -> Result<Vec<ClusterEventPublishReservation>, ApiError> {
-        self.reserve_many(count, "failed to fan out MediaUpdated to cluster replicas")
-            .await
-    }
-
-    async fn reserve_removed_batch(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out MediaRemovedBatch to cluster replicas")
-            .await
-    }
-
-    async fn reserve_reordered(&self) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out PlaylistReordered to cluster replicas")
-            .await
-    }
-
     fn publish_added(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -175,12 +117,11 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
-        reservation.publish(PublishRequest { event });
+        publish_best_effort(self.cluster_fanout.clone(), PublishRequest { event });
     }
 
     fn publish_removed(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -194,12 +135,11 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_id: *media_id,
             timestamp: chrono::Utc::now(),
         };
-        reservation.publish(PublishRequest { event });
+        publish_best_effort(self.cluster_fanout.clone(), PublishRequest { event });
     }
 
     fn publish_updated(
         &self,
-        reservation: ClusterEventPublishReservation,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -215,12 +155,11 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_title: media_title.to_string(),
             timestamp: chrono::Utc::now(),
         };
-        reservation.publish(PublishRequest { event });
+        publish_best_effort(self.cluster_fanout.clone(), PublishRequest { event });
     }
 
     fn publish_removed_batch(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -234,13 +173,11 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        self.cluster_fanout
-            .publish(reservation, PublishRequest { event });
+        publish_best_effort(self.cluster_fanout.clone(), PublishRequest { event });
     }
 
     fn publish_reordered(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         user_id: &UserId,
         username: &str,
@@ -254,8 +191,39 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             media_ids,
             timestamp: chrono::Utc::now(),
         };
-        self.cluster_fanout
-            .publish(reservation, PublishRequest { event });
+        publish_best_effort(self.cluster_fanout.clone(), PublishRequest { event });
+    }
+
+    fn prepare_removed_outbox_fanout(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        username: &str,
+        media_id: &MediaId,
+    ) -> PreparedMediaRemovedFanout {
+        let event = media_removed_event(room_id, user_id, username, media_id);
+        let outbox_event = self.cluster_fanout.outbox_event(&event);
+        PreparedMediaRemovedFanout {
+            event,
+            outbox_event,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
+    }
+}
+
+fn media_removed_event(
+    room_id: &RoomId,
+    user_id: &UserId,
+    username: &str,
+    media_id: &MediaId,
+) -> ClusterEvent {
+    ClusterEvent::MediaRemoved {
+        event_id: synctv_common::snanoid!(16),
+        room_id: *room_id,
+        user_id: *user_id,
+        username: username.to_string(),
+        media_id: *media_id,
+        timestamp: chrono::Utc::now(),
     }
 }
 
@@ -275,6 +243,7 @@ mod tests {
     use super::default_media_fanout_service;
     use crate::cluster_fanout::default_cluster_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
+    use crate::test_support::channel_cluster_fanout_service;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -355,35 +324,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_media_fanout_is_noop_when_cluster_fanout_is_local() {
-        let service =
-            default_media_fanout_service(default_cluster_fanout_service(None, false), None);
-        let reservations = service
-            .reserve_added(1)
-            .await
-            .expect("local media fanout should not fail");
-        assert!(reservations.is_empty());
-    }
-
-    #[tokio::test]
     async fn test_media_fanout_publishes_media_added_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service =
-            default_media_fanout_service(default_cluster_fanout_service(Some(tx), true), None);
-        let mut reservations = service
-            .reserve_added(1)
-            .await
-            .expect("cluster media fanout should reserve");
-        let reservation = reservations.pop().expect("missing reservation");
-
-        service.publish_added(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            &media_id(),
-            "demo",
-        );
+        let service = default_media_fanout_service(channel_cluster_fanout_service(tx), None);
+        service.publish_added(&room_id(), &user_id(), "tester", &media_id(), "demo");
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
@@ -410,23 +354,10 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_media_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
+            channel_cluster_fanout_service(tx),
             Some(event_service.clone()),
         );
-        let mut reservations = service
-            .reserve_added(1)
-            .await
-            .expect("cluster media fanout should reserve");
-        let reservation = reservations.pop().expect("missing reservation");
-
-        service.publish_added(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            &media_id(),
-            "demo",
-        );
+        service.publish_added(&room_id(), &user_id(), "tester", &media_id(), "demo");
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -449,18 +380,7 @@ mod tests {
             default_cluster_fanout_service(None, false),
             Some(event_service.clone()),
         );
-        let reservation = service
-            .reserve_reordered()
-            .await
-            .expect("standalone media fanout should reserve");
-
-        service.publish_reordered(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            vec![media_id()],
-        );
+        service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -482,21 +402,10 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_media_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
+            channel_cluster_fanout_service(tx),
             Some(event_service.clone()),
         );
-        let reservation = service
-            .reserve_reordered()
-            .await
-            .expect("cluster reorder fanout should reserve");
-
-        service.publish_reordered(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            vec![media_id()],
-        );
+        service.publish_reordered(&room_id(), &user_id(), "tester", vec![media_id()]);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(

@@ -1,57 +1,95 @@
 use async_trait::async_trait;
-use std::sync::Arc;
-use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-use synctv_core::models::{RoomId, UserId};
+use std::sync::{Arc, Mutex};
+use synctv_cluster::sync::ClusterEvent;
+use synctv_core::models::{Room, RoomId, UserId};
+use synctv_core::repository::cluster_outbox::NewClusterOutboxEvent;
+use synctv_core::service::ClusterOutboxRoomEventFactory;
 
 use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+
+#[derive(Clone)]
+pub struct PreparedRoomCreatedOutboxFanout {
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    events: Arc<Mutex<Vec<ClusterEvent>>>,
+    creator_id: UserId,
+}
+
+impl PreparedRoomCreatedOutboxFanout {
+    #[must_use]
+    pub fn outbox_factory(&self) -> Option<ClusterOutboxRoomEventFactory> {
+        if !self.cluster_fanout.is_distributed_enabled() {
+            return None;
+        }
+
+        let prepared = self.clone();
+        Some(Arc::new(move |room: &Room| {
+            let event = ClusterEvent::RoomCreated {
+                event_id: synctv_common::snanoid!(16),
+                room_id: room.id,
+                room_name: room.name.clone(),
+                creator_id: prepared.creator_id,
+                timestamp: chrono::Utc::now(),
+            };
+            prepared
+                .events
+                .lock()
+                .expect("room created outbox fanout events mutex should not be poisoned")
+                .push(event.clone());
+            prepared.cluster_fanout.outbox_event(&event)
+        }))
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        let events = std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .expect("room created outbox fanout events mutex should not be poisoned"),
+        );
+        for event in events {
+            self.cluster_fanout.publish_after_outbox_commit(event);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PreparedRoomLifecycleOutboxFanout {
+    pub event: ClusterEvent,
+    pub outbox_event: Option<NewClusterOutboxEvent>,
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+}
+
+impl PreparedRoomLifecycleOutboxFanout {
+    pub fn publish_after_outbox_commit(self) {
+        self.cluster_fanout.publish_after_outbox_commit(self.event);
+    }
+}
 
 #[async_trait]
 pub trait RoomLifecycleFanoutService: Send + Sync {
-    async fn reserve_room_created(
+    fn prepare_room_created_outbox_fanout(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
+        creator_id: UserId,
+    ) -> PreparedRoomCreatedOutboxFanout;
 
-    async fn reserve_room_deleted(
+    fn prepare_room_deleted_outbox_fanout(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_room_banned(&self)
-        -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    async fn reserve_room_owner_inactive(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    fn publish_room_created(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-        room_name: &str,
-        creator_id: &UserId,
-    );
-
-    fn publish_room_deleted(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         deleted_by: &UserId,
-    );
+    ) -> PreparedRoomLifecycleOutboxFanout;
 
-    fn publish_room_banned(
+    fn prepare_room_banned_outbox_fanout(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         banned_by: &UserId,
-    );
+    ) -> PreparedRoomLifecycleOutboxFanout;
 
-    fn publish_room_owner_inactive(
+    fn prepare_room_owner_inactive_outbox_fanout(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         owner_id: &UserId,
         triggered_by: &UserId,
-    );
+    ) -> PreparedRoomLifecycleOutboxFanout;
 }
 
 pub struct DefaultRoomLifecycleFanoutService {
@@ -78,116 +116,90 @@ impl std::fmt::Debug for DefaultRoomLifecycleFanoutService {
 
 #[async_trait]
 impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
-    async fn reserve_room_created(
+    fn prepare_room_created_outbox_fanout(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out RoomCreated to cluster replicas")
-            .await
+        creator_id: UserId,
+    ) -> PreparedRoomCreatedOutboxFanout {
+        PreparedRoomCreatedOutboxFanout {
+            cluster_fanout: self.cluster_fanout.clone(),
+            events: Arc::new(Mutex::new(Vec::new())),
+            creator_id,
+        }
     }
 
-    async fn reserve_room_deleted(
+    fn prepare_room_deleted_outbox_fanout(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out RoomDeleted to cluster replicas")
-            .await
-    }
-
-    async fn reserve_room_banned(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out RoomBanned to cluster replicas")
-            .await
-    }
-
-    async fn reserve_room_owner_inactive(
-        &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out RoomOwnerInactive to cluster replicas")
-            .await
-    }
-
-    fn publish_room_created(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        room_id: &RoomId,
-        room_name: &str,
-        creator_id: &UserId,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest {
-                event: ClusterEvent::RoomCreated {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: *room_id,
-                    room_name: room_name.to_string(),
-                    creator_id: *creator_id,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
-    }
-
-    fn publish_room_deleted(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         deleted_by: &UserId,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest {
-                event: ClusterEvent::RoomDeleted {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: *room_id,
-                    deleted_by: *deleted_by,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
+    ) -> PreparedRoomLifecycleOutboxFanout {
+        let event = room_deleted_event(room_id, deleted_by);
+        let outbox_event = self.cluster_fanout.outbox_event(&event);
+        PreparedRoomLifecycleOutboxFanout {
+            event,
+            outbox_event,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
     }
 
-    fn publish_room_banned(
+    fn prepare_room_banned_outbox_fanout(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         banned_by: &UserId,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest {
-                event: ClusterEvent::RoomBanned {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: *room_id,
-                    banned_by: *banned_by,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
+    ) -> PreparedRoomLifecycleOutboxFanout {
+        let event = room_banned_event(room_id, banned_by);
+        let outbox_event = self.cluster_fanout.outbox_event(&event);
+        PreparedRoomLifecycleOutboxFanout {
+            event,
+            outbox_event,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
     }
 
-    fn publish_room_owner_inactive(
+    fn prepare_room_owner_inactive_outbox_fanout(
         &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         owner_id: &UserId,
         triggered_by: &UserId,
-    ) {
-        self.cluster_fanout.publish(
-            reservation,
-            PublishRequest {
-                event: ClusterEvent::RoomOwnerInactive {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: *room_id,
-                    owner_id: *owner_id,
-                    triggered_by: *triggered_by,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
+    ) -> PreparedRoomLifecycleOutboxFanout {
+        let event = room_owner_inactive_event(room_id, owner_id, triggered_by);
+        let outbox_event = self.cluster_fanout.outbox_event(&event);
+        PreparedRoomLifecycleOutboxFanout {
+            event,
+            outbox_event,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
+    }
+}
+
+fn room_deleted_event(room_id: &RoomId, deleted_by: &UserId) -> ClusterEvent {
+    ClusterEvent::RoomDeleted {
+        event_id: synctv_common::snanoid!(16),
+        room_id: *room_id,
+        deleted_by: *deleted_by,
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+fn room_banned_event(room_id: &RoomId, banned_by: &UserId) -> ClusterEvent {
+    ClusterEvent::RoomBanned {
+        event_id: synctv_common::snanoid!(16),
+        room_id: *room_id,
+        banned_by: *banned_by,
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+fn room_owner_inactive_event(
+    room_id: &RoomId,
+    owner_id: &UserId,
+    triggered_by: &UserId,
+) -> ClusterEvent {
+    ClusterEvent::RoomOwnerInactive {
+        event_id: synctv_common::snanoid!(16),
+        room_id: *room_id,
+        owner_id: *owner_id,
+        triggered_by: *triggered_by,
+        timestamp: chrono::Utc::now(),
     }
 }
 
@@ -201,7 +213,7 @@ pub fn default_room_lifecycle_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_room_lifecycle_fanout_service;
-    use crate::cluster_fanout::default_cluster_fanout_service;
+    use crate::test_support::channel_cluster_fanout_service;
     use synctv_cluster::sync::ClusterEvent;
     use synctv_core::models::{RoomId, UserId};
 
@@ -214,28 +226,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_room_lifecycle_fanout_is_noop_when_cluster_fanout_is_local() {
-        let service =
-            default_room_lifecycle_fanout_service(default_cluster_fanout_service(None, false));
-        let reservation = service
-            .reserve_room_created()
-            .await
-            .expect("local room lifecycle fanout should not fail");
-
-        service.publish_room_created(reservation, &room_id(), "room lifecycle", &user_id());
-    }
-
-    #[tokio::test]
-    async fn test_room_lifecycle_fanout_publishes_room_deleted_event() {
+    async fn test_room_lifecycle_fanout_publishes_prepared_room_deleted_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service =
-            default_room_lifecycle_fanout_service(default_cluster_fanout_service(Some(tx), true));
+        let service = default_room_lifecycle_fanout_service(channel_cluster_fanout_service(tx));
 
-        let reservation = service
-            .reserve_room_deleted()
-            .await
-            .expect("cluster room deleted fanout should reserve");
-        service.publish_room_deleted(reservation, &room_id(), &user_id());
+        service
+            .prepare_room_deleted_outbox_fanout(&room_id(), &user_id())
+            .publish_after_outbox_commit();
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
@@ -252,16 +249,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_room_lifecycle_fanout_publishes_room_banned_event() {
+    async fn test_room_lifecycle_fanout_publishes_prepared_room_banned_event() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service =
-            default_room_lifecycle_fanout_service(default_cluster_fanout_service(Some(tx), true));
+        let service = default_room_lifecycle_fanout_service(channel_cluster_fanout_service(tx));
 
-        let reservation = service
-            .reserve_room_banned()
-            .await
-            .expect("cluster room banned fanout should reserve");
-        service.publish_room_banned(reservation, &room_id(), &user_id());
+        service
+            .prepare_room_banned_outbox_fanout(&room_id(), &user_id())
+            .publish_after_outbox_commit();
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {

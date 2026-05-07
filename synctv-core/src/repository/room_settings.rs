@@ -277,6 +277,25 @@ impl RoomSettingsRepository {
         settings: &RoomSettings,
         expected_version: i64,
     ) -> Result<i64> {
+        self.set_settings_with_version_with_executor(
+            room_id,
+            settings,
+            expected_version,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn set_settings_with_version_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        expected_version: i64,
+        executor: E,
+    ) -> Result<i64>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let json_value = serde_json::to_string(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
@@ -292,7 +311,7 @@ impl RoomSettingsRepository {
                 room_id as &RoomId,
                 json_value,
             )
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
 
             match row {
@@ -313,7 +332,7 @@ impl RoomSettingsRepository {
                 json_value,
                 expected_version,
             )
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
 
             match row {

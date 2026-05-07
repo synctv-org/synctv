@@ -22,6 +22,7 @@ mod bootstrap;
 mod cli;
 mod cluster_bridge;
 mod migrations;
+mod outbox_dispatcher;
 mod rtmp_auth;
 mod server;
 mod shutdown;

@@ -29,12 +29,16 @@ use synctv_core::{
     },
     cache::{CacheInvalidationRuntime, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
+    repository::cluster_outbox::ClusterOutboxRepository,
     service::auth::PasswordHasherService,
     Config, RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
 
-use synctv_api::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
+use synctv_api::cluster_fanout::{
+    default_cluster_fanout_service, default_cluster_fanout_service_with_realtime,
+    ClusterFanoutService,
+};
 use synctv_api::runtime::{
     ClusterRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
 };
@@ -50,6 +54,7 @@ use crate::cluster_bridge::{
     room_event_to_cluster_event, ClusterMemberEventBroadcaster, ClusterPlaybackBroadcaster,
     ClusterPlaylistBroadcaster, LocalPlaylistBroadcaster,
 };
+use crate::outbox_dispatcher::start_cluster_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
@@ -674,6 +679,8 @@ impl Application {
                 (!infra.config.security.credential_encryption_key.is_empty())
                     .then(|| infra.config.security.credential_encryption_key.clone())
             });
+        let cluster_outbox = cluster_runtime_enabled(&infra.config)
+            .then(|| Arc::new(ClusterOutboxRepository::new(infra.pool.clone())));
 
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
@@ -685,6 +692,7 @@ impl Application {
                 provider_test_address_overrides: options.provider_test_address_overrides.clone(),
                 credential_encryption_hex_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
+                cluster_outbox: cluster_outbox.clone(),
             },
         )
         .await?;
@@ -1159,15 +1167,28 @@ impl Application {
             monitor: discovery.health_monitor.clone(),
         });
 
+        let realtime_event_service =
+            Arc::new(ClusterRealtimeEventService::new(cluster_manager.clone()));
+        let outbox = Arc::new(ClusterOutboxRepository::new(infra.pool.clone()));
+        let outbox_cancel = shutdown.register_token("cluster_outbox_dispatcher");
+        shutdown.register_task(
+            "cluster_outbox_dispatcher",
+            start_cluster_outbox_dispatcher(
+                outbox.clone(),
+                cluster_manager.clone(),
+                infra.node_id.clone(),
+                outbox_cancel,
+            ),
+        );
+
         Ok(ClusterState {
-            cluster_fanout_service: default_cluster_fanout_service(
-                cluster_manager.redis_publish_tx().cloned(),
+            cluster_fanout_service: default_cluster_fanout_service_with_realtime(
+                Some(outbox),
                 true,
+                Some(realtime_event_service.clone()),
             ),
             realtime_connection_service: realtime_connection_service.clone(),
-            realtime_event_service: Some(Arc::new(ClusterRealtimeEventService::new(
-                cluster_manager.clone(),
-            ))),
+            realtime_event_service: Some(realtime_event_service),
             node_registry: Some(discovery.registry.clone()),
             health_monitor: Some(discovery.health_monitor.clone()),
             cluster_activation: Some(Arc::new(DefaultClusterNodeActivator::new(

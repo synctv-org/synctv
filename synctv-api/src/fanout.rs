@@ -1,27 +1,83 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-use synctv_core::models::{RoomId, UserId};
+use synctv_core::models::{RoomId, RoomSettings, UserId};
+use synctv_core::service::ClusterOutboxSettingsEventFactory;
 
-use crate::cluster_fanout::ClusterFanoutService;
-use crate::impls::{ApiError, ClusterEventPublishReservation};
+use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
 use crate::runtime::RealtimeEventService;
+
+#[derive(Clone)]
+pub struct PreparedRoomSettingsFanout {
+    pub event: ClusterEvent,
+    distributed: bool,
+    cluster_fanout: Arc<dyn ClusterFanoutService>,
+}
+
+impl PreparedRoomSettingsFanout {
+    #[must_use]
+    pub fn settings_outbox_factory(&self) -> Option<ClusterOutboxSettingsEventFactory> {
+        if !self.distributed {
+            return None;
+        }
+
+        let prepared = self.clone();
+        Some(Arc::new(move |settings: &RoomSettings, version| {
+            let settings_json = serde_json::to_vec(settings).ok()?;
+            let event = room_settings_event_with_settings_and_version(
+                &prepared.event,
+                settings_json,
+                version,
+            );
+            prepared.cluster_fanout.outbox_event(&event)
+        }))
+    }
+
+    #[must_use]
+    pub fn with_version(&self, version: i64) -> Self {
+        Self {
+            event: room_settings_event_with_version(&self.event, version),
+            distributed: self.distributed,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_settings_and_version(&self, settings: &RoomSettings, version: i64) -> Option<Self> {
+        let settings_json = serde_json::to_vec(settings).ok()?;
+        Some(Self {
+            event: room_settings_event_with_settings_and_version(
+                &self.event,
+                settings_json,
+                version,
+            ),
+            distributed: self.distributed,
+            cluster_fanout: self.cluster_fanout.clone(),
+        })
+    }
+}
+
+impl std::fmt::Debug for PreparedRoomSettingsFanout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedRoomSettingsFanout")
+            .field("event", &self.event)
+            .field("distributed", &self.distributed)
+            .finish()
+    }
+}
 
 #[async_trait]
 pub trait RoomSettingsFanoutService: Send + Sync {
-    async fn reserve_settings_changed(
+    fn prepare_settings_changed(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    fn publish_settings_changed(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
         settings_json: Vec<u8>,
         version: i64,
-    );
+    ) -> PreparedRoomSettingsFanout;
+
+    fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout);
 }
 
 pub struct DefaultRoomSettingsFanoutService {
@@ -51,23 +107,14 @@ impl std::fmt::Debug for DefaultRoomSettingsFanoutService {
 
 #[async_trait]
 impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
-    async fn reserve_settings_changed(
+    fn prepare_settings_changed(
         &self,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        self.cluster_fanout
-            .reserve("failed to fan out RoomSettingsChanged to cluster replicas")
-            .await
-    }
-
-    fn publish_settings_changed(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
         settings_json: Vec<u8>,
         version: i64,
-    ) {
+    ) -> PreparedRoomSettingsFanout {
         let event = ClusterEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
@@ -77,8 +124,75 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
             version,
             timestamp: chrono::Utc::now(),
         };
-        self.cluster_fanout
-            .publish(reservation, PublishRequest { event });
+        let distributed = self.cluster_fanout.outbox_event(&event).is_some();
+        PreparedRoomSettingsFanout {
+            event,
+            distributed,
+            cluster_fanout: self.cluster_fanout.clone(),
+        }
+    }
+
+    fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout) {
+        if prepared.distributed {
+            self.cluster_fanout
+                .publish_after_outbox_commit(prepared.event);
+        } else {
+            publish_best_effort(
+                self.cluster_fanout.clone(),
+                PublishRequest {
+                    event: prepared.event,
+                },
+            );
+        }
+    }
+}
+
+fn room_settings_event_with_version(event: &ClusterEvent, version: i64) -> ClusterEvent {
+    match event {
+        ClusterEvent::RoomSettingsChanged {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            settings_json,
+            timestamp,
+            ..
+        } => ClusterEvent::RoomSettingsChanged {
+            event_id: event_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
+            username: username.clone(),
+            settings_json: settings_json.clone(),
+            version,
+            timestamp: *timestamp,
+        },
+        _ => event.clone(),
+    }
+}
+
+fn room_settings_event_with_settings_and_version(
+    event: &ClusterEvent,
+    settings_json: Vec<u8>,
+    version: i64,
+) -> ClusterEvent {
+    match event {
+        ClusterEvent::RoomSettingsChanged {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            timestamp,
+            ..
+        } => ClusterEvent::RoomSettingsChanged {
+            event_id: event_id.clone(),
+            room_id: *room_id,
+            user_id: *user_id,
+            username: username.clone(),
+            settings_json,
+            version,
+            timestamp: *timestamp,
+        },
+        _ => event.clone(),
     }
 }
 
@@ -174,103 +288,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_room_settings_fanout_is_noop_when_cluster_fanout_is_local() {
-        let service =
-            default_room_settings_fanout_service(default_cluster_fanout_service(None, false), None);
-        let reservation = service
-            .reserve_settings_changed()
-            .await
-            .expect("local room settings fanout should not fail");
-
-        service.publish_settings_changed(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            br#"{"allow_guest_join":true}"#.to_vec(),
-            1,
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cluster_room_settings_fanout_publishes_when_channel_available() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_settings_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
-            None,
-        );
-
-        let reservation = service
-            .reserve_settings_changed()
-            .await
-            .expect("cluster room settings fanout should reserve");
-
-        service.publish_settings_changed(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            br#"{"require_password":false}"#.to_vec(),
-            9,
-        );
-
-        let request = rx.recv().await.expect("publish request should be queued");
-        match request.event {
-            ClusterEvent::RoomSettingsChanged {
-                room_id,
-                user_id,
-                username,
-                settings_json,
-                version,
-                ..
-            } => {
-                assert_eq!(room_id, RoomId::from(107_001));
-                assert_eq!(user_id, UserId::from(107_002));
-                assert_eq!(username, "tester");
-                assert_eq!(settings_json, br#"{"require_password":false}"#.to_vec());
-                assert_eq!(version, 9);
-            }
-            other => panic!("expected RoomSettingsChanged, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_cluster_room_settings_fanout_does_not_broadcast_locally_and_publishes_once() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_room_settings_fanout_service(
-            default_cluster_fanout_service(Some(tx), true),
-            Some(event_service.clone()),
-        );
-
-        let reservation = service
-            .reserve_settings_changed()
-            .await
-            .expect("cluster room settings fanout should reserve");
-
-        service.publish_settings_changed(
-            reservation,
-            &room_id(),
-            &user_id(),
-            "tester",
-            br#"{"require_password":true}"#.to_vec(),
-            11,
-        );
-
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
-        );
-
-        let request = rx.recv().await.expect("publish request should be queued");
-        assert!(matches!(
-            request.event,
-            ClusterEvent::RoomSettingsChanged { .. }
-        ));
-    }
-
-    #[tokio::test]
     async fn test_standalone_room_settings_fanout_does_not_broadcast_locally() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_room_settings_fanout_service(
@@ -278,19 +295,14 @@ mod tests {
             Some(event_service.clone()),
         );
 
-        let reservation = service
-            .reserve_settings_changed()
-            .await
-            .expect("standalone room settings fanout should reserve");
-
-        service.publish_settings_changed(
-            reservation,
+        let prepared = service.prepare_settings_changed(
             &room_id(),
             &user_id(),
             "tester",
             br#"{"require_password":true}"#.to_vec(),
             11,
         );
+        service.publish_prepared_after_outbox_commit(prepared);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(

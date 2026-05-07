@@ -387,7 +387,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .publish_permission_changed(&rid, &target_uid, &changed_by)
             .await?;
 
         let username = self
@@ -458,7 +458,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let target_uid = member.user_id;
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .publish_permission_changed(&rid, &target_uid, &changed_by)
             .await?;
 
         let username = self
@@ -532,7 +532,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by, None)
+            .publish_permission_changed(&rid, &target_uid, &changed_by)
             .await?;
 
         Ok(crate::proto::client::RejectRoomJoinReviewResponse {
@@ -560,10 +560,6 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
-        let permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
 
         // Fetch current target member state BEFORE any mutations.
         // This prevents partial mutation when role change + permission update
@@ -654,7 +650,7 @@ impl ClientApiImpl {
         }
 
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .publish_permission_changed(&rid, &target_uid, &uid)
             .await?;
 
         // Get updated member directly instead of fetching all members
@@ -731,11 +727,6 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
-        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
-        let permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
 
         self.room_service
             .kick_member(rid, uid, target_uid)
@@ -747,11 +738,11 @@ impl ClientApiImpl {
             .await;
 
         self.member_fanout
-            .publish_kick_user_from_room(cluster_event, &rid, &target_uid, "kicked");
+            .publish_kick_user_from_room(&rid, &target_uid, "kicked");
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .publish_permission_changed(&rid, &target_uid, &uid)
             .await?;
 
         Ok(crate::proto::client::KickMemberResponse { success: true })
@@ -778,11 +769,6 @@ impl ClientApiImpl {
         } else {
             Some(reason)
         };
-        let cluster_event = self.member_fanout.reserve_kick_user_from_room().await?;
-        let permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
 
         self.room_service
             .member_service()
@@ -795,11 +781,11 @@ impl ClientApiImpl {
             .await;
 
         self.member_fanout
-            .publish_kick_user_from_room(cluster_event, &rid, &target_uid, "banned");
+            .publish_kick_user_from_room(&rid, &target_uid, "banned");
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .publish_permission_changed(&rid, &target_uid, &uid)
             .await?;
 
         Ok(crate::proto::client::BanMemberResponse { success: true })
@@ -819,10 +805,6 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec);
-        let permission_fanout = self
-            .membership_event_fanout
-            .reserve_permission_changed()
-            .await?;
 
         self.room_service
             .member_service()
@@ -832,7 +814,7 @@ impl ClientApiImpl {
 
         // Notify other replicas to invalidate permission cache
         self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid, permission_fanout)
+            .publish_permission_changed(&rid, &target_uid, &uid)
             .await?;
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })

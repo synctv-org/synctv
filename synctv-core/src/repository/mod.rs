@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod chat;
+pub mod cluster_outbox;
 pub mod email_token;
 pub mod media;
 pub mod notification;

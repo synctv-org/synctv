@@ -1,24 +1,27 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use synctv_cluster::sync::PublishRequest;
+use synctv_cluster::sync::{ClusterEvent, PublishRequest};
+use synctv_core::repository::cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent};
 
-use crate::impls::{
-    reserve_cluster_event_publish, try_publish_cluster_event, ApiError,
-    ClusterEventPublishReservation,
-};
+use crate::runtime::RealtimeEventService;
 
 #[async_trait]
 pub trait ClusterFanoutService: Send + Sync {
-    async fn reserve(
-        &self,
-        failure_message: &'static str,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError>;
-
-    fn publish(&self, reservation: Option<ClusterEventPublishReservation>, request: PublishRequest);
-
     async fn try_publish(&self, request: PublishRequest) -> bool;
 
+    fn outbox_event(&self, event: &ClusterEvent) -> Option<NewClusterOutboxEvent>;
+
+    fn publish_after_outbox_commit(&self, event: ClusterEvent);
+
     fn is_distributed_enabled(&self) -> bool;
+}
+
+pub fn publish_best_effort(cluster_fanout: Arc<dyn ClusterFanoutService>, request: PublishRequest) {
+    synctv_core::spawn::spawn_monitored("cluster_fanout_best_effort_publish", async move {
+        if !cluster_fanout.try_publish(request).await {
+            tracing::warn!("Best-effort cluster fanout publish was not accepted");
+        }
+    });
 }
 
 #[derive(Debug, Clone, Default)]
@@ -26,62 +29,189 @@ pub struct NoopClusterFanoutService;
 
 #[async_trait]
 impl ClusterFanoutService for NoopClusterFanoutService {
-    async fn reserve(
-        &self,
-        _failure_message: &'static str,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        Ok(None)
-    }
-
-    fn publish(
-        &self,
-        _reservation: Option<ClusterEventPublishReservation>,
-        _request: PublishRequest,
-    ) {
-    }
-
     async fn try_publish(&self, _request: PublishRequest) -> bool {
         false
     }
+
+    fn outbox_event(&self, _event: &ClusterEvent) -> Option<NewClusterOutboxEvent> {
+        None
+    }
+
+    fn publish_after_outbox_commit(&self, _event: ClusterEvent) {}
 
     fn is_distributed_enabled(&self) -> bool {
         false
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct QueuedClusterFanoutService {
-    publish_tx: tokio::sync::mpsc::Sender<PublishRequest>,
+#[derive(Clone)]
+pub struct OutboxClusterFanoutService {
+    outbox: Arc<ClusterOutboxRepository>,
+    event_service: Option<Arc<dyn RealtimeEventService>>,
 }
 
-impl QueuedClusterFanoutService {
+impl OutboxClusterFanoutService {
     #[must_use]
-    pub const fn new(publish_tx: tokio::sync::mpsc::Sender<PublishRequest>) -> Self {
-        Self { publish_tx }
+    pub const fn new(
+        outbox: Arc<ClusterOutboxRepository>,
+        event_service: Option<Arc<dyn RealtimeEventService>>,
+    ) -> Self {
+        Self {
+            outbox,
+            event_service,
+        }
     }
 }
 
 #[async_trait]
-impl ClusterFanoutService for QueuedClusterFanoutService {
-    async fn reserve(
-        &self,
-        failure_message: &'static str,
-    ) -> Result<Option<ClusterEventPublishReservation>, ApiError> {
-        reserve_cluster_event_publish(Some(&self.publish_tx), true, failure_message).await
-    }
-
-    fn publish(
-        &self,
-        reservation: Option<ClusterEventPublishReservation>,
-        request: PublishRequest,
-    ) {
-        if let Some(reservation) = reservation {
-            reservation.publish(request);
+impl ClusterFanoutService for OutboxClusterFanoutService {
+    async fn try_publish(&self, request: PublishRequest) -> bool {
+        let event = request.event;
+        if let Some(event_service) = &self.event_service {
+            if let Some(room_id) = event.room_id() {
+                event_service.broadcast_local(room_id, &event);
+            } else if is_admin_channel_event(&event) {
+                event_service.broadcast_admin_local(&event);
+            }
+        }
+        match self.outbox.insert(&new_outbox_event(&event)).await {
+            Ok(()) => true,
+            Err(error) => {
+                synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                    .with_label_values(&["outbox_insert_failed"])
+                    .inc();
+                tracing::error!(
+                    error = %error,
+                    event_type = %event.event_type(),
+                    event_id = %event.event_id(),
+                    "Failed to persist cluster event to outbox"
+                );
+                false
+            }
         }
     }
 
+    fn outbox_event(&self, event: &ClusterEvent) -> Option<NewClusterOutboxEvent> {
+        Some(new_outbox_event(event))
+    }
+
+    fn publish_after_outbox_commit(&self, event: ClusterEvent) {
+        if let Some(event_service) = &self.event_service {
+            if let Some(room_id) = event.room_id() {
+                event_service.broadcast_local(room_id, &event);
+            } else if is_admin_channel_event(&event) {
+                event_service.broadcast_admin_local(&event);
+            }
+        }
+    }
+
+    fn is_distributed_enabled(&self) -> bool {
+        true
+    }
+}
+
+fn new_outbox_event(event: &ClusterEvent) -> NewClusterOutboxEvent {
+    NewClusterOutboxEvent {
+        id: event.event_id().to_string(),
+        aggregate_type: aggregate_type(event).to_string(),
+        aggregate_id: aggregate_id(event),
+        event_type: event.event_type().to_string(),
+        event_version: 1,
+        aggregate_version: aggregate_version(event),
+        payload: serde_json::to_value(event).expect("ClusterEvent serialization should not fail"),
+    }
+}
+
+fn is_admin_channel_event(event: &ClusterEvent) -> bool {
+    matches!(
+        event,
+        ClusterEvent::KickUser { .. }
+            | ClusterEvent::UserNotification { .. }
+            | ClusterEvent::ProviderCredentialChanged { .. }
+    )
+}
+
+fn aggregate_type(event: &ClusterEvent) -> &'static str {
+    match event {
+        ClusterEvent::CacheInvalidate { .. } => "cache",
+        ClusterEvent::PlaylistCreated { .. }
+        | ClusterEvent::PlaylistUpdated { .. }
+        | ClusterEvent::PlaylistDeleted { .. }
+        | ClusterEvent::PlaylistReordered { .. } => "playlist",
+        ClusterEvent::MediaAdded { .. }
+        | ClusterEvent::MediaRemoved { .. }
+        | ClusterEvent::MediaUpdated { .. }
+        | ClusterEvent::MediaRemovedBatch { .. } => "media",
+        ClusterEvent::PermissionChanged { .. }
+        | ClusterEvent::UserJoined { .. }
+        | ClusterEvent::UserLeft { .. }
+        | ClusterEvent::KickUserFromRoom { .. } => "membership",
+        ClusterEvent::KickUser { .. }
+        | ClusterEvent::UserNotification { .. }
+        | ClusterEvent::ProviderCredentialChanged { .. } => "user",
+        _ => "room",
+    }
+}
+
+fn aggregate_id(event: &ClusterEvent) -> String {
+    if let Some(room_id) = event.room_id() {
+        return room_id.to_string();
+    }
+    event
+        .user_id()
+        .map_or_else(|| "global".to_string(), ToString::to_string)
+}
+
+fn aggregate_version(event: &ClusterEvent) -> Option<i64> {
+    match event {
+        ClusterEvent::RoomSettingsChanged { version, .. } => Some(*version),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn default_cluster_fanout_service(
+    outbox: Option<Arc<ClusterOutboxRepository>>,
+    cluster_mode: bool,
+) -> Arc<dyn ClusterFanoutService> {
+    default_cluster_fanout_service_with_realtime(outbox, cluster_mode, None)
+}
+
+#[must_use]
+pub fn default_cluster_fanout_service_with_realtime(
+    outbox: Option<Arc<ClusterOutboxRepository>>,
+    cluster_mode: bool,
+    event_service: Option<Arc<dyn RealtimeEventService>>,
+) -> Arc<dyn ClusterFanoutService> {
+    if cluster_mode {
+        if let Some(outbox) = outbox {
+            return Arc::new(OutboxClusterFanoutService::new(outbox, event_service));
+        }
+    }
+
+    Arc::new(NoopClusterFanoutService)
+}
+
+#[derive(Debug, Clone)]
+#[doc(hidden)]
+struct ChannelClusterFanoutService {
+    sender: tokio::sync::mpsc::Sender<PublishRequest>,
+}
+
+#[async_trait]
+impl ClusterFanoutService for ChannelClusterFanoutService {
     async fn try_publish(&self, request: PublishRequest) -> bool {
-        try_publish_cluster_event(&self.publish_tx, request).await
+        self.sender.send(request).await.is_ok()
+    }
+
+    fn outbox_event(&self, _event: &ClusterEvent) -> Option<NewClusterOutboxEvent> {
+        None
+    }
+
+    fn publish_after_outbox_commit(&self, event: ClusterEvent) {
+        if let Err(error) = self.sender.try_send(PublishRequest { event }) {
+            tracing::error!(error = %error, "Test cluster fanout channel rejected committed outbox event");
+        }
     }
 
     fn is_distributed_enabled(&self) -> bool {
@@ -90,91 +220,24 @@ impl ClusterFanoutService for QueuedClusterFanoutService {
 }
 
 #[must_use]
-pub fn default_cluster_fanout_service(
-    publish_tx: Option<tokio::sync::mpsc::Sender<PublishRequest>>,
-    cluster_mode: bool,
+#[doc(hidden)]
+pub fn channel_cluster_fanout_service(
+    sender: tokio::sync::mpsc::Sender<PublishRequest>,
 ) -> Arc<dyn ClusterFanoutService> {
-    if cluster_mode {
-        if let Some(publish_tx) = publish_tx {
-            return Arc::new(QueuedClusterFanoutService::new(publish_tx));
-        }
-    }
-
-    Arc::new(NoopClusterFanoutService)
+    Arc::new(ChannelClusterFanoutService { sender })
 }
 
 #[cfg(test)]
 mod tests {
     use super::default_cluster_fanout_service;
-    use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 
     #[tokio::test]
-    async fn test_reserve_is_noop_when_cluster_fanout_not_required() {
-        let service = default_cluster_fanout_service(None, false);
-
-        let reservation = service
-            .reserve("unused failure message")
-            .await
-            .expect("standalone fanout should not fail");
-
-        assert!(
-            reservation.is_none(),
-            "standalone fanout should not require a channel reservation"
-        );
-        assert!(
-            !service.is_distributed_enabled(),
-            "standalone fanout should report distributed mode as disabled"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_publish_sends_reserved_request() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_cluster_fanout_service(Some(tx), true);
-        let reservation = service
-            .reserve("reservation should succeed")
-            .await
-            .expect("cluster reservation should succeed");
-
-        service.publish(
-            reservation,
-            PublishRequest {
-                event: ClusterEvent::SystemNotification {
-                    event_id: synctv_common::snanoid!(16),
-                    message: "test".to_string(),
-                    level: synctv_cluster::sync::NotificationLevel::Info,
-                    timestamp: chrono::Utc::now(),
-                },
-            },
-        );
-
-        let request = rx
-            .recv()
-            .await
-            .expect("reserved request should be published");
-        assert!(matches!(
-            request.event,
-            ClusterEvent::SystemNotification { .. }
-        ));
-        assert!(
-            service.is_distributed_enabled(),
-            "configured clustered fanout should report distributed mode as enabled"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cluster_fanout_without_publish_channel_degrades_to_noop() {
+    async fn test_cluster_fanout_without_outbox_degrades_to_noop() {
         let service = default_cluster_fanout_service(None, true);
 
-        let reservation = service
-            .reserve("should not fail without channel")
-            .await
-            .expect("missing queue should degrade to no-op fanout");
-
-        assert!(reservation.is_none());
         assert!(
             !service.is_distributed_enabled(),
-            "fanout without a publish channel must report distributed delivery as disabled"
+            "fanout without an outbox must report distributed delivery as disabled"
         );
     }
 }

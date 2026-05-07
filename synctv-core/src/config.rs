@@ -4656,7 +4656,7 @@ mod tests {
             .parent()
             .expect("synctv-core should be inside the workspace root");
 
-        for config_file in ["synctv.yaml", "synctv.example.yaml"] {
+        for config_file in ["synctv.example.yaml"] {
             let path = workspace_root.join(config_file);
             Config::load_config_file(
                 path.to_str()

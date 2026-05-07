@@ -34,12 +34,37 @@ perl -0pi -e '
   s/^appVersion:\s*.*/appVersion: "$version"/m;
 ' helm/synctv/Chart.yaml
 
+perl -0pi -e '
+  my $version = $ENV{"SYNCTV_RELEASE_VERSION"};
+  s/("name":\s*"synctv-docs",\n\s*"version":\s*")[^"]+(")/$1$version$2/g;
+' docs/package.json docs/package-lock.json
+
+perl -0pi -e '
+  my $version = $ENV{"SYNCTV_RELEASE_VERSION"};
+  s/(helmChartVersion = readEnv\('\''SYNCTV_DOCS_HELM_CHART_VERSION'\''\) \|\| '\'')[^'\'']+('\'';)/$1$version$2/;
+' docs/src/lib/project.ts
+
+perl -0pi -e '
+  my $version = $ENV{"SYNCTV_RELEASE_VERSION"};
+  s/(--version\s+)[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?/$1$version/g;
+' helm/synctv/README.md
+
 cargo_version="$(awk '/^\[workspace.package\]/{in_section=1; next} /^\[/{in_section=0} in_section && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)"
 chart_version="$(sed -n 's/^version:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
 app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/synctv/Chart.yaml | head -n1 | tr -d '"')"
+docs_package_version="$(node -p 'require("./docs/package.json").version')"
+docs_lock_version="$(node -p 'require("./docs/package-lock.json").version')"
+docs_lock_root_version="$(node -p 'require("./docs/package-lock.json").packages[""].version')"
+docs_helm_version="$(sed -n "s/.*helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || '\\([^']*\\)';.*/\\1/p" docs/src/lib/project.ts)"
 
-if [ "$cargo_version" != "$version" ] || [ "$chart_version" != "$version" ] || [ "$app_version" != "$version" ]; then
-  echo "Failed to synchronize release version across Cargo.toml and helm/synctv/Chart.yaml." >&2
+if [ "$cargo_version" != "$version" ] ||
+  [ "$chart_version" != "$version" ] ||
+  [ "$app_version" != "$version" ] ||
+  [ "$docs_package_version" != "$version" ] ||
+  [ "$docs_lock_version" != "$version" ] ||
+  [ "$docs_lock_root_version" != "$version" ] ||
+  [ "$docs_helm_version" != "$version" ]; then
+  echo "Failed to synchronize release version across Cargo.toml, Helm chart, and docs metadata." >&2
   exit 1
 fi
 
@@ -84,4 +109,4 @@ if [ -n "$stale_lock_versions" ]; then
   exit 1
 fi
 
-echo "Synchronized release version $version across Cargo workspace, Cargo.lock, and Helm chart."
+echo "Synchronized release version $version across Cargo workspace, Cargo.lock, Helm chart, and docs metadata."

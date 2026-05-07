@@ -70,7 +70,7 @@ export const composeSynctvEnvExampleUrl = `${githubRawBaseUrl}/.env.synctv.examp
 export const composeInitScriptUrl = `${githubRawBaseUrl}/scripts/init-compose-env.sh`;
 
 export const helmChartName = readEnv('SYNCTV_DOCS_HELM_CHART_NAME') || 'synctv';
-export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || '0.1.0';
+export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || '1.0.0';
 export const helmOciRepository =
   readEnv('SYNCTV_DOCS_HELM_OCI_REPOSITORY') ||
   readEnv('HELM_OCI_REPOSITORY') ||

@@ -883,6 +883,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn list_provider_instances_uses_default_page_size_when_request_omits_it() {
         let (_postgres, pool) = create_test_pool().await;
         let repo = Arc::new(ProviderInstanceRepository::new(pool.clone()));

@@ -397,6 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn provider_common_api_list_backends_includes_local_default_and_enabled_remote_instances()
     {
         let (_postgres, pool) = create_test_pool().await;

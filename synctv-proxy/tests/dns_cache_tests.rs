@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
+use std::net::TcpListener;
 use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 
 fn proxy_client() -> reqwest::Client {
@@ -19,10 +20,19 @@ fn proxy_client() -> reqwest::Client {
 /// Verify that a loopback target still fails when no local server is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_client_loopback_target_fails_without_listener() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("test should reserve an unused loopback port");
+    let unused_port = listener
+        .local_addr()
+        .expect("test listener should expose its address")
+        .port();
+    drop(listener);
+
     let client = proxy_client();
+    let url = format!("http://127.0.0.1:{unused_port}/admin");
     let cfg = ProxyConfig {
         client: &client,
-        url: "http://127.0.0.1/admin",
+        url: &url,
         provider_headers: &HashMap::new(),
         range_header: None,
         request_control: None,

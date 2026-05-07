@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["SyncTV Contributors"]
 license = "MIT"
@@ -321,9 +321,7 @@ strip = "symbols"
 [profile.release]
 opt-level = 2
 debug = 0
-lto = "fat"
-codegen-units = 16
-incremental = false
+lto = "thin"
 panic = "unwind"
 strip = "symbols"
 debug-assertions = false

@@ -6177,7 +6177,7 @@ dependencies = [
 
 [[package]]
 name = "synctv"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6235,7 +6235,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -6306,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-cluster"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6346,7 +6346,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-common"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -6364,7 +6364,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -6450,7 +6450,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-core-testing"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "redis",
@@ -6465,7 +6465,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-livestream"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6516,7 +6516,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-management"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -6544,7 +6544,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-media-providers"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6588,7 +6588,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "prost",
  "prost-protovalidate",
@@ -6606,7 +6606,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-proxy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6639,7 +6639,7 @@ dependencies = [
 
 [[package]]
 name = "synctv-xiu"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

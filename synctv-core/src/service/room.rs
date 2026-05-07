@@ -111,6 +111,15 @@ struct PendingRoomCreationRequest {
     password_hash: Option<String>,
     settings: RoomSettings,
 }
+
+struct CreateRoomCommand {
+    name: String,
+    description: String,
+    created_by: UserId,
+    password: Option<String>,
+    settings: Option<RoomSettings>,
+}
+
 use std::{future::Future, sync::Arc};
 use synctv_common::ExecutionControl;
 
@@ -1145,11 +1154,13 @@ impl RoomService {
         outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
         self.do_create_room_with_policy(
-            name,
-            description,
-            created_by,
-            password,
-            settings,
+            CreateRoomCommand {
+                name,
+                description,
+                created_by,
+                password,
+                settings,
+            },
             true,
             outbox_event_factory,
         )
@@ -1158,14 +1169,18 @@ impl RoomService {
 
     async fn do_create_room_with_policy(
         &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
+        command: CreateRoomCommand,
         enforce_creation_policy: bool,
         outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
+        let CreateRoomCommand {
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+        } = command;
+
         tracing::info!(
             user_id = %created_by,
             room_name = %name,
@@ -1506,11 +1521,13 @@ impl RoomService {
         }
 
         self.do_create_room_with_policy(
-            name,
-            description,
-            created_by,
-            password,
-            settings,
+            CreateRoomCommand {
+                name,
+                description,
+                created_by,
+                password,
+                settings,
+            },
             false,
             outbox_event_factory,
         )
@@ -3698,8 +3715,7 @@ impl RoomService {
                 .await?
             };
 
-            if cas_result.is_some() {
-                let new_version = cas_result.expect("cas_result checked as some");
+            if let Some(new_version) = cas_result {
                 let outbox_event = outbox_event_factory
                     .as_ref()
                     .and_then(|factory| factory(&settings, new_version));
@@ -5278,7 +5294,7 @@ impl RoomService {
 
         let mut tx = self.pool.begin().await?;
         let updated_room = crate::repository::RoomRepository::update_ban_status_with_executor(
-            room_id, true, &mut *tx,
+            room_id, true, &mut tx,
         )
         .await?;
         if let (Some(outbox), Some(event)) = (&self.cluster_outbox, &outbox_event) {

@@ -198,7 +198,7 @@ mod tests {
                 aggregate_type: "playlist".to_string(),
                 aggregate_id: event
                     .room_id()
-                    .map_or_else(|| "global".to_string(), |room_id| room_id.to_string()),
+                    .map_or_else(|| "global".to_string(), std::string::ToString::to_string),
                 event_type: event.event_type().to_string(),
                 event_version: 1,
                 aggregate_version: None,

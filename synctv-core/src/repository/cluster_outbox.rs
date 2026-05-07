@@ -123,7 +123,7 @@ impl ClusterOutboxRepository {
         E: sqlx::PgExecutor<'e>,
     {
         sqlx::query(
-            r#"
+            r"
             INSERT INTO cluster_outbox (
                 id,
                 aggregate_type,
@@ -134,7 +134,7 @@ impl ClusterOutboxRepository {
                 payload
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#,
+            ",
         )
         .bind(&event.id)
         .bind(&event.aggregate_type)
@@ -154,7 +154,7 @@ impl ClusterOutboxRepository {
         limit: i64,
     ) -> Result<Vec<ClusterOutboxEvent>> {
         let rows = sqlx::query(
-            r#"
+            r"
             WITH picked AS (
                 SELECT id
                 FROM cluster_outbox
@@ -186,7 +186,7 @@ impl ClusterOutboxRepository {
                 o.created_at,
                 o.dispatched_at,
                 o.last_error
-            "#,
+            ",
         )
         .bind(limit)
         .bind(worker_id)
@@ -198,7 +198,7 @@ impl ClusterOutboxRepository {
 
     pub async fn mark_sent(&self, id: &str) -> Result<()> {
         sqlx::query(
-            r#"
+            r"
             UPDATE cluster_outbox
             SET status = 'sent',
                 dispatched_at = NOW(),
@@ -206,7 +206,7 @@ impl ClusterOutboxRepository {
                 locked_at = NULL,
                 last_error = NULL
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(id)
         .execute(&self.pool)
@@ -224,7 +224,7 @@ impl ClusterOutboxRepository {
         };
 
         sqlx::query(
-            r#"
+            r"
             UPDATE cluster_outbox
             SET status = $2,
                 attempts = $3,
@@ -233,7 +233,7 @@ impl ClusterOutboxRepository {
                 locked_at = NULL,
                 last_error = $5
             WHERE id = $1
-            "#,
+            ",
         )
         .bind(id)
         .bind(status.as_str())
@@ -247,7 +247,7 @@ impl ClusterOutboxRepository {
 
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {
         let result = sqlx::query(
-            r#"
+            r"
             UPDATE cluster_outbox
             SET status = 'pending',
                 locked_by = NULL,
@@ -255,7 +255,7 @@ impl ClusterOutboxRepository {
                 next_retry_at = NOW()
             WHERE status = 'processing'
               AND locked_at < NOW() - ($1::TEXT || ' seconds')::INTERVAL
-            "#,
+            ",
         )
         .bind(stale_after_seconds)
         .execute(&self.pool)
@@ -274,5 +274,5 @@ impl ClusterOutboxRepository {
 
 fn retry_delay_seconds(attempts: i32) -> i64 {
     let capped = attempts.clamp(1, 8);
-    i64::from(2_i32.pow(capped as u32)).min(300)
+    i64::from(2_i32.pow(capped.cast_unsigned())).min(300)
 }

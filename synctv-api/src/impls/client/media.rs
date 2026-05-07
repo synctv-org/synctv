@@ -873,7 +873,7 @@ impl ClientApiImpl {
                 .await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            for media in media_list.iter() {
+            for media in &media_list {
                 self.media_fanout
                     .publish_added(&rid, &uid, &username, &media.id, &media.name);
             }

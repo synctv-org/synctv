@@ -862,7 +862,7 @@ impl RoomRepository {
         }
 
         let room = sqlx::query_as::<_, RoomRow>(
-            r#"
+            r"
             SELECT r.id,
                    r.name,
                    r.description,
@@ -881,7 +881,7 @@ impl RoomRepository {
                    ) AS is_banned
             FROM rooms r
             WHERE r.id = $1 AND r.deleted_at IS NULL
-            "#,
+            ",
         )
         .bind(room_id.as_i64())
         .fetch_optional(&mut *executor)

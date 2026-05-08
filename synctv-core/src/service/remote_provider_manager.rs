@@ -48,6 +48,10 @@ const CHANNEL_CACHE_TTL_SECS: u64 = 300;
 /// Maximum number of cached channels
 const MAX_CACHED_CHANNELS: u64 = 1_000;
 
+/// Match the remote provider server's HTTP/2 frame budget for large provider
+/// directory/listing responses.
+const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+
 /// Remote Provider Manager
 ///
 /// Manages remote provider instances (gRPC connections).
@@ -824,6 +828,7 @@ impl RemoteProviderManager {
                 )
             })?
             .timeout(timeout)
+            .max_frame_size(PROVIDER_GRPC_FRAME_SIZE_LIMIT)
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10));

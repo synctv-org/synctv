@@ -613,7 +613,16 @@ where
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
 
-            let new_json = serde_json::to_string(&value).map_err(|e| {
+            let mut l2_value = serde_json::to_value(&value).map_err(|e| {
+                Error::Internal(format!(
+                    "Failed to serialize {} for caching: {e}",
+                    self.cache_type
+                ))
+            })?;
+            if let Some(object) = l2_value.as_object_mut() {
+                object.insert("updated_at_ms".to_string(), serde_json::json!(new_ts));
+            }
+            let new_json = serde_json::to_string(&l2_value).map_err(|e| {
                 Error::Internal(format!(
                     "Failed to serialize {} for caching: {e}",
                     self.cache_type
@@ -623,18 +632,9 @@ where
             // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor.
             let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
-            // Pass the new updated_at as ISO-8601 string for L2-side comparison.
-            let new_ts_iso = value.updated_at().to_rfc3339();
-
             let was_set = self
                 .l2
-                .set_if_newer_scoped(
-                    &self.key_prefix,
-                    &redis_key,
-                    &new_json,
-                    ttl_seconds,
-                    &new_ts_iso,
-                )
+                .set_if_newer_scoped(&self.key_prefix, &redis_key, &new_json, ttl_seconds, new_ts)
                 .await?;
 
             if !was_set {

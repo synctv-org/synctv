@@ -463,11 +463,11 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     newer_state.updated_at = Utc::now();
 
     let newer_json = serde_json::to_string(&newer_state).unwrap();
-    let newer_ts = newer_state.updated_at.to_rfc3339();
+    let newer_ts = newer_state.updated_at.timestamp_millis();
 
     // Set newer state first
     let was_set = l2
-        .set_if_newer(l2_key, &newer_json, 300, &newer_ts)
+        .set_if_newer(l2_key, &newer_json, 300, newer_ts)
         .await
         .unwrap();
     assert!(was_set, "Newer state should be set");
@@ -478,11 +478,11 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
 
     let older_json = serde_json::to_string(&older_state).unwrap();
-    let older_ts = older_state.updated_at.to_rfc3339();
+    let older_ts = older_state.updated_at.timestamp_millis();
 
     // Try to set older state - should be rejected
     let was_set = l2
-        .set_if_newer(l2_key, &older_json, 300, &older_ts)
+        .set_if_newer(l2_key, &older_json, 300, older_ts)
         .await
         .unwrap();
     assert!(!was_set, "Older state should NOT overwrite newer state");

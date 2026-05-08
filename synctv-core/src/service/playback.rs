@@ -1811,7 +1811,7 @@ mod tests {
             _key: &str,
             _json: &str,
             _ttl_secs: u64,
-            _new_ts_iso: &str,
+            _new_ts_millis: i64,
         ) -> Result<bool> {
             Ok(true)
         }

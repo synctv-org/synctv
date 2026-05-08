@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synctv_core::{
     models::id::{RoomId, UserId},
@@ -163,6 +163,7 @@ pub enum DisconnectSignal {
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
     pub connection_id: String,
+    pub registration_token: String,
     pub user_id: UserId,
     pub room_id: Option<RoomId>,
     pub connected_at: Instant,
@@ -177,6 +178,7 @@ pub struct ConnectionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConnectionInfoPersistent {
     connection_id: String,
+    registration_token: String,
     user_id: UserId,
     room_id: Option<RoomId>,
     connected_at_unix: u64,
@@ -233,6 +235,7 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
 
         Self {
             connection_id: info.connection_id.clone(),
+            registration_token: info.registration_token.clone(),
             user_id: info.user_id,
             room_id: info.room_id,
             connected_at_unix,
@@ -250,6 +253,7 @@ impl ConnectionInfo {
         let now = Instant::now();
         Self {
             connection_id,
+            registration_token: synctv_common::snanoid!(16),
             user_id,
             room_id: None,
             connected_at: now,
@@ -341,15 +345,146 @@ const CONNECTION_METADATA_TTL_SECONDS: i64 = 180; // 3x 60s refresh interval
 const USER_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:user_indexes";
 const ROOM_INDEX_DIRECTORY_KEY_SUFFIX: &str = "conn_mgr:room_indexes";
 
+static UNREGISTER_CLEANUP_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local current_metadata = redis.call('GET', KEYS[5])
+        local metadata_matches = false
+        if current_metadata then
+            local ok, obj = pcall(cjson.decode, current_metadata)
+            if ok and obj and obj.registration_token == ARGV[4] then
+                metadata_matches = true
+            end
+        end
+
+        local first_cleanup = redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1])
+        if first_cleanup then
+            local total = redis.call('DECR', KEYS[2])
+            if total < 0 then redis.call('DEL', KEYS[2]) end
+
+            local user_total = redis.call('DECR', KEYS[3])
+            if user_total < 0 then redis.call('DEL', KEYS[3]) end
+
+            if ARGV[3] == '1' then
+                local room_total = redis.call('DECR', KEYS[4])
+                if room_total < 0 then redis.call('DEL', KEYS[4]) end
+            end
+        end
+
+        if metadata_matches then
+            redis.call('DEL', KEYS[5])
+            redis.call('SREM', KEYS[6], ARGV[2])
+            if ARGV[3] == '1' then
+                redis.call('SREM', KEYS[7], ARGV[2])
+            end
+        end
+
+        if first_cleanup then
+            return 1
+        end
+        return 0
+        ",
+    )
+});
+
+static BATCH_REFRESH_TTLS_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local counter_ttl = tonumber(ARGV[1])
+        local metadata_ttl = tonumber(ARGV[2])
+        local refreshed = 0
+
+        -- Refresh counter keys (KEYS[1] to KEYS[N] where N = #counter_keys)
+        local num_counter_keys = tonumber(ARGV[3])
+        for i = 1, num_counter_keys do
+            local key = KEYS[i]
+            if redis.call("EXISTS", key) == 1 then
+                redis.call("EXPIRE", key, counter_ttl)
+                refreshed = refreshed + 1
+            end
+        end
+
+        -- Refresh metadata keys
+        local num_metadata_keys = tonumber(ARGV[4])
+        for i = 1, num_metadata_keys do
+            local key = KEYS[num_counter_keys + i]
+            if redis.call("EXISTS", key) == 1 then
+                redis.call("EXPIRE", key, metadata_ttl)
+                refreshed = refreshed + 1
+            end
+        end
+
+        return refreshed
+        "#,
+    )
+});
+
+static SYNC_COUNTER_MIN_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"local current = redis.call('GET', KEYS[1])
+          local current_num = 0
+          if current ~= false then
+            current_num = tonumber(current)
+          end
+          local expected_min = tonumber(ARGV[1])
+          if current_num < expected_min then
+            redis.call('SET', KEYS[1], ARGV[1])
+            redis.call('EXPIRE', KEYS[1], ARGV[2])
+            return {current_num, 1}
+          end
+          return {current_num, 0}",
+    )
+});
+
+static INCR_EXPIRE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        "local count = redis.call('INCR', KEYS[1]) \
+         redis.call('EXPIRE', KEYS[1], ARGV[1]) \
+         return count",
+    )
+});
+
+static DECR_DELETE_NEGATIVE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"local v = redis.call('DECR', KEYS[1])
+          if v < 0 then
+            redis.call('DEL', KEYS[1])
+          end
+          return v",
+    )
+});
+
 /// A failed Redis counter operation that should be retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingRedisOp {
     /// Decrement a counter key
     Decr(String),
-    /// Delete a key
-    Del(String),
-    /// Remove a member from a Redis set
-    SRem { key: String, member: String },
+    /// Idempotently clean up one unregistered connection's distributed state.
+    UnregisterCleanup {
+        cleanup_key: String,
+        total_key: String,
+        user_key: String,
+        room_key: String,
+        conn_key: String,
+        user_index_key: String,
+        room_index_key: String,
+        connection_id: String,
+        registration_token: String,
+        has_room: bool,
+    },
+}
+
+struct UnregisterCleanupScriptArgs<'a> {
+    cleanup_key: &'a str,
+    total_key: &'a str,
+    user_key: &'a str,
+    room_key: &'a str,
+    conn_key: &'a str,
+    user_index_key: &'a str,
+    room_index_key: &'a str,
+    connection_id: &'a str,
+    registration_token: &'a str,
+    has_room: bool,
 }
 
 struct ConnectionIdClaim<'a> {
@@ -839,9 +974,34 @@ impl ConnectionManager {
                                     // this is a compensating retry, not a live operation.
                                     conn.decr::<_, _, i64>(key, 1i64).await
                                 }
-                                PendingRedisOp::Del(key) => conn.del::<_, i64>(key).await,
-                                PendingRedisOp::SRem { key, member } => {
-                                    conn.srem::<_, _, i64>(key, member).await
+                                PendingRedisOp::UnregisterCleanup {
+                                    cleanup_key,
+                                    total_key,
+                                    user_key,
+                                    room_key,
+                                    conn_key,
+                                    user_index_key,
+                                    room_index_key,
+                                    connection_id,
+                                    registration_token,
+                                    has_room,
+                                } => {
+                                    Self::run_unregister_cleanup_script(
+                                        &mut conn,
+                                        UnregisterCleanupScriptArgs {
+                                            cleanup_key,
+                                            total_key,
+                                            user_key,
+                                            room_key,
+                                            conn_key,
+                                            user_index_key,
+                                            room_index_key,
+                                            connection_id,
+                                            registration_token,
+                                            has_room: *has_room,
+                                        },
+                                    )
+                                    .await
                                 }
                             };
 
@@ -927,6 +1087,100 @@ impl ConnectionManager {
             );
             self.enqueue_retry(PendingRedisOp::Decr(key));
         }
+    }
+
+    fn unregister_cleanup_op(
+        &self,
+        connection_id: &str,
+        registration_token: &str,
+        user_id: UserId,
+        room_id: Option<RoomId>,
+    ) -> PendingRedisOp {
+        let no_room_key = format!(
+            "{}conn_mgr:cleanup_no_room:{connection_id}",
+            self.redis_key_prefix
+        );
+        PendingRedisOp::UnregisterCleanup {
+            cleanup_key: format!(
+                "{}conn_mgr:cleanup:{connection_id}:{registration_token}",
+                self.redis_key_prefix
+            ),
+            total_key: format!("{}connections:total", self.redis_key_prefix),
+            user_key: format!("{}connections:user:{user_id}", self.redis_key_prefix),
+            room_key: room_id.map_or_else(
+                || no_room_key.clone(),
+                |room_id| format!("{}connections:room:{room_id}", self.redis_key_prefix),
+            ),
+            conn_key: format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix),
+            user_index_key: format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix),
+            room_index_key: room_id
+                .map(|room_id| format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix))
+                .unwrap_or(no_room_key),
+            connection_id: connection_id.to_string(),
+            registration_token: registration_token.to_string(),
+            has_room: room_id.is_some(),
+        }
+    }
+
+    async fn run_unregister_cleanup_script(
+        conn: &mut redis::aio::ConnectionManager,
+        args: UnregisterCleanupScriptArgs<'_>,
+    ) -> redis::RedisResult<i64> {
+        UNREGISTER_CLEANUP_SCRIPT
+            .key(args.cleanup_key)
+            .key(args.total_key)
+            .key(args.user_key)
+            .key(args.room_key)
+            .key(args.conn_key)
+            .key(args.user_index_key)
+            .key(args.room_index_key)
+            .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+            .arg(args.connection_id)
+            .arg(if args.has_room { "1" } else { "0" })
+            .arg(args.registration_token)
+            .invoke_async(conn)
+            .await
+    }
+
+    async fn redis_unregister_cleanup(&self, op: &PendingRedisOp) -> Result<(), String> {
+        let PendingRedisOp::UnregisterCleanup {
+            cleanup_key,
+            total_key,
+            user_key,
+            room_key,
+            conn_key,
+            user_index_key,
+            room_index_key,
+            connection_id,
+            registration_token,
+            has_room,
+        } = op
+        else {
+            return Err("invalid unregister cleanup operation".to_string());
+        };
+
+        let Some(mut conn) = self.redis_conn_snapshot().await else {
+            return Err("Redis not configured".to_string());
+        };
+
+        Self::run_unregister_cleanup_script(
+            &mut conn,
+            UnregisterCleanupScriptArgs {
+                cleanup_key,
+                total_key,
+                user_key,
+                room_key,
+                conn_key,
+                user_index_key,
+                room_index_key,
+                connection_id,
+                registration_token,
+                has_room: *has_room,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("Redis unregister cleanup script failed: {error}"))
     }
 
     async fn persist_registration_metadata_best_effort(
@@ -1926,107 +2180,39 @@ impl ConnectionManager {
                 }
             }
 
-            // Decrement distributed Redis counters and remove metadata.
-            // Use a timeout to ensure cleanup completes promptly during normal
-            // unregister. If the timeout expires (e.g., Redis is slow/down), the
-            // TTL on Redis keys acts as a safety net for eventual cleanup.
-            if let Some(conn_clone) = self.redis_conn_snapshot().await {
-                let key_prefix = self.redis_key_prefix.clone();
-                let user_id = conn_info.user_id;
-                let room_id = conn_info.room_id;
-                let connection_id_owned = connection_id.to_string();
-                let retry_tx = self.pending_retries_tx.clone();
+            // Decrement distributed Redis counters and remove metadata with one
+            // idempotent script. The cleanup marker prevents retries from
+            // double-applying non-idempotent counter decrements.
+            if self.redis_enabled() {
+                let cleanup_op = self.unregister_cleanup_op(
+                    connection_id,
+                    &conn_info.registration_token,
+                    conn_info.user_id,
+                    conn_info.room_id,
+                );
+                let cleanup_result = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    self.redis_unregister_cleanup(&cleanup_op),
+                )
+                .await;
 
-                let cleanup = async {
-                    let this = self;
-
-                    // Decrement total distributed counter
-                    let total_key = format!("{key_prefix}connections:total");
-                    if let Err(_e) = this.redis_decr(&total_key).await {
-                        let _ = retry_tx.try_send(PendingRedisOp::Decr(total_key));
+                match cleanup_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        warn!(
+                            connection_id = %connection_id,
+                            error = %error,
+                            "Redis cleanup failed during unregister, enqueueing idempotent retry"
+                        );
+                        self.enqueue_retry(cleanup_op);
                     }
-
-                    // Decrement user counter
-                    let user_key = format!("{key_prefix}connections:user:{user_id}");
-                    if let Err(_e) = this.redis_decr(&user_key).await {
-                        let _ = retry_tx.try_send(PendingRedisOp::Decr(user_key));
+                    Err(_) => {
+                        warn!(
+                            connection_id = %connection_id,
+                            "Redis cleanup timed out during unregister, enqueueing idempotent retry"
+                        );
+                        self.enqueue_retry(cleanup_op);
                     }
-
-                    // Decrement room counter
-                    if let Some(room_id) = room_id {
-                        let room_key = format!("{key_prefix}connections:room:{room_id}");
-                        if let Err(_e) = this.redis_decr(&room_key).await {
-                            let _ = retry_tx.try_send(PendingRedisOp::Decr(room_key));
-                        }
-                    }
-
-                    // Remove metadata and index entries
-                    let conn_key = format!("{key_prefix}conn_mgr:conn:{connection_id_owned}");
-                    let user_index_key = format!("{key_prefix}conn_mgr:user:{user_id}");
-                    let room_index_key =
-                        room_id.map(|room_id| format!("{key_prefix}conn_mgr:room:{room_id}"));
-
-                    let mut mc = conn_clone.clone();
-                    if mc.del::<_, i64>(&conn_key).await.is_err() {
-                        let _ = retry_tx.try_send(PendingRedisOp::Del(conn_key));
-                    }
-                    if mc
-                        .srem::<_, _, i64>(&user_index_key, &connection_id_owned)
-                        .await
-                        .is_err()
-                    {
-                        let _ = retry_tx.try_send(PendingRedisOp::SRem {
-                            key: user_index_key,
-                            member: connection_id_owned.clone(),
-                        });
-                    }
-                    if let Some(room_key) = room_index_key {
-                        if mc
-                            .srem::<_, _, i64>(&room_key, &connection_id_owned)
-                            .await
-                            .is_err()
-                        {
-                            let _ = retry_tx.try_send(PendingRedisOp::SRem {
-                                key: room_key,
-                                member: connection_id_owned.clone(),
-                            });
-                        }
-                    }
-                };
-
-                if tokio::time::timeout(Duration::from_secs(2), cleanup)
-                    .await
-                    .is_err()
-                {
-                    warn!(
-                        connection_id = %connection_id,
-                        "Redis cleanup timed out during unregister, enqueueing retries"
-                    );
-                    // Enqueue all decrement operations for retry
-                    let total_key = format!("{}connections:total", self.redis_key_prefix);
-                    self.enqueue_retry(PendingRedisOp::Decr(total_key));
-                    let user_key = format!("{}connections:user:{user_id}", self.redis_key_prefix);
-                    self.enqueue_retry(PendingRedisOp::Decr(user_key));
-                    if let Some(room_id) = room_id {
-                        let room_key =
-                            format!("{}connections:room:{room_id}", self.redis_key_prefix);
-                        self.enqueue_retry(PendingRedisOp::Decr(room_key));
-                        let room_index_key =
-                            format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix);
-                        self.enqueue_retry(PendingRedisOp::SRem {
-                            key: room_index_key,
-                            member: connection_id.to_string(),
-                        });
-                    }
-                    let conn_key =
-                        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix);
-                    self.enqueue_retry(PendingRedisOp::Del(conn_key));
-                    let user_index_key =
-                        format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix);
-                    self.enqueue_retry(PendingRedisOp::SRem {
-                        key: user_index_key,
-                        member: connection_id.to_string(),
-                    });
                 }
             }
             self.release_connection_id_claim(connection_id);
@@ -2582,38 +2768,6 @@ impl ConnectionManager {
         counter_keys: &std::collections::HashSet<String>,
         metadata_keys: &std::collections::HashSet<String>,
     ) -> Result<usize, redis::RedisError> {
-        // Lua script that refreshes TTLs for multiple keys in a single call.
-        // Takes key prefixes and TTL values, returns number of keys refreshed.
-        let lua_script = redis::Script::new(
-            r#"
-            local counter_ttl = tonumber(ARGV[1])
-            local metadata_ttl = tonumber(ARGV[2])
-            local refreshed = 0
-
-            -- Refresh counter keys (KEYS[1] to KEYS[N] where N = #counter_keys)
-            local num_counter_keys = tonumber(ARGV[3])
-            for i = 1, num_counter_keys do
-                local key = KEYS[i]
-                if redis.call("EXISTS", key) == 1 then
-                    redis.call("EXPIRE", key, counter_ttl)
-                    refreshed = refreshed + 1
-                end
-            end
-
-            -- Refresh metadata keys
-            local num_metadata_keys = tonumber(ARGV[4])
-            for i = 1, num_metadata_keys do
-                local key = KEYS[num_counter_keys + i]
-                if redis.call("EXISTS", key) == 1 then
-                    redis.call("EXPIRE", key, metadata_ttl)
-                    refreshed = refreshed + 1
-                end
-            end
-
-            return refreshed
-            "#,
-        );
-
         let counter_keys_vec: Vec<&String> = counter_keys.iter().collect();
         let metadata_keys_vec: Vec<&String> = metadata_keys.iter().collect();
         let total_keys = counter_keys_vec.len() + metadata_keys_vec.len();
@@ -2652,7 +2806,7 @@ impl ConnectionManager {
             }
 
             // Build and execute the Lua script for this batch
-            let mut script_invocation = lua_script.prepare_invoke();
+            let mut script_invocation = BATCH_REFRESH_TTLS_SCRIPT.prepare_invoke();
             for key in &batch_keys {
                 script_invocation.key(*key);
             }
@@ -2720,27 +2874,12 @@ impl ConnectionManager {
         // connections that are not visible from this node's local memory.
         // Returns `{current_value, 1}` when the counter was raised and
         // `{current_value, 0}` when no change was needed.
-        let sync_script = redis::Script::new(
-            r"local current = redis.call('GET', KEYS[1])
-              local current_num = 0
-              if current ~= false then
-                current_num = tonumber(current)
-              end
-              local expected_min = tonumber(ARGV[1])
-              if current_num < expected_min then
-                redis.call('SET', KEYS[1], ARGV[1])
-                redis.call('EXPIRE', KEYS[1], ARGV[2])
-                return {current_num, 1}
-              end
-              return {current_num, 0}",
-        );
-
         let mut sync_count = 0u64;
         let mut sync_errors = 0u64;
 
         // Sync user counters
         for (key, local_count) in &user_counts {
-            let script_result: Result<Vec<i64>, _> = sync_script
+            let script_result: Result<Vec<i64>, _> = SYNC_COUNTER_MIN_SCRIPT
                 .key(key)
                 .arg(usize_to_i64_saturating(*local_count))
                 .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
@@ -2773,7 +2912,7 @@ impl ConnectionManager {
 
         // Sync room counters
         for (key, local_count) in &room_counts {
-            let script_result: Result<Vec<i64>, _> = sync_script
+            let script_result: Result<Vec<i64>, _> = SYNC_COUNTER_MIN_SCRIPT
                 .key(key)
                 .arg(usize_to_i64_saturating(*local_count))
                 .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
@@ -2803,7 +2942,7 @@ impl ConnectionManager {
             }
         }
 
-        let script_result: Result<Vec<i64>, _> = sync_script
+        let script_result: Result<Vec<i64>, _> = SYNC_COUNTER_MIN_SCRIPT
             .key(&total_key)
             .arg(usize_to_i64_saturating(local_total))
             .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
@@ -3623,12 +3762,7 @@ impl ConnectionManager {
 
         // Lua script: atomically INCR the key and set TTL in a single round-trip.
         // Returns the new counter value after increment.
-        let script = redis::Script::new(
-            "local count = redis.call('INCR', KEYS[1]) \
-             redis.call('EXPIRE', KEYS[1], ARGV[1]) \
-             return count",
-        );
-        let count: i64 = script
+        let count: i64 = INCR_EXPIRE_SCRIPT
             .key(key)
             .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
             .invoke_async(&mut conn)
@@ -3646,14 +3780,7 @@ impl ConnectionManager {
         let Some(mut conn) = self.redis_conn_snapshot().await else {
             return Err("Redis not configured".to_string());
         };
-        let script = redis::Script::new(
-            r"local v = redis.call('DECR', KEYS[1])
-              if v < 0 then
-                redis.call('DEL', KEYS[1])
-              end
-              return v",
-        );
-        script
+        DECR_DELETE_NEGATIVE_SCRIPT
             .key(key)
             .invoke_async::<i64>(&mut conn)
             .await
@@ -3929,33 +4056,19 @@ mod tests {
     #[test]
     fn test_pending_retry_queue_preserves_metadata_cleanup_operations() {
         let manager = ConnectionManager::default();
+        let cleanup_op = manager.unregister_cleanup_op(
+            "conn-123",
+            "token-123",
+            UserId::from(40_123_001),
+            Some(RoomId::from(40_123_002)),
+        );
 
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::Del(
-            "retry:test:conn_meta".to_string(),
-        ));
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
-            key: "retry:test:user_index".to_string(),
-            member: "conn-123".to_string(),
-        });
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
-            key: "retry:test:room_index".to_string(),
-            member: "conn-123".to_string(),
-        });
+        manager.enqueue_pending_retry_for_test(cleanup_op.clone());
 
         assert_eq!(
             manager.drain_pending_retries_for_test(),
-            vec![
-                PendingRedisOp::Del("retry:test:conn_meta".to_string()),
-                PendingRedisOp::SRem {
-                    key: "retry:test:user_index".to_string(),
-                    member: "conn-123".to_string(),
-                },
-                PendingRedisOp::SRem {
-                    key: "retry:test:room_index".to_string(),
-                    member: "conn-123".to_string(),
-                },
-            ],
-            "metadata and index cleanup retries must be retained alongside counter repairs"
+            vec![cleanup_op],
+            "metadata, index, and counter cleanup retries must be retained as one idempotent operation"
         );
     }
 
@@ -4853,6 +4966,7 @@ mod tests {
         // on this node must not delete it just because it is absent from local memory.
         let foreign_meta = ConnectionInfoPersistent {
             connection_id: "other_node_conn".to_string(),
+            registration_token: "foreign-token".to_string(),
             user_id: UserId::from(20_000_201),
             room_id: Some(RoomId::from(20_000_202)),
             connected_at_unix: 0,
@@ -5040,6 +5154,7 @@ mod tests {
 
         let mismatch_metadata = ConnectionInfoPersistent {
             connection_id: stale_mismatch.to_string(),
+            registration_token: "mismatch-token".to_string(),
             user_id: UserId::from(10_000_131),
             room_id: Some(RoomId::from(10_000_121)),
             connected_at_unix: 0,
@@ -5050,6 +5165,7 @@ mod tests {
         };
         let valid_metadata = ConnectionInfoPersistent {
             connection_id: valid.to_string(),
+            registration_token: "valid-token".to_string(),
             user_id: user_a,
             room_id: Some(room_a),
             connected_at_unix: 0,
@@ -5396,15 +5512,31 @@ mod tests {
         let manager = ConnectionManager::new(ConnectionLimits::default())
             .with_shared_redis(shared_conn.clone(), &prefix);
 
-        let conn_key = format!("{prefix}conn_mgr:conn:conn-recover");
-        let user_index_key = format!("{prefix}conn_mgr:user:user-recover");
-        let room_index_key = format!("{prefix}conn_mgr:room:room-recover");
+        let cleanup_op = manager.unregister_cleanup_op(
+            "conn-recover",
+            "token-recover",
+            UserId::from(20_000_301),
+            Some(RoomId::from(20_000_302)),
+        );
+        let PendingRedisOp::UnregisterCleanup {
+            total_key,
+            user_key,
+            room_key,
+            conn_key,
+            user_index_key,
+            room_index_key,
+            ..
+        } = cleanup_op.clone()
+        else {
+            unreachable!("unregister_cleanup_op must build an unregister cleanup operation");
+        };
 
         let mut verify_conn = redis::aio::ConnectionManager::new(client.clone())
             .await
             .unwrap();
         let metadata = ConnectionInfoPersistent {
             connection_id: "conn-recover".to_string(),
+            registration_token: "token-recover".to_string(),
             user_id: UserId::from(20_000_301),
             room_id: Some(RoomId::from(20_000_302)),
             connected_at_unix: 0,
@@ -5417,6 +5549,9 @@ mod tests {
             .set(&conn_key, serde_json::to_string(&metadata).unwrap())
             .await
             .unwrap();
+        let _: () = verify_conn.set(&total_key, 1i64).await.unwrap();
+        let _: () = verify_conn.set(&user_key, 1i64).await.unwrap();
+        let _: () = verify_conn.set(&room_key, 1i64).await.unwrap();
         let _: () = verify_conn
             .sadd(&user_index_key, "conn-recover")
             .await
@@ -5430,21 +5565,16 @@ mod tests {
             verify_conn.exists::<_, bool>(&conn_key).await.unwrap(),
             "metadata should exist before retry processing"
         );
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::Del(conn_key.clone()));
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
-            key: user_index_key.clone(),
-            member: "conn-recover".to_string(),
-        });
-        manager.enqueue_pending_retry_for_test(PendingRedisOp::SRem {
-            key: room_index_key.clone(),
-            member: "conn-recover".to_string(),
-        });
+        manager.enqueue_pending_retry_for_test(cleanup_op);
 
         tokio::time::sleep(Duration::from_secs(6)).await;
 
         let metadata_exists: bool = verify_conn.exists(&conn_key).await.unwrap();
         let user_members: Vec<String> = verify_conn.smembers(&user_index_key).await.unwrap();
         let room_members: Vec<String> = verify_conn.smembers(&room_index_key).await.unwrap();
+        let total_count: i64 = verify_conn.get(&total_key).await.unwrap_or(0);
+        let user_count: i64 = verify_conn.get(&user_key).await.unwrap_or(0);
+        let room_count: i64 = verify_conn.get(&room_key).await.unwrap_or(0);
 
         assert!(
             !metadata_exists,
@@ -5458,6 +5588,9 @@ mod tests {
             room_members.is_empty(),
             "pending retry processing must remove stale room index members"
         );
+        assert_eq!(total_count, 0);
+        assert_eq!(user_count, 0);
+        assert_eq!(room_count, 0);
 
         manager.shutdown().await;
     }
@@ -5467,6 +5600,7 @@ mod tests {
         // Verify that ConnectionInfoPersistent can be serialized/deserialized
         let persistent = ConnectionInfoPersistent {
             connection_id: "conn1".to_string(),
+            registration_token: "token1".to_string(),
             user_id: UserId::from(20_000_401),
             room_id: Some(RoomId::from(20_000_402)),
             connected_at_unix: 1000,
@@ -5480,6 +5614,7 @@ mod tests {
         let deserialized: ConnectionInfoPersistent = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.connection_id, "conn1");
+        assert_eq!(deserialized.registration_token, "token1");
         assert_eq!(deserialized.user_id, UserId::from(20_000_401));
         assert_eq!(deserialized.room_id, Some(RoomId::from(20_000_402)));
         assert_eq!(deserialized.message_count, 5);

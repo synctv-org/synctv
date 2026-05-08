@@ -78,6 +78,8 @@ pub struct HlsProxyClient {
     playlist_cache: Cache<String, Option<String>>,
     /// Cluster authentication secret for gRPC metadata
     cluster_secret: Option<String>,
+    /// Maximum decoded gRPC message size for playlist and segment responses.
+    grpc_max_message_size_bytes: usize,
     /// Pooled gRPC connections to publisher nodes
     connection_pool: GrpcConnectionPool,
     /// Cache hit counter for monitoring
@@ -157,6 +159,7 @@ impl HlsProxyClient {
             segment_cache,
             playlist_cache,
             cluster_secret,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
             connection_pool: GrpcConnectionPool::with_defaults(),
             cache_hits: Arc::new(AtomicU64::new(0)),
             cache_misses: Arc::new(AtomicU64::new(0)),
@@ -179,6 +182,13 @@ impl HlsProxyClient {
     #[must_use]
     pub fn with_connection_pool(mut self, pool: GrpcConnectionPool) -> Self {
         self.connection_pool = pool;
+        self
+    }
+
+    /// Set the maximum decoded gRPC message size.
+    #[must_use]
+    pub const fn with_grpc_max_message_size(mut self, max_message_size_bytes: usize) -> Self {
+        self.grpc_max_message_size_bytes = max_message_size_bytes;
         self
     }
 
@@ -396,7 +406,9 @@ impl HlsProxyClient {
                 self.connection_pool.invalidate(api_address);
                 anyhow::anyhow!("Failed to connect to publisher API at {api_address}: {e}")
             })?;
-        Ok(StreamRelayServiceClient::new(channel))
+        Ok(StreamRelayServiceClient::new(channel)
+            .max_decoding_message_size(self.grpc_max_message_size_bytes)
+            .max_encoding_message_size(self.grpc_max_message_size_bytes))
     }
 
     /// Invalidate all cached segments and playlists for a given stream.

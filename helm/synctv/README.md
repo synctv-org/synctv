@@ -121,7 +121,7 @@ Notes:
 
 - PostgreSQL standard mode uses `SYNCTV_DATABASE_PASSWORD` from the chart secret
 - Redis standard mode uses `SYNCTV_REDIS_PASSWORD` from the chart secret
-- The PostgreSQL 18 image must mount `/var/lib/postgresql`, not `/var/lib/postgresql/data`
+- The PostgreSQL `18.1-bookworm` image must mount `/var/lib/postgresql`, not `/var/lib/postgresql/data`
 - In standard mode, PostgreSQL and Redis are only reachable through in-cluster `ClusterIP` / Pod networking
 
 ## KubeBlocks Mode

@@ -409,6 +409,49 @@ async fn test_reconcile_does_not_zero_counters_without_distributed_evidence() {
     assert_eq!(room.unwrap_or_default(), 1);
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_unregister_cleanup_is_scoped_to_reused_connection_registration() {
+    let (_container, conn, prefix) = setup_redis().await;
+
+    let manager = distributed_manager(ConnectionLimits::default(), conn.clone(), &prefix);
+    let user_id = uid("user_reuse");
+    let room_id = rid("room_reuse");
+    let connection_id = "conn_reuse".to_string();
+
+    manager
+        .register(connection_id.clone(), user_id)
+        .await
+        .unwrap();
+    manager.join_room(&connection_id, room_id).await.unwrap();
+    manager.unregister(&connection_id).await;
+
+    manager
+        .register(connection_id.clone(), user_id)
+        .await
+        .unwrap();
+    manager.join_room(&connection_id, room_id).await.unwrap();
+    manager.unregister(&connection_id).await;
+
+    let mut redis_conn = conn.clone();
+    let total: Option<i64> = redis_conn
+        .get(format!("{prefix}connections:total"))
+        .await
+        .unwrap();
+    let user: Option<i64> = redis_conn
+        .get(format!("{prefix}connections:user:{user_id}"))
+        .await
+        .unwrap();
+    let room: Option<i64> = redis_conn
+        .get(format!("{prefix}connections:room:{room_id}"))
+        .await
+        .unwrap();
+
+    assert_eq!(total.unwrap_or_default(), 0);
+    assert_eq!(user.unwrap_or_default(), 0);
+    assert_eq!(room.unwrap_or_default(), 0);
+}
+
 /// Test that distributed counter TTL is set to 2x the refresh interval.
 ///
 /// This verifies the fix for TTL should be 120s (2x 60s refresh interval)

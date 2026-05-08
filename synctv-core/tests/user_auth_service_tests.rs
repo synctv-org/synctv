@@ -211,7 +211,7 @@ impl CacheL2Backend for FailingCacheL2 {
         _key: &str,
         _json: &str,
         _ttl_secs: u64,
-        _new_ts_iso: &str,
+        _new_ts_millis: i64,
     ) -> synctv_core::Result<bool> {
         Err(Error::Internal(
             "simulated username cache backend failure".to_string(),

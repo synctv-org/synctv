@@ -21,7 +21,7 @@ postgresql:
       database: "synctv"
     image:
       repository: postgres
-      tag: "18"
+      tag: "18.1-bookworm"
       pullPolicy: IfNotPresent
     service:
       port: 5432
@@ -57,7 +57,7 @@ redis:
       database: 0
     image:
       repository: redis
-      tag: "8"
+      tag: "8.4.0-bookworm"
       pullPolicy: IfNotPresent
     service:
       port: 6379

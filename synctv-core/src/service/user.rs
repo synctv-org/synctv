@@ -2,7 +2,7 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use redis::AsyncCommands;
@@ -29,6 +29,18 @@ use crate::{
     service::rate_limit::{RateLimiter, RequestRateLimiterService},
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
+
+static CONSUME_REDIS_VALUE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local value = redis.call("GET", KEYS[1])
+        if value then
+            redis.call("DEL", KEYS[1])
+        end
+        return value
+        "#,
+    )
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationMode {
@@ -679,19 +691,10 @@ impl OpaqueLoginSessionStore for RedisOpaqueLoginSessionStore {
     async fn consume(&self, session_id: &str) -> Result<Option<OpaqueLoginSession>> {
         let key = self.redis_key(session_id);
         let mut conn = self.runtime.snapshot().await;
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
         let value: Option<String> = self
             .run_redis_op(
                 "consume OPAQUE login session from Redis",
-                lua_script.key(key).invoke_async(&mut conn),
+                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
             .await?;
 
@@ -732,19 +735,10 @@ impl OpaqueRegistrationSessionStore for RedisOpaqueRegistrationSessionStore {
     async fn consume(&self, session_id: &str) -> Result<Option<OpaqueRegistrationSession>> {
         let key = self.redis_key(session_id);
         let mut conn = self.runtime.snapshot().await;
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
         let value: Option<String> = self
             .run_redis_op(
                 "consume OPAQUE registration session from Redis",
-                lua_script.key(key).invoke_async(&mut conn),
+                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
             .await?;
 
@@ -793,19 +787,10 @@ impl MfaSessionStore for RedisMfaSessionStore {
     async fn consume(&self, session_id: &str) -> Result<Option<MfaSession>> {
         let key = self.redis_key(session_id);
         let mut conn = self.runtime.snapshot().await;
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
         let value: Option<String> = self
             .run_redis_op(
                 "consume MFA session from Redis",
-                lua_script.key(key).invoke_async(&mut conn),
+                CONSUME_REDIS_VALUE_SCRIPT.key(key).invoke_async(&mut conn),
             )
             .await?;
 

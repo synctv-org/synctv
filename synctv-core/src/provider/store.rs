@@ -1,7 +1,7 @@
 // Provider Store - key-value storage abstraction for provider caching and locking
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use moka::Expiry;
@@ -10,6 +10,17 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{RedisConnectionRuntime, SharedStateProfile};
+
+static DELETE_LOCK_IF_OWNER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("DEL", KEYS[1])
+        end
+        return 0
+        "#,
+    )
+});
 
 /// Errors returned by provider store operations.
 #[derive(Debug, Error)]
@@ -296,16 +307,8 @@ impl ProviderStore for RedisProviderStore {
                 return Ok(StoreLockGuard::new(move || {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         handle.spawn(async move {
-                            let delete_if_owner = redis::Script::new(
-                                r#"
-                                if redis.call("GET", KEYS[1]) == ARGV[1] then
-                                    return redis.call("DEL", KEYS[1])
-                                end
-                                return 0
-                            "#,
-                            );
                             let mut conn = redis_runtime.snapshot().await;
-                            let _: Result<i32, _> = delete_if_owner
+                            let _: Result<i32, _> = DELETE_LOCK_IF_OWNER_SCRIPT
                                 .key(&key_owned)
                                 .arg(&owner_token_owned)
                                 .invoke_async(&mut conn)
@@ -482,8 +485,6 @@ mod tests {
     use async_trait::async_trait;
     use redis::AsyncCommands;
     use std::sync::Arc;
-    use testcontainers::{runners::AsyncRunner, ContainerAsync};
-    use testcontainers_modules::redis::Redis;
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
     struct TestData {
@@ -513,29 +514,10 @@ mod tests {
     }
 
     async fn start_redis() -> (
-        ContainerAsync<Redis>,
+        synctv_core_testing::RedisContainer,
         Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     ) {
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis container");
-        let host = container
-            .get_host()
-            .await
-            .expect("Failed to get Redis host");
-        let port = container
-            .get_host_port_ipv4(6379)
-            .await
-            .expect("Failed to get Redis port");
-        let redis_url = format!("redis://{host}:{port}");
-        let client =
-            redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
-        let conn = client
-            .get_connection_manager()
-            .await
-            .expect("Failed to create ConnectionManager");
-        (container, Arc::new(tokio::sync::RwLock::new(conn)))
+        synctv_core_testing::start_redis_handle().await
     }
 
     #[tokio::test]

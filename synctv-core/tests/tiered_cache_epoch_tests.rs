@@ -116,7 +116,7 @@ impl CacheL2Backend for DelayedL2 {
         key: &str,
         json: &str,
         ttl_secs: u64,
-        _new_ts_iso: &str,
+        _new_ts_millis: i64,
     ) -> Result<bool> {
         self.set(key, json, ttl_secs).await?;
         Ok(true)

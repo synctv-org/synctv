@@ -1,3 +1,4 @@
+{{- if not .Values.existingConfigMap }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -284,3 +285,4 @@ data:
       allow_subdomains: {{ $webauthn.allowSubdomains | default false }}
       allow_any_port: {{ $webauthn.allowAnyPort | default false }}
       timeout_seconds: {{ $webauthn.timeoutSeconds | default 300 }}
+{{- end }}

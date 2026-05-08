@@ -8,7 +8,7 @@ use failsafe::{backoff, failure_policy, Config as CbConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
@@ -50,6 +50,156 @@ const NODES_CACHE_TTL_SECS: u64 = 2;
 const MAX_INDEX_SCAN_ITERATIONS: usize = 1000;
 const NODE_METADATA_DISCOVERY_KEY: &str = "discovery";
 const NODE_DISCOVERY_SOURCE_K8S_DNS: &str = "k8s_dns";
+
+static REGISTER_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local key = KEYS[1]
+        local index_key = KEYS[2]
+        local new_node_json = ARGV[1]
+        local ttl = tonumber(ARGV[2])
+        local local_epoch = tonumber(ARGV[3])
+        local node_id = ARGV[4]
+
+        -- Parse incoming node info
+        local new_node = cjson.decode(new_node_json)
+
+        -- Read existing value
+        local existing = redis.call('GET', key)
+        local existing_epoch = 0
+
+        if existing then
+            local existing_info = cjson.decode(existing)
+            -- Only use existing epoch if it's the same node
+            if existing_info.node_id == node_id then
+                existing_epoch = existing_info.epoch or 0
+            end
+        end
+
+        -- Calculate new epoch: max(existing + 1, local_epoch + 1, 1)
+        local new_epoch = math.max(existing_epoch + 1, local_epoch + 1, 1)
+
+        -- Update node info with new epoch and current timestamp
+        new_node['epoch'] = new_epoch
+        new_node['last_heartbeat'] = ARGV[5]
+
+        -- Write with TTL
+        local final_json = cjson.encode(new_node)
+        redis.call('SETEX', key, ttl, final_json)
+        redis.call('SADD', index_key, node_id)
+        redis.call('EXPIRE', index_key, ttl)
+
+        return new_epoch
+        ",
+    )
+});
+
+static HEARTBEAT_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local key = KEYS[1]
+        local index_key = KEYS[2]
+        local expected_epoch = tonumber(ARGV[1])
+        local new_node_json = ARGV[2]
+        local ttl = tonumber(ARGV[3])
+        local now_str = ARGV[4]
+        local node_id = ARGV[5]
+
+        local existing = redis.call('GET', key)
+        if not existing then
+            return -1
+        end
+
+        local existing_info = cjson.decode(existing)
+        local remote_epoch = existing_info.epoch or 0
+
+        if remote_epoch ~= expected_epoch then
+            -- Epoch mismatch: encode remote_epoch with offset to avoid 0-ambiguity
+            return -(1000 + remote_epoch)
+        end
+
+        -- Epoch matches: update heartbeat and refresh TTL
+        local node = cjson.decode(new_node_json)
+        node['last_heartbeat'] = now_str
+        node['epoch'] = expected_epoch
+        local final_json = cjson.encode(node)
+        redis.call('SETEX', key, ttl, final_json)
+        redis.call('SADD', index_key, node_id)
+        redis.call('EXPIRE', index_key, ttl)
+        return expected_epoch
+        ",
+    )
+});
+
+static UNREGISTER_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local key = KEYS[1]
+        local index_key = KEYS[2]
+        local expected_epoch = tonumber(ARGV[1])
+        local node_id = ARGV[2]
+
+        local existing = redis.call('GET', key)
+        if not existing then
+            return -1
+        end
+
+        local existing_info = cjson.decode(existing)
+        local remote_epoch = existing_info.epoch or 0
+
+        if remote_epoch > expected_epoch then
+            return 0
+        end
+
+        redis.call('DEL', key)
+        redis.call('SREM', index_key, node_id)
+        return 1
+        ",
+    )
+});
+
+static REGISTER_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local key = KEYS[1]
+        local index_key = KEYS[2]
+        local new_json = ARGV[1]
+        local ttl = tonumber(ARGV[2])
+        local incoming_epoch = tonumber(ARGV[3])
+        local node_id = ARGV[4]
+
+        local existing = redis.call('GET', key)
+        if existing then
+            local existing_info = cjson.decode(existing)
+            local existing_epoch = existing_info.epoch or 0
+            if existing_epoch > incoming_epoch then
+                return 0
+            end
+        end
+
+        redis.call('SETEX', key, ttl, new_json)
+        redis.call('SADD', index_key, node_id)
+        redis.call('EXPIRE', index_key, ttl)
+        return 1
+        ",
+    )
+});
+
+static HEARTBEAT_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local val = redis.call('GET', KEYS[1])
+        if not val then return nil end
+        local obj = cjson.decode(val)
+        obj['last_heartbeat'] = ARGV[1]
+        local updated = cjson.encode(obj)
+        redis.call('SETEX', KEYS[1], ARGV[2], updated)
+        redis.call('SADD', KEYS[2], ARGV[3])
+        redis.call('EXPIRE', KEYS[2], ARGV[2])
+        return updated
+        ",
+    )
+});
 
 /// Create a failsafe circuit breaker for Redis operations.
 ///
@@ -889,53 +1039,10 @@ impl NodeRegistry {
         let node_json = serde_json::to_string(&node_info)
             .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
 
-        // Atomic Lua script: read epoch, increment, write with TTL
-        // Returns the new epoch assigned
-        let script = redis::Script::new(
-            r"
-            local key = KEYS[1]
-            local index_key = KEYS[2]
-            local new_node_json = ARGV[1]
-            local ttl = tonumber(ARGV[2])
-            local local_epoch = tonumber(ARGV[3])
-            local node_id = ARGV[4]
-
-            -- Parse incoming node info
-            local new_node = cjson.decode(new_node_json)
-
-            -- Read existing value
-            local existing = redis.call('GET', key)
-            local existing_epoch = 0
-
-            if existing then
-                local existing_info = cjson.decode(existing)
-                -- Only use existing epoch if it's the same node
-                if existing_info.node_id == node_id then
-                    existing_epoch = existing_info.epoch or 0
-                end
-            end
-
-            -- Calculate new epoch: max(existing + 1, local_epoch + 1, 1)
-            local new_epoch = math.max(existing_epoch + 1, local_epoch + 1, 1)
-
-            -- Update node info with new epoch and current timestamp
-            new_node['epoch'] = new_epoch
-            new_node['last_heartbeat'] = ARGV[5]
-
-            -- Write with TTL
-            local final_json = cjson.encode(new_node)
-            redis.call('SETEX', key, ttl, final_json)
-            redis.call('SADD', index_key, node_id)
-            redis.call('EXPIRE', index_key, ttl)
-
-            return new_epoch
-            ",
-        );
-
         let now_rfc3339 = Utc::now().to_rfc3339();
         let op_result: std::result::Result<u64, Error> = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            script
+            REGISTER_NODE_SCRIPT
                 .key(&key)
                 .key(&index_key)
                 .arg(&node_json)
@@ -1047,44 +1154,9 @@ impl NodeRegistry {
             // We use -(1000 + remote_epoch) instead of -remote_epoch to avoid
             // ambiguity when remote_epoch == 0 (which would return 0, colliding
             // with a successful epoch-0 result).
-            let script = redis::Script::new(
-                r"
-                local key = KEYS[1]
-                local index_key = KEYS[2]
-                local expected_epoch = tonumber(ARGV[1])
-                local new_node_json = ARGV[2]
-                local ttl = tonumber(ARGV[3])
-                local now_str = ARGV[4]
-                local node_id = ARGV[5]
-
-                local existing = redis.call('GET', key)
-                if not existing then
-                    return -1
-                end
-
-                local existing_info = cjson.decode(existing)
-                local remote_epoch = existing_info.epoch or 0
-
-                if remote_epoch ~= expected_epoch then
-                    -- Epoch mismatch: encode remote_epoch with offset to avoid 0-ambiguity
-                    return -(1000 + remote_epoch)
-                end
-
-                -- Epoch matches: update heartbeat and refresh TTL
-                local node = cjson.decode(new_node_json)
-                node['last_heartbeat'] = now_str
-                node['epoch'] = expected_epoch
-                local final_json = cjson.encode(node)
-                redis.call('SETEX', key, ttl, final_json)
-                redis.call('SADD', index_key, node_id)
-                redis.call('EXPIRE', index_key, ttl)
-                return expected_epoch
-                ",
-            );
-
             let op_result: std::result::Result<i64, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script
+                HEARTBEAT_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
                     .arg(current_epoch)
@@ -1230,37 +1302,9 @@ impl NodeRegistry {
             let index_key = self.node_index_key();
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
 
-            // Atomic Lua script: only delete if existing epoch <= our epoch
-            // Returns 1 if deleted, 0 if skipped (newer epoch exists), -1 if key not found
-            let script = redis::Script::new(
-                r"
-                local key = KEYS[1]
-                local index_key = KEYS[2]
-                local local_epoch = tonumber(ARGV[1])
-                local node_id = ARGV[2]
-
-                local existing = redis.call('GET', key)
-                if not existing then
-                    return -1
-                end
-
-                local existing_info = cjson.decode(existing)
-                local remote_epoch = existing_info.epoch or 0
-
-                if remote_epoch > local_epoch then
-                    -- Newer registration exists, don't delete
-                    return 0
-                end
-
-                redis.call('DEL', key)
-                redis.call('SREM', index_key, node_id)
-                return 1
-                ",
-            );
-
             let op_result: std::result::Result<i64, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script
+                UNREGISTER_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
                     .arg(current_epoch)
@@ -1306,36 +1350,9 @@ impl NodeRegistry {
                 .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
             let ttl = self.heartbeat_timeout_secs * 2;
 
-            // Atomic Lua script: only register if incoming epoch >= existing epoch
-            // Returns 1 if written, 0 if rejected (existing epoch is higher)
-            let script = redis::Script::new(
-                r"
-                local key = KEYS[1]
-                local index_key = KEYS[2]
-                local new_json = ARGV[1]
-                local ttl = tonumber(ARGV[2])
-                local incoming_epoch = tonumber(ARGV[3])
-                local node_id = ARGV[4]
-
-                local existing = redis.call('GET', key)
-                if existing then
-                    local existing_info = cjson.decode(existing)
-                    local existing_epoch = existing_info.epoch or 0
-                    if existing_epoch > incoming_epoch then
-                        return 0
-                    end
-                end
-
-                redis.call('SETEX', key, ttl, new_json)
-                redis.call('SADD', index_key, node_id)
-                redis.call('EXPIRE', index_key, ttl)
-                return 1
-                ",
-            );
-
             let op_result: std::result::Result<i64, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script
+                REGISTER_REMOTE_NODE_SCRIPT
                     .key(&key)
                     .key(&index_key)
                     .arg(&value)
@@ -1378,24 +1395,9 @@ impl NodeRegistry {
         let now = Utc::now().to_rfc3339();
         let ttl = self.heartbeat_timeout_secs * 2;
 
-        // Atomic Lua: read → update last_heartbeat → write back with fresh TTL
-        let script = redis::Script::new(
-            r"
-            local val = redis.call('GET', KEYS[1])
-            if not val then return nil end
-            local obj = cjson.decode(val)
-            obj['last_heartbeat'] = ARGV[1]
-            local updated = cjson.encode(obj)
-            redis.call('SETEX', KEYS[1], ARGV[2], updated)
-            redis.call('SADD', KEYS[2], ARGV[3])
-            redis.call('EXPIRE', KEYS[2], ARGV[2])
-            return updated
-            ",
-        );
-
         let op_result: std::result::Result<Option<String>, Error> = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            script
+            HEARTBEAT_REMOTE_NODE_SCRIPT
                 .key(&key)
                 .key(&index_key)
                 .arg(&now)
@@ -1441,35 +1443,9 @@ impl NodeRegistry {
 
             // Use epoch validation if provided, otherwise just delete
             if let Some(epoch) = expected_epoch {
-                // Atomic Lua script: only delete if existing epoch <= expected epoch
-                let script = redis::Script::new(
-                    r"
-                    local key = KEYS[1]
-                    local index_key = KEYS[2]
-                    local expected_epoch = tonumber(ARGV[1])
-                    local node_id = ARGV[2]
-
-                    local existing = redis.call('GET', key)
-                    if not existing then
-                        return -1
-                    end
-
-                    local existing_info = cjson.decode(existing)
-                    local remote_epoch = existing_info.epoch or 0
-
-                    if remote_epoch > expected_epoch then
-                        return 0
-                    end
-
-                    redis.call('DEL', key)
-                    redis.call('SREM', index_key, node_id)
-                    return 1
-                    ",
-                );
-
                 let op_result: std::result::Result<i64, Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    script
+                    UNREGISTER_NODE_SCRIPT
                         .key(&key)
                         .key(&index_key)
                         .arg(epoch)

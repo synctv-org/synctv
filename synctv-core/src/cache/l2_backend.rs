@@ -25,12 +25,17 @@ static SET_IF_NEWER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
         local existing = redis.call('GET', KEYS[1])
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
-            if ok and obj and obj.updated_at then
-                local existing_ts = obj.updated_at
-                local new_ts = ARGV[3]
+            if ok and obj and obj.updated_at_ms then
+                local existing_ts = tonumber(obj.updated_at_ms)
+                local new_ts = tonumber(ARGV[3])
+                if not existing_ts or not new_ts then
+                    return 0
+                end
                 if new_ts <= existing_ts then
                     return 0
                 end
+            elseif ok and obj then
+                return 0
             end
         end
         redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
@@ -45,12 +50,17 @@ static SET_IF_NEWER_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
         local existing = redis.call('GET', KEYS[1])
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
-            if ok and obj and obj.updated_at then
-                local existing_ts = obj.updated_at
-                local new_ts = ARGV[3]
+            if ok and obj and obj.updated_at_ms then
+                local existing_ts = tonumber(obj.updated_at_ms)
+                local new_ts = tonumber(ARGV[3])
+                if not existing_ts or not new_ts then
+                    return 0
+                end
                 if new_ts <= existing_ts then
                     return 0
                 end
+            elseif ok and obj then
+                return 0
             end
         end
         redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
@@ -60,6 +70,65 @@ static SET_IF_NEWER_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
         ",
     )
 });
+
+fn json_with_updated_at_ms(json: &str, updated_at_ms: i64) -> Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+        Error::Internal(format!(
+            "Failed to parse L2 set-if-newer JSON payload: {error}"
+        ))
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "updated_at_ms".to_string(),
+            serde_json::Value::Number(updated_at_ms.into()),
+        );
+    }
+    serde_json::to_string(&value).map_err(|error| {
+        Error::Internal(format!(
+            "Failed to serialize L2 set-if-newer JSON payload: {error}"
+        ))
+    })
+}
+
+fn json_with_inferred_updated_at_ms(json: &str) -> Result<String> {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Ok(json.to_string());
+    };
+
+    let Some(object) = value.as_object_mut() else {
+        return Ok(json.to_string());
+    };
+
+    if object.contains_key("updated_at_ms") {
+        return serde_json::to_string(&value).map_err(|error| {
+            Error::Internal(format!(
+                "Failed to serialize L2 cache JSON payload: {error}"
+            ))
+        });
+    }
+
+    let Some(updated_at) = object.get("updated_at").and_then(serde_json::Value::as_str) else {
+        return Ok(json.to_string());
+    };
+
+    let updated_at_ms = chrono::DateTime::parse_from_rfc3339(updated_at)
+        .map_err(|error| {
+            Error::Internal(format!(
+                "Failed to parse L2 cache updated_at timestamp '{updated_at}': {error}"
+            ))
+        })?
+        .timestamp_millis();
+    object.insert(
+        "updated_at_ms".to_string(),
+        serde_json::Value::Number(updated_at_ms.into()),
+    );
+
+    serde_json::to_string(&value).map_err(|error| {
+        Error::Internal(format!(
+            "Failed to serialize L2 cache JSON payload: {error}"
+        ))
+    })
+}
 
 async fn run_l2_redis_attempt<T, F>(future: F) -> std::result::Result<T, L2RedisAttemptError>
 where
@@ -150,14 +219,14 @@ pub trait CacheL2Backend: Send + Sync {
 
     /// Atomically set a value only if it's newer than the existing value.
     ///
-    /// `new_ts_iso` is the ISO-8601 timestamp string of the new value's `updated_at` field.
+    /// `new_ts_millis` is the epoch-millisecond timestamp of the new value's `updated_at` field.
     /// Returns `true` if the value was set (new is newer), `false` if skipped.
     async fn set_if_newer(
         &self,
         key: &str,
         json: &str,
         ttl_secs: u64,
-        new_ts_iso: &str,
+        new_ts_millis: i64,
     ) -> Result<bool>;
 
     /// Atomically set a value only if it's newer than the existing value within
@@ -168,9 +237,9 @@ pub trait CacheL2Backend: Send + Sync {
         key: &str,
         json: &str,
         ttl_secs: u64,
-        new_ts_iso: &str,
+        new_ts_millis: i64,
     ) -> Result<bool> {
-        self.set_if_newer(key, json, ttl_secs, new_ts_iso).await
+        self.set_if_newer(key, json, ttl_secs, new_ts_millis).await
     }
 
     /// Delete all keys matching the given prefix.
@@ -286,6 +355,7 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
+        let json = json_with_inferred_updated_at_ms(json)?;
 
         run_l2_redis_op(
             "set in L2 cache",
@@ -300,12 +370,13 @@ impl CacheL2Backend for RedisCacheL2 {
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs);
         let now = Self::now_unix_seconds();
+        let json = json_with_inferred_updated_at_ms(json)?;
 
         let mut pipe = redis::pipe();
         pipe.atomic()
             .cmd("SET")
             .arg(key)
-            .arg(json)
+            .arg(&json)
             .arg("EX")
             .arg(ttl_secs)
             .ignore()
@@ -561,17 +632,18 @@ impl CacheL2Backend for RedisCacheL2 {
         key: &str,
         json: &str,
         ttl_secs: u64,
-        new_ts_iso: &str,
+        new_ts_millis: i64,
     ) -> Result<bool> {
         let mut conn = self.conn().await;
+        let json = json_with_updated_at_ms(json, new_ts_millis)?;
 
         let result: i64 = run_l2_redis_op(
             "run set_if_newer Lua script",
             SET_IF_NEWER_SCRIPT
                 .key(key)
-                .arg(json)
+                .arg(&json)
                 .arg(ttl_secs.cast_signed())
-                .arg(new_ts_iso)
+                .arg(new_ts_millis)
                 .invoke_async(&mut conn),
         )
         .await?;
@@ -585,21 +657,22 @@ impl CacheL2Backend for RedisCacheL2 {
         key: &str,
         json: &str,
         ttl_secs: u64,
-        new_ts_iso: &str,
+        new_ts_millis: i64,
     ) -> Result<bool> {
         let mut conn = self.conn().await;
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs);
         let now = Self::now_unix_seconds();
+        let json = json_with_updated_at_ms(json, new_ts_millis)?;
 
         let result: i64 = run_l2_redis_op(
             "run set_if_newer Lua script",
             SET_IF_NEWER_SCOPED_SCRIPT
                 .key(key)
                 .key(&index_key)
-                .arg(json)
+                .arg(&json)
                 .arg(ttl_secs.cast_signed())
-                .arg(new_ts_iso)
+                .arg(new_ts_millis)
                 .arg(expires_at)
                 .arg(now)
                 .invoke_async(&mut conn),
@@ -692,7 +765,7 @@ impl CacheL2Backend for NoopCacheL2 {
         _key: &str,
         _json: &str,
         _ttl_secs: u64,
-        _new_ts_iso: &str,
+        _new_ts_millis: i64,
     ) -> Result<bool> {
         // No L2 — always allow the caller to proceed with L1 update
         Ok(true)
@@ -799,7 +872,7 @@ mod tests {
             _key: &str,
             _json: &str,
             _ttl_secs: u64,
-            _new_ts_iso: &str,
+            _new_ts_millis: i64,
         ) -> Result<bool> {
             tokio::time::sleep(self.delay).await;
             Ok(true)
@@ -932,7 +1005,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             TEST_TIMEOUT,
-            backend.set_if_newer("key", "{}", 60, "2024-01-01T00:00:00Z"),
+            backend.set_if_newer("key", "{}", 60, 1_704_067_200_000),
         )
         .await;
 

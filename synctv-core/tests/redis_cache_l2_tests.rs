@@ -10,6 +10,19 @@ use redis::AsyncCommands;
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use synctv_core_testing::start_redis as start_test_redis;
 
+fn ts_millis(ts: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .expect("test timestamp should parse")
+        .timestamp_millis()
+}
+
+fn assert_stored_name(stored: Option<String>, expected_name: &str, expected_ts: i64) {
+    let value: serde_json::Value =
+        serde_json::from_str(&stored.expect("cache value should exist")).unwrap();
+    assert_eq!(value["name"], expected_name);
+    assert_eq!(value["updated_at_ms"], expected_ts);
+}
+
 async fn start_redis() -> (
     synctv_core_testing::RedisContainer,
     redis::aio::ConnectionManager,
@@ -27,7 +40,7 @@ async fn test_set_if_newer_absent_key() {
 
     let key = "test:sin:absent";
     let json = r#"{"name":"alice","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let ts = "2024-01-01T12:00:00Z";
+    let ts = ts_millis("2024-01-01T12:00:00Z");
 
     // Setting an absent key should succeed
     let was_set = l2.set_if_newer(key, json, 300, ts).await.unwrap();
@@ -35,7 +48,7 @@ async fn test_set_if_newer_absent_key() {
 
     // Verify it was actually stored
     let stored = l2.get(key).await.unwrap();
-    assert_eq!(stored.as_deref(), Some(json));
+    assert_stored_name(stored, "alice", ts);
 }
 
 #[tokio::test]
@@ -46,9 +59,9 @@ async fn test_set_if_newer_newer_wins() {
 
     let key = "test:sin:newer_wins";
     let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let old_ts = "2024-01-01T12:00:00Z";
+    let old_ts = ts_millis("2024-01-01T12:00:00Z");
     let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
-    let new_ts = "2024-06-15T12:00:00Z";
+    let new_ts = ts_millis("2024-06-15T12:00:00Z");
 
     // Set the old value first
     l2.set_if_newer(key, old_json, 300, old_ts).await.unwrap();
@@ -58,7 +71,7 @@ async fn test_set_if_newer_newer_wins() {
     assert!(was_set, "Newer value should overwrite older value");
 
     let stored = l2.get(key).await.unwrap();
-    assert_eq!(stored.as_deref(), Some(new_json));
+    assert_stored_name(stored, "alice_new", new_ts);
 }
 
 #[tokio::test]
@@ -69,9 +82,9 @@ async fn test_set_if_newer_older_rejected() {
 
     let key = "test:sin:older_rejected";
     let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
-    let new_ts = "2024-06-15T12:00:00Z";
+    let new_ts = ts_millis("2024-06-15T12:00:00Z");
     let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let old_ts = "2024-01-01T12:00:00Z";
+    let old_ts = ts_millis("2024-01-01T12:00:00Z");
 
     // Set the newer value first
     l2.set_if_newer(key, new_json, 300, new_ts).await.unwrap();
@@ -82,7 +95,61 @@ async fn test_set_if_newer_older_rejected() {
 
     // Value should still be the newer one
     let stored = l2.get(key).await.unwrap();
-    assert_eq!(stored.as_deref(), Some(new_json));
+    assert_stored_name(stored, "alice_new", new_ts);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_if_newer_rejects_older_value_after_normal_set() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
+
+    let key = "test:sin:normal_set_then_older_rejected";
+    let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
+    let new_ts = ts_millis("2024-06-15T12:00:00Z");
+    let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
+    let old_ts = ts_millis("2024-01-01T12:00:00Z");
+
+    l2.set(key, new_json, 300).await.unwrap();
+
+    let was_set = l2.set_if_newer(key, old_json, 300, old_ts).await.unwrap();
+    assert!(
+        !was_set,
+        "Older value should be rejected after a normal L2 set"
+    );
+
+    let stored = l2.get(key).await.unwrap();
+    assert_stored_name(stored, "alice_new", new_ts);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_if_newer_rejects_existing_timestamped_value_without_numeric_epoch() {
+    let (_container, conn) = start_redis().await;
+    let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
+
+    let key = "test:sin:missing_epoch_rejected";
+    let existing_json = r#"{"name":"alice_existing","updated_at":"2024-06-15T12:00:00Z"}"#;
+    let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
+    let old_ts = ts_millis("2024-01-01T12:00:00Z");
+
+    let mut raw_conn = conn;
+    raw_conn
+        .set_ex::<_, _, ()>(key, existing_json, 300)
+        .await
+        .unwrap();
+
+    let was_set = l2.set_if_newer(key, old_json, 300, old_ts).await.unwrap();
+    assert!(
+        !was_set,
+        "Existing timestamped values without updated_at_ms must fail closed"
+    );
+
+    let stored = l2.get(key).await.unwrap().unwrap();
+    assert!(
+        stored.contains("alice_existing"),
+        "non-normalized existing value should remain untouched; got {stored}"
+    );
 }
 
 #[tokio::test]
@@ -103,10 +170,10 @@ async fn test_set_if_newer_concurrent() {
             r#"{{"name":"worker_{i}","updated_at":"2024-{:02}-15T12:00:00Z"}}"#,
             i + 1
         );
-        let ts = format!("2024-{:02}-15T12:00:00Z", i + 1);
+        let ts = ts_millis(&format!("2024-{:02}-15T12:00:00Z", i + 1));
         let k = key.to_string();
         handles.push(tokio::spawn(async move {
-            l2_clone.set_if_newer(&k, &json, 300, &ts).await
+            l2_clone.set_if_newer(&k, &json, 300, ts).await
         }));
     }
 

@@ -1818,6 +1818,89 @@ impl Config {
         self.local_publish_host()
     }
 
+    fn apply_redis_url_component_env_overrides(
+        &mut self,
+        get_env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<(), ConfigError> {
+        if self.redis.url.trim().is_empty() {
+            return Ok(());
+        }
+
+        let host = get_env("SYNCTV_REDIS_HOST");
+        let port = get_env("SYNCTV_REDIS_PORT");
+        let user = get_env("SYNCTV_REDIS_USER");
+        let username_env = get_env("SYNCTV_REDIS_USERNAME");
+        let username = username_env.or(user);
+        let mut password = get_env("SYNCTV_REDIS_PASSWORD");
+        if let Some(path) = get_env("SYNCTV_REDIS_PASSWORD_FILE") {
+            password = Some(load_config_string_from_file(
+                Path::new("<environment>"),
+                &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                "redis.password",
+                &path,
+            )?);
+        }
+        let database = get_env("SYNCTV_REDIS_DATABASE");
+
+        if host.is_none()
+            && port.is_none()
+            && username.is_none()
+            && password.is_none()
+            && database.is_none()
+        {
+            return Ok(());
+        }
+
+        let mut url = url::Url::parse(&self.redis.url).map_err(|error| {
+            ConfigError::Message(format!(
+                "Cannot apply Redis environment overrides to redis.url '{}': {error}",
+                self.redis.url
+            ))
+        })?;
+
+        if let Some(host) = host {
+            url.set_host(Some(host.trim())).map_err(|_| {
+                ConfigError::Message(format!(
+                    "Invalid value for environment variable SYNCTV_REDIS_HOST: '{host}'"
+                ))
+            })?;
+        }
+        if let Some(port) = port {
+            let port = port.parse::<u16>().map_err(|error| {
+                ConfigError::Message(format!(
+                    "Invalid value for environment variable SYNCTV_REDIS_PORT: '{port}' ({error})"
+                ))
+            })?;
+            url.set_port(Some(port)).map_err(|()| {
+                ConfigError::Message(format!(
+                    "Cannot apply SYNCTV_REDIS_PORT to redis.url '{}'",
+                    self.redis.url
+                ))
+            })?;
+        }
+        if let Some(username) = username {
+            url.set_username(&username).map_err(|()| {
+                ConfigError::Message("Cannot apply SYNCTV_REDIS_USERNAME to redis.url".to_string())
+            })?;
+        }
+        if let Some(password) = password {
+            url.set_password(Some(&password)).map_err(|()| {
+                ConfigError::Message("Cannot apply SYNCTV_REDIS_PASSWORD to redis.url".to_string())
+            })?;
+        }
+        if let Some(database) = database {
+            let database = database.parse::<i64>().map_err(|error| {
+                ConfigError::Message(format!(
+                    "Invalid value for environment variable SYNCTV_REDIS_DATABASE: '{database}' ({error})"
+                ))
+            })?;
+            url.set_path(&format!("/{database}"));
+        }
+
+        self.redis.url = url.to_string();
+        Ok(())
+    }
+
     /// Apply environment variable overrides using single-underscore format.
     ///
     /// Format: `SYNCTV_<SECTION>_<FIELD>=<value>`
@@ -2136,19 +2219,26 @@ impl Config {
             &mut self.database.max_lifetime_seconds,
         )?;
 
+        let redis_url_from_env =
+            get_env("SYNCTV_REDIS_URL").is_some() || get_env("SYNCTV_REDIS_URL_FILE").is_some();
+
         env_override_str("SYNCTV_REDIS_URL", &mut self.redis.url);
         env_override_str_file("SYNCTV_REDIS_URL_FILE", "redis.url", &mut self.redis.url)?;
-        env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
-        env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
-        env_override_str("SYNCTV_REDIS_USER", &mut self.redis.username);
-        env_override_str("SYNCTV_REDIS_USERNAME", &mut self.redis.username);
-        env_override_str("SYNCTV_REDIS_PASSWORD", &mut self.redis.password);
-        env_override_str_file(
-            "SYNCTV_REDIS_PASSWORD_FILE",
-            "redis.password",
-            &mut self.redis.password,
-        )?;
-        env_override_parse("SYNCTV_REDIS_DATABASE", &mut self.redis.database)?;
+        if self.redis.url.trim().is_empty() || redis_url_from_env {
+            env_override_str("SYNCTV_REDIS_HOST", &mut self.redis.host);
+            env_override_parse("SYNCTV_REDIS_PORT", &mut self.redis.port)?;
+            env_override_str("SYNCTV_REDIS_USER", &mut self.redis.username);
+            env_override_str("SYNCTV_REDIS_USERNAME", &mut self.redis.username);
+            env_override_str("SYNCTV_REDIS_PASSWORD", &mut self.redis.password);
+            env_override_str_file(
+                "SYNCTV_REDIS_PASSWORD_FILE",
+                "redis.password",
+                &mut self.redis.password,
+            )?;
+            env_override_parse("SYNCTV_REDIS_DATABASE", &mut self.redis.database)?;
+        } else {
+            self.apply_redis_url_component_env_overrides(get_env)?;
+        }
         env_override_parse(
             "SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS",
             &mut self.redis.connect_timeout_seconds,
@@ -6020,6 +6110,83 @@ jwt:
         assert_eq!(
             config.redis_url(),
             "redis://cache-user:redis-password@redis.example.com:6380/7"
+        );
+    }
+
+    #[test]
+    fn test_redis_split_env_overrides_file_url() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+database:
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+redis:
+  url: "redis://localhost:6379"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::load_with_env_map(
+            Some(config_path.to_str().expect("utf-8 path")),
+            &env_map(&[
+                ("SYNCTV_REDIS_HOST", "redis.example.com"),
+                ("SYNCTV_REDIS_PORT", "6380"),
+                ("SYNCTV_REDIS_PASSWORD", "redis-password"),
+                ("SYNCTV_REDIS_DATABASE", "7"),
+            ]),
+        )
+        .expect("split redis env config should replace file URL");
+
+        assert_eq!(
+            config.redis.url,
+            "redis://:redis-password@redis.example.com:6380/7"
+        );
+        assert_eq!(
+            config.redis_url(),
+            "redis://:redis-password@redis.example.com:6380/7"
+        );
+    }
+
+    #[test]
+    fn test_redis_url_partial_env_overrides_preserve_configured_endpoint() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("synctv.yaml");
+        let redis_password = temp_dir.path().join("redis.password");
+        std::fs::write(&redis_password, "redis-password\n")
+            .expect("redis password file should be written");
+        std::fs::write(
+            &config_path,
+            r#"
+database:
+  url: "postgresql://synctv:synctv@localhost:5432/synctv"
+redis:
+  url: "redis://cache.example.com:6379/2"
+jwt:
+  secret: "12345678901234567890123456789012"
+"#,
+        )
+        .expect("config file should be written");
+
+        let config = Config::load_with_env_map(
+            Some(config_path.to_str().expect("utf-8 path")),
+            &env_map(&[
+                (
+                    "SYNCTV_REDIS_PASSWORD_FILE",
+                    redis_password.to_str().expect("utf-8 path"),
+                ),
+                ("SYNCTV_REDIS_DATABASE", "7"),
+            ]),
+        )
+        .expect("partial redis env config should update the configured URL");
+
+        assert!(config.redis.host.is_empty());
+        assert_eq!(
+            config.redis_url(),
+            "redis://:redis-password@cache.example.com:6379/7"
         );
     }
 

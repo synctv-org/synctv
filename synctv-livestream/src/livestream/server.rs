@@ -83,6 +83,8 @@ pub struct LivestreamConfig {
     pub cluster_enabled: bool,
     /// Cluster secret for authenticating gRPC HLS proxy calls
     pub cluster_secret: Option<String>,
+    /// Maximum gRPC message size for cross-node HLS relay calls.
+    pub grpc_max_message_size_bytes: usize,
     /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// 0 means use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
@@ -926,6 +928,7 @@ impl LivestreamServer {
         // 5b. Create HLS proxy client with the shared pool
         let hls_proxy =
             crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
+                .with_grpc_max_message_size(self.config.grpc_max_message_size_bytes)
                 .with_connection_pool(shared_grpc_pool.clone());
 
         // 5c. Create PullStreamManager with the same shared pool
@@ -1090,6 +1093,7 @@ mod tests {
             stream_timeout_seconds: 5,
             cluster_enabled: false,
             cluster_secret: None,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1485,6 +1489,7 @@ mod tests {
             stream_timeout_seconds: 5,
             cluster_enabled: false,
             cluster_secret: None,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1526,6 +1531,7 @@ mod tests {
             stream_timeout_seconds: 5,
             cluster_enabled: false,
             cluster_secret: None,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),
@@ -1571,6 +1577,7 @@ mod tests {
             stream_timeout_seconds: 5,
             cluster_enabled: false,
             cluster_secret: None,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             api_address: "127.0.0.1:0".to_string(),

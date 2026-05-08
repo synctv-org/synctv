@@ -1245,11 +1245,7 @@ impl CacheInvalidationService {
         // Broadcast via Redis Streams if available
         if self.redis_enabled() {
             match self.do_broadcast_to_stream_internal(&message).await {
-                Ok(()) => {
-                    // Clear the sync flag on successful broadcast
-                    self.needs_state_sync
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                }
+                Ok(()) => {}
                 Err(e) => {
                     // Mark that we need a state sync when Redis recovers
                     self.needs_state_sync

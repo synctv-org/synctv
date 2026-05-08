@@ -1,4 +1,7 @@
 {{- if eq (include "synctv.redis.mode" .) "standard" }}
+{{- if .Values.redis.standard.auth.username }}
+{{- fail "redis.standard.auth.username is not supported when redis.mode=standard because the chart-managed Redis StatefulSet only creates the default user; leave it empty or use kubeblocks/external Redis with ACL users" }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -42,7 +45,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: "{{ .Values.redis.standard.image.repository | default "redis" }}:{{ .Values.redis.standard.image.tag | default "8" }}"
+          image: "{{ .Values.redis.standard.image.repository | default "redis" }}:{{ .Values.redis.standard.image.tag | default "8.4.0-bookworm" }}"
           imagePullPolicy: {{ .Values.redis.standard.image.pullPolicy | default "IfNotPresent" }}
           command: ["sh", "-ec"]
           args:

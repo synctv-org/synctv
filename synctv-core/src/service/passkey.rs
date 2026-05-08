@@ -1,4 +1,8 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use redis::AsyncCommands;
@@ -21,6 +25,18 @@ const PASSKEY_SESSION_TTL_SECS: u64 = 300;
 const PASSKEY_SESSION_CAPACITY: u64 = 10_000;
 const PASSKEY_USER_HANDLE_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x4f5b_14fc_3148_5d64_9e5a_4f6d_9af9_b0f2);
+
+static CONSUME_PASSKEY_SESSION_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local value = redis.call("GET", KEYS[1])
+        if value then
+            redis.call("DEL", KEYS[1])
+        end
+        return value
+        "#,
+    )
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PasskeySession {
@@ -211,19 +227,12 @@ impl PasskeySessionStore for RedisPasskeySessionStore {
     async fn consume(&self, session_id: &str) -> Result<Option<PasskeySession>> {
         let key = self.redis_key(session_id);
         let mut conn = self.runtime.snapshot().await;
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
         let value: Option<String> = self
             .run_redis_op(
                 "consume WebAuthn session from Redis",
-                lua_script.key(key).invoke_async(&mut conn),
+                CONSUME_PASSKEY_SESSION_SCRIPT
+                    .key(key)
+                    .invoke_async(&mut conn),
             )
             .await?;
 

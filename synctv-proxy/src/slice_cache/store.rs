@@ -41,6 +41,40 @@ struct MetaEvictionCandidate {
     key: String,
 }
 
+async fn read_exact_slice_body(
+    mut resp: reqwest::Response,
+    expected_len: usize,
+    request_control: Option<&ExecutionControl>,
+) -> Result<Bytes, anyhow::Error> {
+    let mut data = Vec::with_capacity(expected_len);
+    while let Some(chunk) =
+        run_with_proxy_cancellation("slice cache body read", request_control, resp.chunk())
+            .await?
+            .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?
+    {
+        let next_len = data
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| anyhow::anyhow!("Slice body length overflow"))?;
+        if next_len > expected_len {
+            return Err(anyhow::anyhow!(
+                "Slice body length exceeded Content-Range: got at least {next_len}, expected {expected_len}"
+            ));
+        }
+        data.extend_from_slice(&chunk);
+    }
+
+    if data.len() != expected_len {
+        return Err(anyhow::anyhow!(
+            "Slice body length mismatch: got {}, expected {} from Content-Range",
+            data.len(),
+            expected_len
+        ));
+    }
+
+    Ok(Bytes::from(data))
+}
+
 /// A slice cache backed by a [`CacheBackend`] (memory or file).
 ///
 /// Each cached entry is a [`StoredEntry`] containing the `Bytes` data plus
@@ -1205,18 +1239,26 @@ impl SliceCache {
         let mk = Self::meta_key(url, provider_headers);
         let existing_etag_cloned = self.meta.get(&mk).and_then(|m| m.etag.clone());
 
+        let expected_len = usize::try_from(
+            parsed_content_range
+                .end
+                .saturating_sub(parsed_content_range.start),
+        )
+        .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
+
+        if let Some(content_length) = resp.content_length() {
+            let content_length = usize::try_from(content_length)
+                .map_err(|_| anyhow::anyhow!("Slice Content-Length overflow"))?;
+            if content_length != expected_len {
+                return Err(anyhow::anyhow!(
+                    "Slice body length mismatch: Content-Length got {content_length}, expected {expected_len}"
+                ));
+            }
+        }
+
         if let Some(existing_etag) = &existing_etag_cloned {
             if let Some(new_etag) = &resp_etag {
                 if existing_etag != new_etag {
-                    // Drain the body to release the connection cleanly for
-                    // reqwest's connection pool (dropping an unconsumed
-                    // Response can block while the client drains it anyway).
-                    let _ = run_with_proxy_cancellation(
-                        "slice cache etag mismatch drain",
-                        request_control,
-                        resp.bytes(),
-                    )
-                    .await;
                     // ETag mismatch: resource was modified between slices.
                     // Invalidate all cached slices for this resource.
                     self.invalidate_resource(url, provider_headers, total_size)
@@ -1229,27 +1271,7 @@ impl SliceCache {
             }
         }
 
-        // Read body now that ETag is validated.  Reading eagerly (rather than
-        // on-demand) ensures the connection is properly closed before any
-        // error-path returns.
-        let data =
-            run_with_proxy_cancellation("slice cache body read", request_control, resp.bytes())
-                .await?
-                .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
-
-        let expected_len = usize::try_from(
-            parsed_content_range
-                .end
-                .saturating_sub(parsed_content_range.start),
-        )
-        .map_err(|_| anyhow::anyhow!("Slice length overflow for slice {slice_index}"))?;
-        if data.len() != expected_len {
-            return Err(anyhow::anyhow!(
-                "Slice body length mismatch: got {}, expected {} from Content-Range",
-                data.len(),
-                expected_len
-            ));
-        }
+        let data = read_exact_slice_body(resp, expected_len, request_control).await?;
 
         self.meta.insert(
             mk,

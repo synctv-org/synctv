@@ -16,7 +16,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use synctv_common::ExecutionControl;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -34,6 +34,18 @@ use crate::{
     },
     Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
+
+static CONSUME_OAUTH2_STATE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local value = redis.call("GET", KEYS[1])
+        if value then
+            redis.call("DEL", KEYS[1])
+        end
+        return value
+        "#,
+    )
+});
 
 // OAuthStateStore trait
 
@@ -217,21 +229,12 @@ impl OAuthStateStore for RedisOAuthStateStore {
         let key = self.redis_key(token_id);
         let mut conn = self.get_conn().await;
 
-        // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
-
         let value: Option<String> = self
             .run_redis_op(
                 "consume OAuth2 state from Redis",
-                lua_script.key(&key).invoke_async(&mut conn),
+                CONSUME_OAUTH2_STATE_SCRIPT
+                    .key(&key)
+                    .invoke_async(&mut conn),
             )
             .await?;
 

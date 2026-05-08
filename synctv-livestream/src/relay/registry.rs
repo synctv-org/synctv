@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -40,6 +40,221 @@ const NODE_PUBLISHERS_KEY_PREFIX: &str = "stream:node_publishers";
 const ROOM_PUBLISHERS_KEY_PREFIX: &str = "stream:room_publishers";
 const ACTIVE_PUBLISHERS_KEY: &str = "stream:active_publishers";
 const ACTIVE_PUBLISHER_FETCH_BATCH_SIZE: usize = 128;
+
+static REGISTER_PUBLISHER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local epoch_key = KEYS[1]
+        local hash_key = KEYS[2]
+        local info_json_template = ARGV[1]
+        local ttl = tonumber(ARGV[2])
+        local user_key = ARGV[3]
+        local user_member = ARGV[4]
+        local node_key = ARGV[5]
+        local node_member = ARGV[6]
+        local room_key = ARGV[7]
+        local room_member = ARGV[8]
+        local active_key = ARGV[9]
+        local active_member = ARGV[10]
+
+        -- Check HSETNX FIRST before touching the epoch.
+        -- Use a placeholder JSON with epoch=0 for the initial slot reservation.
+        -- Try to reserve the publisher slot (HSETNX returns 1 if set, 0 if exists)
+        local reserved = redis.call('HSETNX', hash_key, 'publisher', info_json_template)
+
+        if reserved == 0 then
+            -- Slot already taken: another publisher is active.
+            -- Read current epoch for the caller's information (no modification).
+            local current_epoch = redis.call('GET', epoch_key)
+            return {0, tonumber(current_epoch) or 0}
+        end
+
+        -- Slot reserved: now increment epoch atomically.
+        -- Only now does the epoch change, so other nodes never see a spurious increment.
+        local epoch = redis.call('INCR', epoch_key)
+
+        -- Set the actual epoch via cjson (robust, unlike fragile string.gsub).
+        local parsed = cjson.decode(info_json_template)
+        parsed.epoch = epoch
+        local info_json = cjson.encode(parsed)
+
+        -- Overwrite the placeholder entry with the fully-populated JSON.
+        -- HSET (not HSETNX) because we already own the slot.
+        redis.call('HSET', hash_key, 'publisher', info_json)
+
+        -- Set TTL on the publisher hash
+        redis.call('EXPIRE', hash_key, ttl)
+
+        -- Add to user reverse index if provided
+        if user_key ~= '' then
+            redis.call('SADD', user_key, user_member)
+            redis.call('EXPIRE', user_key, ttl)
+        end
+
+        if node_key ~= '' then
+            redis.call('SADD', node_key, node_member)
+            redis.call('EXPIRE', node_key, ttl)
+        end
+
+        if room_key ~= '' then
+            redis.call('SADD', room_key, room_member)
+            redis.call('EXPIRE', room_key, ttl)
+        end
+
+        if active_key ~= '' then
+            redis.call('SADD', active_key, active_member)
+            redis.call('EXPIRE', active_key, ttl)
+        end
+
+        return {1, epoch}
+        ",
+    )
+});
+
+static REFRESH_PUBLISHER_TTL_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local hash_key = KEYS[1]
+        local user_key = KEYS[2]
+        local node_key = KEYS[3]
+        local room_key = KEYS[4]
+        local active_key = KEYS[5]
+        local ttl = tonumber(ARGV[1])
+        local expected_user_id = ARGV[2]
+        local expected_node_id = ARGV[3]
+        local expected_epoch = tonumber(ARGV[4])
+        local member = ARGV[5]
+
+        local info_json = redis.call('HGET', hash_key, 'publisher')
+        if not info_json then
+            return 0
+        end
+
+        local ok, parsed = pcall(cjson.decode, info_json)
+        if not ok or not parsed then
+            return 0
+        end
+
+        local stored_user_id = parsed.user_id or ''
+        if expected_user_id ~= '' and stored_user_id ~= expected_user_id then
+            return -1
+        end
+
+        local stored_node_id = parsed.node_id or ''
+        if expected_node_id ~= '' and stored_node_id ~= expected_node_id then
+            return -1
+        end
+
+        local stored_epoch = tonumber(parsed.epoch or 0)
+        if expected_epoch >= 0 and stored_epoch ~= expected_epoch then
+            return -1
+        end
+
+        redis.call('EXPIRE', hash_key, ttl)
+
+        if user_key ~= '' then
+            redis.call('SADD', user_key, member)
+            redis.call('EXPIRE', user_key, ttl)
+        end
+
+        if node_key ~= '' then
+            redis.call('SADD', node_key, member)
+            redis.call('EXPIRE', node_key, ttl)
+        end
+
+        redis.call('SADD', room_key, member)
+        redis.call('EXPIRE', room_key, ttl)
+        redis.call('SADD', active_key, member)
+        redis.call('EXPIRE', active_key, ttl)
+
+        return 1
+        ",
+    )
+});
+
+static UNREGISTER_PUBLISHER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local hash_key = KEYS[1]
+        local check_epoch = tonumber(ARGV[1])
+
+        -- Get current publisher info
+        local info_json = redis.call('HGET', hash_key, 'publisher')
+        if not info_json then
+            return {0, '', ''}
+        end
+
+        -- Parse JSON robustly using cjson instead of fragile regex
+        local ok, parsed = pcall(cjson.decode, info_json)
+        if not ok or not parsed then
+            -- JSON is corrupt; delete the entry but return empty reverse-index metadata
+            redis.call('HDEL', hash_key, 'publisher')
+            return {1, '', ''}
+        end
+
+        -- If epoch check is requested, validate before deleting
+        if check_epoch >= 0 then
+            local stored_epoch = tonumber(parsed.epoch)
+            if stored_epoch and stored_epoch ~= check_epoch then
+                -- Epoch mismatch: a newer publisher registered, do NOT delete
+                return {-1, '', ''}
+            end
+        end
+
+        -- Extract user_id for reverse-index cleanup
+        local user_id = parsed.user_id or ''
+        local node_id = parsed.node_id or ''
+
+        -- Delete the publisher entry
+        redis.call('HDEL', hash_key, 'publisher')
+
+        return {1, user_id, node_id}
+        ",
+    )
+});
+
+static CLEANUP_NODE_PUBLISHER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local hash_key = KEYS[1]
+        local expected_node_id = ARGV[1]
+        local expected_epoch = tonumber(ARGV[2])
+
+        local info_json = redis.call('HGET', hash_key, 'publisher')
+        if not info_json then
+            return {0, ''}
+        end
+
+        -- Parse JSON robustly using cjson instead of fragile regex
+        local ok, parsed = pcall(cjson.decode, info_json)
+        if not ok or not parsed then
+            -- JSON is corrupt; delete the entry but return empty user_id
+            redis.call('HDEL', hash_key, 'publisher')
+            return {1, ''}
+        end
+
+        -- Verify node_id matches
+        local stored_node_id = parsed.node_id
+        if not stored_node_id or stored_node_id ~= expected_node_id then
+            return {0, ''}
+        end
+
+        -- Verify epoch matches (a newer registration would have a higher epoch)
+        local stored_epoch = tonumber(parsed.epoch)
+        if stored_epoch and stored_epoch ~= expected_epoch then
+            return {-1, ''}
+        end
+
+        -- Extract user_id for reverse-index cleanup
+        local user_id = parsed.user_id or ''
+
+        -- Delete the publisher entry
+        redis.call('HDEL', hash_key, 'publisher')
+
+        return {1, user_id}
+        ",
+    )
+});
 
 #[async_trait]
 pub trait RegistryConnectionRuntime: Send + Sync {
@@ -443,82 +658,6 @@ impl StreamRegistry {
         };
         let info_json = serde_json::to_string(&info)?;
 
-        // Atomic Lua script to prevent epoch TOCTOU race condition.
-        // The original script incremented the epoch BEFORE the HSETNX
-        // check, so other nodes could briefly observe a spuriously inflated epoch
-        // during the window between INCR and a failed HSETNX (followed by DECR).
-        // Fix: HSETNX first, then increment epoch ONLY if registration succeeded.
-        // This ensures the epoch counter only changes when ownership actually changes,
-        // eliminating the intermediate-epoch window entirely.
-        // Returns: {registered (1 or 0), epoch}
-        // - registered=1: new publisher registered; epoch is the new epoch value.
-        // - registered=0: another publisher already exists; epoch is the current epoch.
-        let lua_script = r"
-            local epoch_key = KEYS[1]
-            local hash_key = KEYS[2]
-            local info_json_template = ARGV[1]
-            local ttl = tonumber(ARGV[2])
-            local user_key = ARGV[3]
-            local user_member = ARGV[4]
-            local node_key = ARGV[5]
-            local node_member = ARGV[6]
-            local room_key = ARGV[7]
-            local room_member = ARGV[8]
-            local active_key = ARGV[9]
-            local active_member = ARGV[10]
-
-            -- Check HSETNX FIRST before touching the epoch.
-            -- Use a placeholder JSON with epoch=0 for the initial slot reservation.
-            -- Try to reserve the publisher slot (HSETNX returns 1 if set, 0 if exists)
-            local reserved = redis.call('HSETNX', hash_key, 'publisher', info_json_template)
-
-            if reserved == 0 then
-                -- Slot already taken: another publisher is active.
-                -- Read current epoch for the caller's information (no modification).
-                local current_epoch = redis.call('GET', epoch_key)
-                return {0, tonumber(current_epoch) or 0}
-            end
-
-            -- Slot reserved: now increment epoch atomically.
-            -- Only now does the epoch change, so other nodes never see a spurious increment.
-            local epoch = redis.call('INCR', epoch_key)
-
-            -- Set the actual epoch via cjson (robust, unlike fragile string.gsub).
-            local parsed = cjson.decode(info_json_template)
-            parsed.epoch = epoch
-            local info_json = cjson.encode(parsed)
-
-            -- Overwrite the placeholder entry with the fully-populated JSON.
-            -- HSET (not HSETNX) because we already own the slot.
-            redis.call('HSET', hash_key, 'publisher', info_json)
-
-            -- Set TTL on the publisher hash
-            redis.call('EXPIRE', hash_key, ttl)
-
-            -- Add to user reverse index if provided
-            if user_key ~= '' then
-                redis.call('SADD', user_key, user_member)
-                redis.call('EXPIRE', user_key, ttl)
-            end
-
-            if node_key ~= '' then
-                redis.call('SADD', node_key, node_member)
-                redis.call('EXPIRE', node_key, ttl)
-            end
-
-            if room_key ~= '' then
-                redis.call('SADD', room_key, room_member)
-                redis.call('EXPIRE', room_key, ttl)
-            end
-
-            if active_key ~= '' then
-                redis.call('SADD', active_key, active_member)
-                redis.call('EXPIRE', active_key, ttl)
-            end
-
-            return {1, epoch}
-        ";
-
         let user_key = if user_id.is_empty() {
             String::new()
         } else {
@@ -537,7 +676,7 @@ impl StreamRegistry {
         // Add timeout for Redis Lua script execution (5 seconds)
         // Prevents indefinite blocking on Redis server issues or slow Lua execution
         let result: Vec<i64> = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            redis::Script::new(lua_script)
+            REGISTER_PUBLISHER_SCRIPT
                 .key(&epoch_key)
                 .key(&key)
                 .arg(&info_json)
@@ -628,66 +767,8 @@ impl StreamRegistry {
 
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
-            let script = redis::Script::new(
-                r"
-                local hash_key = KEYS[1]
-                local user_key = KEYS[2]
-                local node_key = KEYS[3]
-                local room_key = KEYS[4]
-                local active_key = KEYS[5]
-                local ttl = tonumber(ARGV[1])
-                local expected_user_id = ARGV[2]
-                local expected_node_id = ARGV[3]
-                local expected_epoch = tonumber(ARGV[4])
-                local member = ARGV[5]
 
-                local info_json = redis.call('HGET', hash_key, 'publisher')
-                if not info_json then
-                    return 0
-                end
-
-                local ok, parsed = pcall(cjson.decode, info_json)
-                if not ok or not parsed then
-                    return 0
-                end
-
-                local stored_user_id = parsed.user_id or ''
-                if expected_user_id ~= '' and stored_user_id ~= expected_user_id then
-                    return -1
-                end
-
-                local stored_node_id = parsed.node_id or ''
-                if expected_node_id ~= '' and stored_node_id ~= expected_node_id then
-                    return -1
-                end
-
-                local stored_epoch = tonumber(parsed.epoch or 0)
-                if expected_epoch >= 0 and stored_epoch ~= expected_epoch then
-                    return -1
-                end
-
-                redis.call('EXPIRE', hash_key, ttl)
-
-                if user_key ~= '' then
-                    redis.call('SADD', user_key, member)
-                    redis.call('EXPIRE', user_key, ttl)
-                end
-
-                if node_key ~= '' then
-                    redis.call('SADD', node_key, member)
-                    redis.call('EXPIRE', node_key, ttl)
-                end
-
-                redis.call('SADD', room_key, member)
-                redis.call('EXPIRE', room_key, ttl)
-                redis.call('SADD', active_key, member)
-                redis.call('EXPIRE', active_key, ttl)
-
-                return 1
-                ",
-            );
-
-            let status: i64 = script
+            let status: i64 = REFRESH_PUBLISHER_TTL_SCRIPT
                 .key(&key)
                 .key(&user_key)
                 .key(&node_key)
@@ -749,46 +830,7 @@ impl StreamRegistry {
         with_redis_timeout(|| async {
             let mut conn = self.conn().await;
 
-            // Atomic Lua script: check epoch (if provided), delete publisher, and
-            // return reverse-index metadata so Rust can clean auxiliary sets.
-            let lua_script = r"
-                local hash_key = KEYS[1]
-                local check_epoch = tonumber(ARGV[1])
-
-                -- Get current publisher info
-                local info_json = redis.call('HGET', hash_key, 'publisher')
-                if not info_json then
-                    return {0, '', ''}
-                end
-
-                -- Parse JSON robustly using cjson instead of fragile regex
-                local ok, parsed = pcall(cjson.decode, info_json)
-                if not ok or not parsed then
-                    -- JSON is corrupt; delete the entry but return empty reverse-index metadata
-                    redis.call('HDEL', hash_key, 'publisher')
-                    return {1, '', ''}
-                end
-
-                -- If epoch check is requested, validate before deleting
-                if check_epoch >= 0 then
-                    local stored_epoch = tonumber(parsed.epoch)
-                    if stored_epoch and stored_epoch ~= check_epoch then
-                        -- Epoch mismatch: a newer publisher registered, do NOT delete
-                        return {-1, '', ''}
-                    end
-                end
-
-                -- Extract user_id for reverse-index cleanup
-                local user_id = parsed.user_id or ''
-                local node_id = parsed.node_id or ''
-
-                -- Delete the publisher entry
-                redis.call('HDEL', hash_key, 'publisher')
-
-                return {1, user_id, node_id}
-            ";
-
-            let result: Vec<redis::Value> = redis::Script::new(lua_script)
+            let result: Vec<redis::Value> = UNREGISTER_PUBLISHER_SCRIPT
                 .key(&key)
                 .arg(epoch_arg)
                 .invoke_async(&mut conn)
@@ -1044,48 +1086,6 @@ impl StreamRegistry {
         })
         .await?;
 
-        // Atomic Lua script: check node_id AND epoch before deleting.
-        // This prevents a race where a new publisher registers between
-        // reading the node reverse index and the delete.
-        let cleanup_script = r"
-            local hash_key = KEYS[1]
-            local expected_node_id = ARGV[1]
-            local expected_epoch = tonumber(ARGV[2])
-
-            local info_json = redis.call('HGET', hash_key, 'publisher')
-            if not info_json then
-                return {0, ''}
-            end
-
-            -- Parse JSON robustly using cjson instead of fragile regex
-            local ok, parsed = pcall(cjson.decode, info_json)
-            if not ok or not parsed then
-                -- JSON is corrupt; delete the entry but return empty user_id
-                redis.call('HDEL', hash_key, 'publisher')
-                return {1, ''}
-            end
-
-            -- Verify node_id matches
-            local stored_node_id = parsed.node_id
-            if not stored_node_id or stored_node_id ~= expected_node_id then
-                return {0, ''}
-            end
-
-            -- Verify epoch matches (a newer registration would have a higher epoch)
-            local stored_epoch = tonumber(parsed.epoch)
-            if stored_epoch and stored_epoch ~= expected_epoch then
-                return {-1, ''}
-            end
-
-            -- Extract user_id for reverse-index cleanup
-            local user_id = parsed.user_id or ''
-
-            -- Delete the publisher entry
-            redis.call('HDEL', hash_key, 'publisher')
-
-            return {1, user_id}
-        ";
-
         for chunk in members.chunks(ACTIVE_PUBLISHER_FETCH_BATCH_SIZE) {
             let mut entries = Vec::with_capacity(chunk.len());
             for member in chunk {
@@ -1149,7 +1149,7 @@ impl StreamRegistry {
 
                 let cleanup_result: Result<Vec<redis::Value>> = with_redis_timeout(|| async {
                     let mut conn = self.conn().await;
-                    let result: Vec<redis::Value> = redis::Script::new(cleanup_script)
+                    let result: Vec<redis::Value> = CLEANUP_NODE_PUBLISHER_SCRIPT
                         .key(&publisher_key)
                         .arg(node_id)
                         .arg(info.epoch)

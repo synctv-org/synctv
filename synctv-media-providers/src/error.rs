@@ -60,14 +60,31 @@ pub enum ProviderClientError {
 /// Checks `Content-Length` hint first (if available), then enforces the
 /// limit on the actual body bytes before deserializing.
 pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
 ) -> Result<T, ProviderClientError> {
     if let Some(cl) = response.content_length() {
         if usize::try_from(cl).map_or(true, |s| s > MAX_RESPONSE_SIZE) {
             return Err(ProviderClientError::ResponseTooLarge { size: cl });
         }
     }
-    let bytes = response.bytes().await?;
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or(0),
+    );
+    while let Some(chunk) = response.chunk().await? {
+        let next_len = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(ProviderClientError::ResponseTooLarge { size: u64::MAX })?;
+        if next_len > MAX_RESPONSE_SIZE {
+            return Err(ProviderClientError::ResponseTooLarge {
+                size: next_len as u64,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if bytes.len() > MAX_RESPONSE_SIZE {
         return Err(ProviderClientError::ResponseTooLarge {
             size: bytes.len() as u64,

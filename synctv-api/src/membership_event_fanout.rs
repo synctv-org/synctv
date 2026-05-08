@@ -5,6 +5,7 @@ use synctv_core::models::{PermissionBits, RoomId, RoomRole, UserId};
 use synctv_core::service::{RoomService, UserService};
 
 use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
+use crate::impls::admin::LOCAL_MANAGEMENT_ACTOR_USER_ID;
 use crate::impls::ApiError;
 use crate::runtime::RealtimeEventService;
 
@@ -59,6 +60,18 @@ impl DefaultMembershipEventFanoutService {
     ) -> bool {
         !self.cluster_fanout.is_distributed_enabled() && target_user_id == changed_by
     }
+
+    async fn username_for_actor(&self, user_id: &UserId) -> Result<String, ApiError> {
+        if *user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
+            return Ok("local-management".to_string());
+        }
+
+        self.user_service
+            .get_user(user_id)
+            .await
+            .map(|u| u.username)
+            .map_err(ApiError::from)
+    }
 }
 
 impl std::fmt::Debug for DefaultMembershipEventFanoutService {
@@ -80,26 +93,21 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         target_user_id: &UserId,
         changed_by: &UserId,
     ) -> Result<(), ApiError> {
-        let room_settings = self
-            .room_service
-            .get_room_settings(room_id)
-            .await
-            .unwrap_or_default();
-
         let (target_username, new_permissions, role, added_permissions, removed_permissions) =
             match self
                 .room_service
                 .member_service()
                 .get_member(room_id, target_user_id)
                 .await
+                .map_err(ApiError::from)?
             {
-                Ok(Some(member)) => {
-                    let username = self
-                        .user_service
-                        .get_user(target_user_id)
+                Some(member) => {
+                    let room_settings = self
+                        .room_service
+                        .get_room_settings(room_id)
                         .await
-                        .map(|u| u.username)
-                        .unwrap_or_default();
+                        .map_err(ApiError::from)?;
+                    let username = self.username_for_actor(target_user_id).await?;
                     let role_default = self
                         .room_service
                         .permission_service()
@@ -112,21 +120,19 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
                         member.removed_permissions,
                     )
                 }
-                _ => (
-                    String::new(),
-                    PermissionBits::empty(),
-                    synctv_proto::common::RoomMemberRole::Member as i32,
-                    0,
-                    0,
-                ),
+                None => {
+                    let username = self.username_for_actor(target_user_id).await?;
+                    (
+                        username,
+                        PermissionBits::empty(),
+                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        0,
+                        0,
+                    )
+                }
             };
 
-        let changed_by_username = self
-            .user_service
-            .get_user(changed_by)
-            .await
-            .map(|u| u.username)
-            .unwrap_or_default();
+        let changed_by_username = self.username_for_actor(changed_by).await?;
 
         let request = PublishRequest {
             event: ClusterEvent::PermissionChanged {
@@ -160,7 +166,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
             .get_user(user_id)
             .await
             .map(|u| u.username)
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let request = PublishRequest {
             event: ClusterEvent::UserLeft {
@@ -309,8 +315,16 @@ mod tests {
         (room_service, user_service)
     }
 
+    fn assert_service_unavailable(error: crate::impls::ApiError) {
+        assert!(
+            matches!(error, crate::impls::ApiError::ServiceUnavailable(_)),
+            "repository lookup failure should surface as ServiceUnavailable, got {error:?}"
+        );
+    }
+
     #[tokio::test]
-    async fn test_permission_changed_does_not_broadcast_locally_in_standalone_mode() {
+    async fn test_permission_changed_lookup_failure_does_not_broadcast_locally_in_standalone_mode()
+    {
         let (room_service, user_service) = test_services();
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_membership_event_fanout_service(
@@ -320,10 +334,11 @@ mod tests {
             Some(event_service.clone()),
         );
 
-        service
+        let error = service
             .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
-            .expect("standalone permission change publish should succeed");
+            .expect_err("repository lookup failure must abort permission-change publish");
+        assert_service_unavailable(error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -341,7 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_permission_changed_broadcasts_locally_for_self_join_in_standalone_mode() {
+    async fn test_permission_changed_lookup_failure_does_not_broadcast_self_join_locally() {
         let (room_service, user_service) = test_services();
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_membership_event_fanout_service(
@@ -352,29 +367,26 @@ mod tests {
         );
         let user = user_id("self-joiner");
 
-        service
+        let error = service
             .publish_permission_changed(&room_id(), &user, &user)
             .await
-            .expect("standalone self-join publish should succeed");
+            .expect_err("repository lookup failure must abort self-join publish");
+        assert_service_unavailable(error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            1
+            0
         );
         let local_events = event_service
             .local_events
             .lock()
             .expect("recorded local events mutex should not be poisoned");
-        assert_eq!(local_events.len(), 1);
-        assert!(matches!(
-            local_events[0].1,
-            ClusterEvent::PermissionChanged { .. }
-        ));
+        assert!(local_events.is_empty());
     }
 
     #[tokio::test]
-    async fn test_permission_changed_skips_local_broadcast_and_uses_single_cluster_publish() {
+    async fn test_permission_changed_lookup_failure_skips_cluster_publish() {
         let (room_service, user_service) = test_services();
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -384,32 +396,25 @@ mod tests {
             user_service,
             Some(event_service.clone()),
         );
-        service
+        let error = service
             .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
-            .expect("cluster permission change publish should succeed");
+            .expect_err("repository lookup failure must abort cluster permission publish");
+        assert_service_unavailable(error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
             0
         );
-        let request = rx
-            .recv()
-            .await
-            .expect("cluster publish queue should receive a single request");
-        assert!(matches!(
-            request.event,
-            ClusterEvent::PermissionChanged { .. }
-        ));
         assert!(
             rx.try_recv().is_err(),
-            "permission change should publish exactly one cluster event"
+            "permission change must not publish a cluster event after lookup failure"
         );
     }
 
     #[tokio::test]
-    async fn test_user_left_skips_local_broadcast_and_uses_single_cluster_publish() {
+    async fn test_user_left_lookup_failure_skips_cluster_publish() {
         let (room_service, user_service) = test_services();
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -419,29 +424,25 @@ mod tests {
             user_service,
             Some(event_service.clone()),
         );
-        service
+        let error = service
             .publish_user_left(&room_id(), &user_id("target"))
             .await
-            .expect("cluster user-left publish should succeed");
+            .expect_err("repository lookup failure must abort cluster user-left publish");
+        assert_service_unavailable(error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
             0
         );
-        let request = rx
-            .recv()
-            .await
-            .expect("cluster publish queue should receive a single request");
-        assert!(matches!(request.event, ClusterEvent::UserLeft { .. }));
         assert!(
             rx.try_recv().is_err(),
-            "user-left should publish exactly one cluster event"
+            "user-left must not publish a cluster event after lookup failure"
         );
     }
 
     #[tokio::test]
-    async fn test_user_left_does_not_broadcast_locally_in_standalone_mode() {
+    async fn test_user_left_lookup_failure_does_not_broadcast_locally_in_standalone_mode() {
         let (room_service, user_service) = test_services();
         let event_service = Arc::new(RecordingRealtimeEventService::default());
         let service = default_membership_event_fanout_service(
@@ -451,10 +452,11 @@ mod tests {
             Some(event_service.clone()),
         );
 
-        service
+        let error = service
             .publish_user_left(&room_id(), &user_id("target"))
             .await
-            .expect("standalone user-left publish should succeed");
+            .expect_err("repository lookup failure must abort user-left publish");
+        assert_service_unavailable(error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(

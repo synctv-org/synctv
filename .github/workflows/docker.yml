@@ -59,7 +59,10 @@ jobs:
       id-token: write
     uses: docker/github-builder/.github/workflows/build.yml@v1
     with:
-      runner: auto
+      runner: |
+        default=ubuntu-24.04
+        linux/arm=ubuntu-24.04-arm
+        linux/arm64=ubuntu-24.04-arm
       distribute: true
       platforms: linux/amd64,linux/arm64
       output: ${{ github.event_name == 'push' && 'image' || 'local' }}

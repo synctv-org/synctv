@@ -4656,14 +4656,13 @@ mod tests {
             .parent()
             .expect("synctv-core should be inside the workspace root");
 
-        for config_file in ["synctv.example.yaml"] {
-            let path = workspace_root.join(config_file);
-            Config::load_config_file(
-                path.to_str()
-                    .expect("checked-in config path should be valid UTF-8"),
-            )
-            .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
-        }
+        let config_file = "synctv.example.yaml";
+        let path = workspace_root.join(config_file);
+        Config::load_config_file(
+            path.to_str()
+                .expect("checked-in config path should be valid UTF-8"),
+        )
+        .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
     }
 
     /// Helper to create a valid production config for validation tests

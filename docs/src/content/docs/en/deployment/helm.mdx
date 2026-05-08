@@ -231,7 +231,7 @@ The Deployment mounts `/data`. The default is `emptyDir`, which is appropriate f
 
 ## HLS With Multiple Replicas
 
-The chart does not enable cluster mode by default and does not declare HLS shared storage by default. Multi-replica HLS has two models: local backends work through publisher-node HLS proxying; shared filesystem or OSS lets any replica read segments directly and is better for high production traffic.
+The chart does not enable cluster mode by default. Multi-replica HLS can start with publisher-node HLS proxying; high-traffic production deployments should use `shared_file` or OSS. In `shared_file`, TS segments are read by the current node from the shared path.
 
 Local backend example:
 
@@ -252,8 +252,7 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "file"
-    hlsSharedStorage: true
+    hlsStorageBackend: "shared_file"
     hlsStoragePath: "/var/lib/synctv/hls"
 
 persistence:
@@ -263,10 +262,10 @@ persistence:
 
 Helm rejects these combinations during rendering:
 
-- `hlsStorageBackend` is not `memory`, `file`, or `oss`.
-- `hlsStorageBackend=file` with an empty `hlsStoragePath`.
-- `hlsStorageBackend=file` in Kubernetes with a non-absolute `hlsStoragePath`.
-- `hlsSharedStorage=true` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
+- `hlsStorageBackend` is not `memory`, `file`, `shared_file`, or `oss`.
+- `hlsStorageBackend=file/shared_file` with an empty `hlsStoragePath`.
+- `hlsStorageBackend=file/shared_file` in Kubernetes with a non-absolute `hlsStoragePath`.
+- `hlsStorageBackend=shared_file` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
 
 OSS example:
 

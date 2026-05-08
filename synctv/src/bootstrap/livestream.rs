@@ -182,7 +182,6 @@ pub async fn init_livestream(
             api_address: config.advertise_api_address(),
             hls_memory_max_mb: config.livestream.hls_memory_max_mb,
             hls_storage_backend: config.livestream.hls_storage_backend,
-            hls_shared_storage: config.livestream.hls_shared_storage,
             hls_storage_path: config.livestream.hls_storage_path.clone(),
             hls_oss: config.livestream.hls_oss.clone(),
         },

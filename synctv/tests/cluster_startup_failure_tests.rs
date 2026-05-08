@@ -137,8 +137,7 @@ fn cluster_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig {
-            hls_storage_backend: HlsStorageBackend::File,
-            hls_shared_storage: true,
+            hls_storage_backend: HlsStorageBackend::SharedFile,
             hls_storage_path: "/var/lib/synctv/hls".to_string(),
             ..LivestreamConfig::default()
         },

@@ -382,12 +382,12 @@ config:
     maxFlvTagSizeBytes: 10485760
     gopCacheMaxMemoryMb: 100
     hlsMemoryMaxMb: 0
-    ## Allowed values: memory, file, oss.
+    ## Allowed values: memory, file, shared_file, oss.
     ## - memory: single-replica in-process HLS segment storage.
-    ## - file: filesystem-backed HLS storage at hlsStoragePath.
+    ## - file: node-local filesystem-backed HLS storage at hlsStoragePath.
+    ## - shared_file: shared filesystem-backed HLS storage at hlsStoragePath.
     ## - oss: S3-compatible object storage configured by hlsOss and secrets.livestream.hlsOss.
     hlsStorageBackend: "memory"
-    hlsSharedStorage: false
     hlsStoragePath: ""
     hlsOss:
       endpoint: ""
@@ -400,7 +400,7 @@ config:
   ## ClusterChannelConfig (matches code defaults)
   cluster:
     ## Enable only for multi-replica deployments. Local HLS backends work through
-    ## publisher-node gRPC proxying; shared file storage or OSS is recommended
+    ## publisher-node gRPC proxying; shared_file storage or OSS is recommended
     ## for production multi-replica HLS traffic.
     enabled: false
     criticalChannelCapacity: 1000
@@ -616,7 +616,8 @@ secrets:
 ## ============================================================================
 
 ## Application data and HLS storage mounts.
-## `data` stores runtime-owned local files. HLS file backend requires `hls`.
+## `data` stores runtime-owned local files. HLS file/shared_file backends use `hls`.
+## shared_file requires `hls.existingClaim` so every replica sees the same segments.
 persistence:
   data:
     existingClaim: ""

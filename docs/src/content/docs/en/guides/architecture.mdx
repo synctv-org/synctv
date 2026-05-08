@@ -146,7 +146,7 @@ For multi-replica deployments, also confirm:
 - All replicas share the same PostgreSQL database.
 - All replicas share the same Redis and `redis.key_prefix`.
 - WebSocket tickets must be cross-node capable, not node-local memory only.
-- HLS cross-node reads currently use publisher-node proxying. Shared filesystem storage or OSS improves storage, recovery, and cleanup boundaries, but capacity planning should still include the publisher-node proxy request path.
+- Local HLS backends use publisher-node proxying. `shared_file` serves TS segments from the current node's shared mount, and OSS provides object-storage-backed segment storage.
 - Kubernetes termination grace period is longer than `server.shutdown_drain_timeout_seconds`.
 
 For the full runtime design, discovery modes, leader election, and clustered livestreaming boundaries, see [Cluster Configuration](../../configuration/cluster/).
@@ -165,7 +165,7 @@ Kubernetes multi-replica topology:
   light={kubernetesTopologyLight}
   dark={kubernetesTopologyDark}
   alt="Kubernetes multi-replica topology showing HTTP Ingress, gRPC Ingress, separate Services, multiple SyncTV pods, PostgreSQL, Redis, HLS backend or publisher-node proxy, and external media providers."
-  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. HLS cross-node reads currently use publisher-node proxying; shared filesystem storage or OSS provides a more stable storage and recovery boundary."
+  caption="Kubernetes multi-replica deployments should split HTTP and gRPC Services/Ingresses and connect every pod to the same PostgreSQL and Redis backends. Local HLS backends use publisher-node proxying; shared_file lets the current node read TS segments from a shared path, and OSS provides object-storage-backed segments."
 />
 
 ## Next Pages

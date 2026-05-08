@@ -235,7 +235,7 @@ Deployment 会挂载 `/data`。默认是 `emptyDir`，适合运行时临时文�
 
 ## HLS 多副本注意事项
 
-Helm 默认不启用集群模式，也不把 HLS 声明为共享存储。多副本 HLS 当前通过 publisher-node HLS proxy 做跨节点读取；共享文件系统或 OSS 主要提供更稳定的分片存储、重启恢复和清理边界，生产高流量场景仍要按 publisher-node proxy 路径预留容量。
+Helm 默认不启用集群模式。多副本 HLS 可以先使用 publisher-node HLS proxy；生产高流量场景建议使用 `shared_file` 或 OSS。`shared_file` 的 TS 分片由当前节点从共享路径读取。
 
 本地 backend 示例：
 
@@ -256,8 +256,7 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "file"
-    hlsSharedStorage: true
+    hlsStorageBackend: "shared_file"
     hlsStoragePath: "/var/lib/synctv/hls"
 
 persistence:
@@ -267,10 +266,10 @@ persistence:
 
 Helm 会提前拒绝以下组合：
 
-- `hlsStorageBackend` 不是 `memory`、`file` 或 `oss`。
-- `hlsStorageBackend=file` 但 `hlsStoragePath` 为空。
-- Kubernetes 中 `hlsStorageBackend=file` 但 `hlsStoragePath` 不是绝对路径。
-- `hlsSharedStorage=true` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
+- `hlsStorageBackend` 不是 `memory`、`file`、`shared_file` 或 `oss`。
+- `hlsStorageBackend=file/shared_file` 但 `hlsStoragePath` 为空。
+- Kubernetes 中 `hlsStorageBackend=file/shared_file` 但 `hlsStoragePath` 不是绝对路径。
+- `hlsStorageBackend=shared_file` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
 
 OSS 示例：
 

@@ -129,7 +129,7 @@ Do not start by reading every configuration field. Classify the failure, then ru
 | OAuth2 callback/state errors | Redirect mismatch or multi-replica deployment without shared Redis | Align runtime settings with provider registration and configure Redis |
 | WebAuthn/passkey errors | `rp_origin` does not match the actual HTTPS origin | Configure exact origin and valid `rp_id` |
 | Range seek or proxy playback fails | Provider headers are incomplete or upstream lacks Range support | Check provider headers and upstream `Accept-Ranges` |
-| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or storage model mismatch | Use publisher-node proxy, shared filesystem, or OSS |
+| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or storage model mismatch | Use publisher-node proxy, `shared_file`, or OSS |
 
 ## Command Templates
 
@@ -224,7 +224,7 @@ Important checks:
 - HTTP and gRPC use separate Ingresses.
 - gRPC Ingress has its own annotations.
 - ServiceMonitor or VMServiceScrape targets the intended Service.
-- Multi-replica HLS uses shared storage.
+- Multi-replica HLS uses `shared_file` or OSS when publisher-node proxying is not enough.
 - `existingSecret` contains all required chart keys.
 
 See [Helm Deployment](../../deployment/helm/) for details.

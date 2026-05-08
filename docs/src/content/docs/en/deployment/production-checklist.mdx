@@ -68,7 +68,7 @@ The OPAQUE setup secret and provider credential encryption key are long-lived ke
 | Cluster mode | Configure `server.cluster_secret` and `server.advertise_host`. |
 | Public gRPC | Split HTTP and gRPC Services/Ingresses on Kubernetes. |
 | Livestreaming/STUN | Expose RTMP; for built-in STUN, expose UDP 3478. |
-| Multi-replica HLS | Explicitly use publisher-node proxy, shared filesystem storage, or OSS. |
+| Multi-replica HLS | Explicitly use publisher-node proxy, `shared_file`, or OSS. |
 | File-backed slice cache | Mount a directory with enough capacity and a cleanup policy. |
 | OpenAPI | Decide whether production should expose `/swagger-ui/` and `/api-docs/openapi.json`. |
 
@@ -135,8 +135,7 @@ Shared filesystem:
 
 ```yaml
 livestream:
-  hls_storage_backend: "file"
-  hls_shared_storage: true
+  hls_storage_backend: "shared_file"
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
@@ -204,7 +203,7 @@ Must back up:
 
 Back up as needed:
 
-- HLS shared storage.
+- HLS `shared_file` storage.
 - Proxy slice cache.
 - Custom configuration files.
 

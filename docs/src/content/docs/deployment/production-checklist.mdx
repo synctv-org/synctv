@@ -68,7 +68,7 @@ OPAQUE setup secret 和 Provider 凭据加密 key 是长期密钥。丢失或随
 | 集群模式 | 配置 `server.cluster_secret` 和 `server.advertise_host`。 |
 | 公开 gRPC | Kubernetes 中拆分 HTTP Service/Ingress 和 gRPC Service/Ingress。 |
 | 直播/STUN | 放行 RTMP 端口；使用内置 STUN 时，放行 UDP 3478。 |
-| 多副本 HLS | 明确选择 publisher-node proxy、共享文件系统或 OSS。 |
+| 多副本 HLS | 明确选择 publisher-node proxy、`shared_file` 或 OSS。 |
 | 文件 slice cache | 挂载持久目录并确认容量、清理和共享策略。 |
 | OpenAPI | 确认生产是否允许暴露 `/swagger-ui/` 和 `/api-docs/openapi.json`。 |
 
@@ -135,8 +135,7 @@ HTTP REST 和公开 gRPC 共享主进程端口，但 Kubernetes 中建议拆成�
 
 ```yaml
 livestream:
-  hls_storage_backend: "file"
-  hls_shared_storage: true
+  hls_storage_backend: "shared_file"
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
@@ -216,7 +215,7 @@ kubectl -n synctv get pods
 
 按需备份：
 
-- HLS 共享存储。
+- HLS `shared_file` 存储。
 - proxy slice cache。
 - 自定义配置文件。
 

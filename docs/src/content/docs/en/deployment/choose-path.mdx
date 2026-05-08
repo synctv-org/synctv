@@ -86,7 +86,7 @@ Success signals:
 1. If it faces users, do not use development Compose secrets.
 2. If it runs long term, back up PostgreSQL and production secrets.
 3. If it runs multiple replicas, share PostgreSQL, Redis, `redis.key_prefix`, and `server.cluster_secret`.
-4. If HLS runs across replicas, choose publisher-node proxying, shared filesystem storage, or OSS explicitly.
+4. If HLS runs across replicas, choose publisher-node proxying, `shared_file`, or OSS explicitly.
 5. If the management plane uses TCP, configure a token and keep it away from normal public entrypoints.
 </Steps>
 

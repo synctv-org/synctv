@@ -1443,8 +1443,7 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                hls_storage_backend: synctv_core::config::HlsStorageBackend::File,
-                hls_shared_storage: true,
+                hls_storage_backend: synctv_core::config::HlsStorageBackend::SharedFile,
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },

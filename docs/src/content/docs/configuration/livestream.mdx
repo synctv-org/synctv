@@ -63,9 +63,16 @@ RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。
   </TabItem>
   <TabItem label="file" icon="folder">
 
-`file` 把分片写入 `hls_storage_path`。单副本可以用本地磁盘；多副本可以使用本地磁盘并依赖 publisher-node proxy，也可以把该路径挂载成所有副本可读写的共享文件系统。
+`file` 把分片写入当前节点的 `hls_storage_path`。单副本可以用本地磁盘；多副本可以使用本地磁盘并依赖 publisher-node proxy。
 
-共享文件系统的典型选择：NFS、RWX PVC、CSI 共享卷。不要把 `emptyDir`、`/tmp` 或节点本地盘声明为共享存储。
+不要把共享文件系统配置成 `file`；如果所有副本都能读写同一路径，使用 `shared_file`。
+
+  </TabItem>
+  <TabItem label="shared_file" icon="folder">
+
+`shared_file` 把分片写入所有副本可见的 `hls_storage_path`。Publisher 节点写入分片，任意节点收到 `.ts` 请求时从当前节点挂载的共享路径读取。
+
+典型选择：NFS、RWX PVC、CSI 共享卷。不要把 `emptyDir`、`/tmp` 或节点本地盘配置成 `shared_file`。
 
   </TabItem>
   <TabItem label="oss" icon="cloud-download">
@@ -83,13 +90,13 @@ RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。
 1. Publisher 通过 RTMP 连接到任意一个 SyncTV 节点。
 2. 认证通过后，节点把 `room_id/media_id -> node_id/api_address` 注册到 publisher registry。集群模式下 registry 使用 Redis。
 3. 本节点 StreamHub 开始接收直播包；HTTP-FLV 可以直接从本节点订阅，HLS remuxer 持续生成分片。
-4. HLS 分片写入 `memory`、`file` 或 `oss` backend。
+4. HLS 分片写入 `memory`、`file`、`shared_file` 或 `oss` backend。
 5. 观众请求如果落到非 publisher 节点，该节点通过共享 registry 找到 publisher owner。HTTP-FLV 走跨节点拉流/relay；HLS playlist/segment 可以通过 HLS gRPC proxy 从 publisher 节点读取。
-6. 当前跨节点 HLS 读取以 publisher-node HLS gRPC proxy 为主路径；共享 `file` 或 `oss` backend 表示分片存储边界更稳定，但不等于非 publisher 节点会绕过 publisher 直接读取。
+6. `shared_file` 的 TS 分片请求由当前节点从共享路径读取；本地 backend 仍使用 publisher-node HLS gRPC proxy 读取远端 playlist/segment。
 </Steps>
 
 <Aside type="note">
-多副本 HLS 的当前实现依赖 publisher registry 定位推流节点，并通过 HLS gRPC proxy 读取远端 playlist/segment。共享文件系统或 OSS 可以让存储更持久、更适合滚动升级后的恢复边界，但容量规划仍要把 publisher-node proxy 的回源压力算进去。
+多副本 HLS 依赖 publisher registry 定位推流节点。本地 backend 通过 HLS gRPC proxy 读取远端 playlist/segment；`shared_file` 可以让 TS 请求从当前节点读取共享路径，适合高流量多副本场景。
 </Aside>
 
 ## `livestream.rtmp_port`
@@ -199,14 +206,15 @@ GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快
 | 值 | 作用 | 适用场景 |
 | --- | --- | --- |
 | `memory` | HLS 分片保存在当前进程内存里 | 单副本、临时直播、开发环境 |
-| `file` | HLS 分片写入 `livestream.hls_storage_path` | 单副本文件存储，或多副本共享文件系统 |
+| `file` | HLS 分片写入当前节点的 `livestream.hls_storage_path` | 单副本文件存储，或小规模多副本 publisher-node proxy |
+| `shared_file` | HLS 分片写入所有副本共享的 `livestream.hls_storage_path` | 多副本共享文件系统，TS 分片由当前节点从共享路径读取 |
 | `oss` | HLS 分片写入 S3 兼容对象存储 | 多副本、Kubernetes、跨节点共享 |
 
-规范值是 `memory`、`file`、`oss`。原始 YAML/env 解析也接受 `filesystem` 作为 `file` 别名，接受 `s3`、`object_storage` 作为 `oss` 别名；Helm values 只允许使用规范值。
+规范值是 `memory`、`file`、`shared_file`、`oss`。
 
-集群模式可以使用 `memory`。非 publisher 节点会通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。这个模式适合小规模部署或验证环境；生产高并发 HLS 推荐使用：
+集群模式可以使用 `memory` 或 `file`。非 publisher 节点会通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。这个模式适合小规模部署或验证环境；生产高并发 HLS 推荐使用：
 
-- `file`，并且 `hls_storage_path` 是所有副本可读写的共享文件系统。
+- `shared_file`，并且 `hls_storage_path` 是所有副本可读写的共享文件系统。`.ts` 请求会由当前节点直接从共享路径读取。
 - `oss`，并配置 `livestream.hls_oss.*`。
 
 ### `livestream.hls_memory_max_mb`
@@ -215,30 +223,23 @@ GOP 是视频编码中的一组帧。GOP 缓存可以让新连接的观众更快
 
 作用：限制 `hls_storage_backend=memory` 时的 HLS 分片内存占用。`0` 使用内置默认，当前内置默认是 512 MB。
 
-### `livestream.hls_shared_storage`
-
-默认值：`false`。
-
-作用：声明 `hls_storage_backend=file` 的 `hls_storage_path` 是否所有副本都能访问。
-
-这个字段只适用于 `file` backend。`oss` backend 天然是共享存储，不需要设置 `hls_shared_storage`。在 `memory` 或 `oss` backend 下把 `hls_shared_storage` 设置为 `true` 会被配置校验拒绝。
-
-多副本部署时，如果 HLS 文件写在本地磁盘，非 publisher 节点会通过 HLS gRPC proxy 向 publisher 节点读取。共享文件 backend 可以避免把分片锁死在单个 Pod 的本地磁盘上，并让重启后的节点仍能看到同一份 HLS 文件；但当前请求路径仍以 publisher-node proxy 为准。
+### 共享文件 backend
 
 ```yaml
 livestream:
-  hls_storage_backend: "file"
-  hls_shared_storage: true
+  hls_storage_backend: "shared_file"
   hls_storage_path: "/var/lib/synctv/hls"
 ```
 
-并确保这个路径是 NFS、RWX PVC、CSI volume 等所有副本可见的共享文件系统。不要把 Pod 本地 `emptyDir`、`/tmp` 或本机磁盘声明为共享存储；如果它只是本地路径，保持 `hls_shared_storage=false`。
+`shared_file` 明确表示这个路径是 NFS、RWX PVC、CSI volume 等所有副本可见的共享文件系统。不要把 Pod 本地 `emptyDir`、`/tmp` 或本机磁盘配置成 `shared_file`。
+
+在 `shared_file` 模式下，publisher 节点负责写入 HLS 分片；任意节点收到 `.ts` 请求时，会从当前节点挂载的共享路径读取分片，不再回源到 publisher 节点获取 TS 文件。
 
 ### `livestream.hls_storage_path`
 
 默认值为空。
 
-作用：`hls_storage_backend=file` 时的 HLS 分片存储路径。相对路径会相对 `data_dir`。
+作用：`hls_storage_backend=file` 或 `shared_file` 时的 HLS 分片存储路径。相对路径会相对 `data_dir`。
 
 示例：
 

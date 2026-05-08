@@ -96,9 +96,7 @@ pub struct LivestreamConfig {
     pub hls_memory_max_mb: u64,
     /// HLS segment storage backend.
     pub hls_storage_backend: HlsStorageBackend,
-    /// Whether HLS segments should be written to a shared filesystem.
-    pub hls_shared_storage: bool,
-    /// Base path for shared HLS filesystem storage.
+    /// Base path for file-backed HLS storage.
     pub hls_storage_path: String,
     /// S3-compatible object storage settings for the OSS backend.
     pub hls_oss: HlsOssConfig,
@@ -106,17 +104,18 @@ pub struct LivestreamConfig {
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
     match config.hls_storage_backend {
-        HlsStorageBackend::File => {
+        HlsStorageBackend::File | HlsStorageBackend::SharedFile => {
             let path = config.hls_storage_path.trim();
             if path.is_empty() {
                 return Err(crate::error::StreamError::InvalidState(
-                    "hls_storage_backend=file requires a non-empty hls_storage_path".to_string(),
+                    "hls_storage_backend=file/shared_file requires a non-empty hls_storage_path"
+                        .to_string(),
                 ));
             }
 
             info!(
                 hls_storage_path = %path,
-                hls_shared_storage = config.hls_shared_storage,
+                hls_storage_backend = ?config.hls_storage_backend,
                 "HLS storage backend: filesystem"
             );
             Ok(Arc::new(FileStorage::new(path)))
@@ -174,7 +173,7 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
                 warn!(
                     "HLS storage is using in-memory backend in cluster mode. \
                      Each segment request will require gRPC proxy to the publisher node. \
-                     Use OSS or shared filesystem storage for production multi-replica HLS."
+                     Use shared_file or OSS storage for production multi-replica HLS."
                 );
             }
 
@@ -1045,6 +1044,7 @@ impl LivestreamServer {
             .with_segment_manager(segment_manager)
             .with_hls_stream_registry(stream_registry)
             .with_local_node_id(local_node_id)
+            .with_hls_storage_backend(self.config.hls_storage_backend)
             .with_hls_proxy(hls_proxy),
         );
 
@@ -1095,7 +1095,6 @@ mod tests {
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
-            hls_shared_storage: false,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
         }
@@ -1124,13 +1123,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_hls_storage_uses_shared_filesystem_when_enabled() {
+    async fn test_build_hls_storage_uses_shared_file_backend() {
         let dir = tempdir().expect("tempdir should be created");
         let mut config = test_config();
         config.cluster_enabled = true;
         config.cluster_secret = Some("cluster-secret".to_string());
-        config.hls_storage_backend = HlsStorageBackend::File;
-        config.hls_shared_storage = true;
+        config.hls_storage_backend = HlsStorageBackend::SharedFile;
         config.hls_storage_path = dir.path().display().to_string();
 
         let storage = build_hls_storage(&config).expect("storage should be built");
@@ -1492,7 +1490,6 @@ mod tests {
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
-            hls_shared_storage: false,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
         };
@@ -1534,7 +1531,6 @@ mod tests {
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
-            hls_shared_storage: false,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
         };
@@ -1580,7 +1576,6 @@ mod tests {
             api_address: "127.0.0.1:0".to_string(),
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
-            hls_shared_storage: false,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
         };

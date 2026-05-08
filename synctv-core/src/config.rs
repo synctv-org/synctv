@@ -1097,6 +1097,7 @@ pub enum HlsStorageBackend {
     #[default]
     Memory,
     File,
+    SharedFile,
     Oss,
 }
 
@@ -1106,10 +1107,11 @@ impl FromStr for HlsStorageBackend {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "memory" => Ok(Self::Memory),
-            "file" | "filesystem" => Ok(Self::File),
-            "oss" | "s3" | "object_storage" => Ok(Self::Oss),
+            "file" => Ok(Self::File),
+            "shared_file" => Ok(Self::SharedFile),
+            "oss" => Ok(Self::Oss),
             _ => Err(ConfigError::Message(format!(
-                "livestream.hls_storage_backend '{value}' must be one of: memory, file, oss"
+                "livestream.hls_storage_backend '{value}' must be one of: memory, file, shared_file, oss"
             ))),
         }
     }
@@ -1191,22 +1193,15 @@ pub struct LivestreamConfig {
     /// HLS segment storage backend.
     ///
     /// - `memory`: in-process memory storage.
-    /// - `file`: filesystem storage at `hls_storage_path`.
+    /// - `file`: node-local filesystem storage at `hls_storage_path`.
+    /// - `shared_file`: shared filesystem storage at `hls_storage_path`.
     /// - `oss`: S3-compatible object storage configured by `hls_oss`.
     pub hls_storage_backend: HlsStorageBackend,
-    /// Whether HLS segment storage is on shared storage accessible by all replicas.
-    ///
-    /// Only meaningful for the `file` backend. Set to true when
-    /// `hls_storage_path` is backed by a filesystem mount visible to every
-    /// replica, such as NFS or a RWX CSI/PVC volume.
-    ///
-    /// Default: false (local storage, single-node safe).
-    pub hls_shared_storage: bool,
     /// Base path for HLS segment storage.
     ///
     /// Used for validation: paths that are obviously local-only (e.g. /tmp/)
-    /// trigger a stronger warning in cluster mode even when `hls_shared_storage=true`.
-    /// Required when `hls_storage_backend=file`.
+    /// trigger a stronger warning in cluster mode when `hls_storage_backend=shared_file`.
+    /// Required when `hls_storage_backend=file` or `shared_file`.
     /// Relative paths are resolved against the effective `data_dir`.
     pub hls_storage_path: String,
     /// S3-compatible object storage settings used when `hls_storage_backend=oss`.
@@ -1241,7 +1236,6 @@ impl Default for LivestreamConfig {
             gop_cache_max_memory_mb: 100,
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
-            hls_shared_storage: false,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
             flv_max_connection_duration_seconds: 86400, // 24 hours
@@ -2261,10 +2255,6 @@ impl Config {
             self.livestream.hls_storage_backend = val.parse()?;
             Ok(())
         })?;
-        env_override_bool(
-            "SYNCTV_LIVESTREAM_HLS_SHARED_STORAGE",
-            &mut self.livestream.hls_shared_storage,
-        )?;
         env_override_str(
             "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH",
             &mut self.livestream.hls_storage_path,
@@ -3451,30 +3441,16 @@ impl Config {
         }
 
         match self.livestream.hls_storage_backend {
-            HlsStorageBackend::Memory => {
-                if self.livestream.hls_shared_storage {
-                    errors.push(
-                        "livestream.hls_shared_storage=true is only valid when livestream.hls_storage_backend='file'"
-                            .to_string(),
-                    );
-                }
-            }
-            HlsStorageBackend::File => {
+            HlsStorageBackend::Memory => {}
+            HlsStorageBackend::File | HlsStorageBackend::SharedFile => {
                 if self.livestream.hls_storage_path.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage_path must be set when livestream.hls_storage_backend='file'"
+                        "livestream.hls_storage_path must be set when livestream.hls_storage_backend is 'file' or 'shared_file'"
                             .to_string(),
                     );
                 }
             }
             HlsStorageBackend::Oss => {
-                if self.livestream.hls_shared_storage {
-                    errors.push(
-                        "livestream.hls_shared_storage is not used with livestream.hls_storage_backend='oss'; object storage is inherently shared across replicas"
-                            .to_string(),
-                    );
-                }
-
                 let oss = &self.livestream.hls_oss;
                 if oss.endpoint.trim().is_empty() {
                     errors.push(
@@ -3615,8 +3591,7 @@ impl Config {
         if cluster_mode_active {
             match self.livestream.hls_storage_backend {
                 HlsStorageBackend::Oss => {}
-                HlsStorageBackend::File if self.livestream.hls_shared_storage => {
-                    // shared_storage=true but check for obviously-local paths
+                HlsStorageBackend::SharedFile => {
                     let path = &self.livestream.hls_storage_path;
                     let is_obviously_local = path.starts_with("/tmp/")
                         || path == "/tmp"
@@ -3625,26 +3600,25 @@ impl Config {
                     if is_obviously_local {
                         tracing::warn!(
                             hls_storage_path = %path,
-                            "livestream.hls_shared_storage=true but hls_storage_path '{}' appears \
+                            "livestream.hls_storage_backend='shared_file' but hls_storage_path '{}' appears \
                              to be a local-only path. Ensure this path is actually mounted from \
                              shared storage (NFS, CSI volume) on every replica. Otherwise remote \
-                             HLS requests will fall back to publisher-node gRPC proxying instead \
-                             of direct shared-storage reads.",
+                             HLS segment requests will read from a path that is not shared.",
                             path
                         );
                     }
                 }
                 HlsStorageBackend::File => {
                     tracing::warn!(
-                        "Cluster mode is enabled with livestream.hls_storage_backend='file' and livestream.hls_shared_storage=false. \
-                         HLS remains functional through publisher-node gRPC proxying, but shared filesystem storage or OSS is recommended for production multi-replica HLS."
+                        "Cluster mode is enabled with livestream.hls_storage_backend='file'. \
+                         HLS remains functional through publisher-node gRPC proxying, but shared_file or OSS is recommended for production multi-replica HLS."
                     );
                 }
                 HlsStorageBackend::Memory => {
                     tracing::warn!(
                         "Cluster mode is enabled with livestream.hls_storage_backend='memory'. \
                          HLS remains functional through publisher-node gRPC proxying, but memory storage is node-local and lost on restart. \
-                         Use shared filesystem storage or OSS for production multi-replica HLS."
+                         Use livestream.hls_storage_backend='shared_file' or 'oss' for production multi-replica HLS."
                     );
                 }
             }
@@ -3654,8 +3628,8 @@ impl Config {
             tracing::warn!(
                 "The default HLS storage backend is MemoryStorage, which is node-local. \
                  HLS segments are lost on restart. For production multi-replica HLS, \
-                 configure livestream.hls_storage_backend='file' with shared filesystem storage \
-                 or 'oss' with S3-compatible object storage."
+                 configure livestream.hls_storage_backend='shared_file' with shared filesystem storage \
+                 or livestream.hls_storage_backend='oss' with S3-compatible object storage."
             );
         }
 
@@ -4569,6 +4543,7 @@ mod tests {
         assert!(message.contains("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND"));
         assert!(message.contains("memory"));
         assert!(message.contains("file"));
+        assert!(message.contains("shared_file"));
         assert!(message.contains("oss"));
     }
 
@@ -4703,10 +4678,9 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                // Keep a valid file backend so cluster-mode tests can opt in by
+                // Keep a valid shared file backend so cluster-mode tests can opt in by
                 // toggling `cluster.enabled` without unrelated HLS path errors.
-                hls_storage_backend: HlsStorageBackend::File,
-                hls_shared_storage: true,
+                hls_storage_backend: HlsStorageBackend::SharedFile,
                 hls_storage_path: "/var/lib/synctv/hls".to_string(),
                 ..LivestreamConfig::default()
             },
@@ -4750,7 +4724,7 @@ mod tests {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.server.advertise_host = "10.0.0.12".to_string();
-        config.livestream.hls_shared_storage = false;
+        config.livestream.hls_storage_backend = HlsStorageBackend::File;
         assert!(config.validate().is_ok());
 
         config.livestream.hls_storage_backend = HlsStorageBackend::Memory;
@@ -4761,7 +4735,7 @@ mod tests {
     #[test]
     fn test_validate_standalone_mode_allows_hls_local_storage() {
         // In standalone mode (no cluster_secret and cluster.enabled=false),
-        // hls_shared_storage=false should be allowed (only a warning is logged).
+        // local file storage should be allowed.
         let mut config = valid_prod_config();
         // Disable cluster mode by clearing cluster_secret and ensuring cluster.enabled is false
         config.server.cluster_secret = String::new();
@@ -4771,8 +4745,7 @@ mod tests {
         // Also need to clear stun_external_addr since standalone mode no longer
         // requires an external STUN address.
         config.webrtc.stun_external_addr = String::new();
-        // hls_shared_storage=false should be allowed in standalone mode
-        config.livestream.hls_shared_storage = false;
+        config.livestream.hls_storage_backend = HlsStorageBackend::File;
         // This should pass validation (only a warning is logged)
         assert!(config.validate().is_ok());
     }
@@ -6480,7 +6453,7 @@ jwt:
         // cluster_secret alone must not implicitly enable cluster mode
         config.server.cluster_secret = "shared-secret-long-enough".to_string();
         config.redis.url = String::new();
-        config.livestream.hls_shared_storage = false;
+        config.livestream.hls_storage_backend = HlsStorageBackend::File;
         config.webrtc.stun_external_addr = String::new();
         assert!(
             config.validate().is_ok(),
@@ -6777,10 +6750,9 @@ jwt:
     }
 
     #[test]
-    fn test_validate_shared_hls_storage_requires_storage_path() {
+    fn test_validate_shared_file_hls_storage_requires_storage_path() {
         let mut config = valid_prod_config();
-        config.livestream.hls_storage_backend = HlsStorageBackend::File;
-        config.livestream.hls_shared_storage = true;
+        config.livestream.hls_storage_backend = HlsStorageBackend::SharedFile;
         config.livestream.hls_storage_path = String::new();
 
         let errors = config.validate().unwrap_err();
@@ -6799,7 +6771,6 @@ jwt:
         config.cluster.enabled = false;
         config.server.cluster_secret.clear();
         config.livestream.hls_storage_backend = HlsStorageBackend::Oss;
-        config.livestream.hls_shared_storage = false;
         config.livestream.hls_oss = HlsOssConfig::default();
 
         let errors = config.validate().unwrap_err();

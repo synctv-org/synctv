@@ -36,7 +36,7 @@ The default installation deploys:
 - Redis 8
 
 These database services are internal-only and are not exposed outside the cluster. For temporary external access, prefer `kubectl port-forward`.
-The chart defaults to single-replica mode with `config.cluster.enabled=false`. Before scaling beyond one replica, enable cluster mode. Local HLS backends work through publisher-node gRPC proxying, while `file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
+The chart defaults to single-replica mode with `config.cluster.enabled=false`. Before scaling beyond one replica, enable cluster mode. Local HLS backends work through publisher-node gRPC proxying, while `shared_file` with a real shared filesystem (`persistence.hls.existingClaim`) or `oss` with S3-compatible object storage is recommended for production HLS traffic.
 
 Install the released OCI chart:
 
@@ -216,7 +216,7 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` when `config.livestream.hlsStorageBackend=oss`
 - `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
 
-HLS storage rendering fails fast for invalid combinations: `hlsStorageBackend=file` requires a non-empty `hlsStoragePath`, and `hlsSharedStorage=true` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but shared file storage or OSS is the recommended production model.
+HLS storage rendering fails fast for invalid combinations: `hlsStorageBackend=file/shared_file` requires a non-empty `hlsStoragePath`, and `hlsStorageBackend=shared_file` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but `shared_file` or OSS is the recommended production model.
 
 ## Verify the Deployment
 
@@ -424,7 +424,7 @@ You can then scrape through either Prometheus Operator (`ServiceMonitor`) or Vic
 - [ ] Keep `secrets.security.opaqueServerSetupSecret` stable across upgrades
 - [ ] Enable TLS for ingress (cert-manager)
 - [ ] Set appropriate resource limits
-- [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared file/OSS for production traffic
+- [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared_file/OSS for production traffic
 - [ ] Enable autoscaling (HPA)
 - [ ] Configure pod disruption budget
 - [ ] Enable network policies

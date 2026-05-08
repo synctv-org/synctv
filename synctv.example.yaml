@@ -315,8 +315,9 @@ livestream:
   # Maximum memory (in megabytes) for in-memory HLS segment storage.
   # 0 means use the built-in default.
   hls_memory_max_mb: 0
-  # Set true only when hls_storage_path points to storage shared by all replicas.
-  hls_shared_storage: false
+  # HLS segment storage backend: memory, file, shared_file, or oss.
+  # Use shared_file only when hls_storage_path is mounted from storage visible to every replica.
+  hls_storage_backend: "memory"
   # Relative hls_storage_path values are resolved from data_dir.
   # This is runtime-owned storage, unlike *_file secrets or metrics TLS files.
   # hls_storage_path: "livestream/hls"

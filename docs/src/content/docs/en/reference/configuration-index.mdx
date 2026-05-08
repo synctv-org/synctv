@@ -209,9 +209,8 @@ Use the full field index below when you leave the Compose path for bare-metal, K
 | `livestream.max_flv_tag_size_bytes` | bytes | `10485760` | Maximum accepted FLV tag size |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP cache memory limit |
 | `livestream.hls_memory_max_mb` | MB | `0` | In-memory HLS storage limit; `0` uses the built-in default |
-| `livestream.hls_storage_backend` | `memory`, `file`, or `oss` | `memory` | HLS segment storage backend |
-| `livestream.hls_shared_storage` | boolean | `false` | Whether the `file` backend path is a multi-replica shared filesystem |
-| `livestream.hls_storage_path` | path | `""` | HLS file path for the `file` backend |
+| `livestream.hls_storage_backend` | `memory`, `file`, `shared_file`, or `oss` | `memory` | HLS segment storage backend |
+| `livestream.hls_storage_path` | path | `""` | HLS file path for the `file` / `shared_file` backend |
 | `livestream.hls_oss.endpoint` | string | `""` | S3/OSS endpoint for the `oss` backend; required when `oss` is enabled |
 | `livestream.hls_oss.access_key_id` | secret string | `""` | Access key ID for the `oss` backend; required when `oss` is enabled |
 | `livestream.hls_oss.secret_access_key` | secret string | `""` | Secret access key for the `oss` backend; required when `oss` is enabled |

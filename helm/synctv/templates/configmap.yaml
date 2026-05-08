@@ -152,7 +152,6 @@ data:
       gop_cache_max_memory_mb: {{ printf "%d" (int64 (.Values.config.livestream.gopCacheMaxMemoryMb | default 100)) }}
       hls_memory_max_mb: {{ printf "%d" (int64 (.Values.config.livestream.hlsMemoryMaxMb | default 0)) }}
       hls_storage_backend: {{ .Values.config.livestream.hlsStorageBackend | default "memory" | quote }}
-      hls_shared_storage: {{ .Values.config.livestream.hlsSharedStorage | default false }}
       hls_storage_path: {{ .Values.config.livestream.hlsStoragePath | default "" | quote }}
       {{- if eq (.Values.config.livestream.hlsStorageBackend | default "memory") "oss" }}
       hls_oss:

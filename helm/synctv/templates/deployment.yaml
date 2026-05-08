@@ -1,15 +1,16 @@
 {{- $hlsBackend := .Values.config.livestream.hlsStorageBackend | default "memory" -}}
-{{- if not (has $hlsBackend (list "memory" "file" "oss")) -}}
-{{- fail "config.livestream.hlsStorageBackend must be one of: memory, file, oss" -}}
+{{- $hlsFileBackend := or (eq $hlsBackend "file") (eq $hlsBackend "shared_file") -}}
+{{- if not (has $hlsBackend (list "memory" "file" "shared_file" "oss")) -}}
+{{- fail "config.livestream.hlsStorageBackend must be one of: memory, file, shared_file, oss" -}}
 {{- end -}}
-{{- if and (eq $hlsBackend "file") (not .Values.config.livestream.hlsStoragePath) -}}
-{{- fail "config.livestream.hlsStorageBackend=file requires config.livestream.hlsStoragePath" -}}
+{{- if and $hlsFileBackend (not .Values.config.livestream.hlsStoragePath) -}}
+{{- fail "config.livestream.hlsStorageBackend=file/shared_file requires config.livestream.hlsStoragePath" -}}
 {{- end -}}
-{{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath (not (hasPrefix "/" .Values.config.livestream.hlsStoragePath)) -}}
-{{- fail "config.livestream.hlsStorageBackend=file requires an absolute config.livestream.hlsStoragePath in Kubernetes" -}}
+{{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath (not (hasPrefix "/" .Values.config.livestream.hlsStoragePath)) -}}
+{{- fail "config.livestream.hlsStorageBackend=file/shared_file requires an absolute config.livestream.hlsStoragePath in Kubernetes" -}}
 {{- end -}}
-{{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsSharedStorage (not .Values.persistence.hls.existingClaim) -}}
-{{- fail "config.livestream.hlsSharedStorage=true requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
+{{- if and (eq $hlsBackend "shared_file") (not .Values.persistence.hls.existingClaim) -}}
+{{- fail "config.livestream.hlsStorageBackend=shared_file requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -264,7 +265,7 @@ spec:
               mountPath: /tmp
             - name: app-data
               mountPath: /data
-            {{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath }}
+            {{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath }}
             - name: hls-storage
               mountPath: {{ .Values.config.livestream.hlsStoragePath | quote }}
             {{- end }}
@@ -288,7 +289,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- if and (eq $hlsBackend "file") .Values.config.livestream.hlsStoragePath }}
+        {{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath }}
         - name: hls-storage
           {{- if .Values.persistence.hls.existingClaim }}
           persistentVolumeClaim:

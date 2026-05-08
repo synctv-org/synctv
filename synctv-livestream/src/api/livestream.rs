@@ -25,6 +25,7 @@ use crate::{
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
+use synctv_core::config::HlsStorageBackend;
 use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -57,6 +58,8 @@ pub struct LiveStreamingInfrastructure {
     pub user_stream_tracker: Arc<StreamTracker>,
     /// Local node ID for comparing with publisher node
     pub local_node_id: String,
+    /// HLS segment storage backend.
+    pub hls_storage_backend: HlsStorageBackend,
     /// HLS proxy client for fetching playlists/segments from remote publisher nodes
     pub hls_proxy: Option<HlsProxyClient>,
 }
@@ -79,6 +82,7 @@ impl LiveStreamingInfrastructure {
             hls_stream_registry: None,
             user_stream_tracker,
             local_node_id: String::new(),
+            hls_storage_backend: HlsStorageBackend::Memory,
             hls_proxy: None,
         }
     }
@@ -101,6 +105,13 @@ impl LiveStreamingInfrastructure {
     #[must_use]
     pub fn with_local_node_id(mut self, node_id: String) -> Self {
         self.local_node_id = node_id;
+        self
+    }
+
+    /// Set the HLS storage backend used by segment serving decisions.
+    #[must_use]
+    pub fn with_hls_storage_backend(mut self, backend: HlsStorageBackend) -> Self {
+        self.hls_storage_backend = backend;
         self
     }
 
@@ -431,8 +442,9 @@ impl FlvStreamingApi {
 /// HLS streaming API
 ///
 /// Provides methods for HLS playlist generation and segment serving.
-/// In cluster mode, automatically proxies requests to the publisher node
-/// if the publisher is on a different node.
+/// In cluster mode, local-only backends proxy remote publisher reads through
+/// the publisher node. The `shared_file` backend reads segment files from the
+/// current node's shared mount.
 pub struct HlsStreamingApi;
 
 impl HlsStreamingApi {
@@ -570,7 +582,8 @@ impl HlsStreamingApi {
     ///
     /// In cluster mode:
     /// - If publisher is local: reads from local `SegmentManager`
-    /// - If publisher is remote: proxies to publisher node via gRPC (with local cache)
+    /// - If storage backend is `shared_file`: reads from the current node's shared mount
+    /// - If publisher is remote with local-only storage: proxies to publisher node via gRPC
     ///
     /// HLS segment requests do NOT trigger gRPC RTMP pull streams.
     pub async fn get_segment(
@@ -594,8 +607,8 @@ impl HlsStreamingApi {
         let is_local = !infrastructure.local_node_id.is_empty()
             && publisher_info.node_id == infrastructure.local_node_id;
 
-        if is_local {
-            // Local publisher: read from local storage
+        if is_local || infrastructure.hls_storage_backend == HlsStorageBackend::SharedFile {
+            // Local publisher or shared filesystem: read from storage visible to this node.
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
             // Validate API address before attempting remote proxy
@@ -761,6 +774,36 @@ mod tests {
             result.is_ok(),
             "local publisher should create FLV session without requiring gRPC pull"
         );
+    }
+
+    #[tokio::test]
+    async fn test_shared_file_segments_are_read_from_current_node_storage() {
+        let storage: Arc<dyn synctv_xiu::storage::HlsStorage> =
+            Arc::new(synctv_xiu::storage::MemoryStorage::new());
+        storage
+            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+            .await
+            .expect("test segment should be written");
+
+        let segment_manager = Arc::new(SegmentManager::new(
+            storage,
+            crate::livestream::segment_manager::CleanupConfig::default(),
+        ));
+        let infrastructure = make_infrastructure_with_publisher("node-local", "node-remote", "")
+            .with_segment_manager(segment_manager)
+            .with_hls_storage_backend(HlsStorageBackend::SharedFile)
+            .with_hls_proxy(HlsProxyClient::new(
+                std::time::Duration::from_secs(1),
+                1024 * 1024,
+                std::time::Duration::from_secs(1),
+                Some("cluster-secret".to_string()),
+            ));
+
+        let segment = HlsStreamingApi::get_segment(&infrastructure, "room1", "media1", "seg1")
+            .await
+            .expect("shared_file should read TS data from the current node storage");
+
+        assert_eq!(segment, Bytes::from_static(b"segment"));
     }
 
     #[tokio::test]

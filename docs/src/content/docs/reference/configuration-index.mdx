@@ -209,9 +209,8 @@ curl -fsS http://localhost:8080/health/ready
 | `livestream.max_flv_tag_size_bytes` | 字节数 | `10485760` | 最大 FLV tag 大小 |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP 缓存最大内存 |
 | `livestream.hls_memory_max_mb` | MB | `0` | 内存 HLS 存储上限，0 表示内置默认 |
-| `livestream.hls_storage_backend` | `memory`、`file`、`oss` | `memory` | HLS 分片存储后端 |
-| `livestream.hls_shared_storage` | 布尔值 | `false` | `file` 后端路径是否为多副本共享文件系统 |
-| `livestream.hls_storage_path` | 路径 | `""` | `file` 后端 HLS 文件存储路径 |
+| `livestream.hls_storage_backend` | `memory`、`file`、`shared_file`、`oss` | `memory` | HLS 分片存储后端 |
+| `livestream.hls_storage_path` | 路径 | `""` | `file` / `shared_file` 后端 HLS 文件存储路径 |
 | `livestream.hls_oss.endpoint` | 字符串 | `""` | `oss` 后端 S3/OSS endpoint，启用 `oss` 时必填 |
 | `livestream.hls_oss.access_key_id` | secret 字符串 | `""` | `oss` 后端 access key ID，启用 `oss` 时必填 |
 | `livestream.hls_oss.secret_access_key` | secret 字符串 | `""` | `oss` 后端 secret access key，启用 `oss` 时必填 |

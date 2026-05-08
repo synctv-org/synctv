@@ -146,14 +146,14 @@ Provider header 是边界设计的一部分。这样可以避免底层 proxy 猜
 - 所有副本共享同一个 PostgreSQL。
 - 所有副本共享同一个 Redis 和 `redis.key_prefix`。
 - WebSocket ticket 后端必须能跨节点验证，不能只保存在单节点内存中。
-- HLS 跨节点访问当前走 publisher-node proxy；共享文件系统或 OSS 主要改善存储、恢复和清理边界，容量规划仍要把 publisher-node proxy 作为请求路径考虑进去。
+- 本地 HLS backend 走 publisher-node proxy；`shared_file` 会让当前节点从共享挂载读取 TS 分片，OSS 提供对象存储分片。
 - Pod 关闭时给足 `server.shutdown_drain_timeout_seconds` 和 Kubernetes termination grace period。
 
 更完整的运行时设计、发现模式、leader election 和集群直播边界见 [集群配置](../../configuration/cluster/)。
 
 ## 直播模型
 
-直播路径和点播 proxy 路径不同。RTMP 是推流入口；HTTP-FLV 面向低延迟播放；HLS 通过 remuxer 生成 playlist/segment 并写入 `memory`、`file` 或 `oss` backend。多副本时，publisher 所在节点通过共享 registry 暴露给其他节点；当前非 publisher 节点通过 HLS gRPC proxy 向 publisher 节点读取 playlist/segment。共享文件系统或 OSS 是存储与恢复边界，不表示非 publisher 节点会绕过 publisher 直接读分片。
+直播路径和点播 proxy 路径不同。RTMP 是推流入口；HTTP-FLV 面向低延迟播放；HLS 通过 remuxer 生成 playlist/segment 并写入 `memory`、`file`、`shared_file` 或 `oss` backend。多副本时，publisher 所在节点通过共享 registry 暴露给其他节点；本地 backend 通过 HLS gRPC proxy 向 publisher 节点读取远端 playlist/segment，`shared_file` 的 TS 分片由当前节点从共享挂载读取。
 
 详细的 RTMP/StreamHub/HTTP-FLV/HLS pipeline、backend 选择和集群直播故障边界见 [直播与 HLS/FLV](../../configuration/livestream/)。
 
@@ -165,7 +165,7 @@ Kubernetes 多副本拓扑：
   light={kubernetesTopologyLight}
   dark={kubernetesTopologyDark}
   alt="Kubernetes 多副本拓扑图，展示 HTTP Ingress、gRPC Ingress、两个独立 Service、多个 SyncTV Pod、PostgreSQL、Redis、HLS backend 或 publisher-node proxy，以及外部媒体 Provider。"
-  caption="Kubernetes 多副本部署应拆分 HTTP 与 gRPC 的 Service/Ingress，同时让所有 Pod 共享 PostgreSQL、Redis。HLS 当前通过 publisher-node proxy 做跨节点读取；共享文件系统或 OSS 用于更稳定的存储和恢复边界。"
+  caption="Kubernetes 多副本部署应拆分 HTTP 与 gRPC 的 Service/Ingress，同时让所有 Pod 共享 PostgreSQL、Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
 />
 
 ## 继续阅读

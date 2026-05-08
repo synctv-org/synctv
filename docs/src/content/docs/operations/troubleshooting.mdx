@@ -129,7 +129,7 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
 | OAuth2 callback/state 错误 | redirect URL 不一致或多副本未共享 Redis | 对齐 runtime settings 和第三方平台登记值，多副本配置 Redis |
 | WebAuthn/passkey 失败 | `rp_origin` 与实际 HTTPS origin 不一致 | 配置真实 origin，确认 `rp_id` 是同域或父域 |
 | Range seek 或代理播放异常 | Provider header 不完整或上游不支持 Range | 检查 Provider 返回 header 和上游 `Accept-Ranges` |
-| HLS 多副本偶发 404 | publisher 节点不可达或存储模型不一致 | 使用 publisher-node proxy、共享文件系统或 OSS |
+| HLS 多副本偶发 404 | publisher 节点不可达或存储模型不一致 | 使用 publisher-node proxy、`shared_file` 或 OSS |
 
 ## 常用命令模板
 
@@ -229,7 +229,7 @@ Helm 渲染成功只代表 Kubernetes manifest 语法成立，不代表业务配
 - HTTP 和 gRPC 是否是两个独立 Ingress。
 - gRPC Ingress 是否有独立 annotation。
 - metrics ServiceMonitor/VMServiceScrape 是否抓对 Service。
-- 多副本 HLS 是否使用共享存储。
+- 多副本 HLS 在 publisher-node proxy 不够用时是否使用 `shared_file` 或 OSS。
 - `existingSecret` 是否包含 chart 需要的全部 key。
 
 更多内容见 [Helm 部署](../../deployment/helm/)。

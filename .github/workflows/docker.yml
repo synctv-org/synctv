@@ -65,6 +65,7 @@ jobs:
       output: ${{ github.event_name == 'push' && 'image' || 'local' }}
       push: ${{ github.event_name == 'push' }}
       artifact-upload: ${{ github.event_name != 'push' }}
+      sign: ${{ github.event_name == 'push' && 'auto' || 'false' }}
       cache: true
       cache-mode: max
       cache-scope: synctv-image

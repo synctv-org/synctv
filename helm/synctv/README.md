@@ -12,8 +12,8 @@ Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment an
 
 ## Prerequisites
 
-- Kubernetes 1.23+
-- Helm 3.8+
+- Kubernetes 1.23.0+
+- Helm 3.8.0+
 - Optional: Ingress controller
 - Optional: cert-manager
 - Optional: KubeBlocks operator, required only in `kubeblocks` mode

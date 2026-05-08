@@ -56,7 +56,7 @@ needless_for_each = "allow"
 
 [workspace.dependencies]
 # Async Runtime
-tokio = { version = "1.52", features = [
+tokio = { version = "1.52.1", features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -71,7 +71,7 @@ tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
 tokio-stream = "0.1.18"
 
 # gRPC & Protobuf
-tonic = { version = "0.14", default-features = false, features = [
+tonic = { version = "0.14.6", default-features = false, features = [
     "transport",
     "codegen",
     "server",
@@ -94,13 +94,13 @@ prost-protovalidate = "0.3.0"
 
 # HTTP Framework
 axum = { version = "0.8.9", features = ["macros", "ws"] }
-tower = { version = "0.5", features = [
+tower = { version = "0.5.3", features = [
     "util",
     "timeout",
     "limit",
     "load-shed",
 ] }
-tower-http = { version = "0.6", features = [
+tower-http = { version = "0.6.10", features = [
     "trace",
     "on-early-drop",
     "compression-full",
@@ -108,13 +108,13 @@ tower-http = { version = "0.6", features = [
     "timeout",
     "cors",
 ] }
-hyper = { version = "1.9", default-features = false, features = [
+hyper = { version = "1.9.0", default-features = false, features = [
     "http1",
     "http2",
     "server",
     "client",
 ] }
-reqwest = { version = "0.13", default-features = false, features = [
+reqwest = { version = "0.13.3", default-features = false, features = [
     "json",
     "cookies",
     "query",
@@ -122,7 +122,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 
 # Database
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio",
     "postgres",
     "migrate",
@@ -133,7 +133,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 
 # Redis
-redis = { version = "1.2", features = [
+redis = { version = "1.2.1", features = [
     "tokio-comp",
     "connection-manager",
     "streams",
@@ -198,7 +198,7 @@ opendal = { version = "0.56.0", default-features = false, features = [
 
 # Logging & Tracing
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3", features = [
+tracing-subscriber = { version = "0.3.23", features = [
     "env-filter",
     "json",
     "fmt",
@@ -250,7 +250,7 @@ hyper-util = { version = "0.1.20", features = ["client-legacy", "tokio", "http2"
 ipnet = "2.12.0"
 
 # Email
-lettre = { version = "0.11", default-features = false, features = [
+lettre = { version = "0.11.21", default-features = false, features = [
     "tokio1-rustls",
     "rustls-no-provider",
     "webpki-roots",

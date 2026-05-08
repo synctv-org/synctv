@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[async_trait]
 pub trait RedisConnectionRuntime: Send + Sync {
@@ -55,21 +56,36 @@ impl RedisConnectionRuntime for SharedRedisConnectionRuntime {
 #[derive(Clone)]
 pub struct OnDemandRedisRuntime {
     client: redis::Client,
+    manager_config: redis::aio::ConnectionManagerConfig,
 }
 
 impl OnDemandRedisRuntime {
     #[must_use]
-    pub const fn new(client: redis::Client) -> Self {
-        Self { client }
+    pub fn new(client: redis::Client) -> Self {
+        Self::new_with_config(client, redis::aio::ConnectionManagerConfig::new())
+    }
+
+    #[must_use]
+    pub fn new_with_config(
+        client: redis::Client,
+        manager_config: redis::aio::ConnectionManagerConfig,
+    ) -> Self {
+        Self {
+            client,
+            manager_config,
+        }
     }
 }
 
 #[async_trait]
 impl RedisConnectionRuntime for OnDemandRedisRuntime {
     async fn snapshot(&self) -> redis::aio::ConnectionManager {
-        redis::aio::ConnectionManager::new(self.client.clone())
-            .await
-            .expect("on-demand redis runtime failed to create connection manager")
+        redis::aio::ConnectionManager::new_with_config(
+            self.client.clone(),
+            self.manager_config.clone(),
+        )
+        .await
+        .expect("on-demand redis runtime failed to create connection manager")
     }
 }
 
@@ -102,7 +118,15 @@ impl ManagedRedisRuntime {
     }
 
     pub async fn from_client(client: redis::Client) -> redis::RedisResult<Self> {
-        let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
+        Self::from_client_with_config(client, redis::aio::ConnectionManagerConfig::new()).await
+    }
+
+    pub async fn from_client_with_config(
+        client: redis::Client,
+        manager_config: redis::aio::ConnectionManagerConfig,
+    ) -> redis::RedisResult<Self> {
+        let conn =
+            redis::aio::ConnectionManager::new_with_config(client.clone(), manager_config).await?;
         Ok(Self::new(client, Arc::new(tokio::sync::RwLock::new(conn))))
     }
 
@@ -165,15 +189,58 @@ pub fn coordination_runtime_from_client(
     Arc::new(OnDemandRedisRuntime::new(client))
 }
 
+#[must_use]
+pub fn coordination_runtime_from_client_with_config(
+    client: redis::Client,
+    manager_config: redis::aio::ConnectionManagerConfig,
+) -> Arc<dyn RedisCoordinationRuntime> {
+    Arc::new(OnDemandRedisRuntime::new_with_config(
+        client,
+        manager_config,
+    ))
+}
+
+#[must_use]
+pub fn redis_connection_manager_config(
+    connect_timeout: Duration,
+    response_timeout: Duration,
+    pipeline_buffer_size: usize,
+) -> redis::aio::ConnectionManagerConfig {
+    redis::aio::ConnectionManagerConfig::new()
+        .set_connection_timeout(Some(connect_timeout))
+        .set_response_timeout(Some(response_timeout))
+        .set_pipeline_buffer_size(pipeline_buffer_size)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{shared_runtime, shared_runtime_from_conn};
+    use super::{redis_connection_manager_config, shared_runtime, shared_runtime_from_conn};
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::RwLock;
 
     #[test]
     fn test_shared_runtime_from_conn_preserves_none() {
         assert!(shared_runtime_from_conn(None).is_none());
+    }
+
+    #[test]
+    fn test_redis_connection_manager_config_sets_timeouts_and_pipeline_buffer() {
+        let manager_config =
+            redis_connection_manager_config(Duration::from_secs(3), Duration::from_secs(4), 256);
+
+        assert_eq!(
+            manager_config.connection_timeout(),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            manager_config.response_timeout(),
+            Some(Duration::from_secs(4))
+        );
+        assert!(
+            format!("{manager_config:?}").contains("pipeline_buffer_size: Some(256)"),
+            "pipeline buffer size should be applied to ConnectionManagerConfig"
+        );
     }
 
     #[tokio::test]

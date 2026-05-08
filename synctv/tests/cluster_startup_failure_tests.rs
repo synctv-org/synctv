@@ -23,6 +23,7 @@ fn standalone_test_config() -> Config {
             port: 8080,
             enable_reflection: false,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: String::new(), // No cluster secret for standalone mode
@@ -111,6 +112,7 @@ fn cluster_test_config() -> Config {
             port: 8080,
             enable_reflection: false,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: "test-cluster-secret-key-1234567890".to_string(),

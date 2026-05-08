@@ -25,6 +25,9 @@ server:
   # Minimum: 1MB (1048576 bytes), Maximum: 1GB (1073741824 bytes).
   # Environment variable: SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES
   # grpc_max_message_size_bytes: 16777216
+  # Enable gzip negotiation for gRPC request/response bodies.
+  # Environment variable: SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED
+  grpc_compression_enabled: true
   # Trusted proxy IP addresses/CIDRs for X-Forwarded-For validation.
   # If empty, X-Forwarded-For headers are NOT trusted (socket address is used).
   # Example: ["10.0.0.0/8", "192.168.0.0/16"]
@@ -239,6 +242,12 @@ redis:
   # password_file: "/run/secrets/redis_password"
   # database: 0
   connect_timeout_seconds: 5
+  # Maximum time to wait for a Redis command response.
+  # Environment variable: SYNCTV_REDIS_RESPONSE_TIMEOUT_SECONDS
+  response_timeout_seconds: 5
+  # Redis connection manager pipeline buffer for bursty short commands.
+  # Environment variable: SYNCTV_REDIS_PIPELINE_BUFFER_SIZE
+  pipeline_buffer_size: 512
   key_prefix: "synctv:"
 
   # Deployment mode: standalone or sentinel

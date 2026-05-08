@@ -106,6 +106,7 @@ Use the full field index below when you leave the Compose path for bare-metal, K
 | `server.advertise_host` | string | `""` | Address other nodes use to reach this node |
 | `server.shutdown_drain_timeout_seconds` | seconds | `30` | Graceful shutdown drain timeout |
 | `server.grpc_max_message_size_bytes` | bytes | `16777216` | Maximum gRPC message size |
+| `server.grpc_compression_enabled` | boolean | `true` | Allow gRPC gzip compression negotiation |
 
 ## `time`, `public_ids`, and `security`
 
@@ -174,6 +175,8 @@ Use the full field index below when you leave the Compose path for bare-metal, K
 | `redis.password` | secret string | `""` | Redis password |
 | `redis.database` | integer | `0` | Redis database index |
 | `redis.connect_timeout_seconds` | seconds | `5` | Redis connection timeout |
+| `redis.response_timeout_seconds` | seconds | `5` | Redis command response timeout |
+| `redis.pipeline_buffer_size` | integer | `512` | Redis connection manager pipeline buffer size |
 | `redis.key_prefix` | string | `synctv:` | Redis key prefix |
 | `redis.deployment_mode` | `standalone` or `sentinel` | `standalone` | Redis deployment mode |
 | `redis.sentinel_master_name` | string or null | `null` | Sentinel master name |

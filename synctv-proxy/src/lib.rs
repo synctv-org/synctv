@@ -465,7 +465,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
     // We only retry once to avoid excessive latency for the client.
     // A delay is added before retry to avoid hammering struggling upstream servers.
-    let (proxy_response, followed_redirects) =
+    let (proxy_response, _followed_redirects) =
         if is_retryable_status(proxy_result.response.status()) {
             let retry_delay = calculate_retry_delay();
             tracing::warn!(
@@ -507,27 +507,6 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         }
     }
 
-    // Determine if reqwest auto-decompressed the response body.
-    // reqwest transparently decodes gzip, deflate, and brotli by default.
-    // If the upstream used one of these encodings, reqwest has already decoded
-    // the body, so we must strip the content-encoding header (otherwise the
-    // client would try to decompress already-decoded data).
-    // For other encodings (e.g. zstd) that reqwest does NOT handle, we must
-    // preserve the header so the client knows to decode it.
-    // Additionally, when redirects were followed the body has been fully
-    // consumed and re-requested at the final URL; in that case we strip
-    // content-encoding unconditionally because the body is already decoded.
-    // Use contains() to handle multiple encodings like "gzip, deflate" or "br, gzip".
-    // This correctly handles cases where servers return multiple encodings.
-    let reqwest_auto_decompressed = followed_redirects
-        || response_headers
-            .get("content-encoding")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|ce| {
-                let ce_lower = ce.to_lowercase();
-                ce_lower.contains("gzip") || ce_lower.contains("deflate") || ce_lower.contains("br")
-            });
-
     let mut builder = Response::builder().status(status);
 
     // For 206 Partial Content responses the client needs Content-Length to
@@ -552,10 +531,6 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
                 | "trailer"
                 | "upgrade"
         ) {
-            continue;
-        }
-        // Only strip content-encoding if reqwest auto-decompressed the body
-        if name.as_str() == "content-encoding" && reqwest_auto_decompressed {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -1722,6 +1697,50 @@ mod tests {
             .await
             .expect("proxy fetch should not inherit the outer request deadline");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_fetch_preserves_content_encoding_for_byte_transparent_body() {
+        let server = wiremock::MockServer::start().await;
+        let public_origin = format!("http://cdn.example.com:{}", server.address().port());
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/encoded.bin"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(b"gzip-bytes".to_vec())
+                    .insert_header("content-encoding", "gzip")
+                    .insert_header("content-type", "application/octet-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("cdn.example.com", *server.address())
+            .build()
+            .expect("client should build");
+        let provider_headers = HashMap::new();
+        let cfg = ProxyConfig {
+            client: &client,
+            url: &format!("{public_origin}/encoded.bin"),
+            provider_headers: &provider_headers,
+            range_header: None,
+            request_control: None,
+            upstream_header_timeout: None,
+        };
+
+        let response = proxy_fetch_and_forward(cfg, &NoopMetrics)
+            .await
+            .expect("proxy fetch should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
     }
 
     #[test]

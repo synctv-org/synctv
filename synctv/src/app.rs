@@ -1417,6 +1417,7 @@ mod tests {
                 port: 8080,
                 enable_reflection: false,
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
+                grpc_compression_enabled: true,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),

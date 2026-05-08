@@ -171,11 +171,11 @@ The application currently uses split database/Redis configuration rather than re
 
 | Section | Description |
 |---------|-------------|
-| `config.server` | API bind address, CORS, and proxy settings |
+| `config.server` | API bind address, CORS, proxy settings, and gRPC transport settings |
 | `config.publicIds` | Optional sqids settings for public API IDs |
 | `config.management` | Management endpoint settings |
 | `config.database` | Pool settings; actual host/port/user/password come from env vars |
-| `config.redis` | Base Redis settings; connection details come from env vars |
+| `config.redis` | Redis timeouts, pipeline buffer, key prefix, and deployment mode; connection details come from env vars |
 | `config.cluster` | Cluster coordination and discovery settings |
 | `config.jwt` | Token durations; signing secret comes from a secret |
 | `config.bootstrap` | Bootstrap root-user settings |
@@ -195,6 +195,12 @@ The chart creates two separate Services for application traffic:
 
 - `{{ release-name }}` exposes HTTP/REST plus RTMP/STUN/metrics ports.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
+
+Important transport defaults:
+
+- `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
+- `config.redis.responseTimeoutSeconds=5` bounds how long a Redis command can wait for a response.
+- `config.redis.pipelineBufferSize=512` controls the Redis connection manager pipeline buffer for bursty short-command workloads.
 
 The default Ingress routes HTTP traffic to the HTTP Service. When `ingress.grpc.enabled=true`,
 the chart creates a second Ingress that routes to the gRPC Service and sets

@@ -18,6 +18,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 use tokio_tungstenite::client_async_tls_with_config;
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::error::{check_response, json_with_limit, BilibiliError};
@@ -40,6 +42,10 @@ static RE_LIVE_ROOM: LazyLock<Regex> =
 
 use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
+const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
+const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 /// Shared HTTP client for all Bilibili requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
@@ -56,6 +62,13 @@ fn shared_client() -> Result<Client, BilibiliError> {
         .map_err(|err| BilibiliError::Network(err.to_string()))
 }
 
+#[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
+fn live_danmaku_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(LIVE_DANMAKU_WS_MAX_FRAME_SIZE))
+}
+
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
 async fn connect_live_danmaku_websocket(
     ws_url: &str,
@@ -64,7 +77,7 @@ async fn connect_live_danmaku_websocket(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
     BilibiliError,
 > {
-    client_async_tls_with_config(ws_url, socket, None, None)
+    client_async_tls_with_config(ws_url, socket, Some(live_danmaku_websocket_config()), None)
         .await
         .map(|(stream, _response)| stream)
         .map_err(|e| BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}")))
@@ -2699,6 +2712,38 @@ pub fn build_heartbeat_packet() -> Vec<u8> {
 /// Prevents decompression bombs from exhausting memory.
 const MAX_DANMAKU_DECOMPRESS_SIZE: u64 = 16 * 1024 * 1024;
 
+fn read_limited_danmaku_decompressed<R: std::io::Read>(
+    decoder: R,
+    compression: &str,
+    compressed_len: usize,
+) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let limit = MAX_DANMAKU_DECOMPRESS_SIZE
+        .checked_add(1)
+        .expect("danmaku decompression limit must not overflow");
+    let mut limited = decoder.take(limit);
+    let mut out = Vec::new();
+    if let Err(e) = limited.read_to_end(&mut out) {
+        tracing::warn!(
+            "Danmaku packet {compression} decompression failed: {e} (body length: {compressed_len} bytes)"
+        );
+        return None;
+    }
+
+    if out.len() as u64 > MAX_DANMAKU_DECOMPRESS_SIZE {
+        tracing::warn!(
+            compression,
+            compressed_len,
+            decompressed_limit = MAX_DANMAKU_DECOMPRESS_SIZE,
+            "Danmaku packet exceeded decompressed size limit"
+        );
+        return None;
+    }
+
+    Some(out)
+}
+
 /// Parse danmaku packet from binary data.
 ///
 /// A single binary frame may contain multiple sub-packets (especially when
@@ -2733,40 +2778,26 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
             // Notification message
             let body = &data[16..];
 
-            // Handle compression (protocol_version 2 = zlib, 3 = brotli)
-            let decompressed = match protocol_version {
-                0 | 1 => body.to_vec(),
+            let compressed_body;
+            let payload = match protocol_version {
+                0 | 1 => body,
                 2 => {
-                    // zlib (deflate) compression with size limit
-                    use std::io::Read;
                     let decoder = flate2::read::ZlibDecoder::new(body);
-                    let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
-                    let mut out = Vec::new();
-                    if let Err(e) = limited.read_to_end(&mut out) {
-                        tracing::warn!(
-                            "Danmaku packet zlib decompression failed: {} (body length: {} bytes)",
-                            e,
-                            body.len()
-                        );
-                        return Vec::new();
-                    }
-                    out
+                    compressed_body =
+                        match read_limited_danmaku_decompressed(decoder, "zlib", body.len()) {
+                            Some(out) => out,
+                            None => return Vec::new(),
+                        };
+                    compressed_body.as_slice()
                 }
                 3 => {
-                    // brotli compression with size limit
-                    use std::io::Read;
                     let decoder = brotli::Decompressor::new(body, 4096);
-                    let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
-                    let mut out = Vec::new();
-                    if let Err(e) = limited.read_to_end(&mut out) {
-                        tracing::warn!(
-                            "Danmaku packet brotli decompression failed: {} (body length: {} bytes)",
-                            e,
-                            body.len()
-                        );
-                        return Vec::new();
-                    }
-                    out
+                    compressed_body =
+                        match read_limited_danmaku_decompressed(decoder, "brotli", body.len()) {
+                            Some(out) => out,
+                            None => return Vec::new(),
+                        };
+                    compressed_body.as_slice()
                 }
                 _ => {
                     tracing::warn!(
@@ -2780,7 +2811,7 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
             // Compressed data contains concatenated sub-packets with headers;
             // uncompressed (v0/v1) body is raw JSON.
             if protocol_version == 0 || protocol_version == 1 {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decompressed) {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
                     if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
                         messages.push(parse_danmaku_cmd(cmd, &json));
                     }
@@ -2788,21 +2819,21 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
             } else {
                 // Iterate over ALL sub-packets inside the decompressed buffer
                 let mut offset = 0usize;
-                while offset + 16 <= decompressed.len() {
+                while offset + 16 <= payload.len() {
                     let pkt_len = u32::from_be_bytes([
-                        decompressed[offset],
-                        decompressed[offset + 1],
-                        decompressed[offset + 2],
-                        decompressed[offset + 3],
+                        payload[offset],
+                        payload[offset + 1],
+                        payload[offset + 2],
+                        payload[offset + 3],
                     ]) as usize;
                     let hdr_len = u16::from_be_bytes([
-                        decompressed[offset + 4],
-                        decompressed[offset + 5],
+                        payload[offset + 4],
+                        payload[offset + 5],
                     ]) as usize;
-                    if pkt_len < hdr_len || offset + pkt_len > decompressed.len() {
+                    if pkt_len < hdr_len || offset + pkt_len > payload.len() {
                         break;
                     }
-                    let sub_body = &decompressed[offset + hdr_len..offset + pkt_len];
+                    let sub_body = &payload[offset + hdr_len..offset + pkt_len];
                     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(sub_body) {
                         if let Some(cmd) = json.get("cmd").and_then(|v| v.as_str()) {
                             messages.push(parse_danmaku_cmd(cmd, &json));
@@ -3591,6 +3622,16 @@ mod tests {
     }
 
     #[test]
+    fn test_live_danmaku_websocket_config_limits_incoming_sizes() {
+        let config = live_danmaku_websocket_config();
+        assert_eq!(
+            config.max_message_size,
+            Some(LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE)
+        );
+        assert_eq!(config.max_frame_size, Some(LIVE_DANMAKU_WS_MAX_FRAME_SIZE));
+    }
+
+    #[test]
     fn test_video_page_info_deserialize() {
         let json = r#"{
             "data": {
@@ -4165,6 +4206,18 @@ mod tests {
 
         let result = parse_danmaku_packet(&packet);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_read_limited_danmaku_decompressed_rejects_oversized_output() {
+        let oversized_len = usize::try_from(MAX_DANMAKU_DECOMPRESS_SIZE)
+            .expect("danmaku decompression test limit must fit in usize")
+            .checked_add(1)
+            .expect("danmaku decompression test allocation length must not overflow");
+        let oversized = vec![0u8; oversized_len];
+        let result =
+            read_limited_danmaku_decompressed(std::io::Cursor::new(oversized), "identity-test", 1);
+        assert!(result.is_none());
     }
 
     #[test]

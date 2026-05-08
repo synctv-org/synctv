@@ -107,6 +107,18 @@ redis:
 
 `user` is accepted as a YAML alias for `username`; `SYNCTV_REDIS_USER` is accepted as an environment alias for `SYNCTV_REDIS_USERNAME`.
 
+## Redis Timeouts and Pipeline Buffer
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `redis.connect_timeout_seconds` | `5` | Timeout while opening a Redis connection |
+| `redis.response_timeout_seconds` | `5` | Timeout while waiting for a Redis command response |
+| `redis.pipeline_buffer_size` | `512` | Internal pipeline buffer size for the Redis connection manager |
+
+Increase `response_timeout_seconds` only when Redis is remote, proxied, or has expected failover windows. If response timeouts happen often, check Redis CPU, slow queries, network latency, and connection pressure before raising the value.
+
+The default `pipeline_buffer_size` fits most deployments. Raising it can help high-concurrency, short-command workloads absorb bursts with less scheduling pressure, at the cost of more memory. Do not set it to `0`.
+
 ## Redis Sentinel
 
 Sentinel mode connects to a Redis Sentinel deployment. After repeated health-check failures, SyncTV queries Sentinel for the current master and performs a best-effort Redis connection rebuild and hot-swap.

@@ -16,6 +16,8 @@ metrics:
 
 Production deployments should enable metrics but avoid exposing them publicly.
 
+Linux builds also register process-level metrics in the same Prometheus registry, including CPU, memory, file descriptors, and process start time. They are exposed through `/metrics` together with application metrics and need no extra configuration.
+
 ## Common Examples
 
 Bearer token:

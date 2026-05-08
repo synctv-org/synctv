@@ -100,6 +100,34 @@ server:
 - 批量导入、批量媒体操作、管理接口返回内容很大时可以调高。
 - 如果暴露公网且客户端不可控，不建议调得太高。
 
+### `server.grpc_compression_enabled`
+
+默认值：
+
+```yaml
+server:
+  grpc_compression_enabled: true
+```
+
+作用：允许 gRPC 客户端和服务端协商 gzip 压缩。它不会强制所有请求都压缩，而是在客户端声明支持时压缩可受益的消息体。
+
+什么时候保持开启：
+
+- 跨节点 gRPC、远程管理、批量响应或列表类接口比较多。
+- 网络带宽比 CPU 更紧张。
+- Kubernetes/Ingress 链路存在跨节点转发。
+
+什么时候可以关闭：
+
+- 所有调用都在本机或极低延迟内网。
+- CPU 明显比带宽更紧张，并且 gRPC 消息体通常很小。
+
+环境变量：
+
+```bash
+SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED=true
+```
+
 ### `server.trusted_proxies`
 
 默认值：

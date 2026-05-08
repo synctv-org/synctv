@@ -3,8 +3,12 @@
 //! This module provides validation functions for common input types to ensure
 //! data integrity and prevent security issues like injection attacks.
 
+use axum::body::Body;
 use axum::{
-    extract::{rejection::QueryRejection, FromRequestParts, Query},
+    extract::{
+        rejection::JsonRejection, rejection::QueryRejection, FromRequest, FromRequestParts, Json,
+        Query,
+    },
     http::request::Parts,
 };
 use prost_reflect::ReflectMessage;
@@ -183,7 +187,28 @@ impl<T> std::ops::DerefMut for StrictQuery<T> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedJson<T>(pub T);
+
+impl<T> std::ops::Deref for ValidatedJson<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for ValidatedJson<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
+    super::AppError::new(rejection.status(), rejection.body_text())
+}
+
+fn map_json_rejection(rejection: &JsonRejection) -> super::AppError {
     super::AppError::new(rejection.status(), rejection.body_text())
 }
 
@@ -214,6 +239,28 @@ where
         let Query(value) = Query::<T>::from_request_parts(parts, state)
             .await
             .map_err(|rejection| map_query_rejection(&rejection))?;
+        Ok(Self(value))
+    }
+}
+
+impl<S, T> FromRequest<S, Body> for ValidatedJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + garde::Validate + Send,
+    T::Context: Default,
+{
+    type Rejection = super::AppError;
+
+    async fn from_request(
+        req: axum::http::Request<Body>,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(req, state)
+            .await
+            .map_err(|rejection| map_json_rejection(&rejection))?;
+        value
+            .validate()
+            .map_err(|report| map_garde_report(&report))?;
         Ok(Self(value))
     }
 }

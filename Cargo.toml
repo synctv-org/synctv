@@ -77,6 +77,7 @@ tonic = { version = "0.14", default-features = false, features = [
     "server",
     "router",
     "channel",
+    "gzip",
 ] }
 tonic-web = "0.14.6"
 tonic-reflection = "0.14.6"
@@ -101,6 +102,7 @@ tower = { version = "0.5", features = [
 ] }
 tower-http = { version = "0.6", features = [
     "trace",
+    "on-early-drop",
     "compression-full",
     "limit",
     "timeout",
@@ -185,9 +187,6 @@ chrono-tz = "0.10.4"
 sha2_010 = { package = "sha2", version = "0.10.9" }
 iana-time-zone = "0.1.65"
 
-# WebRTC
-webrtc = "0.17.1"
-
 # Streaming (consolidated xiu crate)
 synctv-xiu = { path = "synctv-xiu", default-features = false }
 
@@ -231,7 +230,7 @@ http = "1.4.0"
 garde = { version = "0.22.1", features = ["derive"] }
 
 # Monitoring
-prometheus = "0.14.0"
+prometheus = { version = "0.14.0", features = ["process"] }
 
 # Time
 chrono = { version = "0.4.44", features = ["serde"] }
@@ -257,6 +256,7 @@ lettre = { version = "0.11", default-features = false, features = [
     "webpki-roots",
     "builder",
     "smtp-transport",
+    "pool",
     "hostname",
     "tokio1",
 ] }

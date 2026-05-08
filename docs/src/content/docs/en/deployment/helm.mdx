@@ -126,6 +126,8 @@ Why split them:
 - Kubernetes Service/Ingress semantics differ even if the container port is the same.
 - Metrics selectors can target the HTTP/API Service without accidentally scraping the gRPC Service.
 
+`config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
+
 ## Ingress
 
 HTTP Ingress:
@@ -217,6 +219,18 @@ redis:
 In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
 
 Note: the KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically configure SyncTV as a `redis.deployment_mode=sentinel` client. The chart still injects a stable Redis Service endpoint into SyncTV, and SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
+
+Redis connection-manager values:
+
+```yaml
+config:
+  redis:
+    connectTimeoutSeconds: 5
+    responseTimeoutSeconds: 5
+    pipelineBufferSize: 512
+```
+
+`responseTimeoutSeconds` bounds how long Redis commands wait for responses. `pipelineBufferSize` controls the connection manager's internal pipeline buffer. Raise it only for high-concurrency, short-command bursts; most deployments should keep the default.
 
 ## `config.dataDir`
 

@@ -9,6 +9,7 @@ use synctv_proto::providers::bilibili::bilibili_provider_service_server::Bilibil
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
 use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
+use tonic::codec::CompressionEncoding;
 
 pub mod admin_service;
 pub mod client_service;
@@ -39,6 +40,19 @@ pub trait GrpcServiceExt: Sized {
             .with_encoding_limit(max_size)
     }
 
+    /// Apply message size limits and optional gRPC gzip compression negotiation.
+    #[must_use]
+    fn with_transport_settings(self, max_size: usize, compression_enabled: bool) -> Self {
+        let service = self.with_message_size_limit(max_size);
+        if compression_enabled {
+            service
+                .with_accept_compressed(CompressionEncoding::Gzip)
+                .with_send_compressed(CompressionEncoding::Gzip)
+        } else {
+            service
+        }
+    }
+
     /// Apply maximum decoding (incoming) message size limit.
     #[must_use]
     fn with_decoding_limit(self, limit: usize) -> Self;
@@ -46,6 +60,12 @@ pub trait GrpcServiceExt: Sized {
     /// Apply maximum encoding (outgoing) message size limit.
     #[must_use]
     fn with_encoding_limit(self, limit: usize) -> Self;
+
+    #[must_use]
+    fn with_accept_compressed(self, encoding: CompressionEncoding) -> Self;
+
+    #[must_use]
+    fn with_send_compressed(self, encoding: CompressionEncoding) -> Self;
 }
 
 // Implement GrpcServiceExt for all tonic-generated server types that support
@@ -60,6 +80,12 @@ macro_rules! impl_grpc_service_ext {
             }
             fn with_encoding_limit(self, limit: usize) -> Self {
                 self.max_encoding_message_size(limit)
+            }
+            fn with_accept_compressed(self, encoding: CompressionEncoding) -> Self {
+                self.accept_compressed(encoding)
+            }
+            fn with_send_compressed(self, encoding: CompressionEncoding) -> Self {
+                self.send_compressed(encoding)
             }
         }
     };
@@ -80,6 +106,7 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_serv
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
 
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///
@@ -977,39 +1004,43 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let mut routes = tonic::service::Routes::builder();
     if grpc_registration_plan.health_state.auth_registered {
         routes.add_service(
-            AuthServiceServer::new(client_service).with_message_size_limit(max_message_size),
+            AuthServiceServer::new(client_service)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
     if grpc_registration_plan.health_state.user_registered {
         routes.add_service(
-            UserServiceServer::new(client_service_clone1).with_message_size_limit(max_message_size),
+            UserServiceServer::new(client_service_clone1)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
     if grpc_registration_plan.health_state.room_registered {
         routes.add_service(
-            RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
+            RoomServiceServer::new(client_service_clone2)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
     if grpc_registration_plan.health_state.public_registered {
         routes.add_service(
             PublicServiceServer::new(client_service_clone3)
-                .with_message_size_limit(max_message_size),
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
     if grpc_registration_plan.health_state.admin_registered {
         routes.add_service(
-            AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
+            AdminServiceServer::new(admin_service)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
     if grpc_registration_plan.health_state.email_registered {
         routes.add_service(
             EmailServiceServer::new(client_service_clone4)
-                .with_message_size_limit(max_message_size),
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
@@ -1032,7 +1063,8 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             Arc::new(config.clone()),
         );
         routes.add_service(
-            NotificationServiceServer::new(notif_impl).with_message_size_limit(max_message_size),
+            NotificationServiceServer::new(notif_impl)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         tracing::info!("NotificationService gRPC registered");
 
@@ -1136,7 +1168,8 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         // Public endpoints are unauthenticated; private endpoints invoke the
         // shared impl-level auth pipeline inline.
         routes.add_service(
-            OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size),
+            OAuth2ServiceServer::new(oauth2_impl)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
     }
@@ -1158,7 +1191,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 &shared_api_runtime,
                 Arc::new(config.clone()),
             ))
-            .with_message_size_limit(max_message_size),
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         routes.add_service(
             AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
@@ -1166,7 +1199,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 shared_api_runtime.request_executor.clone(),
                 Arc::new(config.clone()),
             ))
-            .with_message_size_limit(max_message_size),
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         routes.add_service(
             BilibiliProviderServiceServer::new(
@@ -1176,7 +1209,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                     Arc::new(config.clone()),
                 ),
             )
-            .with_message_size_limit(max_message_size),
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         routes.add_service(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
@@ -1184,7 +1217,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 shared_api_runtime.request_executor.clone(),
                 Arc::new(config.clone()),
             ))
-            .with_message_size_limit(max_message_size),
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
         routes.add_service(
             RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
@@ -1192,7 +1225,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 shared_api_runtime.request_executor.clone(),
                 Arc::new(config.clone()),
             ))
-            .with_message_size_limit(max_message_size),
+            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
     }
 
@@ -1222,9 +1255,10 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 .with_cluster_secret(config.server.cluster_secret.clone())
                 .with_connection_runtime(connection_service.clone())
                 .with_slice_cache_runtime(shared_http_app_state.proxy_slice_cache.clone());
-        routes.add_service(synctv_cluster::grpc::ClusterServiceServer::new(
-            cluster_server,
-        ));
+        routes.add_service(
+            synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
         tracing::info!(
             "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
         );
@@ -1267,7 +1301,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let relay_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
         routes.add_service(tonic::codegen::InterceptedService::new(
             synctv_livestream::grpc::StreamRelayServiceServer::new(relay_service)
-                .with_message_size_limit(max_message_size),
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
             move |req| relay_interceptor.validate(req),
         ));
         tracing::info!("Livestream relay gRPC service registered with shared-secret auth");

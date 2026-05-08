@@ -11,12 +11,55 @@ use crate::resilience::timeout::REDIS_OPERATION_TIMEOUT;
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateProfile};
 use async_trait::async_trait;
 use std::future::Future;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 enum L2RedisAttemptError {
     Redis(redis::RedisError),
     Timeout,
 }
+
+static SET_IF_NEWER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local existing = redis.call('GET', KEYS[1])
+        if existing then
+            local ok, obj = pcall(cjson.decode, existing)
+            if ok and obj and obj.updated_at then
+                local existing_ts = obj.updated_at
+                local new_ts = ARGV[3]
+                if new_ts <= existing_ts then
+                    return 0
+                end
+            end
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        return 1
+        ",
+    )
+});
+
+static SET_IF_NEWER_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local existing = redis.call('GET', KEYS[1])
+        if existing then
+            local ok, obj = pcall(cjson.decode, existing)
+            if ok and obj and obj.updated_at then
+                local existing_ts = obj.updated_at
+                local new_ts = ARGV[3]
+                if new_ts <= existing_ts then
+                    return 0
+                end
+            end
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+        redis.call('ZADD', KEYS[2], ARGV[4], KEYS[1])
+        redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[5])
+        return 1
+        ",
+    )
+});
 
 async fn run_l2_redis_attempt<T, F>(future: F) -> std::result::Result<T, L2RedisAttemptError>
 where
@@ -522,29 +565,9 @@ impl CacheL2Backend for RedisCacheL2 {
     ) -> Result<bool> {
         let mut conn = self.conn().await;
 
-        // Lua script: atomically GET existing JSON, parse its updated_at inside
-        // Lua via cjson, compare with the new timestamp, and SET only if newer.
-        let script = redis::Script::new(
-            r"
-            local existing = redis.call('GET', KEYS[1])
-            if existing then
-                local ok, obj = pcall(cjson.decode, existing)
-                if ok and obj and obj.updated_at then
-                    local existing_ts = obj.updated_at
-                    local new_ts = ARGV[3]
-                    if new_ts <= existing_ts then
-                        return 0
-                    end
-                end
-            end
-            redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-            return 1
-            ",
-        );
-
         let result: i64 = run_l2_redis_op(
             "run set_if_newer Lua script",
-            script
+            SET_IF_NEWER_SCRIPT
                 .key(key)
                 .arg(json)
                 .arg(ttl_secs.cast_signed())
@@ -569,29 +592,9 @@ impl CacheL2Backend for RedisCacheL2 {
         let expires_at = Self::expiry_timestamp(ttl_secs);
         let now = Self::now_unix_seconds();
 
-        let script = redis::Script::new(
-            r"
-            local existing = redis.call('GET', KEYS[1])
-            if existing then
-                local ok, obj = pcall(cjson.decode, existing)
-                if ok and obj and obj.updated_at then
-                    local existing_ts = obj.updated_at
-                    local new_ts = ARGV[3]
-                    if new_ts <= existing_ts then
-                        return 0
-                    end
-                end
-            end
-            redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-            redis.call('ZADD', KEYS[2], ARGV[4], KEYS[1])
-            redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[5])
-            return 1
-            ",
-        );
-
         let result: i64 = run_l2_redis_op(
             "run set_if_newer Lua script",
-            script
+            SET_IF_NEWER_SCOPED_SCRIPT
                 .key(key)
                 .key(&index_key)
                 .arg(json)

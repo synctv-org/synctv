@@ -292,6 +292,8 @@ config:
     enableReflection: false
     shutdownDrainTimeoutSeconds: 30
     grpcMaxMessageSizeBytes: 16777216
+    ## Allow public and cluster gRPC peers to negotiate gzip compression.
+    grpcCompressionEnabled: true
     # trustedProxies: ["10.0.0.0/8", "172.16.0.0/12"]
     corsAllowedOrigins:
       - "https://synctv.example.com"
@@ -328,6 +330,10 @@ config:
   ## RedisConfig (url composed from secrets; these are for connection settings)
   redis:
     connectTimeoutSeconds: 5
+    ## Maximum time to wait for a Redis command response.
+    responseTimeoutSeconds: 5
+    ## Redis connection manager pipeline buffer for bursty short commands.
+    pipelineBufferSize: 512
     keyPrefix: "synctv:"
     deploymentMode: "standalone"
     sentinelMasterName: ""

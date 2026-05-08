@@ -4,7 +4,7 @@ use {
         bytesio::TNetIO,
     },
     byteorder::{ByteOrder, WriteBytesExt},
-    bytes::BytesMut,
+    bytes::{Bytes, BytesMut},
     rand::RngExt,
     std::{io::Write, sync::Arc, time::Duration},
     tokio::{sync::Mutex, time::timeout},
@@ -120,6 +120,10 @@ impl BytesWriter {
     }
     pub fn extract_current_bytes(&mut self) -> BytesMut {
         BytesMut::from(std::mem::take(&mut self.bytes).as_slice())
+    }
+
+    pub fn extract_current_bytes_frozen(&mut self) -> Bytes {
+        Bytes::from(std::mem::take(&mut self.bytes))
     }
 
     pub fn clear(&mut self) {

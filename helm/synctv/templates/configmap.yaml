@@ -32,6 +32,7 @@ data:
       enable_reflection: {{ .Values.config.server.enableReflection | default false }}
       shutdown_drain_timeout_seconds: {{ .Values.config.server.shutdownDrainTimeoutSeconds | default 30 }}
       grpc_max_message_size_bytes: {{ printf "%d" (int64 (.Values.config.server.grpcMaxMessageSizeBytes | default 16777216)) }}
+      grpc_compression_enabled: {{ if hasKey .Values.config.server "grpcCompressionEnabled" }}{{ .Values.config.server.grpcCompressionEnabled }}{{ else }}true{{ end }}
       {{- if .Values.config.server.trustedProxies }}
       trusted_proxies:
         {{- range .Values.config.server.trustedProxies }}
@@ -94,6 +95,8 @@ data:
 
     redis:
       connect_timeout_seconds: {{ .Values.config.redis.connectTimeoutSeconds | default 5 }}
+      response_timeout_seconds: {{ .Values.config.redis.responseTimeoutSeconds | default 5 }}
+      pipeline_buffer_size: {{ .Values.config.redis.pipelineBufferSize | default 512 }}
       key_prefix: {{ .Values.config.redis.keyPrefix | default "synctv:" | quote }}
       deployment_mode: {{ .Values.config.redis.deploymentMode | default "standalone" | quote }}
       {{- if .Values.config.redis.sentinelMasterName }}

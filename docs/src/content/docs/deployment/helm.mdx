@@ -126,6 +126,8 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 - HTTP 和 gRPC 虽然同端口，但 Kubernetes Service/Ingress 层需要不同语义。
 - metrics selector 也能只匹配 HTTP/API Service，避免误抓 gRPC Service。
 
+`config.server.grpcCompressionEnabled` 默认是 `true`，会让 gRPC 客户端和服务端协商 gzip 压缩。跨节点调用、Ingress 转发、批量响应较多时通常保持开启；如果你的 gRPC 调用都在本地低延迟网络且 CPU 比带宽更紧张，可以显式关闭。
+
 ## Ingress
 
 默认 HTTP Ingress 使用：
@@ -221,6 +223,18 @@ redis:
 KubeBlocks 模式下，数据库账号密码来自 KubeBlocks 生成的 Secret。
 
 注意：KubeBlocks Redis Sentinel 组件属于数据库 Operator 的内部拓扑，不等同于把 SyncTV 配置成 `redis.deployment_mode=sentinel`。Helm 默认仍向 SyncTV 注入稳定 Redis Service endpoint；SyncTV 集群模式不能与 SyncTV Sentinel mode 同时使用。
+
+Redis 连接管理相关的 Helm 值：
+
+```yaml
+config:
+  redis:
+    connectTimeoutSeconds: 5
+    responseTimeoutSeconds: 5
+    pipelineBufferSize: 512
+```
+
+`responseTimeoutSeconds` 限制 Redis 命令等待响应的时间；`pipelineBufferSize` 控制 connection manager 内部 pipeline buffer。高并发短命令场景可以适度调大，普通部署保持默认即可。
 
 ## `config.dataDir`
 

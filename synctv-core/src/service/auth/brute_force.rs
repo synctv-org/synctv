@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use synctv_common::ExecutionControl;
 
@@ -62,6 +62,27 @@ use crate::{
     cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, RedisConnectionRuntime,
     Result, SharedStateMode, SharedStateProfile,
 };
+
+static RECORD_FAILURE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local raw = redis.call('GET', KEYS[1])
+        local count = 0
+        if raw then
+            local ok, state = pcall(cjson.decode, raw)
+            if ok and state and state.count then
+                count = tonumber(state.count) or 0
+            else
+                count = tonumber(raw) or 0
+            end
+        end
+        count = count + 1
+        local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
+        redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
+        return count
+        ",
+    )
+});
 
 /// Stable service boundary for brute-force protection.
 ///
@@ -719,28 +740,9 @@ impl AttemptTracker for RedisAttemptTracker {
     async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) -> Result<()> {
         let mut conn = self.get_conn().await;
 
-        let script = redis::Script::new(
-            r"
-            local raw = redis.call('GET', KEYS[1])
-            local count = 0
-            if raw then
-                local ok, state = pcall(cjson.decode, raw)
-                if ok and state and state.count then
-                    count = tonumber(state.count) or 0
-                else
-                    count = tonumber(raw) or 0
-                end
-            end
-            count = count + 1
-            local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
-            redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
-            return count
-            ",
-        );
-
         let result: std::result::Result<u64, _> = tokio::time::timeout(
             REDIS_OPERATION_TIMEOUT,
-            script
+            RECORD_FAILURE_SCRIPT
                 .key(key)
                 .arg(now)
                 .arg(u64_to_i64_saturating(ttl_secs))

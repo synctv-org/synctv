@@ -202,6 +202,32 @@ redis:
 
 Redis 一般应该很快。如果经常超时，优先检查网络、DNS、Redis 负载，而不是只调大超时。
 
+### `redis.response_timeout_seconds`
+
+默认值：`5`。
+
+作用：限制 Redis 命令等待响应的最长时间。它用于连接管理器的响应超时，避免网络抖动或 Redis 卡顿时让业务请求无限等待。
+
+什么时候调大：
+
+- Redis 跨可用区、跨机房或经过代理。
+- Sentinel / 托管 Redis 在 failover 窗口内偶尔响应较慢。
+- 你确认 Redis 慢查询是可接受的业务退化，而不是容量问题。
+
+如果频繁触发响应超时，优先检查 Redis CPU、慢查询、网络和连接数。
+
+### `redis.pipeline_buffer_size`
+
+默认值：`512`。
+
+作用：控制 Redis connection manager 内部 pipeline buffer 大小。更大的 buffer 可以减少高并发短命令场景下的调度压力，但也会占用更多内存。
+
+建议：
+
+- 大多数部署保持默认值。
+- Redis QPS 高、短命令多、请求突刺明显时可以适度调大。
+- 小内存部署或 Redis 使用很轻时可以调小，但不要设为 `0`。
+
 ### `redis.key_prefix`
 
 默认值：

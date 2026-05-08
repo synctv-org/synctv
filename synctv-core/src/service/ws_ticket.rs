@@ -25,12 +25,40 @@ use base64::Engine;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use synctv_common::ExecutionControl;
 use tracing::debug;
 
 use crate::models::{RoomId, UserId};
 use crate::{Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
+
+static CLAIM_TICKET_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local value = redis.call("GET", KEYS[1])
+        if not value then
+            return 0
+        end
+        if value ~= ARGV[1] then
+            return 0
+        end
+        redis.call("DEL", KEYS[1])
+        return 1
+        "#,
+    )
+});
+
+static CONSUME_TICKET_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r#"
+        local value = redis.call("GET", KEYS[1])
+        if value then
+            redis.call("DEL", KEYS[1])
+        end
+        return value
+        "#,
+    )
+});
 
 /// User validation result returned by `UserValidator` callback
 #[derive(Debug, Clone)]
@@ -267,22 +295,10 @@ impl TicketStore for RedisTicketStore {
         let deleted: i64 = self
             .run_redis_op(
                 "claim ticket",
-                redis::Script::new(
-                    r#"
-                local value = redis.call("GET", KEYS[1])
-                if not value then
-                    return 0
-                end
-                if value ~= ARGV[1] then
-                    return 0
-                end
-                redis.call("DEL", KEYS[1])
-                return 1
-            "#,
-                )
-                .key(&key)
-                .arg(&expected_json)
-                .invoke_async(&mut conn),
+                CLAIM_TICKET_SCRIPT
+                    .key(&key)
+                    .arg(&expected_json)
+                    .invoke_async(&mut conn),
             )
             .await?;
 
@@ -297,21 +313,10 @@ impl TicketStore for RedisTicketStore {
         let key = self.redis_key(ticket, expected_room_id);
         let mut conn = self.conn().await;
 
-        // Get and delete atomically using Lua script
-        let lua_script = redis::Script::new(
-            r#"
-            local value = redis.call("GET", KEYS[1])
-            if value then
-                redis.call("DEL", KEYS[1])
-            end
-            return value
-        "#,
-        );
-
         let json: Option<String> = self
             .run_redis_op(
                 "validate ticket",
-                lua_script.key(&key).invoke_async(&mut conn),
+                CONSUME_TICKET_SCRIPT.key(&key).invoke_async(&mut conn),
             )
             .await?;
 

@@ -99,7 +99,8 @@ pub use config::{
 pub use error::{Error, InternalExt, Result};
 pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};
 pub use redis_runtime::{
-    coordination_runtime_from_client, direct_runtime, direct_runtime_from_conn, shared_runtime,
+    coordination_runtime_from_client, coordination_runtime_from_client_with_config, direct_runtime,
+    direct_runtime_from_conn, redis_connection_manager_config, shared_runtime,
     shared_runtime_from_conn, DirectRedisConnectionRuntime, ManagedRedisRuntime,
     OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime,
     SharedRedisConnectionRuntime,

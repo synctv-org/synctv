@@ -38,13 +38,35 @@ use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimite
 use moka::sync::Cache as MokaCache;
 use nonzero_ext::nonzero;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use synctv_common::{ExecutionControl, ExecutionControlError};
 use thiserror::Error;
 
 /// Type alias for the keyed rate limiter cache used by `InMemoryGovernorLimiter`.
 type GovernorLimiterCache = MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
+
+static REDIS_SLIDING_WINDOW_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+        local seq = redis.call('INCR', KEYS[1] .. ':seq')
+        local member = ARGV[2] .. ':' .. seq
+        redis.call('ZADD', KEYS[1], ARGV[2], member)
+        local count = redis.call('ZCARD', KEYS[1])
+        redis.call('EXPIRE', KEYS[1], ARGV[3])
+        redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
+        local oldest = 0
+        if count > tonumber(ARGV[4]) then
+            local entries = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+            if #entries >= 2 then
+                oldest = tonumber(entries[2]) or 0
+            end
+        end
+        return {count, oldest}
+        ",
+    )
+});
 
 /// Rate limiting error
 #[derive(Error, Debug)]
@@ -183,6 +205,22 @@ fn window_expire_seconds(window_seconds: u64) -> i64 {
 
 fn millis_to_i64_saturating(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn retry_after_seconds_from_oldest(
+    now_millis: u64,
+    oldest_score_millis: u64,
+    window_seconds: u64,
+) -> u64 {
+    if oldest_score_millis == 0 {
+        return 1;
+    }
+
+    let time_since_oldest = now_millis.saturating_sub(oldest_score_millis);
+    let remaining_window = window_seconds
+        .saturating_mul(1000)
+        .saturating_sub(time_since_oldest);
+    remaining_window.div_ceil(1000).max(1)
 }
 
 fn nonnegative_i64_to_u32_saturating(value: i64) -> u32 {
@@ -499,31 +537,9 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = window_expire_seconds(window_seconds);
 
-        // Lua script returns both current_count and oldest_score atomically,
-        // eliminating the TOCTOU window from a separate ZRANGE command.
-        let script = redis::Script::new(
-            r"
-            redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            local seq = redis.call('INCR', KEYS[1] .. ':seq')
-            local member = ARGV[2] .. ':' .. seq
-            redis.call('ZADD', KEYS[1], ARGV[2], member)
-            local count = redis.call('ZCARD', KEYS[1])
-            redis.call('EXPIRE', KEYS[1], ARGV[3])
-            redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
-            local oldest = 0
-            if count > tonumber(ARGV[4]) then
-                local entries = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
-                if #entries >= 2 then
-                    oldest = tonumber(entries[2]) or 0
-                end
-            end
-            return {count, oldest}
-            ",
-        );
-
         let result: Vec<i64> = match Self::run_with_control(control, async {
             let mut conn = self.get_conn().await;
-            script
+            REDIS_SLIDING_WINDOW_SCRIPT
                 .key(&redis_key)
                 .arg(millis_to_i64_saturating(window_start))
                 .arg(now)
@@ -560,16 +576,12 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let oldest_score = result.get(1).copied().unwrap_or(0).max(0).cast_unsigned();
 
         if current_count > max_requests {
-            let retry_after_seconds = if oldest_score > 0 {
-                let time_since_oldest = now.saturating_sub(oldest_score);
-                let remaining_window = (window_seconds * 1000).saturating_sub(time_since_oldest);
-                (remaining_window / 1000).max(1)
-            } else {
-                1
-            };
-
             return Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds,
+                retry_after_seconds: retry_after_seconds_from_oldest(
+                    now,
+                    oldest_score,
+                    window_seconds,
+                ),
             });
         }
 
@@ -598,26 +610,14 @@ impl RateLimitBackend for RedisRateLimitBackend {
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = window_expire_seconds(window_seconds);
 
-        let script = redis::Script::new(
-            r"
-            redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            local seq = redis.call('INCR', KEYS[1] .. ':seq')
-            local member = ARGV[2] .. ':' .. seq
-            redis.call('ZADD', KEYS[1], ARGV[2], member)
-            local count = redis.call('ZCARD', KEYS[1])
-            redis.call('EXPIRE', KEYS[1], ARGV[3])
-            redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
-            return count
-            ",
-        );
-
-        let current_count: u32 = match Self::run_with_control(control, async {
+        let result: Vec<i64> = match Self::run_with_control(control, async {
             let mut conn = self.get_conn().await;
-            script
+            REDIS_SLIDING_WINDOW_SCRIPT
                 .key(&redis_key)
                 .arg(millis_to_i64_saturating(window_start))
                 .arg(now)
                 .arg(expire_seconds)
+                .arg(max_requests)
                 .invoke_async(&mut conn)
                 .await
                 .map_err(RateLimitError::from)
@@ -635,10 +635,16 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 ));
             }
         };
+        let current_count = nonnegative_i64_to_u32_saturating(result.first().copied().unwrap_or(0));
+        let oldest_score = result.get(1).copied().unwrap_or(0).max(0).cast_unsigned();
 
         if current_count > max_requests {
             return Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1,
+                retry_after_seconds: retry_after_seconds_from_oldest(
+                    now,
+                    oldest_score,
+                    window_seconds,
+                ),
             });
         }
 
@@ -1047,6 +1053,14 @@ mod tests {
     use crate::RedisConnectionRuntime;
     use async_trait::async_trait;
     use synctv_core_testing::start_redis;
+
+    #[test]
+    fn test_retry_after_uses_ceiled_remaining_window() {
+        assert_eq!(retry_after_seconds_from_oldest(1_250, 1_000, 1), 1);
+        assert_eq!(retry_after_seconds_from_oldest(2_001, 1_000, 2), 1);
+        assert_eq!(retry_after_seconds_from_oldest(10_000, 0, 60), 1);
+        assert_eq!(retry_after_seconds_from_oldest(1_000, 1_000, 60), 60);
+    }
 
     #[test]
     fn test_rate_limiter_without_redis() {

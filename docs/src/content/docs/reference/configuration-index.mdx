@@ -106,6 +106,7 @@ curl -fsS http://localhost:8080/health/ready
 | `server.advertise_host` | 字符串 | `""` | 其他节点连接本节点时使用的地址 |
 | `server.shutdown_drain_timeout_seconds` | 秒数 | `30` | 关闭时等待连接 drain 的时间 |
 | `server.grpc_max_message_size_bytes` | 字节数 | `16777216` | gRPC 消息最大大小 |
+| `server.grpc_compression_enabled` | 布尔值 | `true` | 是否允许 gRPC gzip 压缩协商 |
 
 ## `time`、`public_ids`、`security`
 
@@ -174,6 +175,8 @@ curl -fsS http://localhost:8080/health/ready
 | `redis.password` | secret 字符串 | `""` | Redis 密码 |
 | `redis.database` | 整数 | `0` | Redis database index |
 | `redis.connect_timeout_seconds` | 秒数 | `5` | Redis 连接超时 |
+| `redis.response_timeout_seconds` | 秒数 | `5` | Redis 命令响应超时 |
+| `redis.pipeline_buffer_size` | 整数 | `512` | Redis connection manager pipeline buffer 大小 |
 | `redis.key_prefix` | 字符串 | `synctv:` | Redis key 前缀 |
 | `redis.deployment_mode` | `standalone` 或 `sentinel` | `standalone` | Redis 部署模式 |
 | `redis.sentinel_master_name` | 字符串或空 | `null` | Sentinel master 名称 |

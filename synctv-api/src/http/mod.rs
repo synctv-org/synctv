@@ -42,7 +42,8 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
+use tower_http::trace::{DefaultOnFailure, TraceLayer};
 
 pub use error::{AppError, AppResult};
 
@@ -1148,6 +1149,9 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
             .layer(axum_middleware::from_fn(
                 crate::observability::metrics_middleware::metrics_layer,
             ))
+            .layer(OnEarlyDropLayer::new(EarlyDropsAsFailures::new(
+                DefaultOnFailure::default(),
+            )))
             .layer(TraceLayer::new_for_http())
             .with_state(state.clone()),
     )

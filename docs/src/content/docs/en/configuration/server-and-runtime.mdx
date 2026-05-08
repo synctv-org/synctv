@@ -61,6 +61,31 @@ Default: `16777216`, which is 16 MiB.
 
 This limits gRPC request and response message sizes. Increase only when large batch operations require it. Avoid very high values on public endpoints.
 
+### `server.grpc_compression_enabled`
+
+Default:
+
+```yaml
+server:
+  grpc_compression_enabled: true
+```
+
+Allows gRPC clients and servers to negotiate gzip compression. It does not force every request to be compressed; compression is used when the peer advertises support and the message can benefit from it.
+
+Keep it enabled when:
+
+- Cluster gRPC, remote management, batch responses, or list APIs are common.
+- Network bandwidth is tighter than CPU.
+- Kubernetes or Ingress traffic crosses nodes.
+
+Disable it only when CPU is the tighter resource and gRPC payloads are usually small or entirely local.
+
+Environment variable:
+
+```bash
+SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED=true
+```
+
 ### `server.trusted_proxies`
 
 Default: `[]`.

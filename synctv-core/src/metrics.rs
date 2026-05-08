@@ -9,8 +9,17 @@ use prometheus::{
     HistogramVec, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
 };
 
-/// Global metrics registry
-pub static REGISTRY: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(Registry::new);
+/// Global metrics registry.
+pub static REGISTRY: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(|| {
+    let registry = Registry::new();
+    #[cfg(target_os = "linux")]
+    registry
+        .register(Box::new(
+            prometheus::process_collector::ProcessCollector::for_self(),
+        ))
+        .expect("failed to register Prometheus process collector");
+    registry
+});
 
 /// HTTP and WebSocket metrics
 pub mod http {

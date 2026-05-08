@@ -11,9 +11,11 @@ use tracing::info;
 
 use crate::config::RedisDeploymentMode;
 use crate::Config;
-use crate::{ManagedRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime};
+use crate::{
+    redis_connection_manager_config, ManagedRedisRuntime, RedisConnectionRuntime,
+    RedisCoordinationRuntime,
+};
 
-type RedisConnectionManagerConfig = redis::aio::ConnectionManagerConfig;
 type SentinelNodeConnectionInfo = redis::sentinel::SentinelNodeConnectionInfo;
 type RedisNodeSettings = redis::RedisConnectionInfo;
 
@@ -185,20 +187,32 @@ mod init_tests {
     fn test_redis_connection_manager_config_uses_connect_timeout() {
         let mut config = Config::default();
         config.redis.connect_timeout_seconds = 9;
+        config.redis.response_timeout_seconds = 11;
+        config.redis.pipeline_buffer_size = 768;
 
-        let manager_config = redis_connection_manager_config(&config);
+        let manager_config = build_redis_connection_manager_config(&config);
 
         assert_eq!(
             manager_config.connection_timeout(),
             Some(std::time::Duration::from_secs(9))
         );
+        assert_eq!(
+            manager_config.response_timeout(),
+            Some(std::time::Duration::from_secs(11))
+        );
+        assert!(
+            format!("{manager_config:?}").contains("pipeline_buffer_size: Some(768)"),
+            "pipeline buffer size should be applied to ConnectionManagerConfig"
+        );
     }
 }
 
-fn redis_connection_manager_config(config: &Config) -> RedisConnectionManagerConfig {
-    RedisConnectionManagerConfig::new().set_connection_timeout(Some(
+fn build_redis_connection_manager_config(config: &Config) -> redis::aio::ConnectionManagerConfig {
+    redis_connection_manager_config(
         std::time::Duration::from_secs(config.redis.connect_timeout_seconds),
-    ))
+        std::time::Duration::from_secs(config.redis.response_timeout_seconds),
+        config.redis.pipeline_buffer_size,
+    )
 }
 
 fn parse_redis_node_settings(config: &Config) -> Result<Option<RedisNodeSettings>, anyhow::Error> {
@@ -227,7 +241,7 @@ async fn init_standalone(
     let client = redis::Client::open(redis_url.to_string())?;
     let conn = redis::aio::ConnectionManager::new_with_config(
         client.clone(),
-        redis_connection_manager_config(config),
+        build_redis_connection_manager_config(config),
     )
     .await?;
     let runtime = ManagedRedisRuntime::new(client, Arc::new(RwLock::new(conn)));
@@ -269,7 +283,7 @@ async fn init_sentinel(
 
     let conn = redis::aio::ConnectionManager::new_with_config(
         client.clone(),
-        redis_connection_manager_config(config),
+        build_redis_connection_manager_config(config),
     )
     .await?;
     let shared_conn = Arc::new(RwLock::new(conn));
@@ -280,7 +294,7 @@ async fn init_sentinel(
         let master_name = master_name.clone();
         let known_master_addr = initial_master_addr.clone();
         let node_info = node_info.clone();
-        let manager_config = redis_connection_manager_config(config);
+        let manager_config = build_redis_connection_manager_config(config);
         let shared_conn_clone = shared_conn.clone();
         let health_check_task = crate::spawn::spawn_monitored(
             "sentinel_master_health_check",

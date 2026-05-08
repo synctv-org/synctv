@@ -16,7 +16,6 @@ use crate::streamhub::{
     utils::Uuid,
     SubscribeWithRollbackError,
 };
-use bytes::BytesMut;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -172,9 +171,9 @@ impl HttpFlvSession {
     }
 
     fn write_flv_tag(&mut self, frame_data: FrameData) -> anyhow::Result<()> {
-        let (data, timestamp, tag_type) = match frame_data {
-            FrameData::Audio { timestamp, data } => (BytesMut::from(&data[..]), timestamp, 8), // AUDIO
-            FrameData::Video { timestamp, data } => (BytesMut::from(&data[..]), timestamp, 9), // VIDEO
+        let (data, timestamp, tag_type) = match &frame_data {
+            FrameData::Audio { timestamp, data } => (&data[..], *timestamp, 8), // AUDIO
+            FrameData::Video { timestamp, data } => (&data[..], *timestamp, 9), // VIDEO
             FrameData::MetaData { timestamp, data } => {
                 // Remove @setDataFrame from RTMP's metadata
                 let mut amf_writer = Amf0Writer::new();
@@ -182,7 +181,7 @@ impl HttpFlvSession {
                     .write_string(&String::from("@setDataFrame"))
                     .map_err(|e| anyhow::anyhow!("Failed to write AMF string: {e:?}"))?;
                 let right = &data[amf_writer.len()..];
-                (BytesMut::from(right), timestamp, 18) // SCRIPT_DATA_AMF
+                (right, *timestamp, 18) // SCRIPT_DATA_AMF
             }
             _ => return Ok(()),
         };
@@ -194,7 +193,7 @@ impl HttpFlvSession {
             .write_flv_tag_header(tag_type, data_len, timestamp)
             .map_err(|e| anyhow::anyhow!("Failed to write FLV tag header: {e:?}"))?;
         self.muxer
-            .write_flv_tag_body(&data)
+            .write_flv_tag_body(data)
             .map_err(|e| anyhow::anyhow!("Failed to write FLV tag body: {e:?}"))?;
         self.muxer
             .write_previous_tag_size(data_len + HEADER_LENGTH)
@@ -206,8 +205,7 @@ impl HttpFlvSession {
     }
 
     fn flush_response_data(&mut self) -> anyhow::Result<()> {
-        let data = self.muxer.writer.extract_current_bytes();
-        let bytes = data.freeze();
+        let bytes = self.muxer.writer.extract_current_bytes_frozen();
 
         // Use try_send to apply backpressure. Track consecutive dropped frames
         // and disconnect the subscriber after too many drops to prevent a slow client

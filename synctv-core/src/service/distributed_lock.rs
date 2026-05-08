@@ -60,7 +60,41 @@ use crate::{Error, InternalExt, RedisConnectionRuntime, Result};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+static GENERATE_FENCING_TOKEN_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r"
+        local val = redis.call('INCR', KEYS[1])
+        redis.call('EXPIRE', KEYS[1], 86400)
+        return val
+        ",
+    )
+});
+
+static RELEASE_LOCK_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r#"
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("DEL", KEYS[1])
+        else
+            return 0
+        end
+        "#,
+    )
+});
+
+static EXTEND_LOCK_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r#"
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("EXPIRE", KEYS[1], ARGV[2])
+        else
+            return 0
+        end
+        "#,
+    )
+});
 
 async fn run_distributed_lock_redis_op<T, F>(operation: impl Into<String>, future: F) -> Result<T>
 where
@@ -256,18 +290,11 @@ impl DistributedLock {
         let token_key = format!("lock:token:{key}");
         let mut conn = self.conn().await;
 
-        // Atomically INCR and set a 24-hour TTL to prevent unbounded key accumulation
-        let script = Script::new(
-            r"
-            local val = redis.call('INCR', KEYS[1])
-            redis.call('EXPIRE', KEYS[1], 86400)
-            return val
-            ",
-        );
-
         run_distributed_lock_redis_op(
             format!("generate fencing token for lock '{key}'"),
-            script.key(&token_key).invoke_async::<u64>(&mut conn),
+            GENERATE_FENCING_TOKEN_SCRIPT
+                .key(&token_key)
+                .invoke_async::<u64>(&mut conn),
         )
         .await
     }
@@ -398,23 +425,11 @@ impl DistributedLock {
     pub async fn release(&self, key: &str, lock_value: &str) -> Result<bool> {
         let lock_key = format!("lock:{key}");
 
-        // Lua script: Only delete if the value matches
-        // This prevents releasing a lock that was already expired and reacquired
-        let script = Script::new(
-            r#"
-            if redis.call("GET", KEYS[1]) == ARGV[1] then
-                return redis.call("DEL", KEYS[1])
-            else
-                return 0
-            end
-            "#,
-        );
-
         let mut conn = self.conn().await;
 
         let result: i32 = run_distributed_lock_redis_op(
             "release lock",
-            script
+            RELEASE_LOCK_SCRIPT
                 .key(&lock_key)
                 .arg(lock_value)
                 .invoke_async::<i32>(&mut conn),
@@ -653,22 +668,11 @@ impl DistributedLock {
     pub async fn extend(&self, key: &str, lock_value: &str, ttl_seconds: u64) -> Result<bool> {
         let lock_key = format!("lock:{key}");
 
-        // Lua script: Only extend if the value matches
-        let script = Script::new(
-            r#"
-            if redis.call("GET", KEYS[1]) == ARGV[1] then
-                return redis.call("EXPIRE", KEYS[1], ARGV[2])
-            else
-                return 0
-            end
-            "#,
-        );
-
         let mut conn = self.conn().await;
 
         let result: i32 = run_distributed_lock_redis_op(
             "extend lock",
-            script
+            EXTEND_LOCK_SCRIPT
                 .key(&lock_key)
                 .arg(lock_value)
                 .arg(ttl_seconds)
@@ -964,19 +968,9 @@ impl Redlock {
         lock_key: &str,
         lock_value: &str,
     ) {
-        let script = Script::new(
-            r#"
-            if redis.call("GET", KEYS[1]) == ARGV[1] then
-                return redis.call("DEL", KEYS[1])
-            else
-                return 0
-            end
-            "#,
-        );
-
         let _ = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            script
+            RELEASE_LOCK_SCRIPT
                 .key(lock_key)
                 .arg(lock_value)
                 .invoke_async::<i32>(conn),
@@ -1157,18 +1151,9 @@ impl RedlockRef {
                 let lock_key = lock_key.to_string();
                 let lock_value = lock_value.to_string();
                 async move {
-                    let script = Script::new(
-                        r#"
-                        if redis.call("GET", KEYS[1]) == ARGV[1] then
-                            return redis.call("DEL", KEYS[1])
-                        else
-                            return 0
-                        end
-                        "#,
-                    );
                     let _ = tokio::time::timeout(
                         crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-                        script
+                        RELEASE_LOCK_SCRIPT
                             .key(&lock_key)
                             .arg(&lock_value)
                             .invoke_async::<i32>(&mut conn),

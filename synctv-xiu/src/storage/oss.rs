@@ -12,7 +12,7 @@ mod inner {
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::TryStreamExt;
-    use opendal::{services::S3, Operator};
+    use opendal::{services::S3, EntryMode, Operator};
     use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
     use std::time::Duration;
@@ -111,16 +111,24 @@ mod inner {
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
             let mut entries = lister;
-            let mut deleted = 0;
+            let mut paths = Vec::new();
             while let Some(entry) = entries
                 .try_next()
                 .await
                 .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
             {
-                let path = entry.path();
-                if self.operator.delete(path).await.is_ok() {
-                    deleted += 1;
+                if entry.metadata().mode() == EntryMode::DIR {
+                    continue;
                 }
+                paths.push(entry.path().to_string());
+            }
+
+            let deleted = paths.len();
+            if deleted > 0 {
+                self.operator
+                    .delete_iter(paths)
+                    .await
+                    .map_err(|e| Error::other(format!("OSS batch delete failed: {e}")))?;
             }
             Ok(deleted)
         }
@@ -231,7 +239,6 @@ mod inner {
         async fn cleanup(&self, older_than: Duration) -> Result<usize> {
             // Compute cutoff time using opendal's Timestamp
             let cutoff_time = opendal::raw::Timestamp::now() - older_than;
-            let mut deleted = 0;
 
             let base_path = if self.config.base_path.is_empty() {
                 String::new()
@@ -239,12 +246,6 @@ mod inner {
                 self.config.base_path.clone()
             };
 
-            // List objects and stat each one to get LastModified metadata.
-            // NOTE: opendal 0.55 does not support inline metadata on list
-            // (no `metakey` option), so a per-object stat() call is required.
-            // When upgrading opendal to a version that supports
-            // `lister_with().metakey(Metakey::LastModified)`, replace the
-            // stat() calls to reduce API requests from O(2N) to O(N).
             let lister = self
                 .operator
                 .lister(&base_path)
@@ -252,23 +253,39 @@ mod inner {
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
             let mut entries = lister;
+            let mut expired_paths = Vec::new();
             while let Some(entry) = entries
                 .try_next()
                 .await
                 .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
             {
+                if entry.metadata().mode() == EntryMode::DIR {
+                    continue;
+                }
                 let path = entry.path();
-                let metadata = self
-                    .operator
-                    .stat(path)
-                    .await
-                    .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?;
+                let last_modified = match entry.metadata().last_modified() {
+                    Some(value) => Some(value),
+                    None => self
+                        .operator
+                        .stat(path)
+                        .await
+                        .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?
+                        .last_modified(),
+                };
 
-                if let Some(last_modified) = metadata.last_modified() {
-                    if last_modified < cutoff_time && self.operator.delete(path).await.is_ok() {
-                        deleted += 1;
-                        tracing::trace!("Deleted expired OSS object: {}", path);
-                    }
+                if last_modified.is_some_and(|value| value < cutoff_time) {
+                    expired_paths.push(path.to_string());
+                }
+            }
+
+            let deleted = expired_paths.len();
+            if deleted > 0 {
+                self.operator
+                    .delete_iter(expired_paths.iter().map(String::as_str))
+                    .await
+                    .map_err(|e| Error::other(format!("OSS batch cleanup delete failed: {e}")))?;
+                for path in expired_paths {
+                    tracing::trace!("Deleted expired OSS object: {}", path);
                 }
             }
 

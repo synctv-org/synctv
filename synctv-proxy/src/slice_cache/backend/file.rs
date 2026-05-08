@@ -45,13 +45,19 @@ use tokio::io::AsyncReadExt;
 use super::SliceCacheBackend;
 use crate::slice_cache::etag::StoredEntry;
 
+fn cache_header_bincode_config() -> impl bincode::config::Config + Send + Sync + 'static {
+    bincode::config::standard()
+        .with_little_endian()
+        .with_variable_int_encoding()
+}
+
 fn encode_header(header: &FileEntryHeader) -> anyhow::Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(header, bincode::config::standard())
+    bincode::serde::encode_to_vec(header, cache_header_bincode_config())
         .map_err(|e| anyhow::anyhow!("bincode encode: {e}"))
 }
 
 fn decode_header(bytes: &[u8]) -> anyhow::Result<FileEntryHeader> {
-    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+    bincode::serde::decode_from_slice(bytes, cache_header_bincode_config())
         .map(|(header, _consumed)| header)
         .map_err(|e| anyhow::anyhow!("bincode decode: {e}"))
 }

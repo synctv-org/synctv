@@ -133,6 +133,7 @@ server:
   advertise_host: "synctv-0.synctv-headless.default.svc.cluster.local"
   shutdown_drain_timeout_seconds: 30
   grpc_max_message_size_bytes: 16777216
+  grpc_compression_enabled: true
 
 time:
   timezone: "Asia/Shanghai"
@@ -201,6 +202,8 @@ redis:
   password: ""
   database: 0
   connect_timeout_seconds: 5
+  response_timeout_seconds: 5
+  pipeline_buffer_size: 512
   key_prefix: "synctv:"
   deployment_mode: "standalone"
   sentinel_master_name: null

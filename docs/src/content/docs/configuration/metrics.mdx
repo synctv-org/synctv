@@ -16,6 +16,8 @@ metrics:
 
 生产环境建议开启 metrics，但不要裸露到公网。最常见做法是只在内网、Kubernetes ServiceMonitor 或受控网段中访问。
 
+Linux 构建会在同一个 Prometheus registry 中注册进程级指标，例如 CPU、内存、文件描述符和进程启动时间。这些指标跟业务指标一起从 `/metrics` 暴露，不需要额外配置。
+
 ## 完整示例
 
 静态 bearer token：

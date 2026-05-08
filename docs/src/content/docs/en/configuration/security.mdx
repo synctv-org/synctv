@@ -162,6 +162,18 @@ server:
 
 Only add proxy IPs or CIDRs that you control. If this list is empty, SyncTV uses the socket peer address and does not trust forwarded client IP headers.
 
+## SSRF Default Policy
+
+SyncTV allows private-network media providers, proxy targets, and remote video sources by default. This is intentional for self-hosted deployments where Alist, Emby, reverse proxies, NAS systems, IPTV sources, or other media endpoints often live on a LAN.
+
+That means private-address SSRF blocking is not a global default security boundary. The codebase still has an explicit strict policy for call sites that need it, but the default product behavior favors private media source compatibility.
+
+Operational guidance:
+
+- For public deployments, restrict reachable networks through reverse proxies, network policies, firewalls, and provider credential scope.
+- Do not expose privileged internal admin endpoints as ordinary media sources for untrusted users.
+- Custom providers or outbound HTTP integrations should explicitly decide whether to enable the strict SSRF guard.
+
 ## WebAuthn and 2FA
 
 WebAuthn/passkey configuration is documented in [WebAuthn and Passkeys](../webauthn/).

@@ -1,6 +1,5 @@
 use {
     super::errors::FlvMuxerError, crate::bytesio::bytes_writer::BytesWriter, byteorder::BigEndian,
-    bytes::BytesMut,
 };
 
 const FLV_HEADER_AV: [u8; 9] = [
@@ -93,8 +92,8 @@ impl FlvMuxer {
         Ok(())
     }
 
-    pub fn write_flv_tag_body(&mut self, body: &BytesMut) -> Result<(), FlvMuxerError> {
-        self.writer.write(&body[..])?;
+    pub fn write_flv_tag_body(&mut self, body: &[u8]) -> Result<(), FlvMuxerError> {
+        self.writer.write(body)?;
         Ok(())
     }
 

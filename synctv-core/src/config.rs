@@ -599,6 +599,9 @@ pub struct ServerConfig {
     /// Default: 16777216 (16 MB). Minimum: 1048576 (1 MB).
     /// Set via `SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES` env var or config file.
     pub grpc_max_message_size_bytes: usize,
+    /// Enable gzip compression negotiation for gRPC request and response bodies.
+    /// Compression is only used when the peer advertises support.
+    pub grpc_compression_enabled: bool,
 }
 
 impl Default for ServerConfig {
@@ -613,6 +616,7 @@ impl Default for ServerConfig {
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024, // 16 MB default
+            grpc_compression_enabled: true,
         }
     }
 }
@@ -931,6 +935,8 @@ pub struct RedisConfig {
     pub password: String,
     pub database: i64,
     pub connect_timeout_seconds: u64,
+    pub response_timeout_seconds: u64,
+    pub pipeline_buffer_size: usize,
     pub key_prefix: String,
     /// Deployment mode: standalone (default) or sentinel
     pub deployment_mode: RedisDeploymentMode,
@@ -995,6 +1001,8 @@ impl std::fmt::Debug for RedisConfig {
             .field("password", &"<redacted>")
             .field("database", &self.database)
             .field("connect_timeout_seconds", &self.connect_timeout_seconds)
+            .field("response_timeout_seconds", &self.response_timeout_seconds)
+            .field("pipeline_buffer_size", &self.pipeline_buffer_size)
             .field("key_prefix", &self.key_prefix)
             .field("deployment_mode", &self.deployment_mode)
             .field("sentinel_master_name", &self.sentinel_master_name)
@@ -1013,6 +1021,8 @@ impl Default for RedisConfig {
             password: String::new(),
             database: 0,
             connect_timeout_seconds: 5,
+            response_timeout_seconds: 5,
+            pipeline_buffer_size: 512,
             key_prefix: "synctv:".to_string(),
             deployment_mode: RedisDeploymentMode::Standalone,
             sentinel_master_name: None,
@@ -1987,6 +1997,10 @@ impl Config {
             "SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES",
             &mut self.server.grpc_max_message_size_bytes,
         )?;
+        env_override_bool(
+            "SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED",
+            &mut self.server.grpc_compression_enabled,
+        )?;
 
         env_override_bool("SYNCTV_METRICS_ENABLED", &mut self.metrics.enabled)?;
         env_override_str("SYNCTV_METRICS_HOST", &mut self.metrics.host);
@@ -2138,6 +2152,14 @@ impl Config {
         env_override_parse(
             "SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS",
             &mut self.redis.connect_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_REDIS_RESPONSE_TIMEOUT_SECONDS",
+            &mut self.redis.response_timeout_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_REDIS_PIPELINE_BUFFER_SIZE",
+            &mut self.redis.pipeline_buffer_size,
         )?;
         env_override_str("SYNCTV_REDIS_KEY_PREFIX", &mut self.redis.key_prefix);
         env_override_enum("SYNCTV_REDIS_DEPLOYMENT_MODE", &mut |val| {
@@ -3323,6 +3345,16 @@ impl Config {
             self.validate_redis_split_config(&mut errors);
         }
 
+        if self.redis.connect_timeout_seconds == 0 {
+            errors.push("redis.connect_timeout_seconds must be greater than 0".to_string());
+        }
+        if self.redis.response_timeout_seconds == 0 {
+            errors.push("redis.response_timeout_seconds must be greater than 0".to_string());
+        }
+        if self.redis.pipeline_buffer_size == 0 {
+            errors.push("redis.pipeline_buffer_size must be greater than 0".to_string());
+        }
+
         if !redis_url_present && !redis_split_present && !self.cluster_runtime_enabled() {
             tracing::info!(
                 "Redis is not configured — running in standalone mode with in-memory fallbacks. \
@@ -4316,6 +4348,7 @@ mod tests {
                 port: 8080,
                 enable_reflection: true,
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
+                grpc_compression_enabled: true,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
@@ -4647,6 +4680,7 @@ mod tests {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 grpc_max_message_size_bytes: 16 * 1024 * 1024,
+                grpc_compression_enabled: true,
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),

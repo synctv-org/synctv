@@ -192,40 +192,99 @@ impl RemoteProviderManager {
         }
     }
 
+    fn provider_error_from_ref(error: &ProviderError) -> ProviderError {
+        match error {
+            ProviderError::InvalidUrl(message) => ProviderError::InvalidUrl(message.clone()),
+            ProviderError::InvalidConfig(message) => ProviderError::InvalidConfig(message.clone()),
+            ProviderError::MissingField(message) => ProviderError::MissingField(message.clone()),
+            ProviderError::NetworkError(message) => ProviderError::NetworkError(message.clone()),
+            ProviderError::AuthRequired => ProviderError::AuthRequired,
+            ProviderError::CredentialRequired => ProviderError::CredentialRequired,
+            ProviderError::InvalidCredentialType => ProviderError::InvalidCredentialType,
+            ProviderError::NotFound => ProviderError::NotFound,
+            ProviderError::ApiError(message) => ProviderError::ApiError(message.clone()),
+            ProviderError::UpstreamHttp { status, url } => ProviderError::UpstreamHttp {
+                status: *status,
+                url: url.clone(),
+            },
+            ProviderError::UnsupportedFormat(format) => {
+                ProviderError::UnsupportedFormat(format.clone())
+            }
+            ProviderError::ParseError(message) => ProviderError::ParseError(message.clone()),
+            ProviderError::MissingInstance => ProviderError::MissingInstance,
+            ProviderError::InstanceNotFound(name) => ProviderError::InstanceNotFound(name.clone()),
+            ProviderError::CredentialNotFound(message) => {
+                ProviderError::CredentialNotFound(message.clone())
+            }
+            ProviderError::CredentialExpired(message) => {
+                ProviderError::CredentialExpired(message.clone())
+            }
+            ProviderError::EncryptionRequired(provider) => {
+                ProviderError::EncryptionRequired(provider)
+            }
+            ProviderError::RouteRegistrationFailed(message) => {
+                ProviderError::RouteRegistrationFailed(message.clone())
+            }
+            ProviderError::Internal(message) => ProviderError::Internal(message.clone()),
+            ProviderError::IoError(error) => {
+                ProviderError::IoError(std::io::Error::new(error.kind(), error.to_string()))
+            }
+            ProviderError::JsonError(error) => ProviderError::JsonError(serde_json::Error::io(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
+            )),
+        }
+    }
+
     async fn get_connection_result(
         &self,
         name: &str,
     ) -> std::result::Result<Option<RemoteProviderConnection>, ProviderError> {
-        if let Some(connection) = self.channel_cache.get(name).await {
-            return Ok(Some(connection));
+        enum LoadError {
+            NotCacheable,
+            Provider(ProviderError),
         }
 
-        let Some(config) = self
-            .repository
-            .get_by_name(name)
-            .await
-            .map_err(Self::map_remote_resolution_error)?
-        else {
-            return Ok(None);
-        };
+        let loaded = self
+            .channel_cache
+            .try_get_with_by_ref(name, async {
+                let Some(config) = self.repository.get_by_name(name).await.map_err(|error| {
+                    LoadError::Provider(Self::map_remote_resolution_error(error))
+                })?
+                else {
+                    return Err(LoadError::NotCacheable);
+                };
 
-        if !config.enabled || !Self::requires_remote_connection(&config) {
-            return Ok(None);
-        }
+                if !config.enabled || !Self::requires_remote_connection(&config) {
+                    return Err(LoadError::NotCacheable);
+                }
 
-        let channel = self
-            .create_grpc_channel(&config)
-            .await
-            .map_err(Self::map_remote_resolution_error)?;
-        let connection = Self::build_remote_connection(&config, channel)
-            .map_err(Self::map_remote_resolution_error)?;
+                let channel = self.create_grpc_channel(&config).await.map_err(|error| {
+                    LoadError::Provider(Self::map_remote_resolution_error(error))
+                })?;
+                let connection =
+                    Self::build_remote_connection(&config, channel).map_err(|error| {
+                        LoadError::Provider(Self::map_remote_resolution_error(error))
+                    })?;
 
-        self.channel_cache
-            .insert(name.to_string(), connection.clone())
+                tracing::debug!(
+                    "Lazily created and cached channel for instance '{}'",
+                    config.name
+                );
+                Ok(connection)
+            })
             .await;
-        tracing::debug!("Lazily created and cached channel for instance '{}'", name);
 
-        Ok(Some(connection))
+        match loaded {
+            Ok(connection) => Ok(Some(connection)),
+            Err(error) => match Arc::try_unwrap(error) {
+                Ok(LoadError::NotCacheable) => Ok(None),
+                Ok(LoadError::Provider(error)) => Err(error),
+                Err(error) => match error.as_ref() {
+                    LoadError::NotCacheable => Ok(None),
+                    LoadError::Provider(error) => Err(Self::provider_error_from_ref(error)),
+                },
+            },
+        }
     }
 
     /// Create a new `RemoteProviderManager` without shared durable invalidation.

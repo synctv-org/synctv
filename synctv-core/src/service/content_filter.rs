@@ -1,6 +1,18 @@
-use ammonia::{clean, Builder, UrlRelative};
+use ammonia::{Builder, UrlRelative};
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 use thiserror::Error;
+
+static SAFE_HTML_CLEANER: LazyLock<Builder<'static>> = LazyLock::new(Builder::default);
+static PLAIN_TEXT_CLEANER: LazyLock<Builder<'static>> = LazyLock::new(|| {
+    let mut cleaner = Builder::default();
+    cleaner
+        .tags(HashSet::new())
+        .tag_attributes(HashMap::new())
+        .generic_attributes(HashSet::new())
+        .url_relative(UrlRelative::Deny);
+    cleaner
+});
 
 /// Content filtering error
 #[derive(Error, Debug)]
@@ -85,7 +97,7 @@ impl ContentFilter {
             Self::strip_all_html(trimmed)
         } else {
             // Allow safe HTML subset (links, bold, italic)
-            clean(trimmed)
+            SAFE_HTML_CLEANER.clean(trimmed).to_string()
         };
 
         // Check for sensitive words
@@ -153,11 +165,7 @@ impl ContentFilter {
     /// Uses ammonia with an empty allowed-tags set, which removes ALL HTML
     /// elements and attributes, decodes entities, and produces plain text.
     fn strip_all_html(text: &str) -> String {
-        Builder::default()
-            .tags(HashSet::new())
-            .tag_attributes(HashMap::new())
-            .generic_attributes(HashSet::new())
-            .url_relative(UrlRelative::Deny)
+        PLAIN_TEXT_CLEANER
             .clean(text)
             .to_string()
             .trim()

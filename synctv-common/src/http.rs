@@ -4,10 +4,8 @@
 //! - [`SsrfSafeClientBuilder::provider()`] — for media-provider API calls
 //! - [`SsrfSafeClientBuilder::proxy()`] — for outbound media proxy fetches
 //!
-//! Clients can enforce SSRF protection via an explicit [`crate::ssrf::SsrfGuard`]
-//! and always disable automatic redirects. Runtime defaults depend on the
-//! shared SSRF policy; when `SsrfGuard::shared_default()` is disabled, the
-//! builder will not inject a DNS resolver.
+//! Clients can enforce SSRF protection through an explicit [`crate::ssrf::SsrfGuard`]
+//! stored on the builder and always disable automatic redirects.
 
 use std::time::Duration;
 
@@ -18,9 +16,8 @@ use crate::ssrf::SsrfGuard;
 /// Every client built through this builder automatically gets:
 /// - Redirect policy set to `none` (prevents redirect-based SSRF)
 ///
-/// A DNS resolver is injected only when the active shared SSRF policy exposes
-/// one. With the current runtime default, SSRF enforcement is disabled unless
-/// callers opt into a strict policy.
+/// SSRF DNS enforcement is opt-in because many SyncTV deployments intentionally
+/// use private-network media sources.
 pub struct SsrfSafeClientBuilder {
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
@@ -29,6 +26,7 @@ pub struct SsrfSafeClientBuilder {
     pool_idle_timeout: Option<Duration>,
     user_agent: Option<String>,
     resolves: Vec<(String, std::net::SocketAddr)>,
+    ssrf_guard: Option<SsrfGuard>,
 }
 
 impl SsrfSafeClientBuilder {
@@ -36,7 +34,7 @@ impl SsrfSafeClientBuilder {
     ///
     /// Defaults: 10 s connect, 30 s request, pool 10, no read timeout.
     #[must_use]
-    pub const fn provider() -> Self {
+    pub fn provider() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
             request_timeout: Some(Duration::from_secs(30)),
@@ -45,6 +43,7 @@ impl SsrfSafeClientBuilder {
             pool_idle_timeout: None,
             user_agent: None,
             resolves: Vec::new(),
+            ssrf_guard: None,
         }
     }
 
@@ -57,7 +56,7 @@ impl SsrfSafeClientBuilder {
     /// timeout, it should apply an explicit per-request budget only around
     /// "send request + receive response headers".
     #[must_use]
-    pub const fn proxy() -> Self {
+    pub fn proxy() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
             request_timeout: None,
@@ -66,7 +65,22 @@ impl SsrfSafeClientBuilder {
             pool_idle_timeout: Some(Duration::from_secs(30)),
             user_agent: None,
             resolves: Vec::new(),
+            ssrf_guard: None,
         }
+    }
+
+    /// Override the SSRF policy used by the injected DNS resolver.
+    #[must_use]
+    pub fn ssrf_guard(mut self, guard: SsrfGuard) -> Self {
+        self.ssrf_guard = Some(guard);
+        self
+    }
+
+    /// Disable SSRF DNS enforcement.
+    #[must_use]
+    pub fn disable_ssrf_guard(mut self) -> Self {
+        self.ssrf_guard = None;
+        self
     }
 
     /// Override the overall request timeout.
@@ -143,7 +157,7 @@ impl SsrfSafeClientBuilder {
             .pool_max_idle_per_host(self.pool_max_idle_per_host)
             .redirect(reqwest::redirect::Policy::none());
 
-        if let Some(resolver) = SsrfGuard::shared_default().dns_resolver() {
+        if let Some(resolver) = self.ssrf_guard.as_ref().and_then(SsrfGuard::dns_resolver) {
             builder = builder.dns_resolver(resolver);
         }
 
@@ -201,6 +215,7 @@ mod tests {
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(b.user_agent.as_deref(), Some("test-agent"));
         assert!(b.resolves.is_empty());
+        assert!(b.ssrf_guard.is_none());
     }
 
     #[test]
@@ -219,6 +234,18 @@ mod tests {
     #[test]
     fn test_build_proxy_client() {
         let _client = build_proxy_client().expect("proxy client should build");
+    }
+
+    #[test]
+    fn test_disable_ssrf_guard_is_explicit() {
+        let builder = SsrfSafeClientBuilder::provider().disable_ssrf_guard();
+        assert!(builder.ssrf_guard.is_none());
+    }
+
+    #[test]
+    fn test_ssrf_guard_is_opt_in() {
+        let builder = SsrfSafeClientBuilder::provider().ssrf_guard(SsrfGuard::strict_policy());
+        assert!(builder.ssrf_guard.is_some());
     }
 
     #[test]

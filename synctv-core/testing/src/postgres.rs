@@ -138,6 +138,22 @@ pub struct TestContainer {
     cleaned_up: bool,
 }
 
+/// Isolated PostgreSQL test database with an open pool.
+///
+/// The `container` field owns cleanup for the leased database. Keep the
+/// fixture alive for at least as long as code uses `pool`.
+pub struct TestDatabase {
+    pub container: TestContainer,
+    pub pool: PgPool,
+}
+
+impl TestDatabase {
+    pub async fn cleanup(self) {
+        self.pool.close().await;
+        self.container.cleanup().await;
+    }
+}
+
 impl ProcessLock {
     fn try_acquire(name: &str) -> Option<Self> {
         let path = lock_file_path(name);
@@ -229,6 +245,27 @@ impl TestContainer {
             self.shared.drop_database(&self.database_name).await;
             self.cleaned_up = true;
         }
+    }
+
+    pub async fn recreate_as_empty_database(&self) {
+        if self.database_name == self.shared.template_database
+            || self.database_name == ADMIN_DATABASE
+        {
+            return;
+        }
+
+        let database = quote_identifier(&self.database_name);
+        let drop_sql = format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)");
+        sqlx::query(&drop_sql)
+            .execute(&self.shared.admin_pool)
+            .await
+            .expect("test database should be dropped before empty recreation");
+
+        let create_sql = format!("CREATE DATABASE {database}");
+        sqlx::query(&create_sql)
+            .execute(&self.shared.admin_pool)
+            .await
+            .expect("test database should be recreated empty");
     }
 
     pub fn host(&self) -> String {
@@ -1120,6 +1157,18 @@ pub async fn create_test_pool_with_options_and_label(
     (container, pool)
 }
 
+pub async fn create_test_database_with_options_and_label(
+    db_name: &str,
+    label: &str,
+    max_connections: u32,
+    acquire_timeout: Duration,
+) -> TestDatabase {
+    let (container, pool) =
+        create_test_pool_with_options_and_label(db_name, label, max_connections, acquire_timeout)
+            .await;
+    TestDatabase { container, pool }
+}
+
 pub async fn create_test_pool_with_db_and_label(
     db_name: &str,
     label: &str,
@@ -1136,6 +1185,29 @@ pub async fn create_test_pool_with_db_and_label(
 /// Creates a `PostgreSQL` test pool with a custom database name
 pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) {
     create_test_pool_with_db_and_label(db_name, db_name).await
+}
+
+pub async fn create_test_database_with_db_and_label(db_name: &str, label: &str) -> TestDatabase {
+    create_test_database_with_options_and_label(
+        db_name,
+        label,
+        default_test_pool_max_connections(),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+pub async fn create_test_database() -> TestDatabase {
+    create_test_database_with_db_and_label("synctv_test", "database").await
+}
+
+pub async fn connect_test_pool_url(database_url: &str) -> PgPool {
+    PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(30))
+        .max_connections(default_test_pool_max_connections())
+        .connect(database_url)
+        .await
+        .expect("test should connect to PostgreSQL database URL")
 }
 
 /// Starts a shared `PostgreSQL` test container and returns a connection URL

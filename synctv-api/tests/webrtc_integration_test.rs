@@ -216,8 +216,8 @@ mod permissions {
     };
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
     use synctv_core_testing::{
-        create_test_pool_with_db_and_label, start_redis_url_with_label, test_redis_key_prefix,
-        RedisContainer, TestContainer,
+        create_test_pool_with_db_and_label, redis_connection_manager, start_redis_url_with_label,
+        test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -238,9 +238,7 @@ mod permissions {
 
         let redis_client = redis::Client::open(redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
-            redis::aio::ConnectionManager::new(redis_client.clone())
-                .await
-                .expect("Redis connection manager"),
+            redis_connection_manager(&redis_client).await,
         ));
         let username_cache = UsernameCache::new(
             Arc::new(RedisCacheL2::from_runtime(synctv_core::shared_runtime(

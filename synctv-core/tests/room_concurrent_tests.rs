@@ -33,27 +33,18 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
+use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
 use tokio::sync::Barrier;
 // Test Infrastructure
 
-/// Test container wrapper for Postgres
-pub struct TestPostgres {
-    pub pool: PgPool,
-    #[allow(dead_code)]
-    container: TestContainer,
-}
-
-async fn create_test_pool() -> TestPostgres {
-    let (container, pool) = create_test_pool_with_options_and_label(
+async fn create_test_pool() -> TestDatabase {
+    create_test_database_with_options_and_label(
         "synctv_test",
         "room-concurrent",
         30,
         std::time::Duration::from_secs(30),
     )
-    .await;
-
-    TestPostgres { pool, container }
+    .await
 }
 
 /// Create a test user in the database
@@ -164,14 +155,14 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_join_respects_max_members() {
-    let (_container, pool) = create_test_pool_with_options_and_label(
+    let infra = create_test_database_with_options_and_label(
         "synctv_test",
         "concurrent-join-max-members",
         30,
         std::time::Duration::from_secs(30),
     )
     .await;
-    let pool = &pool;
+    let pool = &infra.pool;
 
     let (_owner, room, _settings) = setup_test_room(pool, "Concurrent Join Room", 10).await;
 

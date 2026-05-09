@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
-use synctv_core_testing::{start_redis_with_client, RedisContainer};
+use synctv_core_testing::{start_redis_client_manager, RedisContainer};
 use tokio::sync::RwLock;
 
 // In-memory rate limiter tests
@@ -117,11 +117,7 @@ async fn test_in_memory_distributed_uses_governor() {
 // Redis rate limiter tests (require Docker)
 
 async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, RedisContainer) {
-    let (container, client) = start_redis_with_client().await;
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis ConnectionManager");
-
+    let (container, _client, conn) = start_redis_client_manager().await;
     (conn, container)
 }
 

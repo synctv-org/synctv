@@ -21,7 +21,9 @@ use synctv_core::{
     service::{remote_provider_manager::RemoteProviderManager, CredentialEncryption},
     Error,
 };
-use synctv_core_testing::{create_test_pool_with_options_and_label, start_redis_with_client};
+use synctv_core_testing::{
+    create_test_pool_with_options_and_label, redis_connection_manager, start_redis_with_client,
+};
 use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
     emby::emby_server::EmbyServer, emby_server::EmbyService as EmbyGrpcService,
@@ -64,9 +66,7 @@ impl TestInfra {
     }
 
     async fn redis_connection_manager(&self) -> redis::aio::ConnectionManager {
-        redis::aio::ConnectionManager::new(self.redis_client.clone())
-            .await
-            .expect("Failed to create Redis ConnectionManager")
+        redis_connection_manager(&self.redis_client).await
     }
 }
 

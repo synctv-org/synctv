@@ -24,7 +24,10 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
-use synctv_core_testing::start_redis as start_test_redis;
+use synctv_core_testing::{
+    redis_connection_manager, start_redis as start_test_redis,
+    start_redis_client_manager_with_label,
+};
 
 // Test Helpers
 
@@ -622,7 +625,8 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
 #[ignore = "Requires Docker"]
 async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     let (_pg_container, pool) = synctv_core_testing::create_test_pool().await;
-    let (redis_container, redis_conn) = start_redis().await;
+    let (_redis_container, redis_client, redis_conn) =
+        start_redis_client_manager_with_label("playback-l2-invalidation").await;
 
     let user_repo = UserRepository::new(pool.clone());
     let mut room_service = make_room_service(pool.clone());
@@ -643,18 +647,8 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
         "test:playback:invalidate:stream:{}",
         synctv_common::snanoid!(8)
     );
-    let (redis_host, redis_port) = redis_container.host_port(6379);
-    let redis_url = if redis_host.contains(':') && !redis_host.starts_with('[') {
-        format!("redis://[{redis_host}]:{redis_port}")
-    } else {
-        format!("redis://{redis_host}:{redis_port}")
-    };
     let subscriber = Arc::new(synctv_core::cache::CacheInvalidationService::from_runtime(
-        synctv_core::direct_runtime(
-            redis::aio::ConnectionManager::new(redis::Client::open(redis_url.clone()).unwrap())
-                .await
-                .unwrap(),
-        ),
+        synctv_core::direct_runtime(redis_connection_manager(&redis_client).await),
         "node-subscriber".to_string(),
         cache_stream.clone(),
     ));
@@ -662,11 +656,7 @@ async fn test_playback_state_cross_replica_invalidation_clears_l2() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let publisher = Arc::new(synctv_core::cache::CacheInvalidationService::from_runtime(
-        synctv_core::direct_runtime(
-            redis::aio::ConnectionManager::new(redis::Client::open(redis_url).unwrap())
-                .await
-                .unwrap(),
-        ),
+        synctv_core::direct_runtime(redis_connection_manager(&redis_client).await),
         "node-publisher".to_string(),
         cache_stream,
     ));

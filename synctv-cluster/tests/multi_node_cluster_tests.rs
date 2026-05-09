@@ -11,6 +11,7 @@ use std::time::Duration;
 use chrono::Utc;
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{RoomId, UserId};
+use synctv_core_testing::redis_connection_manager;
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_all_clients_receive, create_node, wait_until, wait_until_async, TestRedis,
@@ -300,15 +301,9 @@ async fn test_leader_election_single_leader() {
     let client =
         redis::Client::open(redis.redis_url.as_str()).expect("Failed to create Redis client");
 
-    let conn_a = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .expect("Failed to create connection A");
-    let conn_b = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .expect("Failed to create connection B");
-    let conn_c = redis::aio::ConnectionManager::new(client.clone())
-        .await
-        .expect("Failed to create connection C");
+    let conn_a = redis_connection_manager(&client).await;
+    let conn_b = redis_connection_manager(&client).await;
+    let conn_c = redis_connection_manager(&client).await;
 
     let config_a = LeaderElectorConfig {
         lease_duration_secs: 5,

@@ -14,8 +14,9 @@ use synctv::app::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
 use synctv_core::service::auth::TestPasswordHasher;
 use synctv_core_testing::{
-    create_test_database_url_with_label, postgres_connection_url_with_credentials,
-    start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
+    connect_test_pool_url, create_test_database_url_with_label,
+    postgres_connection_url_with_credentials, start_redis_url_with_label, test_redis_key_prefix,
+    RedisContainer, TestContainer,
 };
 use synctv_management::proto as management_proto;
 use synctv_media_providers::grpc::alist::{alist_server::AlistServer, MeResp as AlistMeResp};
@@ -142,33 +143,6 @@ fn test_config(
 fn write_cli_test_config(path: &std::path::Path, config: &Config) {
     let yaml = serde_yaml::to_string(config).expect("CLI test config should serialize to YAML");
     std::fs::write(path, yaml).expect("CLI test config should be written");
-}
-
-async fn recreate_test_database_as_empty(container: &TestContainer) {
-    let admin_url = postgres_connection_url_with_credentials(
-        &container.host(),
-        container.port_ipv4(5432),
-        "postgres",
-        "synctv",
-        "synctv_test",
-    );
-    let admin_pool = sqlx::PgPool::connect(&admin_url)
-        .await
-        .expect("test should connect to postgres admin database");
-    let database_name = container.database_name();
-
-    sqlx::query(&format!(
-        "DROP DATABASE IF EXISTS {database_name} WITH (FORCE)"
-    ))
-    .execute(&admin_pool)
-    .await
-    .expect("test should drop the cloned database");
-    sqlx::query(&format!("CREATE DATABASE {database_name}"))
-        .execute(&admin_pool)
-        .await
-        .expect("test should recreate the cloned database without migrations");
-
-    admin_pool.close().await;
 }
 
 #[cfg(unix)]
@@ -5394,7 +5368,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
         rtmp_port,
     );
     write_cli_test_config(&config_path, &config);
-    recreate_test_database_as_empty(&postgres).await;
+    postgres.recreate_as_empty_database().await;
 
     let pending_status = run_synctv_cli_with_env_async(
         &[
@@ -5445,9 +5419,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
         cli_stderr(&migrate_output),
     );
 
-    let pool = sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("test should connect to migrated database");
+    let pool = connect_test_pool_url(&database_url).await;
     let applied_migrations: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = true")
             .fetch_one(&pool)
@@ -5500,9 +5472,7 @@ async fn full_stack_cli_db_status_reports_migration_readiness_and_db_migrate_is_
         "db status should report ready after migrations are applied\nstdout:\n{ready_stdout}"
     );
 
-    let pool = sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("test should reconnect to migrated database");
+    let pool = connect_test_pool_url(&database_url).await;
     sqlx::query(
         "UPDATE _sqlx_migrations \
          SET checksum = decode('00', 'hex') \
@@ -5587,9 +5557,7 @@ async fn full_stack_cli_db_status_fails_when_migration_metadata_is_unreadable() 
 
     let limited_role = format!("status_reader_{}", unique_test_suffix());
     let limited_password = "StatusPwd12345!";
-    let admin_pool = sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("test should connect to prepared database");
+    let admin_pool = connect_test_pool_url(&database_url).await;
     sqlx::query(&format!(
         "CREATE ROLE \"{limited_role}\" LOGIN PASSWORD '{limited_password}'"
     ))

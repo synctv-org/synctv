@@ -15,6 +15,7 @@ use synctv_cluster::{build_room_message_runtime, ClusterConfig, ClusterManager};
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
+use synctv_core_testing::redis_connection_manager;
 mod integration_test_helpers;
 use integration_test_helpers::{
     broadcast_until_cache_invalidation, broadcast_until_room_event, create_node, TestRedis,
@@ -44,10 +45,7 @@ async fn test_cross_replica_cache_invalidation() {
 
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
-    let conn_a = client_a
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager");
+    let conn_a = redis_connection_manager(&client_a).await;
     let config_a = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -199,10 +197,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
 
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
-    let conn_a = client_a
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager");
+    let conn_a = redis_connection_manager(&client_a).await;
     let config_a = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -285,10 +280,7 @@ async fn test_cluster_permission_cache_consistency() {
 
     let client_a =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client A");
-    let conn_a = client_a
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager A");
+    let conn_a = redis_connection_manager(&client_a).await;
     let config_a = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -312,10 +304,7 @@ async fn test_cluster_permission_cache_consistency() {
 
     let client_b =
         redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client B");
-    let conn_b = client_b
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager B");
+    let conn_b = redis_connection_manager(&client_b).await;
     let config_b = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -454,10 +443,7 @@ async fn test_concurrent_permission_cache_updates() {
     let mut rx_c = cache_svc_c.subscribe();
 
     let client_a = redis::Client::open(redis.redis_url.clone()).expect("Redis client A");
-    let conn_a = client_a
-        .get_connection_manager()
-        .await
-        .expect("Connection A");
+    let conn_a = redis_connection_manager(&client_a).await;
     let config_a = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -482,10 +468,7 @@ async fn test_concurrent_permission_cache_updates() {
     );
 
     let client_b = redis::Client::open(redis.redis_url.clone()).expect("Redis client B");
-    let conn_b = client_b
-        .get_connection_manager()
-        .await
-        .expect("Connection B");
+    let conn_b = redis_connection_manager(&client_b).await;
     let config_b = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(
@@ -510,10 +493,7 @@ async fn test_concurrent_permission_cache_updates() {
     );
 
     let client_c = redis::Client::open(redis.redis_url.clone()).expect("Redis client C");
-    let conn_c = client_c
-        .get_connection_manager()
-        .await
-        .expect("Connection C");
+    let conn_c = redis_connection_manager(&client_c).await;
     let config_c = ClusterConfig {
         distributed_transport_factory: Some(Arc::new(
             synctv_cluster::RedisClusterMessageTransportFactory::new(

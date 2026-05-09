@@ -8,13 +8,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::AsyncCommands;
 use synctv_core::service::{
     auth::token_blacklist::{PgTokenBlacklistStore, TieredTokenBlacklistStore},
     TokenBlacklistStore,
 };
-use synctv_core_testing::start_redis_with_client;
+use synctv_core_testing::{redis_connection_manager, start_redis_with_client};
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (synctv_core_testing::RedisContainer, redis::Client) {
@@ -33,11 +32,7 @@ fn unavailable_pg_store() -> PgTokenBlacklistStore {
 #[ignore = "Requires Docker"]
 async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_write() {
     let (_container, redis_client) = start_redis().await;
-    let shared_conn = Arc::new(RwLock::new(
-        RedisConnectionManager::new(redis_client.clone())
-            .await
-            .expect("Failed to create Redis connection manager"),
-    ));
+    let shared_conn = Arc::new(RwLock::new(redis_connection_manager(&redis_client).await));
     let key_prefix = "pg-primary:".to_string();
     let key = "jti:pg_primary_required";
     let redis_key = format!("{key_prefix}bl:{key}");
@@ -54,9 +49,7 @@ async fn test_blacklist_if_not_exists_requires_pg_success_before_redis_cache_wri
         "blacklist_if_not_exists must fail when PG persistence fails, even if Redis is healthy"
     );
 
-    let mut verify_conn = RedisConnectionManager::new(redis_client)
-        .await
-        .expect("Failed to create Redis verification connection manager");
+    let mut verify_conn = redis_connection_manager(&redis_client).await;
     let cached: Option<String> = verify_conn
         .get(&redis_key)
         .await

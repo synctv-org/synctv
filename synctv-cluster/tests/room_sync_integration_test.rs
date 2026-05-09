@@ -15,15 +15,14 @@ use synctv_cluster::sync::{
 };
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::SharedStateProfile;
+use synctv_core_testing::redis_connection_manager;
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
 
 /// Helper: create a `RoomMessageHub` with Redis backing using the given prefix.
 async fn create_hub(redis_url: &str, key_prefix: &str) -> std::sync::Arc<dyn RoomMessageRuntime> {
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis connection");
+    let conn = redis_connection_manager(&client).await;
     build_room_message_runtime(&SharedStateProfile::from_runtime(
         Some(synctv_core::direct_runtime(conn)),
         key_prefix,
@@ -509,9 +508,7 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let room_id = RoomId::from(10_000_088);
 
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
-    let mut conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("redis connection");
+    let mut conn = redis_connection_manager(&client).await;
 
     let room_key = format!("{prefix}room_hub:room:{room_id}");
     let valid_conn_key = format!("{prefix}room_hub:conn:conn_valid");
@@ -561,9 +558,7 @@ async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
 
     let hub = create_hub(&redis.redis_url, prefix).await;
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
-    let mut conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("redis connection");
+    let mut conn = redis_connection_manager(&client).await;
 
     let live_room_id = RoomId::from(10_000_093);
     let live_user_id = UserId::from(10_000_094);
@@ -622,9 +617,7 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
-    let mut conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("redis connection");
+    let mut conn = redis_connection_manager(&client).await;
 
     let directory_key = format!("{prefix}room_hub:room_index");
     let ttl: i64 = conn.ttl(&directory_key).await.expect("room directory TTL");

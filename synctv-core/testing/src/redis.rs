@@ -956,15 +956,33 @@ pub async fn start_redis_with_client() -> (RedisContainer, redis::Client) {
     (container, client)
 }
 
+pub async fn start_redis_client_url_with_label(
+    label: &str,
+) -> (RedisContainer, redis::Client, String) {
+    let (container, redis_url, client) = start_redis_inner(label).await;
+    (container, client, redis_url)
+}
+
+pub async fn start_redis_client_manager_with_label(
+    label: &str,
+) -> (RedisContainer, redis::Client, RedisConnectionManager) {
+    let (container, _redis_url, client) = start_redis_inner(label).await;
+    let manager = redis_connection_manager(&client).await;
+    (container, client, manager)
+}
+
+pub async fn start_redis_client_manager() -> (RedisContainer, redis::Client, RedisConnectionManager)
+{
+    start_redis_client_manager_with_label("client-manager").await
+}
+
 /// Start a shared Redis container and return a `ConnectionManager`.
 ///
 /// This reuses the shared Redis container across processes in the same test run.
 pub async fn start_redis() -> (RedisContainer, RedisConnectionManager) {
     let (container, redis_url, _client) = start_redis_inner("conn-mgr").await;
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let manager = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis connection manager");
+    let manager = redis_connection_manager(&client).await;
     (container, manager)
 }
 
@@ -1028,17 +1046,70 @@ pub async fn start_dedicated_redis_url_with_label(_label: &str) -> (RedisContain
 
 pub async fn start_redis_handle() -> (RedisContainer, RedisConnectionHandle) {
     let (container, redis_url, _client) = start_redis_inner("handle").await;
-    let manager = redis::aio::ConnectionManager::new(
-        redis::Client::open(redis_url).expect("Failed to create Redis client for handle"),
-    )
-    .await
-    .expect("Failed to create Redis connection manager");
+    let client = redis::Client::open(redis_url).expect("Failed to create Redis client for handle");
+    let manager = redis_connection_manager(&client).await;
     (container, Arc::new(RwLock::new(manager)))
 }
 
 pub async fn start_redis_url() -> (RedisContainer, String) {
     let (container, redis_url, _client) = start_redis_inner("url").await;
     (container, redis_url)
+}
+
+pub async fn redis_connection_manager(client: &redis::Client) -> RedisConnectionManager {
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("redis connection manager probe has not run yet");
+    while std::time::Instant::now() < deadline {
+        match redis::aio::ConnectionManager::new(client.clone()).await {
+            Ok(mut conn) => {
+                let ping: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
+                if ping.is_ok() {
+                    return conn;
+                }
+                last_error = format!("connection manager ping failed: {ping:?}");
+            }
+            Err(err) => {
+                last_error = format!("connection manager init failed: {err}");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    panic!(
+        "Redis connection manager did not become ready within {:?}: {}",
+        docker_startup_timeout(),
+        last_error
+    );
+}
+
+pub async fn redis_multiplexed_connection(
+    client: &redis::Client,
+) -> redis::aio::MultiplexedConnection {
+    let deadline = std::time::Instant::now() + docker_startup_timeout();
+    let mut last_error = String::from("redis multiplexed connection probe has not run yet");
+    while std::time::Instant::now() < deadline {
+        match client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
+                let ping: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
+                if ping.is_ok() {
+                    return conn;
+                }
+                last_error = format!("multiplexed ping failed: {ping:?}");
+            }
+            Err(err) => {
+                last_error = format!("multiplexed init failed: {err}");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    panic!(
+        "Redis multiplexed connection did not become ready within {:?}: {}",
+        docker_startup_timeout(),
+        last_error
+    );
 }
 
 pub async fn wait_for_redis_ready(client: &redis::Client) {

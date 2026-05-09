@@ -11,23 +11,13 @@ use synctv_core::SharedStateProfile;
 
 mod integration_test_helpers;
 use integration_test_helpers::TestRedis;
-use synctv_core_testing::test_redis_key_prefix;
+use synctv_core_testing::{redis_connection_manager, test_redis_key_prefix};
 
 async fn setup_redis() -> (TestRedis, redis::aio::ConnectionManager, String) {
     let redis = TestRedis::start().await;
     let redis_client =
         redis::Client::open(redis.redis_url.as_str()).expect("Failed to create Redis client");
-    let conn = redis_client
-        .get_connection_manager()
-        .await
-        .expect("Failed to create Redis ConnectionManager");
-
-    // Verify Redis
-    let mut test_conn = conn.clone();
-    let _: () = redis::cmd("PING")
-        .query_async(&mut test_conn)
-        .await
-        .expect("Redis PING failed");
+    let conn = redis_connection_manager(&redis_client).await;
 
     let key_prefix = test_redis_key_prefix("ttl-test");
     (redis, conn, key_prefix)

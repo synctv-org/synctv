@@ -6,70 +6,22 @@
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
+use synctv_core_testing::{
+    redis_multiplexed_connection, start_redis_client_url_with_label, RedisContainer,
+};
 
 use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
 
-/// Default Redis version for test containers
-#[allow(dead_code)]
-const REDIS_VERSION: &str = "8";
-
-fn docker_startup_timeout() -> Duration {
-    std::env::var("SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(30))
-        .map_or_else(|| Duration::from_mins(2), Duration::from_secs)
-}
-
 /// Helper to create a Redis container and client.
 async fn setup_redis() -> (RedisContainer, redis::Client, String) {
-    let (redis_container, redis_url) = tokio::time::timeout(
-        docker_startup_timeout(),
-        start_redis_url_with_label("heartbeat-backoff"),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)");
-    let redis_client =
-        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
-
-    let mut conn = {
-        let mut retries = 0;
-        loop {
-            match redis_client.get_multiplexed_async_connection().await {
-                Ok(conn) => break conn,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
-            }
-        }
-    };
-    let _: () = redis::cmd("PING")
-        .query_async(&mut conn)
-        .await
-        .expect("Redis PING failed");
-    drop(conn);
-
-    (redis_container, redis_client, redis_url)
+    start_redis_client_url_with_label("heartbeat-backoff").await
 }
 
 async fn connect_redis_with_retry(
     redis_client: &redis::Client,
 ) -> redis::aio::MultiplexedConnection {
-    let mut retries = 0u32;
-    loop {
-        match redis_client.get_multiplexed_async_connection().await {
-            Ok(conn) => return conn,
-            Err(_) if retries < 60 => {
-                retries += 1;
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
-        }
-    }
+    redis_multiplexed_connection(redis_client).await
 }
 
 /// Test that re-registration after heartbeat failure uses backoff.

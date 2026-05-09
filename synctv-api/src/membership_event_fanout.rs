@@ -94,42 +94,39 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         changed_by: &UserId,
     ) -> Result<(), ApiError> {
         let (target_username, new_permissions, role, added_permissions, removed_permissions) =
-            match self
+            if let Some(member) = self
                 .room_service
                 .member_service()
                 .get_member(room_id, target_user_id)
                 .await
                 .map_err(ApiError::from)?
             {
-                Some(member) => {
-                    let room_settings = self
-                        .room_service
-                        .get_room_settings(room_id)
-                        .await
-                        .map_err(ApiError::from)?;
-                    let username = self.username_for_actor(target_user_id).await?;
-                    let role_default = self
-                        .room_service
-                        .permission_service()
-                        .calculate_role_default_permissions(&member.role, &room_settings);
-                    (
-                        username,
-                        member.effective_permissions(role_default),
-                        Self::role_to_proto(member.role),
-                        member.added_permissions,
-                        member.removed_permissions,
-                    )
-                }
-                None => {
-                    let username = self.username_for_actor(target_user_id).await?;
-                    (
-                        username,
-                        PermissionBits::empty(),
-                        synctv_proto::common::RoomMemberRole::Member as i32,
-                        0,
-                        0,
-                    )
-                }
+                let room_settings = self
+                    .room_service
+                    .get_room_settings(room_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                let username = self.username_for_actor(target_user_id).await?;
+                let role_default = self
+                    .room_service
+                    .permission_service()
+                    .calculate_role_default_permissions(&member.role, &room_settings);
+                (
+                    username,
+                    member.effective_permissions(role_default),
+                    Self::role_to_proto(member.role),
+                    member.added_permissions,
+                    member.removed_permissions,
+                )
+            } else {
+                let username = self.username_for_actor(target_user_id).await?;
+                (
+                    username,
+                    PermissionBits::empty(),
+                    synctv_proto::common::RoomMemberRole::Member as i32,
+                    0,
+                    0,
+                )
             };
 
         let changed_by_username = self.username_for_actor(changed_by).await?;
@@ -315,7 +312,7 @@ mod tests {
         (room_service, user_service)
     }
 
-    fn assert_service_unavailable(error: crate::impls::ApiError) {
+    fn assert_service_unavailable(error: &crate::impls::ApiError) {
         assert!(
             matches!(error, crate::impls::ApiError::ServiceUnavailable(_)),
             "repository lookup failure should surface as ServiceUnavailable, got {error:?}"
@@ -338,7 +335,7 @@ mod tests {
             .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
             .expect_err("repository lookup failure must abort permission-change publish");
-        assert_service_unavailable(error);
+        assert_service_unavailable(&error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -371,7 +368,7 @@ mod tests {
             .publish_permission_changed(&room_id(), &user, &user)
             .await
             .expect_err("repository lookup failure must abort self-join publish");
-        assert_service_unavailable(error);
+        assert_service_unavailable(&error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -400,7 +397,7 @@ mod tests {
             .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
             .await
             .expect_err("repository lookup failure must abort cluster permission publish");
-        assert_service_unavailable(error);
+        assert_service_unavailable(&error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -428,7 +425,7 @@ mod tests {
             .publish_user_left(&room_id(), &user_id("target"))
             .await
             .expect_err("repository lookup failure must abort cluster user-left publish");
-        assert_service_unavailable(error);
+        assert_service_unavailable(&error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -456,7 +453,7 @@ mod tests {
             .publish_user_left(&room_id(), &user_id("target"))
             .await
             .expect_err("repository lookup failure must abort user-left publish");
-        assert_service_unavailable(error);
+        assert_service_unavailable(&error);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(

@@ -14,26 +14,17 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
+use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
 use tokio::sync::Barrier;
 
-/// Test container wrapper for Postgres
-pub struct TestPostgres {
-    pub pool: PgPool,
-    #[allow(dead_code)]
-    container: TestContainer,
-}
-
-async fn create_test_pool() -> TestPostgres {
-    let (container, pool) = create_test_pool_with_options_and_label(
+async fn create_test_pool() -> TestDatabase {
+    create_test_database_with_options_and_label(
         "synctv_test",
         "database-deadlock",
         20,
         std::time::Duration::from_secs(30),
     )
-    .await;
-
-    TestPostgres { pool, container }
+    .await
 }
 
 /// Create a test user in the database (required for FK constraints)

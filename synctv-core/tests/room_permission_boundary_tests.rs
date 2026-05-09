@@ -33,26 +33,17 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::{create_test_pool_with_options_and_label, TestContainer};
+use synctv_core_testing::{create_test_database_with_options_and_label, TestDatabase};
 // Test Infrastructure
 
-/// Test container wrapper for Postgres
-pub struct TestPostgres {
-    pub pool: PgPool,
-    #[allow(dead_code)]
-    container: TestContainer,
-}
-
-async fn create_test_pool() -> TestPostgres {
-    let (container, pool) = create_test_pool_with_options_and_label(
+async fn create_test_pool() -> TestDatabase {
+    create_test_database_with_options_and_label(
         "synctv_test",
         "room-permission-boundary",
         20,
         std::time::Duration::from_secs(30),
     )
-    .await;
-
-    TestPostgres { pool, container }
+    .await
 }
 
 /// Create a test user in the database

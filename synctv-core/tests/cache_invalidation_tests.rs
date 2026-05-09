@@ -14,7 +14,8 @@ use synctv_core::{
     repository::RoomMemberRepository,
 };
 use synctv_core_testing::{
-    create_test_pool_with_options_and_label, start_redis_url as start_test_redis_url,
+    create_test_pool_with_options_and_label, redis_connection_manager,
+    start_redis_url as start_test_redis_url,
 };
 use tokio::sync::RwLock;
 
@@ -32,11 +33,7 @@ async fn distributed_invalidation_service(
     stream_key: String,
 ) -> Arc<CacheInvalidationService> {
     Arc::new(CacheInvalidationService::from_runtime(
-        synctv_core::direct_runtime(
-            redis::aio::ConnectionManager::new(redis_client)
-                .await
-                .expect("redis connection manager"),
-        ),
+        synctv_core::direct_runtime(redis_connection_manager(&redis_client).await),
         node_id.to_string(),
         stream_key,
     ))
@@ -399,11 +396,7 @@ async fn test_cache_invalidation_playback_state() {
 async fn test_cache_invalidation_with_shared_conn_without_client_still_broadcasts() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let shared_conn = Arc::new(RwLock::new(
-        redis::aio::ConnectionManager::new(redis_client.clone())
-            .await
-            .expect("Failed to create Redis connection manager"),
-    ));
+    let shared_conn = Arc::new(RwLock::new(redis_connection_manager(&redis_client).await));
     let stream_key = unique_stream_key();
 
     drop(redis_client);
@@ -450,9 +443,7 @@ async fn test_cache_invalidation_restart_resets_consumer_group_for_same_node() {
     let node_id = "restart-node";
     let consumer_group = format!("cache-invalidation-{node_id}");
 
-    let mut setup_conn = redis::aio::ConnectionManager::new(redis_client.clone())
-        .await
-        .expect("Failed to create Redis connection manager");
+    let mut setup_conn = redis_connection_manager(&redis_client).await;
 
     let _: String = redis::cmd("XADD")
         .arg(&stream_key)
@@ -552,9 +543,7 @@ async fn test_cache_invalidation_stop_destroys_current_consumer_group() {
     service.start().await.expect("Failed to start service");
     service.stop().await;
 
-    let mut conn = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .expect("Failed to create Redis connection manager");
+    let mut conn = redis_connection_manager(&redis_client).await;
     let groups: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
         .arg("GROUPS")
         .arg(&stream_key)
@@ -587,9 +576,7 @@ async fn test_cache_invalidation_start_cleans_empty_foreign_orphan_group() {
     let stream_key = unique_stream_key();
     let foreign_group = "cache-invalidation-old-node";
 
-    let mut conn = redis::aio::ConnectionManager::new(redis_client.clone())
-        .await
-        .expect("Failed to create Redis connection manager");
+    let mut conn = redis_connection_manager(&redis_client).await;
 
     let _: () = redis::cmd("XGROUP")
         .arg("CREATE")
@@ -630,9 +617,7 @@ async fn test_cache_invalidation_start_preserves_recent_foreign_group() {
     let foreign_group = "cache-invalidation-remote-node";
     let foreign_consumer = "remote-node";
 
-    let mut conn = redis::aio::ConnectionManager::new(redis_client.clone())
-        .await
-        .expect("Failed to create Redis connection manager");
+    let mut conn = redis_connection_manager(&redis_client).await;
 
     let _: String = redis::cmd("XADD")
         .arg(&stream_key)

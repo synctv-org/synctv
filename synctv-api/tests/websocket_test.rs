@@ -575,8 +575,8 @@ mod websocket_e2e {
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
-        create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
-        RedisContainer, TestContainer,
+        create_test_pool_with_options_and_label, redis_connection_manager,
+        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
@@ -782,9 +782,7 @@ mod websocket_e2e {
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
-            redis::aio::ConnectionManager::new(redis_client.clone())
-                .await
-                .expect("Redis ConnectionManager"),
+            redis_connection_manager(&redis_client).await,
         ));
 
         // UsernameCache with Redis L2 backend
@@ -841,10 +839,7 @@ mod websocket_e2e {
         // mode must be explicitly enabled to start distributed fan-out.
         let redis_client_for_cluster =
             redis::Client::open(redis_url.clone()).expect("Failed to open Redis client");
-        let redis_conn_for_cluster = redis_client_for_cluster
-            .get_connection_manager()
-            .await
-            .expect("Failed to get ConnectionManager");
+        let redis_conn_for_cluster = redis_connection_manager(&redis_client_for_cluster).await;
         let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
@@ -868,11 +863,10 @@ mod websocket_e2e {
                 .await
                 .expect("ClusterManager"),
         );
-        let redis_conn_for_connections = redis::aio::ConnectionManager::new(
-            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager"),
-        )
-        .await
-        .expect("Redis ConnectionManager for connection manager");
+        let redis_client_for_connections =
+            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
+        let redis_conn_for_connections =
+            redis_connection_manager(&redis_client_for_connections).await;
         let connection_manager = Arc::new(
             build_connection_manager(
                 ConnectionLimits::default(),
@@ -4486,8 +4480,8 @@ mod websocket_connection_limit_timing {
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
     use synctv_core_testing::{
-        create_test_pool_with_options_and_label, start_redis_url_with_label, test_redis_key_prefix,
-        RedisContainer, TestContainer,
+        create_test_pool_with_options_and_label, redis_connection_manager,
+        start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
     };
 
     use sqlx::PgPool;
@@ -4619,9 +4613,7 @@ mod websocket_connection_limit_timing {
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
         let redis_conn = Arc::new(tokio::sync::RwLock::new(
-            redis::aio::ConnectionManager::new(redis_client.clone())
-                .await
-                .expect("Redis ConnectionManager"),
+            redis_connection_manager(&redis_client).await,
         ));
 
         let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::from_runtime(
@@ -4670,10 +4662,7 @@ mod websocket_connection_limit_timing {
 
         let redis_client_for_cluster =
             redis::Client::open(redis_url.clone()).expect("Redis client");
-        let redis_conn_for_cluster = redis_client_for_cluster
-            .get_connection_manager()
-            .await
-            .expect("ConnectionManager");
+        let redis_conn_for_cluster = redis_connection_manager(&redis_client_for_cluster).await;
         let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
@@ -4705,11 +4694,10 @@ mod websocket_connection_limit_timing {
             idle_timeout: std::time::Duration::from_mins(5),
             max_duration: std::time::Duration::from_hours(24),
         };
-        let redis_conn_for_connections = redis::aio::ConnectionManager::new(
-            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager"),
-        )
-        .await
-        .expect("Redis ConnectionManager for connection manager");
+        let redis_client_for_connections =
+            redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
+        let redis_conn_for_connections =
+            redis_connection_manager(&redis_client_for_connections).await;
         let connection_manager = Arc::new(
             build_connection_manager(
                 connection_limits,

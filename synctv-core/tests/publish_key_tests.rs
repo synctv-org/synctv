@@ -12,7 +12,9 @@ use synctv_core::service::{
     publish_key::{InMemoryJtiStore, PublishKeyService, RedisJtiStore},
     JtiStore,
 };
-use synctv_core_testing::{start_redis_with_client, test_redis_key_prefix};
+use synctv_core_testing::{
+    redis_connection_manager, start_redis_with_client, test_redis_key_prefix,
+};
 
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap()
@@ -206,9 +208,7 @@ async fn test_publish_key_user_validator_failure_does_not_consume_token() {
 async fn test_redis_jti_store_cross_service_dedup() {
     use synctv_core::service::publish_key::RedisJtiStore;
     let (_container, client) = start_redis_with_client().await;
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis ConnectionManager");
+    let conn = redis_connection_manager(&client).await;
 
     let prefix = test_redis_key_prefix("jti-store");
     let store1 = RedisJtiStore::new(conn.clone(), prefix.clone(), 300);
@@ -232,9 +232,7 @@ async fn test_publish_key_service_with_redis_full_lifecycle() {
     use synctv_core::service::auth::JwtService;
     use synctv_core::service::publish_key::PublishKeyService;
     let (_container, client) = start_redis_with_client().await;
-    let conn = redis::aio::ConnectionManager::new(client)
-        .await
-        .expect("Failed to create Redis ConnectionManager");
+    let conn = redis_connection_manager(&client).await;
 
     let jwt =
         JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap();

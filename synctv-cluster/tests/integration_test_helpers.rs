@@ -9,34 +9,13 @@ use std::time::Duration;
 use synctv_cluster::{build_room_message_runtime, ClusterConfig, ClusterManager};
 use synctv_core::cache::InvalidationMessage;
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
-use synctv_core_testing::redis::RedisContainer;
+use synctv_core_testing::redis::{
+    redis_connection_manager, redis_multiplexed_connection, RedisContainer,
+};
 use synctv_core_testing::{start_redis_url_with_label, test_redis_key_prefix};
 
 const ROUND_TIMEOUT: Duration = Duration::from_millis(750);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
-
-/// Default Redis version for test containers
-#[allow(dead_code)]
-pub const REDIS_VERSION: &str = "8";
-
-#[allow(dead_code)]
-const DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 120;
-#[allow(dead_code)]
-const MIN_DOCKER_STARTUP_TIMEOUT_SECS: u64 = 30;
-#[allow(dead_code)]
-const DOCKER_STARTUP_TIMEOUT_ENV: &str = "SYNCTV_TEST_DOCKER_STARTUP_TIMEOUT_SECS";
-
-#[allow(dead_code)]
-fn docker_startup_timeout() -> Duration {
-    std::env::var(DOCKER_STARTUP_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|secs| secs.max(MIN_DOCKER_STARTUP_TIMEOUT_SECS))
-        .map_or_else(
-            || Duration::from_secs(DEFAULT_DOCKER_STARTUP_TIMEOUT_SECS),
-            Duration::from_secs,
-        )
-}
 
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.
@@ -108,37 +87,8 @@ impl TestRedis {
     pub async fn wait_until_ready(redis_url: &str) {
         let client = redis::Client::open(redis_url)
             .expect("Failed to create Redis client for readiness check");
-        let mut retries = 0;
-
-        loop {
-            let manager_ready = match redis::aio::ConnectionManager::new(client.clone()).await {
-                Ok(mut conn) => redis::cmd("PING")
-                    .query_async::<()>(&mut conn)
-                    .await
-                    .is_ok(),
-                Err(_) => false,
-            };
-
-            let multiplexed_ready = match client.get_multiplexed_async_connection().await {
-                Ok(mut conn) => redis::cmd("PING")
-                    .query_async::<()>(&mut conn)
-                    .await
-                    .is_ok(),
-                Err(_) => false,
-            };
-
-            if manager_ready && multiplexed_ready {
-                return;
-            }
-
-            assert!(
-                retries < 60,
-                "Redis not ready after {retries} retries: manager_ready={manager_ready}, multiplexed_ready={multiplexed_ready}"
-            );
-
-            retries += 1;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
+        let _manager = redis_connection_manager(&client).await;
+        let _multiplexed = redis_multiplexed_connection(&client).await;
     }
 }
 
@@ -155,10 +105,7 @@ pub async fn create_node_with_prefix(
     key_prefix: String,
 ) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
-    let conn = client
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager");
+    let conn = redis_connection_manager(&client).await;
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));
     let realtime_profile =
@@ -194,10 +141,7 @@ pub async fn create_node_with_config(
     mut config_modifier: impl FnMut(&mut ClusterConfig),
 ) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
-    let conn = client
-        .get_connection_manager()
-        .await
-        .expect("Failed to get ConnectionManager");
+    let conn = redis_connection_manager(&client).await;
     let key_prefix = test_redis_key_prefix("cluster-node-config");
     let shared_runtime: Arc<dyn RedisConnectionRuntime> =
         Arc::new(DirectRedisConnectionRuntime::new(conn.clone()));

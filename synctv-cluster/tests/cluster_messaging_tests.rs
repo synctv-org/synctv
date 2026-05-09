@@ -14,7 +14,7 @@ use synctv_cluster::{
 };
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime, SharedStateProfile};
-use synctv_core_testing::{start_redis_with_client, RedisContainer};
+use synctv_core_testing::{redis_connection_manager, start_redis_client_manager, RedisContainer};
 mod integration_test_helpers;
 use integration_test_helpers::{broadcast_until_admin_event, broadcast_until_room_event};
 
@@ -38,19 +38,7 @@ fn mid(s: &str) -> MediaId {
 
 /// Helper to create a Redis container and connection manager.
 async fn setup_redis() -> (RedisContainer, redis::Client, redis::aio::ConnectionManager) {
-    let (redis_container, redis_client) = start_redis_with_client().await;
-    let conn = redis::aio::ConnectionManager::new(redis_client.clone())
-        .await
-        .expect("Failed to create Redis ConnectionManager");
-
-    // Verify Redis
-    let mut test_conn = conn.clone();
-    let _: () = redis::cmd("PING")
-        .query_async(&mut test_conn)
-        .await
-        .expect("Redis PING failed");
-
-    (redis_container, redis_client, conn)
+    start_redis_client_manager().await
 }
 
 /// Create a test cluster config with Redis connection.
@@ -108,20 +96,7 @@ async fn test_cross_node_broadcast() {
     let redis_url = container.connection_url();
     let redis_client2 =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
-
-    let conn2 = {
-        let mut retries = 0;
-        loop {
-            match redis::aio::ConnectionManager::new(redis_client2.clone()).await {
-                Ok(conn) => break conn,
-                Err(_) if retries < 60 => {
-                    retries += 1;
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-                Err(e) => panic!("Redis ConnectionManager 2 failed after {retries} retries: {e}"),
-            }
-        }
-    };
+    let conn2 = redis_connection_manager(&redis_client2).await;
 
     // but the same key prefix so they participate in the same logical cluster.
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
@@ -445,9 +420,7 @@ async fn test_critical_event_delivery() {
     let redis_url = container.connection_url();
     let redis_client2 =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
-    let conn2 = redis::aio::ConnectionManager::new(redis_client2.clone())
-        .await
-        .expect("Failed to create Redis ConnectionManager 2");
+    let conn2 = redis_connection_manager(&redis_client2).await;
 
     let shared_prefix = format!("test_{}:", synctv_common::snanoid!(8));
     let config1 = make_cluster_config_with_prefix(

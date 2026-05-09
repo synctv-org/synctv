@@ -20,6 +20,7 @@ pub mod openapi;
 mod playlist_fanout;
 pub mod proto;
 mod realtime_lifecycle;
+mod resource_change;
 mod room_cache_fanout;
 mod room_lifecycle_fanout;
 pub mod runtime;

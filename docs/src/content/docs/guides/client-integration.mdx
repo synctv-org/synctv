@@ -62,9 +62,14 @@ curl -sS http://localhost:8080/api/tickets \
 const roomId = 'room_1'; // 使用创建或列表接口返回的 room.id
 const ticket = ticketResponse.ticket;
 const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
 
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes); // 使用 client.proto 生成的类型
   console.log(message);
 };
 ```
@@ -217,6 +222,14 @@ wss://<host>/ws/rooms/<room_id>
 4. 连接成功后不要复用 ticket；失败也应重新申请。
 </Steps>
 
+WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`；文本帧会被忽略。浏览器客户端应把生成代码编码出的 `Uint8Array` 作为 payload 发送，并把收到的 `Blob` 或 `ArrayBuffer` 解码成 `ServerMessage`。
+
+## 实时资源观察
+
+实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放快照、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
+
+完整协议、delivery mode、版本同步、每类资源示例、重连和错误处理见 [Realtime API](../realtime-api/)。
+
 ## 媒体 URL 与请求头
 
 Provider 返回的媒体播放结果可能包含 URL、代理模式、直连模式和必须使用的 header。客户端规则：
@@ -257,6 +270,7 @@ HTTP API 的错误体形状：
 
 - [OpenAPI 文档入口](../../reference/openapi/)：Swagger UI 和 `/api-docs/openapi.json`。
 - [gRPC 调试](../../reference/grpc/)：reflection、grpcurl 和 protobuf 文件位置。
+- [Realtime API](../realtime-api/)：WebSocket protobuf、资源观察、版本同步和重连处理。
 - [认证与安全模型](../security-model/)：2FA、OAuth2、token 上下文和 Provider header 边界。
 - [房间、权限与用户偏好](../rooms-permissions/)：角色、权限名称、room settings 和用户偏好。
 - [排障入口](../../operations/troubleshooting/)：按现象定位 CORS、WebSocket、登录、Provider 和 Range 问题。

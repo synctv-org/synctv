@@ -41,7 +41,8 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
       2. 阅读 [OpenAPI 文档入口](../../reference/openapi/)，确认 Swagger UI 和 OpenAPI JSON 的访问位置。
       3. 阅读 [gRPC 调试](../../reference/grpc/)，确认 cluster/admin/service protobuf 和 reflection 调试方式。
       4. 阅读 [客户端集成指南](../client-integration/)，理解登录、MFA、WebSocket、OAuth2 和媒体 header 的组合方式。
-      5. 阅读 [配置总索引](../../reference/configuration-index/)，修改配置结构时同步更新文档。
+      5. 阅读 [Realtime API](../realtime-api/)，确认 WebSocket protobuf、资源观察、版本同步和重连处理。
+      6. 阅读 [配置总索引](../../reference/configuration-index/)，修改配置结构时同步更新文档。
     </Steps>
   </TabItem>
 </Tabs>
@@ -148,6 +149,11 @@ import { Aside, Badge, Card, CardGrid, LinkCard, Steps, TabItem, Tabs } from '@a
     title="我要写客户端或 SDK"
     href="../client-integration/"
     description="说明登录、MFA、OAuth2、WebSocket、gRPC room metadata、媒体 header 和 token 处理方式。"
+  />
+  <LinkCard
+    title="我要接入实时 API"
+    href="../realtime-api/"
+    description="说明 WebSocket protobuf、聊天与播放实时消息、资源观察、delivery mode、版本同步和错误处理。"
   />
 </CardGrid>
 

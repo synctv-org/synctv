@@ -177,6 +177,11 @@ export default defineConfig({
               translations: { en: 'Client Integration Guide' },
               slug: 'guides/client-integration',
             },
+            {
+              label: 'Realtime API',
+              translations: { en: 'Realtime API' },
+              slug: 'guides/realtime-api',
+            },
           ],
           collapsed: false,
         },

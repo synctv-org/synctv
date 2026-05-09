@@ -1890,6 +1890,8 @@ message Danmaku {
 
 // Real-time Messaging
 message ClientMessage {
+    reserved 14 to 18;
+
     oneof message {
         ChatMessageSend chat = 1;
         HeartbeatMessage heartbeat = 2;
@@ -1905,57 +1907,61 @@ message ClientMessage {
         PlaybackProgressReport playback_progress = 9;
         // Playback state update command (real-time)
         UpdatePlayback playback_update = 10;
-        WatchPlaybackState watch_playback_state = 14;
-        WatchPlaybackSnapshot watch_playback_snapshot = 15;
-        WatchRoomSettings watch_room_settings = 16;
-        WatchPlaylistItems watch_playlist_items = 17;
-        WatchRoomMembers watch_room_members = 18;
+        ObserveResource observe_resource = 19;
+        UnobserveResource unobserve_resource = 20;
     }
 }
 
-message WatchPlaybackState {
-    optional int64 version = 1;
+enum ResourceDeliveryMode {
+    RESOURCE_DELIVERY_MODE_UNSPECIFIED = 0;
+    RESOURCE_DELIVERY_MODE_NOTIFY_ONLY = 1;
+    RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT = 2;
 }
 
-message WatchPlaybackSnapshot {
-    // Empty means the client has no local snapshot yet.
-    string version = 1;
+message ObserveResource {
+    string observe_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+    // Empty means the client has no local version yet.
+    string version = 2;
+    ResourceDeliveryMode delivery_mode = 3 [(buf.validate.field).enum.defined_only = true];
+    oneof resource {
+        ObservePlaybackState playback_state = 10;
+        ObservePlaybackSnapshot playback_snapshot = 11;
+        ObserveRoomSettings room_settings = 12;
+        ObservePlaylistItems playlist_items = 13;
+        ObserveRoomMembers room_members = 14;
+    }
+}
+
+message UnobserveResource {
+    string observe_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 128
+    }];
+}
+
+message ObservePlaybackState {}
+
+message ObservePlaybackSnapshot {
     // Client-side cached playback source identity. Used together with `version`
     // so reconnects don't suppress required refreshes when the source changed
     // but the DB-derived version collided.
-    string media_id = 2;
-    string playlist_id = 3;
-    bytes target = 4;
-    PlaybackClientProfile playback_client_profile = 5;
+    string media_id = 1;
+    string playlist_id = 2;
+    bytes target = 3;
+    PlaybackClientProfile playback_client_profile = 4;
 }
 
-message WatchRoomSettings {
-    optional int64 version = 1;
+message ObserveRoomSettings {}
+
+message ObservePlaylistItems {
+    ListPlaylistItemsRequest request = 1;
 }
 
-message WatchPlaylistItems {
-    string playlist_id = 1; // Empty means room root
-    bytes target = 2; // Provider-facing browse target payload
-    int32 page = 3;
-    int32 page_size = 4;
-    string search = 5;
-    string source_provider = 6;
-    string provider_instance_name = 7;
-    MediaListSortBy sort_by = 8 [(buf.validate.field).enum.defined_only = true];
-    SortDirection sort_direction = 9 [(buf.validate.field).enum.defined_only = true];
-    ResourceAvailabilityFilter availability = 10 [(buf.validate.field).enum.defined_only = true];
-    string version = 11; // Empty means the client has no local snapshot yet
-}
-
-message WatchRoomMembers {
-    int32 page = 1;
-    int32 page_size = 2;
-    string search = 3;
-    optional synctv.common.RoomMemberRole role = 4 [(buf.validate.field).enum.defined_only = true];
-    optional synctv.common.MemberStatus status = 5 [(buf.validate.field).enum.defined_only = true];
-    RoomMemberListSortBy sort_by = 6 [(buf.validate.field).enum.defined_only = true];
-    SortDirection sort_direction = 7 [(buf.validate.field).enum.defined_only = true];
-    string version = 8; // Empty means the client has no local snapshot yet
+message ObserveRoomMembers {
+    GetRoomMembersRequest request = 1;
 }
 
 // Client -> Server: periodic playback progress heartbeat
@@ -2000,7 +2006,36 @@ message ServerMessage {
         PlaybackSnapshotChanged playback_snapshot = 26;
         PlaylistItemsChanged playlist_items = 27;
         RoomMembersChanged room_members = 28;
+        ResourceObserved resource_observed = 29;
+        ResourceChanged resource_changed = 30;
+        ResourceObserveError resource_observe_error = 31;
     }
+}
+
+message ResourceObserved {
+    string observe_id = 1;
+    string version = 2;
+    bool changed = 3;
+}
+
+message ResourceChangedOnly {}
+
+message ResourceChanged {
+    string observe_id = 1;
+    string version = 2;
+    oneof payload {
+        ResourceChangedOnly changed_only = 10;
+        PlaybackState playback_state = 11;
+        PlaybackSnapshot playback_snapshot = 12;
+        RoomSettingsChanged room_settings = 13;
+        ListPlaylistItemsResponse playlist_items = 14;
+        GetRoomMembersResponse room_members = 15;
+    }
+}
+
+message ResourceObserveError {
+    string observe_id = 1;
+    ErrorMessage error = 2;
 }
 
 message PlaylistItemsChanged {

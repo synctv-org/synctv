@@ -2805,7 +2805,7 @@ pub struct Danmaku {
 pub struct ClientMessage {
     #[prost(
         oneof = "client_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 19, 20"
     )]
     pub message: ::core::option::Option<client_message::Message>,
 }
@@ -2841,127 +2841,127 @@ pub mod client_message {
         /// Playback state update command (real-time)
         #[prost(message, tag = "10")]
         PlaybackUpdate(super::UpdatePlayback),
-        #[prost(message, tag = "14")]
-        WatchPlaybackState(super::WatchPlaybackState),
-        #[prost(message, tag = "15")]
-        WatchPlaybackSnapshot(super::WatchPlaybackSnapshot),
-        #[prost(message, tag = "16")]
-        WatchRoomSettings(super::WatchRoomSettings),
-        #[prost(message, tag = "17")]
-        WatchPlaylistItems(super::WatchPlaylistItems),
-        #[prost(message, tag = "18")]
-        WatchRoomMembers(super::WatchRoomMembers),
+        #[prost(message, tag = "19")]
+        ObserveResource(super::ObserveResource),
+        #[prost(message, tag = "20")]
+        UnobserveResource(super::UnobserveResource),
     }
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.WatchPlaybackState")]
+#[prost_reflect(message_name = "synctv.client.ObserveResource")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaybackState))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WatchPlaybackState {
-    #[prost(int64, optional, tag = "1")]
-    pub version: ::core::option::Option<i64>,
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObserveResource))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ObserveResource {
+    #[prost(string, tag = "1")]
+    pub observe_id: ::prost::alloc::string::String,
+    /// Empty means the client has no local version yet.
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(enumeration = "ResourceDeliveryMode", tag = "3")]
+    #[serde(default)]
+    pub delivery_mode: i32,
+    #[prost(oneof = "observe_resource::Resource", tags = "10, 11, 12, 13, 14")]
+    pub resource: ::core::option::Option<observe_resource::Resource>,
+}
+/// Nested message and enum types in `ObserveResource`.
+pub mod observe_resource {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_ObserveResource))]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Resource {
+        #[prost(message, tag = "10")]
+        PlaybackState(super::ObservePlaybackState),
+        #[prost(message, tag = "11")]
+        PlaybackSnapshot(super::ObservePlaybackSnapshot),
+        #[prost(message, tag = "12")]
+        RoomSettings(super::ObserveRoomSettings),
+        #[prost(message, tag = "13")]
+        PlaylistItems(super::ObservePlaylistItems),
+        #[prost(message, tag = "14")]
+        RoomMembers(super::ObserveRoomMembers),
+    }
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.WatchPlaybackSnapshot")]
+#[prost_reflect(message_name = "synctv.client.UnobserveResource")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaybackSnapshot))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UnobserveResource))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WatchPlaybackSnapshot {
-    /// Empty means the client has no local snapshot yet.
+pub struct UnobserveResource {
     #[prost(string, tag = "1")]
-    pub version: ::prost::alloc::string::String,
+    pub observe_id: ::prost::alloc::string::String,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ObservePlaybackState")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObservePlaybackState))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ObservePlaybackState {}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ObservePlaybackSnapshot")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObservePlaybackSnapshot))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ObservePlaybackSnapshot {
     /// Client-side cached playback source identity. Used together with `version`
     /// so reconnects don't suppress required refreshes when the source changed
     /// but the DB-derived version collided.
-    #[prost(string, tag = "2")]
+    #[prost(string, tag = "1")]
     pub media_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "2")]
     pub playlist_id: ::prost::alloc::string::String,
-    #[prost(bytes = "vec", tag = "4")]
+    #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
     pub target: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "4")]
     pub playback_client_profile: ::core::option::Option<PlaybackClientProfile>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.WatchRoomSettings")]
+#[prost_reflect(message_name = "synctv.client.ObserveRoomSettings")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchRoomSettings))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObserveRoomSettings))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WatchRoomSettings {
-    #[prost(int64, optional, tag = "1")]
-    pub version: ::core::option::Option<i64>,
-}
+pub struct ObserveRoomSettings {}
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.WatchPlaylistItems")]
+#[prost_reflect(message_name = "synctv.client.ObservePlaylistItems")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchPlaylistItems))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObservePlaylistItems))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WatchPlaylistItems {
-    /// Empty means room root
-    #[prost(string, tag = "1")]
-    pub playlist_id: ::prost::alloc::string::String,
-    /// Provider-facing browse target payload
-    #[prost(bytes = "vec", tag = "2")]
-    pub target: ::prost::alloc::vec::Vec<u8>,
-    #[prost(int32, tag = "3")]
-    pub page: i32,
-    #[prost(int32, tag = "4")]
-    pub page_size: i32,
-    #[prost(string, tag = "5")]
-    pub search: ::prost::alloc::string::String,
-    #[prost(string, tag = "6")]
-    pub source_provider: ::prost::alloc::string::String,
-    #[prost(string, tag = "7")]
-    pub provider_instance_name: ::prost::alloc::string::String,
-    #[prost(enumeration = "MediaListSortBy", tag = "8")]
-    pub sort_by: i32,
-    #[prost(enumeration = "SortDirection", tag = "9")]
-    pub sort_direction: i32,
-    #[prost(enumeration = "ResourceAvailabilityFilter", tag = "10")]
-    pub availability: i32,
-    /// Empty means the client has no local snapshot yet
-    #[prost(string, tag = "11")]
-    pub version: ::prost::alloc::string::String,
+pub struct ObservePlaylistItems {
+    #[prost(message, optional, tag = "1")]
+    pub request: ::core::option::Option<ListPlaylistItemsRequest>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.WatchRoomMembers")]
+#[prost_reflect(message_name = "synctv.client.ObserveRoomMembers")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_WatchRoomMembers))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ObserveRoomMembers))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct WatchRoomMembers {
-    #[prost(int32, tag = "1")]
-    pub page: i32,
-    #[prost(int32, tag = "2")]
-    pub page_size: i32,
-    #[prost(string, tag = "3")]
-    pub search: ::prost::alloc::string::String,
-    #[prost(enumeration = "super::common::RoomMemberRole", optional, tag = "4")]
-    pub role: ::core::option::Option<i32>,
-    #[prost(enumeration = "super::common::MemberStatus", optional, tag = "5")]
-    pub status: ::core::option::Option<i32>,
-    #[prost(enumeration = "RoomMemberListSortBy", tag = "6")]
-    pub sort_by: i32,
-    #[prost(enumeration = "SortDirection", tag = "7")]
-    pub sort_direction: i32,
-    /// Empty means the client has no local snapshot yet
-    #[prost(string, tag = "8")]
-    pub version: ::prost::alloc::string::String,
+pub struct ObserveRoomMembers {
+    #[prost(message, optional, tag = "1")]
+    pub request: ::core::option::Option<GetRoomMembersRequest>,
 }
 /// Client -> Server: periodic playback progress heartbeat
 /// Sent every few seconds by clients that are actively playing media.
@@ -2994,7 +2994,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -3065,7 +3065,90 @@ pub mod server_message {
         PlaylistItems(super::PlaylistItemsChanged),
         #[prost(message, tag = "28")]
         RoomMembers(super::RoomMembersChanged),
+        #[prost(message, tag = "29")]
+        ResourceObserved(super::ResourceObserved),
+        #[prost(message, tag = "30")]
+        ResourceChanged(super::ResourceChanged),
+        #[prost(message, tag = "31")]
+        ResourceObserveError(super::ResourceObserveError),
     }
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ResourceObserved")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceObserved))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceObserved {
+    #[prost(string, tag = "1")]
+    pub observe_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub changed: bool,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ResourceChangedOnly")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceChangedOnly))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceChangedOnly {}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ResourceChanged")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceChanged))]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ResourceChanged {
+    #[prost(string, tag = "1")]
+    pub observe_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(oneof = "resource_changed::Payload", tags = "10, 11, 12, 13, 14, 15")]
+    pub payload: ::core::option::Option<resource_changed::Payload>,
+}
+/// Nested message and enum types in `ResourceChanged`.
+pub mod resource_changed {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+    #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceChanged))]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Payload {
+        #[prost(message, tag = "10")]
+        ChangedOnly(super::ResourceChangedOnly),
+        #[prost(message, tag = "11")]
+        PlaybackState(super::PlaybackState),
+        #[prost(message, tag = "12")]
+        PlaybackSnapshot(super::PlaybackSnapshot),
+        #[prost(message, tag = "13")]
+        RoomSettings(super::RoomSettingsChanged),
+        #[prost(message, tag = "14")]
+        PlaylistItems(super::ListPlaylistItemsResponse),
+        #[prost(message, tag = "15")]
+        RoomMembers(super::GetRoomMembersResponse),
+    }
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.ResourceObserveError")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceObserveError))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceObserveError {
+    #[prost(string, tag = "1")]
+    pub observe_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub error: ::core::option::Option<ErrorMessage>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PlaylistItemsChanged")]
@@ -5302,6 +5385,39 @@ impl PlaybackAudioCapability {
             "PLAYBACK_AUDIO_CAPABILITY_STEREO" => Some(Self::Stereo),
             "PLAYBACK_AUDIO_CAPABILITY_SURROUND" => Some(Self::Surround),
             "PLAYBACK_AUDIO_CAPABILITY_LOSSLESS_SURROUND" => Some(Self::LosslessSurround),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceDeliveryMode))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResourceDeliveryMode {
+    Unspecified = 0,
+    NotifyOnly = 1,
+    PushSnapshot = 2,
+}
+impl ResourceDeliveryMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RESOURCE_DELIVERY_MODE_UNSPECIFIED",
+            Self::NotifyOnly => "RESOURCE_DELIVERY_MODE_NOTIFY_ONLY",
+            Self::PushSnapshot => "RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_DELIVERY_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "RESOURCE_DELIVERY_MODE_NOTIFY_ONLY" => Some(Self::NotifyOnly),
+            "RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT" => Some(Self::PushSnapshot),
             _ => None,
         }
     }

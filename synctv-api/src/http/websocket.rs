@@ -737,6 +737,8 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
                 | Message::Error(_)
                 | Message::PermissionChanged(_)
                 | Message::RoomSettings(_)
+                | Message::ResourceObserved(_)
+                | Message::ResourceObserveError(_)
         )
     )
 }
@@ -759,6 +761,7 @@ const fn requires_state_resync(message: &ServerMessage) -> bool {
                 | Message::PlaylistItems(_)
                 | Message::PlaybackSnapshot(_)
                 | Message::RoomMembers(_)
+                | Message::ResourceChanged(_)
                 | Message::Notification(_)
         )
     )
@@ -786,6 +789,9 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::PlaylistDeleted(_)) => "PlaylistDeleted",
         Some(Message::PlaylistItems(_)) => "PlaylistItems",
         Some(Message::RoomMembers(_)) => "RoomMembers",
+        Some(Message::ResourceObserved(_)) => "ResourceObserved",
+        Some(Message::ResourceChanged(_)) => "ResourceChanged",
+        Some(Message::ResourceObserveError(_)) => "ResourceObserveError",
         Some(Message::PlayingChanged(_)) => "PlayingChanged",
         Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
         Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",

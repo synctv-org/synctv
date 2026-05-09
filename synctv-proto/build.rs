@@ -326,6 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.FinishOpaquePasswordUpdateRequest.passkey_credential",
         ".synctv.client.AddMediaRequest.source_config",
         ".synctv.client.ListPlaylistItemsRequest.target",
+        ".synctv.client.ObservePlaybackSnapshot.target",
         ".synctv.client.PlaylistItem.target",
         ".synctv.client.PlaylistBrowsePathNode.target",
         ".synctv.client.CreatePlaylistRequest.source_config",
@@ -342,6 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.StartPlaybackRequest.target",
         ".synctv.client.UpdatePlayback.type",
         ".synctv.client.ListPlaylistItemsRequest.target",
+        ".synctv.client.ObserveResource.delivery_mode",
         ".synctv.client.CreatePlaylistRequest.source_config",
         ".synctv.admin.UpdateRoomSettingsRequest.settings",
     ] {

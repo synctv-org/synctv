@@ -561,7 +561,9 @@ impl ClusterManager {
 
         if matches!(
             &event,
-            ClusterEvent::UserNotification { .. } | ClusterEvent::ProviderCredentialChanged { .. }
+            ClusterEvent::UserNotification { .. }
+                | ClusterEvent::ProviderCredentialChanged { .. }
+                | ClusterEvent::CacheInvalidate { .. }
         ) {
             let _ = self.admin_event_tx.send(event);
         }
@@ -967,7 +969,9 @@ impl ClusterManager {
         // delivered via the admin event channel to reach connected WebSocket handlers.
         if matches!(
             &event,
-            ClusterEvent::UserNotification { .. } | ClusterEvent::ProviderCredentialChanged { .. }
+            ClusterEvent::UserNotification { .. }
+                | ClusterEvent::ProviderCredentialChanged { .. }
+                | ClusterEvent::CacheInvalidate { .. }
         ) {
             let _ = self.admin_event_tx.send(event.clone());
         }
@@ -1148,7 +1152,7 @@ pub struct ClusterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::{ConnectionLimits, ConnectionManager};
+    use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager};
     use crate::NodeRegistry;
     use async_trait::async_trait;
     use chrono::Utc;
@@ -2359,6 +2363,47 @@ mod tests {
                 .is_err(),
             "publish_only must not emit UserNotification to the local admin channel"
         );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_cache_invalidate_reaches_admin_channel() {
+        let config = ClusterConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            cluster_enabled: false,
+            node_id: "test_cache_invalidate_admin_channel".to_string(),
+            dedup_window: Duration::from_secs(1),
+            critical_channel_capacity: 4,
+            publish_channel_capacity: 4,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed");
+        let mut admin_rx = manager.subscribe_admin_events();
+        let event = ClusterEvent::CacheInvalidate {
+            event_id: synctv_common::snanoid!(16),
+            targets: vec![CacheTarget::Room {
+                room_id: RoomId::from(10_000_110),
+            }],
+            timestamp: Utc::now(),
+        };
+
+        let result = manager.broadcast(event.clone());
+        assert_eq!(
+            result.local_sent, 0,
+            "cache invalidation is not a room subscriber event"
+        );
+
+        let received = tokio::time::timeout(Duration::from_millis(100), admin_rx.recv())
+            .await
+            .expect("CacheInvalidate should reach admin subscribers")
+            .expect("admin channel should stay open");
+        assert_eq!(received.event_id(), event.event_id());
     }
 
     #[tokio::test]

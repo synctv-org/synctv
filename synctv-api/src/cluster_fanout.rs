@@ -128,6 +128,7 @@ fn is_admin_channel_event(event: &ClusterEvent) -> bool {
         ClusterEvent::KickUser { .. }
             | ClusterEvent::UserNotification { .. }
             | ClusterEvent::ProviderCredentialChanged { .. }
+            | ClusterEvent::CacheInvalidate { .. }
     )
 }
 
@@ -229,7 +230,10 @@ pub fn channel_cluster_fanout_service(
 
 #[cfg(test)]
 mod tests {
-    use super::default_cluster_fanout_service;
+    use super::{default_cluster_fanout_service, is_admin_channel_event};
+    use chrono::Utc;
+    use synctv_cluster::sync::{CacheTarget, ClusterEvent};
+    use synctv_core::models::RoomId;
 
     #[tokio::test]
     async fn test_cluster_fanout_without_outbox_degrades_to_noop() {
@@ -239,5 +243,18 @@ mod tests {
             !service.is_distributed_enabled(),
             "fanout without an outbox must report distributed delivery as disabled"
         );
+    }
+
+    #[test]
+    fn test_cache_invalidate_is_admin_channel_event() {
+        let event = ClusterEvent::CacheInvalidate {
+            event_id: "cache-invalidate-admin-route".to_string(),
+            targets: vec![CacheTarget::Room {
+                room_id: RoomId::from(10_000_151),
+            }],
+            timestamp: Utc::now(),
+        };
+
+        assert!(is_admin_channel_event(&event));
     }
 }

@@ -767,7 +767,7 @@ mod tests {
                     &record.server_id,
                 ),
                 &envelope,
-                Duration::from_secs(60),
+                Duration::from_mins(1),
             )
             .await
             .expect("credential cache write succeeds");
@@ -809,7 +809,7 @@ mod tests {
                     Some("credential-instance"),
                 ),
                 &stale_session,
-                Duration::from_secs(60),
+                Duration::from_mins(1),
             )
             .await
             .expect("stale session cache write succeeds");
@@ -828,7 +828,7 @@ mod tests {
                     Some("bound-instance"),
                 ),
                 &bound_session,
-                Duration::from_secs(60),
+                Duration::from_mins(1),
             )
             .await
             .expect("bound session cache write succeeds");

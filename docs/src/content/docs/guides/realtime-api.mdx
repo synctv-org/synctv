@@ -1,0 +1,353 @@
+---
+title: Realtime API
+description: WebSocket protobuf 实时 API、资源观察、版本同步、错误处理和客户端使用模式。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 适用场景
+
+Realtime API 是房间内的长连接协议。它用于聊天、弹幕、播放控制、播放进度、WebRTC 信令，以及订阅房间内可缓存资源的变化。
+
+如果你只需要一次性读取或修改资源，优先使用 HTTP/OpenAPI 或 gRPC。只有需要低延迟推送、减少轮询、或保持房间实时状态时，才使用 Realtime API。
+
+## 传输与认证
+
+WebSocket 地址：
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+认证方式：
+
+| 方式 | 适用客户端 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <access_token>` | 原生客户端、CLI、服务端 SDK | 推荐方式，不把 token 放进 URL。 |
+| `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先通过 `POST /api/tickets` 创建短期、一次性、房间绑定 ticket。 |
+
+WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`。文本帧、ping、pong 等非业务帧不会被当作业务消息处理。
+
+```js
+const roomId = 'room_1';
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  handleServerMessage(message);
+};
+
+function sendClientMessage(message) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+```
+
+<Aside type="caution">
+不要把 refresh token 放进 WebSocket URL。浏览器客户端应使用 WebSocket ticket；ticket 使用后不要复用，连接失败也应重新申请。
+</Aside>
+
+## 基础消息
+
+Realtime API 的所有业务消息都在 `ClientMessage.message` 和 `ServerMessage.message` 的 `oneof` 中。
+
+常用客户端消息：
+
+| `ClientMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 发送聊天或弹幕消息。 |
+| `heartbeat` | 客户端心跳。 |
+| `playback_progress` | 上报当前播放位置和播放状态。 |
+| `playback_update` | 发起播放状态更新命令。 |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | WebRTC 信令转发。 |
+| `webrtc_join` / `webrtc_leave` | 加入或离开 WebRTC 会话。 |
+| `observe_resource` | 订阅实时资源。 |
+| `unobserve_resource` | 取消订阅实时资源。 |
+
+常用服务端消息：
+
+| `ServerMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 收到聊天或弹幕。 |
+| `heartbeat_ack` | 心跳确认。 |
+| `error` | 普通业务错误。 |
+| `playback_state` / `playing_changed` | 播放状态或播放目标变化。 |
+| `room_settings` | 房间设置变更广播。 |
+| `media_added` / `media_updated` / `media_removed` / `media_removed_batch` | 媒体变更广播。 |
+| `playlist_created` / `playlist_updated` / `playlist_deleted` / `playlist_reordered` | 播放列表变更广播。 |
+| `permission_changed` / `user_joined` / `user_left` / `room_members` | 成员和权限变化。 |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` / `webrtc_join` / `webrtc_leave` | WebRTC 信令或成员状态。 |
+| `resource_observed` / `resource_changed` / `resource_observe_error` | 实时资源观察结果。 |
+
+字段的完整结构以 `synctv-proto/proto/client.proto` 为准。
+
+## 资源观察模型
+
+资源观察用于订阅“可缓存查询结果”。客户端提交自己的缓存版本，服务端判断是否变化；变化时可以推送完整快照，也可以只通知客户端重新拉取。
+
+支持的资源：
+
+| 资源 | `ObserveResource.resource` 字段 | 版本来源 | 典型用途 |
+| --- | --- | --- | --- |
+| 播放状态 | `playback_state` | `RoomPlaybackState.version` | 播放器 UI、同步当前播放时间和状态。 |
+| 播放快照 | `playback_snapshot` | `PlaybackSnapshot.version` | 获取当前播放源 URL、header、代理策略和过期时间。 |
+| 房间设置 | `room_settings` | 房间设置版本 | 控制聊天、弹幕、播放权限等 UI。 |
+| 播放列表项 | `playlist_items` | 列表快照版本 | 根列表、子播放列表、provider 浏览和搜索结果。 |
+| 房间成员 | `room_members` | 成员列表快照版本 | 成员列表、分页、搜索、角色和状态过滤。 |
+
+每个观察由 `observe_id` 标识。`observe_id` 只需要在当前连接内唯一，长度 1-128。建议用稳定命名，例如 `playback-state`、`playlist-root:p1:50`、`members:online`。
+
+每条连接最多保留 64 个观察。超过限制时服务端返回 `ResourceObserveError`，不会关闭 WebSocket。
+
+## Delivery Mode
+
+`ObserveResource.delivery_mode` 控制变化时推送什么内容：
+
+| 值 | 行为 |
+| --- | --- |
+| `RESOURCE_DELIVERY_MODE_UNSPECIFIED` | 等同于 `PUSH_SNAPSHOT`。 |
+| `RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT` | 变化时推送完整 `ResourceChanged.payload`。推荐给需要低延迟 UI 更新的客户端。 |
+| `RESOURCE_DELIVERY_MODE_NOTIFY_ONLY` | 变化时只推送 `changed_only`。客户端收到后自行通过 HTTP/gRPC 拉取。适合大列表、低频后台同步或已有统一缓存层的客户端。 |
+
+## 订阅流程
+
+<Steps>
+1. 客户端连接房间 WebSocket。
+2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、本地缓存 `version`、`delivery_mode` 和目标资源。
+3. 服务端加载当前资源，返回 `ServerMessage.resource_observed`。
+4. 如果服务端判断资源已变化，随后返回同一 `observe_id` 的 `ServerMessage.resource_changed`。
+5. 连接期间，后续房间事件、缓存失效、Provider credential 变更或播放快照过期会触发服务端重新评估资源。
+</Steps>
+
+`ResourceObserved` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `observe_id` | 对应客户端提交的订阅 ID。 |
+| `version` | 服务端当前版本。客户端应保存它，用于重连或下次订阅。 |
+| `changed` | 服务端当前资源是否不同于客户端提交的 `version` 或播放快照源身份。 |
+
+`ResourceChanged` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `observe_id` | 哪个订阅发生变化。 |
+| `version` | 新版本。客户端应更新本地缓存版本。 |
+| `payload` | 完整快照或 `changed_only`，取决于 `delivery_mode`。 |
+
+## 取消订阅
+
+不再需要某个视图、列表或查询时，发送 `ClientMessage.unobserve_resource`：
+
+```ts
+sendClientMessage({
+  unobserveResource: {
+    observeId: 'playlist-root',
+  },
+});
+```
+
+取消订阅没有确认消息。断开连接时，服务端会自动清理该连接上的所有观察。
+
+## 订阅示例
+
+下面示例是 TypeScript 风格伪代码。实际字段名取决于你使用的 protobuf 代码生成器。
+
+<Tabs syncKey="realtime-observe-examples">
+  <TabItem label="播放状态" icon="play">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'playback-state',
+    version: cached.playbackStateVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    playbackState: {},
+  },
+});
+```
+
+服务端变化时返回 `ResourceChanged.payload.playback_state`。
+
+  </TabItem>
+  <TabItem label="播放快照" icon="document">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'playback-snapshot',
+    version: cached.playbackSnapshotVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    playbackSnapshot: {
+      mediaId: cached.mediaId ?? '',
+      playlistId: cached.playlistId ?? '',
+      target: cached.target ?? new Uint8Array(),
+      playbackClientProfile: currentPlaybackClientProfile,
+    },
+  },
+});
+```
+
+服务端变化时返回 `ResourceChanged.payload.playback_snapshot`。`media_id`、`playlist_id`、`target` 和 `playback_client_profile` 用于识别本地缓存对应的播放源；即使版本字符串碰撞，服务端也能判断播放源已经变化。
+
+  </TabItem>
+  <TabItem label="房间设置" icon="setting">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'room-settings',
+    version: cached.roomSettingsVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    roomSettings: {},
+  },
+});
+```
+
+服务端变化时返回 `ResourceChanged.payload.room_settings`。
+
+  </TabItem>
+  <TabItem label="播放列表项" icon="list">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'playlist-root:p1',
+    version: cached.playlistRootVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    playlistItems: {
+      request: {
+        playlistId: '',
+        page: 1,
+        pageSize: 50,
+        search: '',
+        sortBy: MediaListSortBy.MEDIA_LIST_SORT_BY_POSITION,
+        sortDirection: SortDirection.SORT_DIRECTION_ASC,
+        availability: ResourceAvailabilityFilter.RESOURCE_AVAILABILITY_FILTER_ALL,
+        refresh: false,
+      },
+    },
+  },
+});
+```
+
+服务端变化时返回 `ResourceChanged.payload.playlist_items`。如果 `request.refresh=true`，它只适合强制首轮刷新；服务端注册观察后会把后续自动刷新视为普通缓存读取。
+
+  </TabItem>
+  <TabItem label="房间成员" icon="user">
+
+```ts
+sendClientMessage({
+  observeResource: {
+    observeId: 'room-members:online',
+    version: cached.membersVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_NOTIFY_ONLY,
+    roomMembers: {
+      request: {
+        page: 1,
+        pageSize: 50,
+        search: '',
+        status: MemberStatus.MEMBER_STATUS_ONLINE,
+        sortBy: RoomMemberListSortBy.ROOM_MEMBER_LIST_SORT_BY_JOINED_AT,
+        sortDirection: SortDirection.SORT_DIRECTION_ASC,
+      },
+    },
+  },
+});
+```
+
+notify-only 模式下服务端变化时返回 `ResourceChanged.payload.changed_only`，客户端随后调用 HTTP/gRPC 成员列表接口刷新本地缓存。
+
+  </TabItem>
+</Tabs>
+
+## 处理服务端消息
+
+客户端应该按 `oneof` 类型分发，而不是按文本字段或日志字符串判断：
+
+```ts
+function handleServerMessage(message) {
+  if (message.resourceObserved) {
+    cacheVersion(message.resourceObserved.observeId, message.resourceObserved.version);
+    return;
+  }
+
+  if (message.resourceChanged) {
+    const changed = message.resourceChanged;
+    cacheVersion(changed.observeId, changed.version);
+
+    if (changed.playlistItems) {
+      replacePlaylistCache(changed.observeId, changed.playlistItems);
+    } else if (changed.changedOnly) {
+      scheduleRefetch(changed.observeId);
+    }
+    return;
+  }
+
+  if (message.resourceObserveError) {
+    logObserveError(message.resourceObserveError);
+  }
+}
+```
+
+旧式广播消息仍然存在，例如 `media_added`、`playlist_updated`、`room_settings`、`playback_state`。新客户端可以用资源观察维护最终 UI 快照，用旧式广播做轻量提示、动画或兼容逻辑。
+
+## 变化触发
+
+服务端会根据事件刷新相关观察：
+
+| 事件类型 | 刷新资源 |
+| --- | --- |
+| 播放状态变化 | `playback_state`、`playback_snapshot` |
+| 当前播放媒体或播放列表相关媒体更新 | `playback_snapshot`，必要时 `playlist_items` |
+| 播放列表创建、更新、删除、重排或媒体增删 | `playlist_items` |
+| 房间设置变化 | `room_settings`、`room_members` |
+| 用户加入、离开或权限变化 | `room_members` |
+| 缓存失效命中当前房间或用户 | 对应的播放、设置、列表或成员资源 |
+| Provider credential 变更 | 可能影响当前用户播放快照和 provider 浏览结果 |
+| 播放快照过期 | 到期后自动重新评估 `playback_snapshot` 观察 |
+
+服务端会对同一房间内相同查询做短窗口合并，减少多个连接同时订阅同一资源时的重复快照加载。客户端不需要依赖这个优化，但可以放心为多个视图建立独立 `observe_id`。
+
+## 重连策略
+
+WebSocket 断开后，观察不会跨连接保留。客户端重连时应该：
+
+<Steps>
+1. 重新获取 WebSocket ticket，或用有效 access token 重新连接。
+2. 为当前仍然打开的视图重新发送 `observe_resource`。
+3. 带上本地保存的 `version`，让服务端判断是否需要补发快照。
+4. 对 `playback_snapshot` 同时带上本地缓存的 `media_id`、`playlist_id`、`target` 和 `playback_client_profile`。
+5. 收到 `resource_observed.changed=false` 时保留本地缓存；收到 `resource_changed` 时替换对应缓存。
+</Steps>
+
+如果连接长时间断开，客户端可以先用 HTTP/gRPC 拉取关键资源，再恢复观察。这样可以避免用户看到过旧 UI。
+
+## 错误处理
+
+资源观察错误通过 `ServerMessage.resource_observe_error` 返回：
+
+| 场景 | 客户端动作 |
+| --- | --- |
+| `observe_id` 为空或超过 128 字符 | 修正客户端代码，不要重试同一请求。 |
+| 未指定 `resource` | 修正客户端代码。 |
+| 超过每连接 64 个观察 | 取消不需要的观察，或合并列表视图。 |
+| 快照服务不可用或加载失败 | 展示临时错误，可按退避策略重试。 |
+| 权限、资源不存在或输入无效 | 重新拉取房间状态，必要时引导用户返回。 |
+
+发送失败或连接被服务端断开时，不要假设观察仍然有效。重连后完整重建观察。
+
+## 兼容性说明
+
+当前协议使用 `ClientMessage.observe_resource = 19` 和 `ClientMessage.unobserve_resource = 20`。旧的 watch 字段范围 `14` 到 `18` 已保留，不应再被新客户端使用。客户端生成代码后，应以 `ObserveResource` 作为资源订阅入口。
+
+## 继续阅读
+
+- [客户端集成指南](../client-integration/)
+- [gRPC 调试](../../reference/grpc/)
+- [OpenAPI 文档入口](../../reference/openapi/)

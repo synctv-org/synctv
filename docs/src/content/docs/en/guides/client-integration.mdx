@@ -62,9 +62,14 @@ Browsers cannot reliably set a WebSocket `Authorization` header, so use a ticket
 const roomId = 'room_1'; // Use the room.id returned by create/list room APIs
 const ticket = ticketResponse.ticket;
 const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
 
-ws.onmessage = (event) => {
-  const message = JSON.parse(event.data);
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes); // generated from client.proto
   console.log(message);
 };
 ```
@@ -211,6 +216,14 @@ Browser-style flow:
 4. Do not reuse tickets after success or failure. Request a new one instead.
 </Steps>
 
+WebSocket only handles binary protobuf frames. Clients send `synctv.client.ClientMessage`, and the server returns `synctv.client.ServerMessage`; text frames are ignored. Browser clients should send the `Uint8Array` produced by generated protobuf code and decode received `Blob` or `ArrayBuffer` values into `ServerMessage`.
+
+## Realtime Resource Observation
+
+Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playback snapshots, room settings, playlist items, and room members. Clients send `ClientMessage.observe_resource`, and the server returns `resource_observed`, `resource_changed`, or `resource_observe_error`.
+
+See [Realtime API](../realtime-api/) for the full protocol, delivery modes, version synchronization, examples for every resource type, reconnect behavior, and error handling.
+
 ## Media URLs and Headers
 
 Provider playback results may include URLs, proxy mode, direct mode, and required headers. Client rules:
@@ -251,6 +264,7 @@ Handle errors by category, not by exact text:
 
 - [OpenAPI Access](../../reference/openapi/): Swagger UI and `/api-docs/openapi.json`.
 - [gRPC Debugging](../../reference/grpc/): reflection, grpcurl, and protobuf file locations.
+- [Realtime API](../realtime-api/): WebSocket protobuf, resource observation, version synchronization, and reconnect handling.
 - [Authentication and Security Model](../security-model/): 2FA, OAuth2, token context, and provider header boundaries.
 - [Rooms, Permissions, and Preferences](../rooms-permissions/): roles, permission bits, room settings, and user preferences.
 - [Troubleshooting](../../operations/troubleshooting/): CORS, WebSocket, login, provider, and Range diagnostics.

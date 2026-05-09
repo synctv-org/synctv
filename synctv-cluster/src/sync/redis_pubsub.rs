@@ -1850,9 +1850,10 @@ impl RedisPubSub {
         );
 
         // Handle CacheInvalidate events: dispatch to local cache invalidation
-        // service and do NOT forward to admin channel or room subscribers.
+        // service and notify admin subscribers such as resource observers.
         if let ClusterEvent::CacheInvalidate { ref targets, .. } = event {
             self.invalidate_cache_targets(targets);
+            let _ = self.admin_event_tx.send(event);
             return;
         }
 
@@ -2512,6 +2513,65 @@ mod tests {
         .expect("trait-object room message hub should be accepted");
 
         assert_eq!(pubsub.key_prefix, "runtime-test:");
+    }
+
+    #[tokio::test]
+    async fn test_cache_invalidate_dispatch_invalidates_cache_and_notifies_admin_subscribers() {
+        let redis_client =
+            redis::Client::open("redis://127.0.0.1/").expect("redis client should parse");
+        let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
+        let (admin_event_tx, mut admin_rx) = tokio::sync::broadcast::channel(8);
+        let deduplicator = Arc::new(MessageDeduplicator::new(tokio::time::Duration::from_secs(
+            1,
+        )));
+        let cache_invalidation = Arc::new(synctv_core::cache::CacheInvalidationService::new(
+            "cache-dispatch-test".to_string(),
+            "runtime-test:cache:invalidate".to_string(),
+        ));
+        let mut cache_rx = cache_invalidation.subscribe();
+
+        let pubsub = RedisPubSub::with_key_prefix_runtime(
+            synctv_core::coordination_runtime_from_client(redis_client),
+            message_hub,
+            "runtime-node".to_string(),
+            "runtime-test:",
+            admin_event_tx,
+            None,
+            Some(cache_invalidation),
+            deduplicator,
+            300,
+            DEFAULT_MAX_STREAM_LENGTH,
+        )
+        .expect("RedisPubSub should initialize");
+        let event = ClusterEvent::CacheInvalidate {
+            event_id: synctv_common::snanoid!(16),
+            targets: vec![CacheTarget::Room {
+                room_id: RoomId::from(10_000_150),
+            }],
+            timestamp: Utc::now(),
+        };
+        let event_id = event.event_id().to_string();
+
+        pubsub
+            .dispatch_event("runtime-test:admin:events", event)
+            .await;
+
+        let cache_message =
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), cache_rx.recv())
+                .await
+                .expect("CacheInvalidate should notify local cache subscribers")
+                .expect("cache invalidation channel should stay open");
+        assert!(matches!(
+            cache_message,
+            synctv_core::cache::InvalidationMessage::Room { .. }
+        ));
+
+        let admin_event =
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), admin_rx.recv())
+                .await
+                .expect("CacheInvalidate should notify admin subscribers")
+                .expect("admin event channel should stay open");
+        assert_eq!(admin_event.event_id(), event_id);
     }
 
     #[test]

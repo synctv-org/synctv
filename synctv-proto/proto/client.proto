@@ -1890,25 +1890,23 @@ message Danmaku {
 
 // Real-time Messaging
 message ClientMessage {
-    reserved 14 to 18;
-
     oneof message {
         ChatMessageSend chat = 1;
         HeartbeatMessage heartbeat = 2;
-        // WebRTC signaling messages (P2P and SFU modes)
-        WebRTCOffer webrtc_offer = 3;
-        WebRTCAnswer webrtc_answer = 4;
-        WebRTCIceCandidate webrtc_ice_candidate = 5;
-        WebRTCJoin webrtc_join = 6;
-        WebRTCLeave webrtc_leave = 7;
-        // SFU migration: client responds to server's migration offer
-        SfuMigrationAnswer sfu_migration_answer = 8;
         // Playback progress heartbeat: client periodically reports current position
-        PlaybackProgressReport playback_progress = 9;
+        PlaybackProgressReport playback_progress = 3;
         // Playback state update command (real-time)
-        UpdatePlayback playback_update = 10;
-        ObserveResource observe_resource = 19;
-        UnobserveResource unobserve_resource = 20;
+        UpdatePlayback playback_update = 4;
+        ObserveResource observe_resource = 5;
+        UnobserveResource unobserve_resource = 6;
+        // WebRTC signaling messages (P2P and SFU modes)
+        WebRTCOffer webrtc_offer = 7;
+        WebRTCAnswer webrtc_answer = 8;
+        WebRTCIceCandidate webrtc_ice_candidate = 9;
+        WebRTCJoin webrtc_join = 10;
+        WebRTCLeave webrtc_leave = 11;
+        // SFU migration: client responds to server's migration offer
+        SfuMigrationAnswer sfu_migration_answer = 12;
     }
 }
 
@@ -1927,11 +1925,11 @@ message ObserveResource {
     string version = 2;
     ResourceDeliveryMode delivery_mode = 3 [(buf.validate.field).enum.defined_only = true];
     oneof resource {
-        ObservePlaybackState playback_state = 10;
-        ObservePlaybackSnapshot playback_snapshot = 11;
-        ObserveRoomSettings room_settings = 12;
-        ObservePlaylistItems playlist_items = 13;
-        ObserveRoomMembers room_members = 14;
+        ObservePlaybackState playback_state = 4;
+        ObservePlaybackSnapshot playback_snapshot = 5;
+        ObserveRoomSettings room_settings = 6;
+        ObservePlaylistItems playlist_items = 7;
+        ObserveRoomMembers room_members = 8;
     }
 }
 
@@ -1984,25 +1982,25 @@ message ServerMessage {
         ErrorMessage error = 7;
         MediaAdded media_added = 8;
         MediaRemoved media_removed = 9;
-        MediaRemovedBatch media_removed_batch = 25;
-        PermissionChanged permission_changed = 10;
-        PlaylistCreated playlist_created = 11;
-        PlaylistUpdated playlist_updated = 12;
-        PlaylistDeleted playlist_deleted = 13;
-        PlayingChanged playing_changed = 14;
+        MediaRemovedBatch media_removed_batch = 10;
+        PermissionChanged permission_changed = 11;
+        PlaylistCreated playlist_created = 12;
+        PlaylistUpdated playlist_updated = 13;
+        PlaylistDeleted playlist_deleted = 14;
+        PlaylistReordered playlist_reordered = 15;
+        PlayingChanged playing_changed = 16;
         // WebRTC signaling messages (forwarded from other peers)
-        WebRTCOffer webrtc_offer = 15;
-        WebRTCAnswer webrtc_answer = 16;
-        WebRTCIceCandidate webrtc_ice_candidate = 17;
-        WebRTCJoin webrtc_join = 18;
-        WebRTCLeave webrtc_leave = 19;
+        WebRTCOffer webrtc_offer = 17;
+        WebRTCAnswer webrtc_answer = 18;
+        WebRTCIceCandidate webrtc_ice_candidate = 19;
+        WebRTCJoin webrtc_join = 20;
+        WebRTCLeave webrtc_leave = 21;
         // SFU migration: server requests existing P2P peer to renegotiate via SFU
-        SfuMigrationOffer sfu_migration_offer = 20;
-        SfuMigrationStatus sfu_migration_status = 21;
+        SfuMigrationOffer sfu_migration_offer = 22;
+        SfuMigrationStatus sfu_migration_status = 23;
         // User notification push (replaces NOTIFICATION_PUSH error code abuse)
-        UserNotification notification = 22;
-        MediaUpdated media_updated = 23;
-        PlaylistReordered playlist_reordered = 24;
+        UserNotification notification = 24;
+        MediaUpdated media_updated = 25;
         PlaybackSnapshotChanged playback_snapshot = 26;
         PlaylistItemsChanged playlist_items = 27;
         RoomMembersChanged room_members = 28;
@@ -2024,12 +2022,12 @@ message ResourceChanged {
     string observe_id = 1;
     string version = 2;
     oneof payload {
-        ResourceChangedOnly changed_only = 10;
-        PlaybackState playback_state = 11;
-        PlaybackSnapshot playback_snapshot = 12;
-        RoomSettingsChanged room_settings = 13;
-        ListPlaylistItemsResponse playlist_items = 14;
-        GetRoomMembersResponse room_members = 15;
+        ResourceChangedOnly changed_only = 3;
+        PlaybackState playback_state = 4;
+        PlaybackSnapshot playback_snapshot = 5;
+        RoomSettingsChanged room_settings = 6;
+        ListPlaylistItemsResponse playlist_items = 7;
+        GetRoomMembersResponse room_members = 8;
     }
 }
 

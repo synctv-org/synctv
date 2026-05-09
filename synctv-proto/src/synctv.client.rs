@@ -2805,7 +2805,7 @@ pub struct Danmaku {
 pub struct ClientMessage {
     #[prost(
         oneof = "client_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
     )]
     pub message: ::core::option::Option<client_message::Message>,
 }
@@ -2821,30 +2821,30 @@ pub mod client_message {
         Chat(super::ChatMessageSend),
         #[prost(message, tag = "2")]
         Heartbeat(super::HeartbeatMessage),
-        /// WebRTC signaling messages (P2P and SFU modes)
-        #[prost(message, tag = "3")]
-        WebrtcOffer(super::WebRtcOffer),
-        #[prost(message, tag = "4")]
-        WebrtcAnswer(super::WebRtcAnswer),
-        #[prost(message, tag = "5")]
-        WebrtcIceCandidate(super::WebRtcIceCandidate),
-        #[prost(message, tag = "6")]
-        WebrtcJoin(super::WebRtcJoin),
-        #[prost(message, tag = "7")]
-        WebrtcLeave(super::WebRtcLeave),
-        /// SFU migration: client responds to server's migration offer
-        #[prost(message, tag = "8")]
-        SfuMigrationAnswer(super::SfuMigrationAnswer),
         /// Playback progress heartbeat: client periodically reports current position
-        #[prost(message, tag = "9")]
+        #[prost(message, tag = "3")]
         PlaybackProgress(super::PlaybackProgressReport),
         /// Playback state update command (real-time)
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "4")]
         PlaybackUpdate(super::UpdatePlayback),
-        #[prost(message, tag = "19")]
+        #[prost(message, tag = "5")]
         ObserveResource(super::ObserveResource),
-        #[prost(message, tag = "20")]
+        #[prost(message, tag = "6")]
         UnobserveResource(super::UnobserveResource),
+        /// WebRTC signaling messages (P2P and SFU modes)
+        #[prost(message, tag = "7")]
+        WebrtcOffer(super::WebRtcOffer),
+        #[prost(message, tag = "8")]
+        WebrtcAnswer(super::WebRtcAnswer),
+        #[prost(message, tag = "9")]
+        WebrtcIceCandidate(super::WebRtcIceCandidate),
+        #[prost(message, tag = "10")]
+        WebrtcJoin(super::WebRtcJoin),
+        #[prost(message, tag = "11")]
+        WebrtcLeave(super::WebRtcLeave),
+        /// SFU migration: client responds to server's migration offer
+        #[prost(message, tag = "12")]
+        SfuMigrationAnswer(super::SfuMigrationAnswer),
     }
 }
 #[derive(::prost_reflect::ReflectMessage)]
@@ -2864,7 +2864,7 @@ pub struct ObserveResource {
     #[prost(enumeration = "ResourceDeliveryMode", tag = "3")]
     #[serde(default)]
     pub delivery_mode: i32,
-    #[prost(oneof = "observe_resource::Resource", tags = "10, 11, 12, 13, 14")]
+    #[prost(oneof = "observe_resource::Resource", tags = "4, 5, 6, 7, 8")]
     pub resource: ::core::option::Option<observe_resource::Resource>,
 }
 /// Nested message and enum types in `ObserveResource`.
@@ -2875,15 +2875,15 @@ pub mod observe_resource {
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_ObserveResource))]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "4")]
         PlaybackState(super::ObservePlaybackState),
-        #[prost(message, tag = "11")]
+        #[prost(message, tag = "5")]
         PlaybackSnapshot(super::ObservePlaybackSnapshot),
-        #[prost(message, tag = "12")]
+        #[prost(message, tag = "6")]
         RoomSettings(super::ObserveRoomSettings),
-        #[prost(message, tag = "13")]
+        #[prost(message, tag = "7")]
         PlaylistItems(super::ObservePlaylistItems),
-        #[prost(message, tag = "14")]
+        #[prost(message, tag = "8")]
         RoomMembers(super::ObserveRoomMembers),
     }
 }
@@ -2994,7 +2994,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -3024,41 +3024,41 @@ pub mod server_message {
         MediaAdded(super::MediaAdded),
         #[prost(message, tag = "9")]
         MediaRemoved(super::MediaRemoved),
-        #[prost(message, tag = "25")]
-        MediaRemovedBatch(super::MediaRemovedBatch),
         #[prost(message, tag = "10")]
-        PermissionChanged(super::PermissionChanged),
+        MediaRemovedBatch(super::MediaRemovedBatch),
         #[prost(message, tag = "11")]
-        PlaylistCreated(super::PlaylistCreated),
+        PermissionChanged(super::PermissionChanged),
         #[prost(message, tag = "12")]
-        PlaylistUpdated(super::PlaylistUpdated),
+        PlaylistCreated(super::PlaylistCreated),
         #[prost(message, tag = "13")]
-        PlaylistDeleted(super::PlaylistDeleted),
+        PlaylistUpdated(super::PlaylistUpdated),
         #[prost(message, tag = "14")]
+        PlaylistDeleted(super::PlaylistDeleted),
+        #[prost(message, tag = "15")]
+        PlaylistReordered(super::PlaylistReordered),
+        #[prost(message, tag = "16")]
         PlayingChanged(super::PlayingChanged),
         /// WebRTC signaling messages (forwarded from other peers)
-        #[prost(message, tag = "15")]
-        WebrtcOffer(super::WebRtcOffer),
-        #[prost(message, tag = "16")]
-        WebrtcAnswer(super::WebRtcAnswer),
         #[prost(message, tag = "17")]
-        WebrtcIceCandidate(super::WebRtcIceCandidate),
+        WebrtcOffer(super::WebRtcOffer),
         #[prost(message, tag = "18")]
-        WebrtcJoin(super::WebRtcJoin),
+        WebrtcAnswer(super::WebRtcAnswer),
         #[prost(message, tag = "19")]
+        WebrtcIceCandidate(super::WebRtcIceCandidate),
+        #[prost(message, tag = "20")]
+        WebrtcJoin(super::WebRtcJoin),
+        #[prost(message, tag = "21")]
         WebrtcLeave(super::WebRtcLeave),
         /// SFU migration: server requests existing P2P peer to renegotiate via SFU
-        #[prost(message, tag = "20")]
+        #[prost(message, tag = "22")]
         SfuMigrationOffer(super::SfuMigrationOffer),
-        #[prost(message, tag = "21")]
+        #[prost(message, tag = "23")]
         SfuMigrationStatus(super::SfuMigrationStatus),
         /// User notification push (replaces NOTIFICATION_PUSH error code abuse)
-        #[prost(message, tag = "22")]
-        Notification(super::UserNotification),
-        #[prost(message, tag = "23")]
-        MediaUpdated(super::MediaUpdated),
         #[prost(message, tag = "24")]
-        PlaylistReordered(super::PlaylistReordered),
+        Notification(super::UserNotification),
+        #[prost(message, tag = "25")]
+        MediaUpdated(super::MediaUpdated),
         #[prost(message, tag = "26")]
         PlaybackSnapshot(super::PlaybackSnapshotChanged),
         #[prost(message, tag = "27")]
@@ -3111,7 +3111,7 @@ pub struct ResourceChanged {
     pub observe_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub version: ::prost::alloc::string::String,
-    #[prost(oneof = "resource_changed::Payload", tags = "10, 11, 12, 13, 14, 15")]
+    #[prost(oneof = "resource_changed::Payload", tags = "3, 4, 5, 6, 7, 8")]
     pub payload: ::core::option::Option<resource_changed::Payload>,
 }
 /// Nested message and enum types in `ResourceChanged`.
@@ -3122,17 +3122,17 @@ pub mod resource_changed {
     #[cfg_attr(feature = "openapi", schema(as = synctv_client_ResourceChanged))]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Payload {
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "3")]
         ChangedOnly(super::ResourceChangedOnly),
-        #[prost(message, tag = "11")]
+        #[prost(message, tag = "4")]
         PlaybackState(super::PlaybackState),
-        #[prost(message, tag = "12")]
+        #[prost(message, tag = "5")]
         PlaybackSnapshot(super::PlaybackSnapshot),
-        #[prost(message, tag = "13")]
+        #[prost(message, tag = "6")]
         RoomSettings(super::RoomSettingsChanged),
-        #[prost(message, tag = "14")]
+        #[prost(message, tag = "7")]
         PlaylistItems(super::ListPlaylistItemsResponse),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "8")]
         RoomMembers(super::GetRoomMembersResponse),
     }
 }

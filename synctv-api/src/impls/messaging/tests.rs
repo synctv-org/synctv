@@ -3472,8 +3472,8 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
         message_sender
             .sent_messages()
             .iter()
-            .all(|message| !resource_playlist_items(message)
-                .is_some_and(|snapshot| snapshot.version == "items-v2")),
+            .all(|message| resource_playlist_items(message)
+                .is_none_or(|snapshot| snapshot.version != "items-v2")),
         "stale refresh should not be delivered after unobserve"
     );
 }

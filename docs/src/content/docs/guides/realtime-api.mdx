@@ -342,10 +342,6 @@ WebSocket 断开后，观察不会跨连接保留。客户端重连时应该：
 
 发送失败或连接被服务端断开时，不要假设观察仍然有效。重连后完整重建观察。
 
-## 兼容性说明
-
-当前协议使用 `ClientMessage.observe_resource = 19` 和 `ClientMessage.unobserve_resource = 20`。旧的 watch 字段范围 `14` 到 `18` 已保留，不应再被新客户端使用。客户端生成代码后，应以 `ObserveResource` 作为资源订阅入口。
-
 ## 继续阅读
 
 - [客户端集成指南](../client-integration/)

@@ -342,10 +342,6 @@ Resource observation errors are returned as `ServerMessage.resource_observe_erro
 
 If sending fails or the server closes the connection, do not assume observations remain active. Rebuild all observations after reconnecting.
 
-## Compatibility Notes
-
-The current protocol uses `ClientMessage.observe_resource = 19` and `ClientMessage.unobserve_resource = 20`. The old watch field range `14` to `18` is reserved and should not be used by new clients. After generating client code, use `ObserveResource` as the resource subscription entry point.
-
 ## Next Pages
 
 - [Client Integration Guide](../client-integration/)

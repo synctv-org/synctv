@@ -249,6 +249,7 @@ mod tests {
             room_service: Arc::new(room_service),
             credential_encryption: None,
             credential_repo,
+            provider_access_service: None,
             signing_key: Arc::new(crate::service::ProxySigningKey::derive_from(
                 b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
             )),

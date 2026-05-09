@@ -467,14 +467,34 @@ impl EmbyProvider {
         source_config: &Value,
     ) -> Result<ResolvedEmbyConfig, ProviderError> {
         let config = EmbySourceConfig::try_from(source_config)?;
-
-        let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
-        })?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
             )
+        })?;
+
+        if let Some(access_service) = &ctx.provider_access_service {
+            let access = access_service
+                .emby_access(
+                    *credential_owner_id,
+                    &config.server_id,
+                    super::bound_provider_instance_name(ctx),
+                    ctx.request_context(),
+                )
+                .await?;
+            return Ok(ResolvedEmbyConfig {
+                host: access.host,
+                token: access.api_key,
+                user_id: access.emby_user_id,
+                item_id: config.item_id,
+                credential_owner_id: access.credential_owner_id,
+                credential_revision: access.credential_revision,
+                provider_instance_name: access.provider_instance_name,
+            });
+        }
+
+        let repo = ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
         let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,

@@ -9,7 +9,7 @@ use crate::proto::providers::emby::{
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
-use synctv_core::provider::{EmbyProvider, ExecutionControl};
+use synctv_core::provider::{EmbyProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
@@ -22,6 +22,7 @@ use super::{get_provider_binds, publish_provider_credential_changed, resolve_bou
 pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    access_service: Option<Arc<dyn ProviderAccessService>>,
     event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
@@ -34,8 +35,15 @@ impl EmbyApiImpl {
         Self {
             provider,
             credential_repo,
+            access_service: None,
             event_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_access_service(mut self, access_service: Arc<dyn ProviderAccessService>) -> Self {
+        self.access_service = Some(access_service);
+        self
     }
 
     #[must_use]
@@ -54,6 +62,18 @@ impl EmbyApiImpl {
         server_id: &str,
     ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError>
     {
+        if let Some(access_service) = &self.access_service {
+            let access = access_service
+                .emby_access(*caller_user_id, server_id, None, None)
+                .await?;
+            return Ok((
+                access.host,
+                access.api_key,
+                access.emby_user_id,
+                access.provider_instance_name,
+            ));
+        }
+
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
@@ -184,6 +204,15 @@ impl EmbyApiImpl {
                 ))
             })?;
 
+        if let Some(access_service) = &self.access_service {
+            access_service
+                .invalidate(
+                    *caller_user_id,
+                    synctv_core::provider::EmbyProvider::NAME,
+                    &server_id,
+                )
+                .await?;
+        }
         publish_provider_credential_changed(
             self.event_service.as_ref(),
             *caller_user_id,
@@ -341,6 +370,15 @@ impl EmbyApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            if let Some(access_service) = &self.access_service {
+                access_service
+                    .invalidate(
+                        *caller_user_id,
+                        synctv_core::provider::EmbyProvider::NAME,
+                        &req.server_id,
+                    )
+                    .await?;
+            }
             publish_provider_credential_changed(
                 self.event_service.as_ref(),
                 *caller_user_id,

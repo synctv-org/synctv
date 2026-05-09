@@ -1097,6 +1097,7 @@ mod tests {
                         .expect("lazy pool"),
                 ),
             ),
+            provider_access_service: None,
             signing_key: state.proxy_signing_key.clone(),
             public_id_codec: state.public_id_codec.clone(),
         });

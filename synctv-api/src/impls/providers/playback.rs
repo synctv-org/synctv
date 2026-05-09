@@ -15,6 +15,8 @@ use crate::impls::ApiError;
 pub struct ProviderPlaybackDeps<'a> {
     pub credential_encryption: Option<&'a CredentialEncryption>,
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
+    pub provider_access_service:
+        Option<std::sync::Arc<dyn synctv_core::provider::ProviderAccessService>>,
     pub signing_key: Option<&'a ProxySigningKey>,
     pub store: Option<std::sync::Arc<dyn ProviderStore>>,
     pub public_id_codec: Option<&'a crate::PublicIdCodec>,
@@ -65,6 +67,9 @@ fn build_provider_context<'a>(
     }
     if let Some(repo) = deps.credential_repo {
         ctx = ctx.with_credential_repo(repo);
+    }
+    if let Some(access_service) = deps.provider_access_service {
+        ctx = ctx.with_provider_access_service(access_service);
     }
     if let Some(key) = deps.signing_key {
         ctx = ctx.with_signing_key(key);

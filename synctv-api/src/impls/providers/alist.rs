@@ -10,7 +10,7 @@ use crate::proto::providers::alist::{
 };
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
-use synctv_core::provider::{AlistProvider, ExecutionControl};
+use synctv_core::provider::{AlistProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::{get_provider_binds, publish_provider_credential_changed, resolve_bound_instance_name};
@@ -52,6 +52,7 @@ fn resolve_alist_login_otp_code(
 pub struct AlistApiImpl {
     provider: Arc<AlistProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    access_service: Option<Arc<dyn ProviderAccessService>>,
     event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
@@ -66,8 +67,15 @@ impl AlistApiImpl {
         Self {
             provider,
             credential_repo,
+            access_service: None,
             event_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_access_service(mut self, access_service: Arc<dyn ProviderAccessService>) -> Self {
+        self.access_service = Some(access_service);
+        self
     }
 
     #[must_use]
@@ -88,6 +96,13 @@ impl AlistApiImpl {
         server_id: &str,
         request_context: Option<&ExecutionControl>,
     ) -> Result<(String, String, Option<String>), synctv_core::provider::ProviderError> {
+        if let Some(access_service) = &self.access_service {
+            let access = access_service
+                .alist_access(*caller_user_id, server_id, None, request_context)
+                .await?;
+            return Ok((access.host, access.token, access.provider_instance_name));
+        }
+
         let cred = self
             .credential_repo
             .get_by_provider_and_server(
@@ -230,6 +245,15 @@ impl AlistApiImpl {
                 ))
             })?;
 
+        if let Some(access_service) = &self.access_service {
+            access_service
+                .invalidate(
+                    *caller_user_id,
+                    synctv_core::provider::AlistProvider::NAME,
+                    &server_id,
+                )
+                .await?;
+        }
         publish_provider_credential_changed(
             self.event_service.as_ref(),
             *caller_user_id,
@@ -487,6 +511,15 @@ impl AlistApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            if let Some(access_service) = &self.access_service {
+                access_service
+                    .invalidate(
+                        *caller_user_id,
+                        synctv_core::provider::AlistProvider::NAME,
+                        &req.server_id,
+                    )
+                    .await?;
+            }
             publish_provider_credential_changed(
                 self.event_service.as_ref(),
                 *caller_user_id,

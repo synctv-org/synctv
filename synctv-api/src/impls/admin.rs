@@ -300,6 +300,7 @@ pub struct AdminApiImpl {
     pub realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     pub audit_service: Arc<AuditService>,
     pub provider_stores: Option<Arc<dyn synctv_core::provider::store::ProviderStoreResolver>>,
+    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
     pub public_id_codec: Arc<crate::PublicIdCodec>,
     pub request_executor: Option<Arc<RequestExecutor>>,
 }
@@ -960,6 +961,9 @@ impl AdminApiImpl {
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
         }
+        if let Some(access_service) = &self.provider_access_service {
+            ctx = ctx.with_provider_access_service(access_service.clone());
+        }
         if let Some(stores) = &self.provider_stores {
             ctx = ctx.with_store(stores.load(provider.name()));
         }
@@ -1102,6 +1106,9 @@ impl AdminApiImpl {
         }
         if let Some(enc) = self.room_service.media_service().credential_encryption() {
             ctx = ctx.with_credential_encryption(enc);
+        }
+        if let Some(access_service) = &self.provider_access_service {
+            ctx = ctx.with_provider_access_service(access_service.clone());
         }
         if let Some(stores) = &self.provider_stores {
             ctx = ctx.with_store(stores.load(provider.name()));
@@ -1437,6 +1444,7 @@ impl AdminApiImpl {
             realtime_event_service: None,
             audit_service,
             provider_stores: None,
+            provider_access_service: None,
             public_id_codec,
             request_executor: None,
         }
@@ -1501,6 +1509,15 @@ impl AdminApiImpl {
         stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     ) -> Self {
         self.provider_stores = Some(stores);
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_access_service(
+        mut self,
+        service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    ) -> Self {
+        self.provider_access_service = Some(service);
         self
     }
 

@@ -19,7 +19,7 @@ use crate::proto::providers::common::{
 
 #[derive(Clone)]
 pub struct ProviderCommonGrpcService {
-    api: crate::impls::ProviderCommonApiImpl,
+    api: Arc<crate::impls::ProviderCommonApiImpl>,
     config: Arc<Config>,
 }
 
@@ -27,7 +27,7 @@ impl ProviderCommonGrpcService {
     #[must_use]
     pub fn new(shared_api_runtime: &Arc<SharedApiRuntime>, config: Arc<Config>) -> Self {
         Self {
-            api: shared_api_runtime.provider_common_api.as_ref().clone(),
+            api: shared_api_runtime.provider_common_api.clone(),
             config,
         }
     }

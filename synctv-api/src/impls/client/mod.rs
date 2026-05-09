@@ -161,6 +161,8 @@ pub struct ClientApiImpl {
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Credential repository for resolving stored provider credentials
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
+    /// Typed provider credential/session access cache
+    pub provider_access_service: Option<Arc<dyn synctv_core::provider::ProviderAccessService>>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
     pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
     /// Per-provider stores for signed playback version mappings
@@ -280,6 +282,7 @@ impl ClientApiImpl {
             builtin_stun_url: None,
             credential_encryption: None,
             credential_repo: None,
+            provider_access_service: None,
             signing_key: None,
             provider_stores: None,
             jwt_validator,
@@ -342,6 +345,7 @@ impl ClientApiImpl {
             builtin_stun_url: None,
             credential_encryption: config.credential_encryption,
             credential_repo: None,
+            provider_access_service: None,
             signing_key: None,
             provider_stores: config.provider_stores,
             jwt_validator,
@@ -455,6 +459,16 @@ impl ClientApiImpl {
         repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
     ) -> Self {
         self.credential_repo = Some(repo);
+        self
+    }
+
+    /// Set typed provider access service for cached credential/session resolution.
+    #[must_use]
+    pub fn with_provider_access_service(
+        mut self,
+        service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    ) -> Self {
+        self.provider_access_service = Some(service);
         self
     }
 

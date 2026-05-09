@@ -23,7 +23,7 @@ use crate::proto::providers::bilibili::{
 /// Thin wrapper that delegates to `BilibiliApiImpl`.
 #[derive(Clone)]
 pub struct BilibiliProviderGrpcService {
-    api: BilibiliApiImpl,
+    api: Arc<BilibiliApiImpl>,
     request_executor: Arc<RequestExecutor>,
     config: Arc<Config>,
 }
@@ -35,9 +35,8 @@ impl BilibiliProviderGrpcService {
         request_executor: Arc<RequestExecutor>,
         config: Arc<Config>,
     ) -> Self {
-        let api = shared_api_runtime.bilibili_api.as_ref().clone();
         Self {
-            api,
+            api: shared_api_runtime.bilibili_api.clone(),
             request_executor,
             config,
         }

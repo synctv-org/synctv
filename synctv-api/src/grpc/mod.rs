@@ -1828,6 +1828,13 @@ mod tests {
         );
         assert!(
             Arc::ptr_eq(
+                &http_state.shared_api_runtime.provider_access_service,
+                &http_state.provider_access_service
+            ),
+            "fallback HTTP state must expose the same provider access cache across transports"
+        );
+        assert!(
+            Arc::ptr_eq(
                 http_state
                     .event_service
                     .as_ref()

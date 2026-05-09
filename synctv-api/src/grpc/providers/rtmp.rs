@@ -13,7 +13,7 @@ use crate::proto::providers::rtmp::{
 
 #[derive(Clone)]
 pub struct RtmpProviderGrpcService {
-    api: crate::impls::ClientApiImpl,
+    api: Arc<crate::impls::ClientApiImpl>,
     request_executor: Arc<RequestExecutor>,
     config: Arc<Config>,
 }
@@ -26,7 +26,7 @@ impl RtmpProviderGrpcService {
         config: Arc<Config>,
     ) -> Self {
         Self {
-            api: shared_api_runtime.client_api.as_ref().clone(),
+            api: shared_api_runtime.client_api.clone(),
             request_executor,
             config,
         }

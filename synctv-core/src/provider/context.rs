@@ -10,7 +10,7 @@ use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::ProxySigningKey;
 use crate::service::CredentialEncryption;
 
-use super::PlaybackClientProfile;
+use super::{PlaybackClientProfile, ProviderAccessService};
 
 /// Provider execution context
 ///
@@ -58,6 +58,9 @@ pub struct ProviderContext<'a> {
     /// User provider credential repository for resolving stored credentials (optional)
     pub credential_repo: Option<&'a UserProviderCredentialRepository>,
 
+    /// Typed provider access service for cached credential/session resolution (optional)
+    pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
+
     /// Proxy signing key for generating HMAC-signed proxy URLs (optional)
     pub signing_key: Option<&'a ProxySigningKey>,
 
@@ -86,6 +89,7 @@ impl<'a> ProviderContext<'a> {
             credential_encryption: None,
             store: None,
             credential_repo: None,
+            provider_access_service: None,
             signing_key: None,
             request_context: None,
             playback_client_profile: None,
@@ -176,6 +180,13 @@ impl<'a> ProviderContext<'a> {
         repo: &'a UserProviderCredentialRepository,
     ) -> Self {
         self.credential_repo = Some(repo);
+        self
+    }
+
+    /// Set typed provider access service for cached credential/session resolution
+    #[must_use]
+    pub fn with_provider_access_service(mut self, service: Arc<dyn ProviderAccessService>) -> Self {
+        self.provider_access_service = Some(service);
         self
     }
 

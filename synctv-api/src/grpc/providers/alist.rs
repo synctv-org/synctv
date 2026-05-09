@@ -22,7 +22,7 @@ use crate::grpc::map_api_error;
 /// Thin wrapper that delegates to `AlistApiImpl`.
 #[derive(Clone)]
 pub struct AlistProviderGrpcService {
-    api: AlistApiImpl,
+    api: Arc<AlistApiImpl>,
     request_executor: Arc<RequestExecutor>,
     config: Arc<Config>,
 }
@@ -34,9 +34,8 @@ impl AlistProviderGrpcService {
         request_executor: Arc<RequestExecutor>,
         config: Arc<Config>,
     ) -> Self {
-        let api = shared_api_runtime.alist_api.as_ref().clone();
         Self {
-            api,
+            api: shared_api_runtime.alist_api.clone(),
             request_executor,
             config,
         }

@@ -12,6 +12,7 @@
 //   - Factory pattern for local providers and integration with RemoteProviderManager
 
 // Core traits and types
+pub mod access;
 pub mod config;
 pub mod context;
 pub mod credential_resolver;
@@ -32,6 +33,7 @@ pub mod emby;
 pub mod live_proxy;
 pub mod rtmp;
 
+pub use access::*;
 pub use config::*;
 pub use context::*;
 pub use credential_resolver::*;

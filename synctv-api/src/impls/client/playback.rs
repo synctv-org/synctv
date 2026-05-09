@@ -206,6 +206,9 @@ impl ClientApiImpl {
         if let Some(ref repo) = self.credential_repo {
             ctx = ctx.with_credential_repo(repo);
         }
+        if let Some(access_service) = &self.provider_access_service {
+            ctx = ctx.with_provider_access_service(access_service.clone());
+        }
         if let Some(ref key) = self.signing_key {
             ctx = ctx.with_signing_key(key);
         }

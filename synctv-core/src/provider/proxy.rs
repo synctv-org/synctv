@@ -8,6 +8,7 @@ use http::HeaderMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::ExecutionControl;
@@ -88,6 +89,7 @@ pub struct ProxyServices {
     pub room_service: Arc<RoomService>,
     pub credential_encryption: Option<CredentialEncryption>,
     pub credential_repo: Arc<UserProviderCredentialRepository>,
+    pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
     pub signing_key: Arc<ProxySigningKey>,
     pub public_id_codec: Arc<PublicIdCodec>,
 }

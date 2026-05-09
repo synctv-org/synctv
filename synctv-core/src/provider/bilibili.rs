@@ -423,6 +423,13 @@ async fn resolve_optional_bilibili_cookies(
     ctx: &ProviderContext<'_>,
     credential_owner_id: UserId,
 ) -> Result<(HashMap<String, String>, String), ProviderError> {
+    if let Some(access_service) = &ctx.provider_access_service {
+        let access = access_service
+            .bilibili_access(credential_owner_id, ctx.request_context())
+            .await?;
+        return Ok((access.cookies, access.credential_cache_partition));
+    }
+
     let Some(repo) = ctx.credential_repo else {
         return Ok((HashMap::new(), "anon".to_string()));
     };
@@ -889,7 +896,6 @@ impl BilibiliProvider {
             } => {
                 // Resolve cookies from credential store
                 let cookies = {
-                    let repo = &ctx.services.credential_repo;
                     let credential_owner_id = if *shared {
                         media.creator_id.as_ref().copied().ok_or_else(|| {
                             ProviderError::Internal(
@@ -914,30 +920,39 @@ impl BilibiliProvider {
                                 )
                             })?
                     };
-                    let server_id = bilibili_credential_server_id();
-                    let credential = repo
-                        .get_by_provider_and_server(credential_owner_id, Self::NAME, &server_id)
-                        .await
-                        .map_err(|e| {
-                            ProviderError::Internal(format!(
-                                "Failed to query bilibili credential: {e}"
-                            ))
-                        })?;
-                    match credential {
-                        Some(credential) if !credential.is_expired() => {
-                            match credential.get_credential() {
-                                Ok(crate::models::ProviderCredential::Bilibili { cookies }) => {
-                                    cookies
-                                }
-                                Ok(_) => return Err(ProviderError::InvalidCredentialType),
-                                Err(e) => {
-                                    return Err(ProviderError::Internal(format!(
-                                        "Failed to parse bilibili credential: {e}"
-                                    )));
+
+                    if let Some(access_service) = &ctx.services.provider_access_service {
+                        access_service
+                            .bilibili_access(credential_owner_id, ctx.request_context)
+                            .await?
+                            .cookies
+                    } else {
+                        let repo = &ctx.services.credential_repo;
+                        let server_id = bilibili_credential_server_id();
+                        let credential = repo
+                            .get_by_provider_and_server(credential_owner_id, Self::NAME, &server_id)
+                            .await
+                            .map_err(|e| {
+                                ProviderError::Internal(format!(
+                                    "Failed to query bilibili credential: {e}"
+                                ))
+                            })?;
+                        match credential {
+                            Some(credential) if !credential.is_expired() => {
+                                match credential.get_credential() {
+                                    Ok(crate::models::ProviderCredential::Bilibili { cookies }) => {
+                                        cookies
+                                    }
+                                    Ok(_) => return Err(ProviderError::InvalidCredentialType),
+                                    Err(e) => {
+                                        return Err(ProviderError::Internal(format!(
+                                            "Failed to parse bilibili credential: {e}"
+                                        )));
+                                    }
                                 }
                             }
+                            _ => HashMap::new(),
                         }
-                        _ => HashMap::new(),
                     }
                 };
 

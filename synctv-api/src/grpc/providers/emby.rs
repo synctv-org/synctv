@@ -22,7 +22,7 @@ use crate::grpc::map_api_error;
 /// Thin wrapper that delegates to `EmbyApiImpl`.
 #[derive(Clone)]
 pub struct EmbyProviderGrpcService {
-    api: EmbyApiImpl,
+    api: Arc<EmbyApiImpl>,
     request_executor: Arc<RequestExecutor>,
     config: Arc<Config>,
 }
@@ -34,9 +34,8 @@ impl EmbyProviderGrpcService {
         request_executor: Arc<RequestExecutor>,
         config: Arc<Config>,
     ) -> Self {
-        let api = shared_api_runtime.emby_api.as_ref().clone();
         Self {
-            api,
+            api: shared_api_runtime.emby_api.clone(),
             request_executor,
             config,
         }

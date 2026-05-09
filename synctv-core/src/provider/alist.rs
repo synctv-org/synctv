@@ -489,13 +489,18 @@ struct AlistSourceConfig {
 }
 
 /// Resolved Alist configuration with credentials ready for API calls.
+struct ResolvedAlistBinding {
+    path: String,
+    password: Option<String>,
+    credential_owner_id: String,
+    credential_revision: String,
+}
+
 struct ResolvedAlistConfig {
     host: String,
     token: String,
     path: String,
     password: Option<String>,
-    credential_owner_id: String,
-    credential_revision: String,
     provider_instance_name: Option<String>,
 }
 
@@ -539,6 +544,59 @@ impl AlistProvider {
         format!("playback:{server_id}:{owner_hash}:{path_hash}")
     }
 
+    /// Resolve AlistSourceConfig into a cached credential binding without logging in.
+    async fn resolve_binding(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<ResolvedAlistBinding, ProviderError> {
+        let config = AlistSourceConfig::try_from(source_config)?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        if let Some(access_service) = &ctx.provider_access_service {
+            let binding = access_service
+                .alist_binding(
+                    *credential_owner_id,
+                    &config.server_id,
+                    super::bound_provider_instance_name(ctx),
+                    ctx.request_context(),
+                )
+                .await?;
+            return Ok(ResolvedAlistBinding {
+                path: config.path,
+                password: config.password,
+                credential_owner_id: binding.credential_owner_id,
+                credential_revision: binding.credential_revision,
+            });
+        }
+
+        let repo = ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
+        })?;
+        let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
+            repo,
+            Self::NAME,
+            *credential_owner_id,
+            &config.server_id,
+            ctx.request_context(),
+        )
+        .await?;
+
+        match resolved_credential.credential {
+            crate::models::ProviderCredential::Alist { .. } => Ok(ResolvedAlistBinding {
+                path: config.path,
+                password: config.password,
+                credential_owner_id: credential_owner_id.to_string(),
+                credential_revision: resolved_credential.revision,
+            }),
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
+    }
+
     /// Resolve AlistSourceConfig into credentials owned by the media/playlist creator.
     async fn resolve_config(
         &self,
@@ -546,14 +604,32 @@ impl AlistProvider {
         source_config: &Value,
     ) -> Result<ResolvedAlistConfig, ProviderError> {
         let config = AlistSourceConfig::try_from(source_config)?;
-
-        let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
-        })?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
             )
+        })?;
+
+        if let Some(access_service) = &ctx.provider_access_service {
+            let access = access_service
+                .alist_access(
+                    *credential_owner_id,
+                    &config.server_id,
+                    super::bound_provider_instance_name(ctx),
+                    ctx.request_context(),
+                )
+                .await?;
+            return Ok(ResolvedAlistConfig {
+                host: access.host,
+                token: access.token,
+                path: config.path,
+                password: config.password,
+                provider_instance_name: access.provider_instance_name,
+            });
+        }
+
+        let repo = ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
         let resolved_credential = super::credential_resolver::resolve_credential_record_for_owner(
             repo,
@@ -578,7 +654,6 @@ impl AlistProvider {
                             .map_err(ProviderError::InvalidConfig)
                     },
                 )?;
-                // Re-login with stored credentials to get a fresh token
                 let login_req = synctv_media_providers::grpc::alist::LoginReq {
                     host: host.clone(),
                     username,
@@ -599,8 +674,6 @@ impl AlistProvider {
                     token,
                     path: config.path,
                     password: config.password,
-                    credential_owner_id: credential_owner_id.to_string(),
-                    credential_revision: resolved_credential.revision,
                     provider_instance_name: instance_name.map(std::string::ToString::to_string),
                 })
             }
@@ -1021,11 +1094,12 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Resolve credentials from DB
-        let resolved = self.resolve_config(_ctx, source_config).await?;
+        // Resolve the credential binding first so playback cache hits do not
+        // force an AList login/token refresh.
+        let binding = self.resolve_binding(_ctx, source_config).await?;
 
         // Re-validate path at request time (defense-in-depth against traversal)
-        validate_path_for_traversal(&resolved.path).map_err(|e| {
+        validate_path_for_traversal(&binding.path).map_err(|e| {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
@@ -1038,10 +1112,10 @@ impl MediaProvider for AlistProvider {
         );
         let cache_key = Self::playback_cache_key(
             &config.server_id,
-            &resolved.credential_owner_id,
-            &resolved.credential_revision,
-            &resolved.path,
-            resolved.password.as_deref(),
+            &binding.credential_owner_id,
+            &binding.credential_revision,
+            &binding.path,
+            binding.password.as_deref(),
             &playback_profile_cache_key,
         );
         let cache_ttl = Duration::from_mins(15);
@@ -1079,6 +1153,7 @@ impl MediaProvider for AlistProvider {
         }
 
         // Call provider API
+        let resolved = self.resolve_config(_ctx, source_config).await?;
         let result = self
             .resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
             .await?;
@@ -2623,8 +2698,6 @@ mod tests {
             token: "token".to_string(),
             path: "/movies/movie.mkv".to_string(),
             password: Some("folder-password".to_string()),
-            credential_owner_id: "owner-1".to_string(),
-            credential_revision: "credential-1:1000".to_string(),
             provider_instance_name: None,
         };
         let mut file_info = AlistFileInfo {

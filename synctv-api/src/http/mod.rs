@@ -234,6 +234,8 @@ pub struct SharedApiRuntime {
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     /// Repository shared by provider transports for bind lookups.
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
+    /// Typed provider credential/session access cache.
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Per-provider stores for caching and distributed locking (lazy creation)
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
@@ -278,6 +280,8 @@ pub struct AppState {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    /// Typed provider credential/session access cache.
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Per-provider stores for caching and distributed locking (lazy creation)
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
@@ -373,6 +377,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         bilibili_api: shared_api_runtime.bilibili_api.clone(),
         alist_api: shared_api_runtime.alist_api.clone(),
         emby_api: shared_api_runtime.emby_api.clone(),
+        provider_access_service: shared_api_runtime.provider_access_service.clone(),
         provider_stores: shared_api_runtime.provider_stores.clone(),
         proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
         proxy_services: shared_api_runtime.proxy_services.clone(),
@@ -399,6 +404,15 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             ),
         )
     });
+    let credential_repo = config.user_provider_credential_repository.clone();
+    let provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService> = Arc::new(
+        synctv_core::provider::CachedProviderAccessService::new(
+            credential_repo.clone(),
+            config.providers.alist.clone(),
+        )
+        .with_store(provider_stores.load("credentials"))
+        .with_credential_encryption(config.credential_encryption.clone()),
+    );
 
     // Build the shared security pipeline through the builder so startup fails
     // early if blacklist wiring becomes partial during future refactors.
@@ -453,6 +467,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_rate_limiter(config.rate_limiter.clone())
         .with_credential_encryption(config.credential_encryption.clone())
         .with_credential_repo(config.user_provider_credential_repository.clone())
+        .with_provider_access_service(provider_access_service.clone())
         .with_signing_key(proxy_signing_key.clone())
         .with_provider_stores(provider_stores.clone())
         .with_request_executor(request_executor.clone())
@@ -499,6 +514,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         )
         .with_cluster_fanout_service(config.cluster_fanout_service.clone())
         .with_provider_stores(provider_stores.clone())
+        .with_provider_access_service(provider_access_service.clone())
         .with_request_executor(request_executor.clone());
         let admin_api = if let Some(ref event_service) = config.event_service {
             admin_api.with_realtime_event_service(event_service.clone())
@@ -541,20 +557,22 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
 
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
-    let credential_repo = config.user_provider_credential_repository.clone();
     let bilibili_api = Arc::new(
         crate::impls::BilibiliApiImpl::new(
             config.providers.bilibili.clone(),
             credential_repo.clone(),
         )
+        .with_access_service(provider_access_service.clone())
         .with_event_service(config.event_service.clone()),
     );
     let alist_api = Arc::new(
         crate::impls::AlistApiImpl::new(config.providers.alist.clone(), credential_repo.clone())
+            .with_access_service(provider_access_service.clone())
             .with_event_service(config.event_service.clone()),
     );
     let emby_api = Arc::new(
         crate::impls::EmbyApiImpl::new(config.providers.emby.clone(), credential_repo.clone())
+            .with_access_service(provider_access_service.clone())
             .with_event_service(config.event_service.clone()),
     );
 
@@ -566,6 +584,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         room_service: config.room_service.clone(),
         credential_encryption: config.credential_encryption.clone(),
         credential_repo: credential_repo.clone(),
+        provider_access_service: Some(provider_access_service.clone()),
         signing_key: proxy_signing_key.clone(),
         public_id_codec: public_id_codec.clone(),
     });
@@ -590,6 +609,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         alist_api,
         emby_api,
         user_provider_credential_repository: credential_repo,
+        provider_access_service,
         provider_stores,
         proxy_provider_registry,
         proxy_services,

@@ -12,7 +12,7 @@ use crate::proto::providers::bilibili::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
-use synctv_core::provider::{BilibiliProvider, ExecutionControl};
+use synctv_core::provider::{BilibiliProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
 use super::{get_provider_credentials, publish_provider_credential_changed};
@@ -25,6 +25,7 @@ use super::{get_provider_credentials, publish_provider_credential_changed};
 pub struct BilibiliApiImpl {
     provider: Arc<BilibiliProvider>,
     credential_repo: Arc<UserProviderCredentialRepository>,
+    access_service: Option<Arc<dyn ProviderAccessService>>,
     event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
 }
 
@@ -37,8 +38,15 @@ impl BilibiliApiImpl {
         Self {
             provider,
             credential_repo,
+            access_service: None,
             event_service: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_access_service(mut self, access_service: Arc<dyn ProviderAccessService>) -> Self {
+        self.access_service = Some(access_service);
+        self
     }
 
     #[must_use]
@@ -55,6 +63,13 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &UserId,
     ) -> Result<Option<HashMap<String, String>>, synctv_core::provider::ProviderError> {
+        if let Some(access_service) = &self.access_service {
+            let access = access_service
+                .bilibili_access(*caller_user_id, None)
+                .await?;
+            return Ok(access.authenticated.then_some(access.cookies));
+        }
+
         let server_id = UserProviderCredential::bilibili_server_id();
         let cred = self
             .credential_repo
@@ -121,6 +136,15 @@ impl BilibiliApiImpl {
                 ))
             })?;
 
+        if let Some(access_service) = &self.access_service {
+            access_service
+                .invalidate(
+                    *caller_user_id,
+                    synctv_core::provider::BilibiliProvider::NAME,
+                    &server_id,
+                )
+                .await?;
+        }
         publish_provider_credential_changed(
             self.event_service.as_ref(),
             *caller_user_id,
@@ -503,6 +527,15 @@ impl BilibiliApiImpl {
                         "Failed to delete credential: {e}"
                     ))
                 })?;
+            if let Some(access_service) = &self.access_service {
+                access_service
+                    .invalidate(
+                        *caller_user_id,
+                        synctv_core::provider::BilibiliProvider::NAME,
+                        &server_id,
+                    )
+                    .await?;
+            }
             publish_provider_credential_changed(
                 self.event_service.as_ref(),
                 *caller_user_id,

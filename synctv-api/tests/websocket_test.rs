@@ -1027,6 +1027,20 @@ mod websocket_e2e {
             .with_request_executor(shared_request_executor.clone()),
         );
         let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
+        let shared_provider_stores: std::sync::Arc<
+            dyn synctv_core::provider::store::ProviderStoreResolver,
+        > = std::sync::Arc::new(
+            synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
+        );
+        let shared_provider_access_service: std::sync::Arc<
+            dyn synctv_core::provider::ProviderAccessService,
+        > = std::sync::Arc::new(
+            synctv_core::provider::CachedProviderAccessService::new(
+                user_provider_credential_repo.clone(),
+                providers.alist.clone(),
+            )
+            .with_store(shared_provider_stores.load("credentials")),
+        );
         let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
             redis_runtime: None,
             rate_limit_config: rate_limit_config.clone(),
@@ -1050,9 +1064,8 @@ mod websocket_e2e {
             alist_api: alist_api.clone(),
             emby_api: emby_api.clone(),
             user_provider_credential_repository: user_provider_credential_repo.clone(),
-            provider_stores: std::sync::Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
-            ),
+            provider_access_service: shared_provider_access_service.clone(),
+            provider_stores: shared_provider_stores.clone(),
             proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {
                 let signing_key =
@@ -1063,6 +1076,7 @@ mod websocket_e2e {
                     room_service: room_service.clone(),
                     credential_encryption: None,
                     credential_repo: user_provider_credential_repo.clone(),
+                    provider_access_service: None,
                     signing_key,
                     public_id_codec: public_id_codec.clone(),
                 })
@@ -1098,6 +1112,7 @@ mod websocket_e2e {
             bilibili_api,
             alist_api,
             emby_api,
+            provider_access_service: shared_api_runtime.provider_access_service.clone(),
             provider_stores: shared_api_runtime.provider_stores.clone(),
             proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
             proxy_services: shared_api_runtime.proxy_services.clone(),
@@ -4832,6 +4847,15 @@ mod websocket_connection_limit_timing {
         let shared_provider_stores = std::sync::Arc::new(
             synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
         );
+        let shared_provider_access_service: std::sync::Arc<
+            dyn synctv_core::provider::ProviderAccessService,
+        > = std::sync::Arc::new(
+            synctv_core::provider::CachedProviderAccessService::new(
+                user_provider_credential_repo.clone(),
+                providers.alist.clone(),
+            )
+            .with_store(shared_provider_stores.load("credentials")),
+        );
         let shared_proxy_provider_registry = std::sync::Arc::new(providers.build_proxy_registry());
         let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
         let shared_proxy_signing_key =
@@ -4843,6 +4867,7 @@ mod websocket_connection_limit_timing {
                 room_service: room_service.clone(),
                 credential_encryption: None,
                 credential_repo: user_provider_credential_repo.clone(),
+                provider_access_service: None,
                 signing_key: shared_proxy_signing_key.clone(),
                 public_id_codec: public_id_codec.clone(),
             });
@@ -4888,6 +4913,7 @@ mod websocket_connection_limit_timing {
                 alist_api: alist_api.clone(),
                 emby_api: emby_api.clone(),
                 user_provider_credential_repository: user_provider_credential_repo.clone(),
+                provider_access_service: shared_provider_access_service.clone(),
                 provider_stores: shared_provider_stores.clone(),
                 proxy_provider_registry: shared_proxy_provider_registry.clone(),
                 proxy_services: shared_proxy_services.clone(),
@@ -4914,6 +4940,7 @@ mod websocket_connection_limit_timing {
             bilibili_api,
             alist_api,
             emby_api,
+            provider_access_service: shared_provider_access_service,
             provider_stores: shared_provider_stores,
             proxy_provider_registry: shared_proxy_provider_registry,
             proxy_services: shared_proxy_services,

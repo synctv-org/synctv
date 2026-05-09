@@ -1271,9 +1271,9 @@ mod api_error_classification {
 
         for (err, expected_kind) in cases {
             assert_eq!(err.to_string(), err.message());
-            assert!(
-                std::mem::discriminant(&classify_error(err.message()))
-                    == std::mem::discriminant(&expected_kind)
+            assert_eq!(
+                std::mem::discriminant(&classify_error(err.message())),
+                std::mem::discriminant(&expected_kind)
             );
         }
     }

@@ -254,7 +254,6 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             client::ApproveRoomJoinReviewResponse,
             client::RejectRoomJoinReviewRequest,
             client::RejectRoomJoinReviewResponse,
-            room_extra::RejectRoomJoinReviewBody,
             client::NotificationProto,
             client::ListNotificationsResponse,
             client::GetNotificationResponse,

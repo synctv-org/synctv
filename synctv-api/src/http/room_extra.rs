@@ -6,9 +6,7 @@ use axum::{
 };
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::{
-    middleware::RequestMetadata, validation::ValidatedJson, AppResult, AppState, WithUserId,
-};
+use crate::http::{middleware::RequestMetadata, AppResult, AppState, WithUserId};
 use crate::impls::EndpointRateLimitCategory;
 
 fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
@@ -17,14 +15,6 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 
 pub type AddMemberBody = crate::proto::client::AddMemberRequest;
 pub type BanMemberBody = crate::proto::client::BanMemberRequest;
-
-#[derive(Debug, Default, serde::Deserialize, garde::Validate)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct RejectRoomJoinReviewBody {
-    #[serde(default)]
-    #[garde(length(max = 500))]
-    pub reason: String,
-}
 
 /// Add a member to a room.
 #[cfg_attr(
@@ -177,7 +167,7 @@ pub async fn approve_room_join_review(
             ("room_id" = String, Path, description = "Room ID"),
             ("request_id" = String, Path, description = "Review request ID")
         ),
-        request_body = RejectRoomJoinReviewBody,
+        request_body = crate::proto::client::RejectRoomJoinReviewRequest,
         responses(
             (status = 200, description = "Room join review rejected", body = crate::proto::client::RejectRoomJoinReviewResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -192,17 +182,14 @@ pub async fn reject_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
-    ValidatedJson(req): ValidatedJson<RejectRoomJoinReviewBody>,
+    Json(mut req): Json<crate::proto::client::RejectRoomJoinReviewRequest>,
 ) -> AppResult<Json<crate::proto::client::RejectRoomJoinReviewResponse>> {
     crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomJoinReviewPathRequest {
         room_id,
         request_id,
     } = path;
-    let req = crate::proto::client::RejectRoomJoinReviewRequest {
-        request_id,
-        reason: req.reason,
-    };
+    req.request_id = request_id;
     let request_meta = request_metadata(request_meta);
     let client_api = state.client_api.clone();
     let resp = state
@@ -418,9 +405,6 @@ pub async fn unban_member(
 
 #[cfg(test)]
 mod tests {
-    use super::RejectRoomJoinReviewBody;
-    use garde::Validate;
-
     #[test]
     fn test_room_member_target_path_request_deserializes_proto_field_names() {
         let req: crate::proto::client::RoomMemberTargetPathRequest =
@@ -432,19 +416,22 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_room_join_review_body_deserializes_reason_field() {
-        let req: RejectRoomJoinReviewBody = serde_json::from_str(r#"{"reason":"denied"}"#)
-            .expect("deserialize reject room join review body");
+    fn test_reject_room_join_review_body_deserializes_proto_request_without_path_field() {
+        let req: crate::proto::client::RejectRoomJoinReviewRequest =
+            serde_json::from_str(r#"{"reason":"denied"}"#)
+                .expect("deserialize reject room join review body");
 
+        assert!(req.request_id.is_empty());
         assert_eq!(req.reason, "denied");
     }
 
     #[test]
-    fn test_reject_room_join_review_body_rejects_oversized_reason() {
-        let req = RejectRoomJoinReviewBody {
+    fn test_reject_room_join_review_request_rejects_oversized_reason() {
+        let req = crate::proto::client::RejectRoomJoinReviewRequest {
+            request_id: "rev_1".to_string(),
             reason: "x".repeat(501),
         };
 
-        assert!(req.validate().is_err());
+        assert!(synctv_proto::validate(&req).is_err());
     }
 }

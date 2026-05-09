@@ -417,9 +417,9 @@ pub struct FinishOpaqueLoginRequest {
     #[prost(bytes = "vec", tag = "2")]
     pub credential_finalization: ::prost::alloc::vec::Vec<u8>,
 }
-/// Start a username/email-bound passkey login. The response `options` is the
-/// WebAuthn PublicKeyCredentialRequestOptions JSON that must be passed to the
-/// browser's navigator.credentials.get().
+/// Start a passkey login. If username or email is provided, the challenge is
+/// bound to that account's passkeys. If both are empty, the challenge uses
+/// discoverable credentials with conditional mediation.
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.StartPasskeyLoginRequest")]
 #[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
@@ -430,8 +430,10 @@ pub struct FinishOpaqueLoginRequest {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPasskeyLoginRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub username: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub email: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
@@ -446,8 +448,9 @@ pub struct StartPasskeyLoginResponse {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
     /// WebAuthn PublicKeyCredentialRequestOptions JSON.
-    #[prost(string, tag = "2")]
-    pub options: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub options: ::prost::alloc::vec::Vec<u8>,
 }
 /// Finish a passkey login. `credential` is the browser WebAuthn
 /// PublicKeyCredential JSON returned by navigator.credentials.get().
@@ -462,8 +465,9 @@ pub struct StartPasskeyLoginResponse {
 pub struct FinishPasskeyLoginRequest {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub credential: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub credential: ::prost::alloc::vec::Vec<u8>,
 }
 /// Start a WebAuthn/passkey account registration. The response `options` is the
 /// PublicKeyCredentialCreationOptions JSON that must be passed to the browser's
@@ -486,6 +490,7 @@ pub struct StartPasskeyRegistrationRequest {
     #[serde(default)]
     pub email: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
+    #[serde(default)]
     pub name: ::prost::alloc::string::String,
 }
 /// Finish a WebAuthn/passkey account registration. `credential` is the browser
@@ -504,8 +509,9 @@ pub struct StartPasskeyRegistrationRequest {
 pub struct FinishPasskeyRegistrationRequest {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub credential: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub credential: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.StartPasskeyBindRequest")]
@@ -517,6 +523,7 @@ pub struct FinishPasskeyRegistrationRequest {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StartPasskeyBindRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
@@ -534,8 +541,9 @@ pub struct StartPasskeyRegistrationResponse {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
     /// WebAuthn PublicKeyCredentialCreationOptions JSON.
-    #[prost(string, tag = "2")]
-    pub options: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub options: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.StartPasskeyBindResponse")]
@@ -549,8 +557,9 @@ pub struct StartPasskeyBindResponse {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
     /// WebAuthn PublicKeyCredentialCreationOptions JSON.
-    #[prost(string, tag = "2")]
-    pub options: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub options: ::prost::alloc::vec::Vec<u8>,
 }
 /// Finish a passkey bind. `credential` is the browser WebAuthn
 /// PublicKeyCredential JSON returned by navigator.credentials.create().
@@ -565,8 +574,9 @@ pub struct StartPasskeyBindResponse {
 pub struct FinishPasskeyBindRequest {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub credential: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub credential: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PasskeyCredential")]
@@ -867,8 +877,9 @@ pub struct StartMfaPasskeyResponse {
     #[prost(string, tag = "1")]
     pub passkey_session_id: ::prost::alloc::string::String,
     /// WebAuthn PublicKeyCredentialRequestOptions JSON.
-    #[prost(string, tag = "2")]
-    pub options: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub options: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.FinishMfaPasskeyRequest")]
@@ -883,8 +894,9 @@ pub struct FinishMfaPasskeyRequest {
     pub mfa_session_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub passkey_session_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub credential: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub credential: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.VerifyMfaPasswordRequest")]
@@ -1674,8 +1686,10 @@ pub struct ApproveRoomJoinReviewResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RejectRoomJoinReviewRequest {
     #[prost(string, tag = "1")]
+    #[serde(default)]
     pub request_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
+    #[serde(default)]
     pub reason: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]

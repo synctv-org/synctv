@@ -27,6 +27,8 @@ webauthn:
 
 When enabled, passkey registration and login endpoints become available.
 
+Passkey login uses WebAuthn discoverable credentials with conditional UI. The login start request does not include a username or email; the browser or operating system passkey UI lets the user pick a credential for the configured RP ID, then the server resolves the account from the returned credential ID. Clients should present this as passkey login and require a browser/authenticator combination that supports discoverable credentials.
+
 ## `webauthn.rp_id`
 
 Relying Party ID. This is the site identity seen by authenticators.

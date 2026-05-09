@@ -34,6 +34,8 @@ webauthn:
 
 开启后，passkey 注册和登录接口可用。
 
+Passkey 登录使用 WebAuthn discoverable credential 和 conditional UI。登录开始请求不包含用户名或邮箱；浏览器或操作系统的 passkey UI 会让用户选择当前 RP ID 下的凭据，服务端再通过返回的 credential ID 解析账号。客户端应将它作为 passkey 登录，并要求浏览器/认证器组合支持 discoverable credential。
+
 ## `webauthn.rp_id`
 
 Relying Party ID。可以理解为“认证器认为这是哪个网站”。

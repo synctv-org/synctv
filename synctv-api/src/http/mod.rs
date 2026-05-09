@@ -10,7 +10,6 @@ pub mod metrics_auth;
 pub mod middleware;
 pub mod notifications;
 pub mod oauth2;
-pub(crate) mod passkey_json;
 pub mod public;
 pub mod room;
 pub mod room_extra;
@@ -1837,7 +1836,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/auth/passkeys/login/start")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"username":"alice_123","email":""}"#))
+                    .body(Body::from(r"{}"))
                     .expect("request"),
             )
             .await
@@ -1850,7 +1849,9 @@ mod tests {
                     .method("POST")
                     .uri("/api/auth/passkeys/login/finish")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"session_id":"session","credential":{}}"#))
+                    .body(Body::from(
+                        r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
+                    ))
                     .expect("request"),
             )
             .await
@@ -1879,7 +1880,7 @@ mod tests {
             (
                 "POST",
                 "/api/user/passkeys/bind/finish",
-                Some(r#"{"session_id":"session","credential":{}}"#),
+                Some(r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#),
             ),
             ("DELETE", "/api/user/passkeys/Y3JlZGVudGlhbA", None),
         ] {

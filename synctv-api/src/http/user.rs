@@ -5,18 +5,14 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::{middleware::RequestMetadata, validation::ValidatedQuery, AppResult, AppState};
-use crate::http::passkey_json::{
-    passkey_credential_to_json_bytes, passkey_options_to_value, validate_passkey_session_id,
-};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
-    DeletePasskeyRequest, DeletePasskeyResponse, ListMyRoomsResponse, ListPasskeysResponse,
-    PasskeyCredentialResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, FinishPasskeyBindRequest, ListMyRoomsResponse,
+    ListPasskeysResponse, PasskeyCredentialResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse,
 };
 use crate::proto::client::{
     FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
@@ -237,37 +233,11 @@ pub async fn finish_opaque_password_update(
     Ok(Json(response))
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyBindHttpRequest {
-    #[serde(default)]
-    name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyBindHttpResponse {
-    session_id: String,
-    options: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FinishPasskeyBindHttpRequest {
-    session_id: String,
-    credential: Value,
-}
-
 pub async fn start_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<StartPasskeyBindHttpRequest>,
-) -> AppResult<Json<StartPasskeyBindHttpResponse>> {
-    if req.name.len() > 100 {
-        return Err(super::error::map_api_error(
-            crate::impls::ApiError::InvalidInput("name must be at most 100 characters".to_string()),
-        ));
-    }
+    Json(req): Json<StartPasskeyBindRequest>,
+) -> AppResult<Json<StartPasskeyBindResponse>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -277,16 +247,7 @@ pub async fn start_passkey_bind(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move {
-                let challenge = client_api
-                    .start_passkey_bind_challenge(&auth.user_id, req.name)
-                    .await?;
-                let options = passkey_options_to_value(&challenge.options_json)?;
-                Ok::<_, crate::impls::ApiError>(StartPasskeyBindHttpResponse {
-                    session_id: challenge.session_id,
-                    options,
-                })
-            },
+            |auth| async move { client_api.start_passkey_bind(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;
@@ -297,11 +258,8 @@ pub async fn start_passkey_bind(
 pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<FinishPasskeyBindHttpRequest>,
+    Json(req): Json<FinishPasskeyBindRequest>,
 ) -> AppResult<Json<PasskeyCredentialResponse>> {
-    validate_passkey_session_id(&req.session_id).map_err(super::error::map_api_error)?;
-    let credential_json =
-        passkey_credential_to_json_bytes(&req.credential).map_err(super::error::map_api_error)?;
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -313,7 +271,7 @@ pub async fn finish_passkey_bind(
             EndpointRateLimitCategory::Write,
             |auth| async move {
                 client_api
-                    .finish_passkey_bind(&auth.user_id, &req.session_id, &credential_json)
+                    .finish_passkey_bind_request(&auth.user_id, req)
                     .await
             },
         )
@@ -347,7 +305,7 @@ pub async fn list_passkeys(
 pub async fn delete_passkey(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(credential_id): Path<String>,
+    Path(req): Path<DeletePasskeyRequest>,
 ) -> AppResult<Json<DeletePasskeyResponse>> {
     let request_meta = request_meta
         .0
@@ -358,11 +316,7 @@ pub async fn delete_passkey(
         .execute_user_endpoint(
             &request_meta,
             EndpointRateLimitCategory::Write,
-            |auth| async move {
-                client_api
-                    .delete_passkey(&auth.user_id, DeletePasskeyRequest { credential_id })
-                    .await
-            },
+            |auth| async move { client_api.delete_passkey(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

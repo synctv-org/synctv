@@ -67,20 +67,24 @@ fn normalize_optional_email(email: &str) -> Result<Option<String>, ApiError> {
     }
 }
 
-fn normalize_exactly_one_identifier(username: &str, email: &str) -> Result<String, ApiError> {
+fn normalize_optional_identifier(username: &str, email: &str) -> Result<Option<String>, ApiError> {
     let has_username = !username.trim().is_empty();
     let has_email = !email.trim().is_empty();
-    if has_username == has_email {
+    if has_username && has_email {
         return Err(ApiError::InvalidInput(
-            "Provide exactly one of username or email".to_string(),
+            "Provide at most one of username or email".to_string(),
         ));
     }
     if has_email {
         crate::http::validation::validate_email(email)
+            .map(Some)
+            .map_err(|error| ApiError::InvalidInput(error.to_string()))
+    } else if has_username {
+        crate::http::validation::validate_username(username)
+            .map(Some)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))
     } else {
-        crate::http::validation::validate_username(username)
-            .map_err(|error| ApiError::InvalidInput(error.to_string()))
+        Ok(None)
     }
 }
 
@@ -369,7 +373,7 @@ impl ClientApiImpl {
                 control,
             )
             .await?;
-        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(crate::proto::client::StartPasskeyRegistrationResponse {
             session_id: challenge.session_id,
             options,
@@ -404,7 +408,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.finish_passkey_registration_bytes_with_control(
             &req.session_id,
-            req.credential.as_bytes(),
+            &req.credential,
             client_ip,
             control,
         )
@@ -418,10 +422,10 @@ impl ClientApiImpl {
         client_ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<PasskeyAuthChallenge, ApiError> {
-        let identifier = normalize_exactly_one_identifier(&username, &email)?;
+        let identifier = normalize_optional_identifier(&username, &email)?;
         let challenge = self
             .passkey_service()?
-            .start_login(&identifier, client_ip, control)
+            .start_login(identifier.as_deref(), client_ip, control)
             .await
             .map_err(ApiError::from)?;
         Ok(PasskeyAuthChallenge {
@@ -440,7 +444,7 @@ impl ClientApiImpl {
         let challenge = self
             .start_passkey_login_challenge_with_control(req.username, req.email, client_ip, control)
             .await?;
-        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(crate::proto::client::StartPasskeyLoginResponse {
             session_id: challenge.session_id,
             options,
@@ -471,7 +475,7 @@ impl ClientApiImpl {
         crate::impls::validate_proto_request(&req)?;
         self.finish_passkey_login_bytes_with_control(
             &req.session_id,
-            req.credential.as_bytes(),
+            &req.credential,
             client_ip,
             control,
         )
@@ -506,7 +510,7 @@ impl ClientApiImpl {
         let challenge = self
             .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
             .await?;
-        let options = super::passkey::passkey_options_to_string(challenge.options_json)?;
+        let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(crate::proto::client::StartMfaPasskeyResponse {
             passkey_session_id: challenge.session_id,
             options,
@@ -553,7 +557,7 @@ impl ClientApiImpl {
         self.finish_mfa_passkey_bytes_with_control(
             &req.mfa_session_id,
             &req.passkey_session_id,
-            req.credential.as_bytes(),
+            &req.credential,
             client_ip,
             control,
         )

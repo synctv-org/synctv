@@ -4,20 +4,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{error::map_api_error, middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::rtmp::{
-    CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoResponse,
+    CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
 };
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct RoomMediaPath {
-    room_id: String,
-    media_id: String,
-}
 
 pub fn rtmp_routes() -> Router<AppState> {
     Router::new()
@@ -51,15 +44,11 @@ pub fn rtmp_routes() -> Router<AppState> {
 )]
 pub(crate) async fn generate_publish_key(
     State(state): State<AppState>,
-    Path(path): Path<RoomMediaPath>,
+    Path(req): Path<CreatePublishKeyRequest>,
     request_meta: RequestMetadata,
 ) -> AppResult<Json<CreatePublishKeyResponse>> {
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let client_api = state.client_api.clone();
-    let req = CreatePublishKeyRequest {
-        room_id: path.room_id,
-        media_id: path.media_id,
-    };
     let resp = state
         .client_api
         .execute_user_endpoint(
@@ -100,11 +89,13 @@ pub(crate) async fn generate_publish_key(
 )]
 pub(crate) async fn handle_stream_info(
     request_meta: RequestMetadata,
-    Path(path): Path<RoomMediaPath>,
+    Path(req): Path<GetStreamInfoRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetStreamInfoResponse>> {
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
     let client_api = state.client_api.clone();
+    let room_id = req.room_id;
+    let media_id = req.media_id;
     let resp = state
         .client_api
         .execute_user_endpoint(
@@ -112,11 +103,7 @@ pub(crate) async fn handle_stream_info(
             EndpointRateLimitCategory::Read,
             move |authenticated| async move {
                 client_api
-                    .get_stream_info(
-                        &authenticated.user_id,
-                        path.room_id.as_str(),
-                        path.media_id.as_str(),
-                    )
+                    .get_stream_info(&authenticated.user_id, room_id.as_str(), media_id.as_str())
                     .await
             },
         )

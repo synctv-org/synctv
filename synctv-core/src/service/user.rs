@@ -3182,6 +3182,26 @@ impl UserService {
         self.get_by_login_identifier(&normalized_identifier).await
     }
 
+    pub(crate) async fn check_passkey_discoverable_login_allowed_with_control(
+        &self,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.brute_force
+            .check_ip_allowed_with_control(client_ip, control)
+            .await
+    }
+
+    pub(crate) async fn record_passkey_discoverable_login_failure_with_control(
+        &self,
+        client_ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<()> {
+        self.brute_force
+            .record_ip_failure_with_control(client_ip, control)
+            .await
+    }
+
     pub fn normalize_external_login_identifier(identifier: &str) -> String {
         Self::normalize_login_identifier(identifier)
     }

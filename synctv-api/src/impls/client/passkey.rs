@@ -16,9 +16,10 @@ fn passkey_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Passkey/WebAuthn service is not configured".to_string())
 }
 
-pub(crate) fn passkey_options_to_string(options_json: Vec<u8>) -> Result<String, ApiError> {
-    String::from_utf8(options_json)
-        .map_err(|error| ApiError::Internal(format!("Invalid passkey challenge JSON: {error}")))
+pub(crate) fn passkey_options_to_json_bytes(options_json: Vec<u8>) -> Result<Vec<u8>, ApiError> {
+    serde_json::from_slice::<serde_json::Value>(&options_json)
+        .map_err(|error| ApiError::Internal(format!("Invalid passkey challenge JSON: {error}")))?;
+    Ok(options_json)
 }
 
 pub(crate) fn passkey_credential_to_proto(
@@ -80,7 +81,7 @@ impl ClientApiImpl {
         req: StartPasskeyBindRequest,
     ) -> Result<StartPasskeyBindResponse, ApiError> {
         let challenge = self.start_passkey_bind_challenge(user_id, req.name).await?;
-        let options = passkey_options_to_string(challenge.options_json)?;
+        let options = passkey_options_to_json_bytes(challenge.options_json)?;
         Ok(StartPasskeyBindResponse {
             session_id: challenge.session_id,
             options,
@@ -110,7 +111,7 @@ impl ClientApiImpl {
         req: crate::proto::client::FinishPasskeyBindRequest,
     ) -> Result<PasskeyCredentialResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        self.finish_passkey_bind(user_id, &req.session_id, req.credential.as_bytes())
+        self.finish_passkey_bind(user_id, &req.session_id, &req.credential)
             .await
     }
 

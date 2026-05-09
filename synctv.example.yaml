@@ -564,6 +564,8 @@ webauthn:
   #   POST /api/user/passkeys/registration/finish
   #   POST /api/auth/passkeys/login/start
   #   POST /api/auth/passkeys/login/finish
+  # Passkey login start is username-less and returns conditional UI options.
+  # Clients should require browsers/authenticators that support discoverable credentials.
   #
   # Production requirements:
   #   - Use HTTPS origins except for local development.

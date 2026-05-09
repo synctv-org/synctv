@@ -1133,6 +1133,27 @@ mod tests {
     }
 
     #[test]
+    fn http_json_start_passkey_login_accepts_discoverable_payload() {
+        let request =
+            serde_json::from_str::<crate::client::StartPasskeyLoginRequest>("{}").unwrap();
+
+        assert!(request.username.is_empty());
+        assert!(request.email.is_empty());
+        crate::validate(&request).unwrap();
+    }
+
+    #[test]
+    fn validate_start_passkey_registration_allows_empty_optional_email() {
+        let request = crate::client::StartPasskeyRegistrationRequest {
+            username: "valid_user".into(),
+            email: String::new(),
+            name: String::new(),
+        };
+
+        crate::validate(&request).unwrap();
+    }
+
+    #[test]
     fn validate_update_user_request_checks_optional_fields_when_present() {
         let request = crate::client::UpdateUserRequest {
             username: Some("bad name".into()),

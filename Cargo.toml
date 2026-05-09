@@ -147,7 +147,7 @@ argon2 = "0.5.3"
 opaque-ke = { version = "4.0.1", features = ["argon2"] }
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
-webauthn-rs = { version = "0.6.1-dev", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
 aes-gcm = "0.10.3"
 ammonia = "4.1.2"
 http-acl = "0.11.0"

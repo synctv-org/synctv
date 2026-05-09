@@ -9,8 +9,9 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::{
-    CredentialID, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, Url, Webauthn, WebauthnBuilder,
+    CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, Url, Webauthn,
+    WebauthnBuilder,
 };
 
 use crate::{
@@ -55,6 +56,9 @@ pub enum PasskeySession {
         user_id: UserId,
         brute_force_key: String,
         state: PasskeyAuthentication,
+    },
+    DiscoverableLogin {
+        state: DiscoverableAuthentication,
     },
     Verification {
         user_id: UserId,
@@ -599,6 +603,42 @@ impl PasskeyService {
 
     pub async fn start_login(
         &self,
+        identifier: Option<&str>,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) -> Result<StartPasskeyLogin> {
+        if let Some(identifier) = identifier {
+            return self
+                .start_username_login(identifier, client_ip, control)
+                .await;
+        }
+
+        self.user_service
+            .check_passkey_discoverable_login_allowed_with_control(client_ip, control)
+            .await?;
+
+        let (challenge, state) = self
+            .webauthn
+            .start_discoverable_authentication()
+            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
+        let session_id = synctv_common::snanoid!(48);
+        self.session_store
+            .store(
+                &session_id,
+                &PasskeySession::DiscoverableLogin { state },
+                Duration::from_secs(PASSKEY_SESSION_TTL_SECS),
+            )
+            .await?;
+
+        Ok(StartPasskeyLogin {
+            session_id,
+            options_json: serde_json::to_vec(&challenge)
+                .internal_with_err("Failed to serialize passkey login challenge")?,
+        })
+    }
+
+    async fn start_username_login(
+        &self,
         identifier: &str,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
@@ -693,15 +733,43 @@ impl PasskeyService {
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<crate::service::AuthenticatedLogin> {
-        let Some(PasskeySession::Login {
-            user_id,
-            brute_force_key,
-            state,
-        }) = self.session_store.consume(session_id).await?
-        else {
+        let Some(session) = self.session_store.consume(session_id).await? else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
+        match session {
+            PasskeySession::Login {
+                user_id,
+                brute_force_key,
+                state,
+            } => {
+                self.finish_username_login(
+                    user_id,
+                    brute_force_key,
+                    state,
+                    credential_json,
+                    client_ip,
+                    control,
+                )
+                .await
+            }
+            PasskeySession::DiscoverableLogin { state } => {
+                self.finish_discoverable_login(state, credential_json, client_ip, control)
+                    .await
+            }
+            _ => Err(Error::Authentication("Authentication failed".to_string())),
+        }
+    }
+
+    async fn finish_username_login(
+        &self,
+        user_id: UserId,
+        brute_force_key: String,
+        state: PasskeyAuthentication,
+        credential_json: &[u8],
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) -> Result<crate::service::AuthenticatedLogin> {
         let Ok(credential) = serde_json::from_slice::<PublicKeyCredential>(credential_json) else {
             self.user_service
                 .record_external_login_failure_with_control(
@@ -767,6 +835,87 @@ impl PasskeyService {
                 control,
             )
             .await
+    }
+
+    async fn finish_discoverable_login(
+        &self,
+        state: DiscoverableAuthentication,
+        credential_json: &[u8],
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) -> Result<crate::service::AuthenticatedLogin> {
+        let Ok(credential) = serde_json::from_slice::<PublicKeyCredential>(credential_json) else {
+            self.record_discoverable_login_failure(client_ip, control)
+                .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let Ok((_user_handle, credential_id)) = self
+            .webauthn
+            .identify_discoverable_authentication(&credential)
+        else {
+            self.record_discoverable_login_failure(client_ip, control)
+                .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let Some(mut stored) = self.repository.get_by_credential_id(credential_id).await? else {
+            self.record_discoverable_login_failure(client_ip, control)
+                .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let discoverable_key = DiscoverableKey::from(stored.passkey.clone());
+        let Ok(auth_result) = self.webauthn.finish_discoverable_authentication(
+            &credential,
+            state,
+            &[discoverable_key],
+        ) else {
+            self.record_discoverable_login_failure(client_ip, control)
+                .await;
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        };
+
+        let changed = stored
+            .passkey
+            .update_credential(&auth_result)
+            .unwrap_or(false);
+        if changed || i64::from(auth_result.counter()) != stored.sign_count {
+            self.repository
+                .update_after_authentication(
+                    &stored.credential_id,
+                    &stored.passkey,
+                    i64::from(auth_result.counter()),
+                )
+                .await?;
+        }
+
+        let brute_force_key = format!(
+            "passkey:{}",
+            Self::encode_credential_id(&stored.credential_id)
+        );
+        self.user_service
+            .login_with_verified_external_credential_with_control(
+                &stored.user_id,
+                &brute_force_key,
+                client_ip,
+                control,
+            )
+            .await
+    }
+
+    async fn record_discoverable_login_failure(
+        &self,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&synctv_common::ExecutionControl>,
+    ) {
+        if let Err(error) = self
+            .user_service
+            .record_passkey_discoverable_login_failure_with_control(client_ip, control)
+            .await
+        {
+            tracing::warn!(error = %error, "Failed to record passkey login failure for brute-force tracking");
+        }
     }
 
     pub async fn finish_user_verification(

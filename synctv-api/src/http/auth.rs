@@ -5,20 +5,19 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Request, State},
     Json,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
+use serde::de::DeserializeOwned;
 
 use super::{AppError, AppResult, AppState};
-use crate::http::passkey_json::{
-    passkey_credential_to_json_bytes, passkey_options_to_value, validate_passkey_session_id,
-};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
-    FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, LoginRequest, LoginResponse,
+    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse,
     LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
-    RequestMfaEmailCodeResponse, StartOpaqueLoginRequest, StartOpaqueLoginResponse,
-    StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse, VerifyMfaEmailCodeRequest,
+    RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
+    StartOpaqueRegistrationResponse, StartPasskeyLoginRequest, StartPasskeyLoginResponse,
+    StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
     VerifyMfaPasswordRequest,
 };
 
@@ -330,83 +329,15 @@ pub async fn finish_opaque_login(
     Ok(Json(response))
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyLoginHttpRequest {
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    email: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyLoginHttpResponse {
-    session_id: String,
-    options: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyRegistrationHttpRequest {
-    username: String,
-    #[serde(default)]
-    email: String,
-    #[serde(default)]
-    name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartPasskeyRegistrationHttpResponse {
-    session_id: String,
-    options: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FinishPasskeyLoginHttpRequest {
-    session_id: String,
-    credential: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FinishPasskeyRegistrationHttpRequest {
-    session_id: String,
-    credential: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartMfaPasskeyHttpRequest {
-    mfa_session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct StartMfaPasskeyHttpResponse {
-    passkey_session_id: String,
-    options: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FinishMfaPasskeyHttpRequest {
-    mfa_session_id: String,
-    passkey_session_id: String,
-    credential: Value,
-}
-
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
         path = "/api/auth/passkeys/registration/start",
         tag = "Auth",
-        request_body = StartPasskeyRegistrationHttpRequest,
+        request_body = StartPasskeyRegistrationRequest,
         responses(
-            (status = 200, description = "Passkey registration challenge created", body = StartPasskeyRegistrationHttpResponse),
+            (status = 200, description = "Passkey registration challenge created", body = StartPasskeyRegistrationResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
         )
@@ -415,7 +346,7 @@ pub struct FinishMfaPasskeyHttpRequest {
 pub async fn start_passkey_registration(
     State(state): State<AppState>,
     request: Request,
-) -> AppResult<Json<StartPasskeyRegistrationHttpResponse>> {
+) -> AppResult<Json<StartPasskeyRegistrationResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
     let client_api = state.client_api.clone();
@@ -425,21 +356,10 @@ pub async fn start_passkey_registration(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<StartPasskeyRegistrationHttpRequest>(request).await?;
-                let challenge = client_api
-                    .start_passkey_registration_challenge_with_control(
-                        req.username,
-                        req.email,
-                        req.name,
-                        client_ip,
-                        Some(&request_control),
-                    )
-                    .await?;
-                let options = passkey_options_to_value(&challenge.options_json)?;
-                Ok::<_, ApiError>(StartPasskeyRegistrationHttpResponse {
-                    session_id: challenge.session_id,
-                    options,
-                })
+                let req = parse_auth_json::<StartPasskeyRegistrationRequest>(request).await?;
+                client_api
+                    .start_passkey_registration_with_control(req, client_ip, Some(&request_control))
+                    .await
             },
         )
         .await
@@ -454,7 +374,7 @@ pub async fn start_passkey_registration(
         post,
         path = "/api/auth/passkeys/registration/finish",
         tag = "Auth",
-        request_body = FinishPasskeyRegistrationHttpRequest,
+        request_body = FinishPasskeyRegistrationRequest,
         responses(
             (status = 200, description = "Passkey registration succeeded", body = RegisterResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -476,13 +396,10 @@ pub async fn finish_passkey_registration(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<FinishPasskeyRegistrationHttpRequest>(request).await?;
-                validate_passkey_session_id(&req.session_id)?;
-                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                let req = parse_auth_json::<FinishPasskeyRegistrationRequest>(request).await?;
                 client_api
-                    .finish_passkey_registration_bytes_with_control(
-                        &req.session_id,
-                        &credential_json,
+                    .finish_passkey_registration_with_control(
+                        req,
                         client_ip,
                         Some(&request_control),
                     )
@@ -501,9 +418,9 @@ pub async fn finish_passkey_registration(
         post,
         path = "/api/auth/passkeys/login/start",
         tag = "Auth",
-        request_body = StartPasskeyLoginHttpRequest,
+        request_body = StartPasskeyLoginRequest,
         responses(
-            (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginHttpResponse),
+            (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
             (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
         )
@@ -512,7 +429,7 @@ pub async fn finish_passkey_registration(
 pub async fn start_passkey_login(
     State(state): State<AppState>,
     request: Request,
-) -> AppResult<Json<StartPasskeyLoginHttpResponse>> {
+) -> AppResult<Json<StartPasskeyLoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
     let client_api = state.client_api.clone();
@@ -522,20 +439,10 @@ pub async fn start_passkey_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<StartPasskeyLoginHttpRequest>(request).await?;
-                let challenge = client_api
-                    .start_passkey_login_challenge_with_control(
-                        req.username,
-                        req.email,
-                        client_ip,
-                        Some(&request_control),
-                    )
-                    .await?;
-                let options = passkey_options_to_value(&challenge.options_json)?;
-                Ok::<_, ApiError>(StartPasskeyLoginHttpResponse {
-                    session_id: challenge.session_id,
-                    options,
-                })
+                let req = parse_auth_json::<StartPasskeyLoginRequest>(request).await?;
+                client_api
+                    .start_passkey_login_with_control(req, client_ip, Some(&request_control))
+                    .await
             },
         )
         .await
@@ -550,7 +457,7 @@ pub async fn start_passkey_login(
         post,
         path = "/api/auth/passkeys/login/finish",
         tag = "Auth",
-        request_body = FinishPasskeyLoginHttpRequest,
+        request_body = FinishPasskeyLoginRequest,
         responses(
             (status = 200, description = "Passkey login succeeded", body = LoginResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -572,16 +479,9 @@ pub async fn finish_passkey_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<FinishPasskeyLoginHttpRequest>(request).await?;
-                validate_passkey_session_id(&req.session_id)?;
-                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                let req = parse_auth_json::<FinishPasskeyLoginRequest>(request).await?;
                 client_api
-                    .finish_passkey_login_bytes_with_control(
-                        &req.session_id,
-                        &credential_json,
-                        client_ip,
-                        Some(&request_control),
-                    )
+                    .finish_passkey_login_with_control(req, client_ip, Some(&request_control))
                     .await
             },
         )
@@ -712,7 +612,7 @@ pub async fn verify_mfa_email_code(
 pub async fn start_mfa_passkey(
     State(state): State<AppState>,
     request: Request,
-) -> AppResult<Json<StartMfaPasskeyHttpResponse>> {
+) -> AppResult<Json<StartMfaPasskeyResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_api = state.client_api.clone();
     let response = state
@@ -720,17 +620,9 @@ pub async fn start_mfa_passkey(
         .execute_public_endpoint_with_control(
             &request_meta,
             EndpointRateLimitCategory::Auth,
-            move |request_control| async move {
-                let req = parse_auth_json::<StartMfaPasskeyHttpRequest>(request).await?;
-                let challenge = client_api
-                    .start_mfa_passkey_challenge_with_control(&req.mfa_session_id)
-                    .await?;
-                let options = passkey_options_to_value(&challenge.options_json)?;
-                let _ = request_control;
-                Ok::<_, ApiError>(StartMfaPasskeyHttpResponse {
-                    passkey_session_id: challenge.session_id,
-                    options,
-                })
+            move |_request_control| async move {
+                let req = parse_auth_json::<StartMfaPasskeyRequest>(request).await?;
+                client_api.start_mfa_passkey_with_control(req).await
             },
         )
         .await
@@ -752,17 +644,9 @@ pub async fn finish_mfa_passkey(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = parse_auth_json::<FinishMfaPasskeyHttpRequest>(request).await?;
-                validate_passkey_session_id(&req.passkey_session_id)?;
-                let credential_json = passkey_credential_to_json_bytes(&req.credential)?;
+                let req = parse_auth_json::<FinishMfaPasskeyRequest>(request).await?;
                 client_api
-                    .finish_mfa_passkey_bytes_with_control(
-                        &req.mfa_session_id,
-                        &req.passkey_session_id,
-                        &credential_json,
-                        client_ip,
-                        Some(&request_control),
-                    )
+                    .finish_mfa_passkey_with_control(req, client_ip, Some(&request_control))
                     .await
             },
         )
@@ -971,31 +855,32 @@ mod tests {
     }
 
     #[test]
-    fn test_passkey_http_response_serializes_options_as_json_object() {
-        let response = StartPasskeyLoginHttpResponse {
+    fn test_passkey_http_response_serializes_proto_options_as_json_object() {
+        let response = StartPasskeyLoginResponse {
             session_id: "session".to_string(),
-            options: serde_json::json!({
-                "challenge": "abc",
-                "rpId": "app.example.com",
-                "allowCredentials": []
-            }),
+            options: br#"{"challenge":"abc","rpId":"app.example.com","allowCredentials":[]}"#
+                .to_vec(),
         };
 
         let value = serde_json::to_value(response).expect("serialize passkey response");
         assert_eq!(value["session_id"], "session");
         assert!(value["options"].is_object());
         assert_eq!(value["options"]["challenge"], "abc");
+        assert_eq!(value["options"]["rpId"], "app.example.com");
     }
 
     #[test]
-    fn test_passkey_http_finish_request_accepts_credential_json_object() {
-        let request: FinishPasskeyLoginHttpRequest = serde_json::from_str(
+    fn test_passkey_http_finish_request_deserializes_credential_json_object() {
+        let request: FinishPasskeyLoginRequest = serde_json::from_str(
             r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
         )
         .expect("deserialize passkey credential object");
 
         assert_eq!(request.session_id, "session");
-        assert_eq!(request.credential["type"], "public-key");
+        let credential: serde_json::Value =
+            serde_json::from_slice(&request.credential).expect("credential json");
+        assert_eq!(credential["id"], "cred");
+        assert_eq!(credential["type"], "public-key");
     }
 
     // All three auth handlers (register, login, refresh_token) now use

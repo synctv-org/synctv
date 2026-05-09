@@ -8,7 +8,10 @@
 
 #[cfg(feature = "oss")]
 mod inner {
-    use crate::storage::{validate_component, validate_storage_key, HlsStorage};
+    use crate::storage::{
+        minute_bucket_is_expired, path_leaf, segment_minute_bucket, validate_component,
+        validate_storage_key, HlsStorage, HLS_SEGMENTS_ROOT,
+    };
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::TryStreamExt;
@@ -75,38 +78,46 @@ mod inner {
             })
         }
 
-        /// Get full object key: {`base_path}{app}/{stream}/{name`}
-        fn get_object_key(&self, app: &str, stream: &str, name: &str) -> String {
+        fn segments_root_prefix(&self) -> String {
             if self.config.base_path.is_empty() {
-                format!("{app}/{stream}/{name}")
+                format!("{HLS_SEGMENTS_ROOT}/")
             } else {
-                format!("{}{app}/{stream}/{name}", self.config.base_path)
+                format!("{}{HLS_SEGMENTS_ROOT}/", self.config.base_path)
             }
         }
 
-        /// Get prefix for listing objects under app/stream/
-        fn get_stream_prefix(&self, app: &str, stream: &str) -> String {
-            if self.config.base_path.is_empty() {
-                format!("{app}/{stream}/")
-            } else {
-                format!("{}{app}/{stream}/", self.config.base_path)
-            }
+        /// Get full object key.
+        ///
+        /// HLS segment names must start with an epoch-minute bucket
+        /// (`unix_minutes_random`). OSS stores those as
+        /// `{base_path}segments/{minute}/{app}/{stream}/{name}`.
+        fn get_object_key(&self, app: &str, stream: &str, name: &str) -> Result<String> {
+            let bucket = segment_minute_bucket(name).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "HLS segment name must start with an epoch-minute bucket",
+                )
+            })?;
+            Ok(format!(
+                "{}{bucket}/{app}/{stream}/{name}",
+                self.segments_root_prefix()
+            ))
         }
 
-        /// Get prefix for listing objects under app/
-        fn get_app_prefix(&self, app: &str) -> String {
-            if self.config.base_path.is_empty() {
-                format!("{app}/")
-            } else {
-                format!("{}{app}/", self.config.base_path)
-            }
+        fn get_bucket_app_prefix(&self, bucket: &str, app: &str) -> String {
+            format!("{}{bucket}/{app}/", self.segments_root_prefix())
+        }
+
+        fn get_bucket_stream_prefix(&self, bucket: &str, app: &str, stream: &str) -> String {
+            format!("{}{bucket}/{app}/{stream}/", self.segments_root_prefix())
         }
 
         /// Delete all objects matching a prefix using `OpenDAL` lister.
         async fn delete_by_prefix_internal(&self, prefix: &str) -> Result<usize> {
             let lister = self
                 .operator
-                .lister(prefix)
+                .lister_with(prefix)
+                .recursive(true)
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
@@ -132,13 +143,34 @@ mod inner {
             }
             Ok(deleted)
         }
+
+        async fn list_dirs(&self, prefix: &str) -> Result<Vec<String>> {
+            let lister = self
+                .operator
+                .lister(prefix)
+                .await
+                .map_err(|e| Error::other(format!("OSS list failed for {prefix}: {e}")))?;
+
+            let mut entries = lister;
+            let mut dirs = Vec::new();
+            while let Some(entry) = entries
+                .try_next()
+                .await
+                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+            {
+                if entry.metadata().mode() == EntryMode::DIR {
+                    dirs.push(entry.path().to_string());
+                }
+            }
+            Ok(dirs)
+        }
     }
 
     #[async_trait]
     impl HlsStorage for OssStorage {
         async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
             validate_storage_key(app, stream, name)?;
-            let object_key = self.get_object_key(app, stream, name);
+            let object_key = self.get_object_key(app, stream, name)?;
             let size = data.len();
 
             self.operator
@@ -160,7 +192,7 @@ mod inner {
 
         async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
             validate_storage_key(app, stream, name)?;
-            let object_key = self.get_object_key(app, stream, name);
+            let object_key = self.get_object_key(app, stream, name)?;
 
             let buffer =
                 self.operator.read(&object_key).await.map_err(|e| {
@@ -183,7 +215,7 @@ mod inner {
 
         async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
             validate_storage_key(app, stream, name)?;
-            let object_key = self.get_object_key(app, stream, name);
+            let object_key = self.get_object_key(app, stream, name)?;
 
             self.operator
                 .delete(&object_key)
@@ -203,7 +235,7 @@ mod inner {
 
         async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
             validate_storage_key(app, stream, name)?;
-            let object_key = self.get_object_key(app, stream, name);
+            let object_key = self.get_object_key(app, stream, name)?;
 
             match self.operator.exists(&object_key).await {
                 Ok(exists) => Ok(exists),
@@ -217,8 +249,22 @@ mod inner {
         async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
             validate_component(app, "app")?;
             validate_component(stream, "stream")?;
-            let prefix = self.get_stream_prefix(app, stream);
-            let deleted = self.delete_by_prefix_internal(&prefix).await?;
+            let segments_root = self.segments_root_prefix();
+
+            let mut deleted = 0;
+            for bucket_prefix in self.list_dirs(&segments_root).await? {
+                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
+                    continue;
+                };
+                deleted += self
+                    .delete_by_prefix_internal(&self.get_bucket_stream_prefix(
+                        bucket_name,
+                        app,
+                        stream,
+                    ))
+                    .await?;
+            }
+
             tracing::debug!(
                 "delete_app_stream {}/{}: deleted {} objects",
                 app,
@@ -230,62 +276,33 @@ mod inner {
 
         async fn delete_app(&self, app: &str) -> Result<usize> {
             validate_component(app, "app")?;
-            let prefix = self.get_app_prefix(app);
-            let deleted = self.delete_by_prefix_internal(&prefix).await?;
+            let segments_root = self.segments_root_prefix();
+
+            let mut deleted = 0;
+            for bucket_prefix in self.list_dirs(&segments_root).await? {
+                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
+                    continue;
+                };
+                deleted += self
+                    .delete_by_prefix_internal(&self.get_bucket_app_prefix(bucket_name, app))
+                    .await?;
+            }
+
             tracing::debug!("delete_app {}: deleted {} objects", app, deleted);
             Ok(deleted)
         }
 
         async fn cleanup(&self, older_than: Duration) -> Result<usize> {
-            // Compute cutoff time using opendal's Timestamp
-            let cutoff_time = opendal::raw::Timestamp::now() - older_than;
+            let segments_root = self.segments_root_prefix();
 
-            let base_path = if self.config.base_path.is_empty() {
-                String::new()
-            } else {
-                self.config.base_path.clone()
-            };
-
-            let lister = self
-                .operator
-                .lister(&base_path)
-                .await
-                .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
-
-            let mut entries = lister;
-            let mut expired_paths = Vec::new();
-            while let Some(entry) = entries
-                .try_next()
-                .await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
-            {
-                if entry.metadata().mode() == EntryMode::DIR {
+            let mut deleted = 0;
+            for bucket_prefix in self.list_dirs(&segments_root).await? {
+                let Some(bucket_name) = path_leaf(&bucket_prefix) else {
                     continue;
-                }
-                let path = entry.path();
-                let last_modified = match entry.metadata().last_modified() {
-                    Some(value) => Some(value),
-                    None => self
-                        .operator
-                        .stat(path)
-                        .await
-                        .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?
-                        .last_modified(),
                 };
 
-                if last_modified.is_some_and(|value| value < cutoff_time) {
-                    expired_paths.push(path.to_string());
-                }
-            }
-
-            let deleted = expired_paths.len();
-            if deleted > 0 {
-                self.operator
-                    .delete_iter(expired_paths.iter().map(String::as_str))
-                    .await
-                    .map_err(|e| Error::other(format!("OSS batch cleanup delete failed: {e}")))?;
-                for path in expired_paths {
-                    tracing::trace!("Deleted expired OSS object: {}", path);
+                if minute_bucket_is_expired(bucket_name, older_than) {
+                    deleted += self.delete_by_prefix_internal(&bucket_prefix).await?;
                 }
             }
 
@@ -306,7 +323,7 @@ mod inner {
             name: &str,
         ) -> Result<Option<String>> {
             validate_storage_key(app, stream, name)?;
-            let object_key = self.get_object_key(app, stream, name);
+            let object_key = self.get_object_key(app, stream, name)?;
 
             // If CDN is configured, return CDN URL
             if !self.config.public_url_prefix.is_empty() {
@@ -347,6 +364,12 @@ mod inner {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use chrono::Utc;
+
+        fn current_segment(suffix: &str) -> String {
+            let bucket = Utc::now().timestamp() / 60;
+            format!("{bucket}_{suffix}")
+        }
 
         #[tokio::test]
         async fn test_oss_storage_path_traversal_rejected() {
@@ -452,15 +475,19 @@ mod inner {
             let storage = OssStorage::new(config).unwrap();
 
             // With CDN configured, should return CDN URL with structured path
+            let segment = current_segment("segment_0");
             let url = storage
-                .get_public_url("live", "room_123", "segment_0")
+                .get_public_url("live", "room_123", &segment)
                 .await
                 .unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
             assert!(url_str.starts_with("https://cdn.example.com/hls/"));
             // URL should contain the structured path
-            assert!(url_str.contains("live/room_123/segment_0"));
+            assert!(url_str.contains(&format!(
+                "segments/{}/live/room_123/{segment}",
+                segment_minute_bucket(&segment).unwrap()
+            )));
         }
 
         #[tokio::test]
@@ -478,14 +505,67 @@ mod inner {
 
             let storage = OssStorage::new(config).unwrap();
 
+            let segment = current_segment("segment_0");
             let url = storage
-                .get_public_url("room_123", "media_456", "segment_0")
+                .get_public_url("room_123", "media_456", &segment)
                 .await
                 .unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
             assert!(url_str.starts_with("https://minio.example.com:9000/hls/"));
-            assert!(url_str.contains("room_123/media_456/segment_0"));
+            assert!(url_str.contains(&format!(
+                "segments/{}/room_123/media_456/{segment}",
+                segment_minute_bucket(&segment).unwrap()
+            )));
+        }
+
+        #[test]
+        fn test_segment_minute_bucket_parsing() {
+            assert_eq!(segment_minute_bucket("29676270_abcd1234"), Some("29676270"));
+            assert_eq!(segment_minute_bucket("segment_0"), None);
+            assert_eq!(segment_minute_bucket("_abcd1234"), None);
+            assert_eq!(segment_minute_bucket("2967627x_abcd1234"), None);
+        }
+
+        #[test]
+        fn test_minute_bucket_expiration_waits_for_whole_bucket() {
+            let now = Utc::now().timestamp();
+            let current_bucket = (now / 60).to_string();
+            let old_bucket = ((now - chrono::Duration::minutes(5).num_seconds()) / 60).to_string();
+
+            assert!(!minute_bucket_is_expired(
+                &current_bucket,
+                Duration::from_mins(3)
+            ));
+            assert!(minute_bucket_is_expired(
+                &old_bucket,
+                Duration::from_mins(3)
+            ));
+        }
+
+        #[test]
+        fn test_minute_bucket_segment_maps_to_directory_key() {
+            let config = OssConfig {
+                endpoint: "s3.amazonaws.com".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                bucket: "my-bucket".to_string(),
+                region: Some("us-east-1".to_string()),
+                base_path: "hls/".to_string(),
+                public_url_prefix: String::new(),
+                presign_expires_in: 3600,
+            };
+
+            let storage = OssStorage::new(config).unwrap();
+            assert_eq!(
+                storage
+                    .get_object_key("room", "media", "29676270_abcd")
+                    .unwrap(),
+                "hls/segments/29676270/room/media/29676270_abcd"
+            );
+            assert!(storage
+                .get_object_key("room", "media", "unbucketed_segment")
+                .is_err());
         }
     }
 }

@@ -3,10 +3,9 @@
 // - Track active streams and their segments
 // - Periodic cleanup of expired segments
 // - Provide segment metadata for M3U8 generation
-// Storage key format (flat structure):
-// - Format: "app_name-stream_name-ts_name"
-// - Example: "live-room123-a1b2c3d4e5f6"
-// - No prefix, no extension, no directory hierarchy
+// Public segment names remain slash-free. Storage backends may internally map
+// minute-prefixed segment names into directory/prefix buckets for efficient
+// cleanup.
 // Architecture:
 // - Storage layer: Pure KV storage (FileStorage/MemoryStorage/OssStorage)
 // - SegmentManager: Business logic (retention policy, cleanup scheduling)
@@ -21,9 +20,9 @@ use tokio_util::sync::CancellationToken;
 /// Segment cleanup configuration
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
-    /// How often to run cleanup (e.g., every 10 seconds)
+    /// How often to run cleanup.
     pub interval: Duration,
-    /// Delete segments older than this (e.g., 60 seconds)
+    /// Delete segments older than this.
     pub retention: Duration,
     /// Maximum number of segments per stream. 0 means unlimited (time-based only).
     /// When exceeded, the oldest segments for that stream are deleted.
@@ -33,8 +32,8 @@ pub struct CleanupConfig {
 impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(10),
-            retention: Duration::from_mins(1),
+            interval: Duration::from_secs(60),
+            retention: Duration::from_mins(3),
             max_segments_per_stream: 0,
         }
     }
@@ -44,6 +43,7 @@ impl Default for CleanupConfig {
 pub struct SegmentManager {
     storage: Arc<dyn HlsStorage>,
     config: CleanupConfig,
+    cleanup_authority: Arc<dyn CleanupAuthority>,
 }
 
 /// A stream that has ended and exposed an explicit set of segment names safe to delete.
@@ -63,10 +63,39 @@ pub trait StreamCleanupChecker: Send + Sync {
     fn get_streams_marked_for_cleanup(&self) -> Vec<MarkedStreamCleanup>;
 }
 
+/// Decides whether this replica should run storage cleanup.
+///
+/// Local-only storage backends should use the default always-true authority so
+/// every replica cleans its own data. Shared storage backends can plug in a
+/// leader check so only the elected leader scans and deletes shared data.
+pub trait CleanupAuthority: Send + Sync {
+    fn should_cleanup(&self) -> bool;
+}
+
+#[derive(Debug)]
+pub struct AlwaysCleanupAuthority;
+
+impl CleanupAuthority for AlwaysCleanupAuthority {
+    fn should_cleanup(&self) -> bool {
+        true
+    }
+}
+
 impl SegmentManager {
     /// Create new segment manager
     pub fn new(storage: Arc<dyn HlsStorage>, config: CleanupConfig) -> Self {
-        Self { storage, config }
+        Self {
+            storage,
+            config,
+            cleanup_authority: Arc::new(AlwaysCleanupAuthority),
+        }
+    }
+
+    /// Set the cleanup authority used by startup and periodic cleanup.
+    #[must_use]
+    pub fn with_cleanup_authority(mut self, cleanup_authority: Arc<dyn CleanupAuthority>) -> Self {
+        self.cleanup_authority = cleanup_authority;
+        self
     }
 
     /// Start periodic cleanup task with optional cancellation support.
@@ -133,6 +162,11 @@ impl SegmentManager {
                     tracing::info!("Segment cleanup task shutting down");
                     break;
                 }
+            }
+
+            if !self.cleanup_authority.should_cleanup() {
+                tracing::trace!("Skipping HLS segment cleanup because this replica is not the cleanup authority");
+                continue;
             }
 
             // First, clean up streams marked for cleanup (priority cleanup)
@@ -235,14 +269,17 @@ impl SegmentManager {
         &self.storage
     }
 
-    /// Cleanup all expired segments immediately
+    /// Cleanup segments older than the configured retention window immediately.
     ///
-    /// Note: Due to hash-based storage, we cannot filter by app/room.
-    /// This will delete ALL expired segments across all rooms.
-    ///
-    /// For per-room cleanup, consider using separate storage instances per room.
+    /// This uses the same age-based policy as the periodic cleanup loop. It is
+    /// intentionally not a full purge: shared backends may be used by multiple
+    /// replicas, so startup/manual cleanup must not remove fresh segments.
     pub async fn cleanup_expired(&self) -> std::io::Result<usize> {
-        self.storage.cleanup(Duration::from_secs(0)).await
+        if !self.cleanup_authority.should_cleanup() {
+            tracing::trace!("Skipping HLS segment startup cleanup because this replica is not the cleanup authority");
+            return Ok(0);
+        }
+        self.storage.cleanup(self.config.retention).await
     }
 
     /// Cleanup all segments for a specific stream immediately.
@@ -301,6 +338,14 @@ impl SegmentManager {
 mod tests {
     use super::*;
     use crate::storage::MemoryStorage;
+
+    struct NeverCleanupAuthority;
+
+    impl CleanupAuthority for NeverCleanupAuthority {
+        fn should_cleanup(&self) -> bool {
+            false
+        }
+    }
     use bytes::Bytes;
     use std::time::Duration;
 
@@ -385,13 +430,17 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let config = CleanupConfig::default();
+        let config = CleanupConfig {
+            interval: Duration::from_hours(1),
+            retention: Duration::from_millis(10),
+            max_segments_per_stream: 0,
+        };
         let manager = SegmentManager::new(storage.clone(), config);
 
-        // Cleanup all expired segments
+        // Cleanup segments older than the configured retention window.
         let deleted = manager.cleanup_expired().await.unwrap();
 
-        // Both segments are deleted since they're expired
+        // Both segments are deleted since they're older than retention.
         assert_eq!(deleted, 2);
         assert!(!storage
             .exists("live", "room_123", "segment_0")
@@ -399,6 +448,34 @@ mod tests {
             .unwrap());
         assert!(!storage
             .exists("live", "room_456", "segment_0")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_segment_manager_cleanup_expired_skips_without_authority() {
+        let storage = Arc::new(MemoryStorage::new());
+
+        storage
+            .write("live", "room_123", "segment_0", Bytes::from_static(b"data"))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let config = CleanupConfig {
+            interval: Duration::from_hours(1),
+            retention: Duration::from_millis(10),
+            max_segments_per_stream: 0,
+        };
+        let manager = SegmentManager::new(storage.clone(), config)
+            .with_cleanup_authority(Arc::new(NeverCleanupAuthority));
+
+        let deleted = manager.cleanup_expired().await.unwrap();
+
+        assert_eq!(deleted, 0);
+        assert!(storage
+            .exists("live", "room_123", "segment_0")
             .await
             .unwrap());
     }

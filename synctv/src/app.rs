@@ -83,6 +83,16 @@ struct LeaderState {
     leader_runtime: Arc<dyn LeaderRuntime>,
 }
 
+struct LeaderRuntimeCheck {
+    leader_runtime: Arc<dyn LeaderRuntime>,
+}
+
+impl synctv_core::service::LeaderCheck for LeaderRuntimeCheck {
+    fn is_leader(&self) -> bool {
+        self.leader_runtime.is_leader()
+    }
+}
+
 /// Cluster infrastructure.
 struct ClusterState {
     cluster_fanout_service: Arc<dyn ClusterFanoutService>,
@@ -497,7 +507,7 @@ impl Application {
         };
 
         // Phase 7: Server components (livestream, WebRTC, providers)
-        let servers = match Self::init_servers(&infra, &core, &mut shutdown).await {
+        let servers = match Self::init_servers(&infra, &core, &leader, &mut shutdown).await {
             Ok(servers) => servers,
             Err(e) => {
                 shutdown.shutdown().await;
@@ -1204,6 +1214,7 @@ impl Application {
     async fn init_servers(
         infra: &Infrastructure,
         core: &CoreState,
+        leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ServerComponents> {
         // Livestream
@@ -1212,6 +1223,9 @@ impl Application {
             &infra.config,
             &core.services,
             infra.shared_runtime.clone(),
+            Arc::new(LeaderRuntimeCheck {
+                leader_runtime: leader.leader_runtime.clone(),
+            }),
             &infra.node_id,
             livestream_cancel,
         )

@@ -32,7 +32,7 @@ use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 const STREAM_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,6 +42,22 @@ const DTS_REGRESSION_THRESHOLD_MS: i64 = 1000;
 
 fn duration_ms_to_secs_f64(duration_ms: i64) -> f64 {
     Duration::from_millis(u64::try_from(duration_ms.max(0)).unwrap_or(u64::MAX)).as_secs_f64()
+}
+
+fn current_segment_minute_bucket() -> String {
+    let epoch_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    (epoch_secs / 60).to_string()
+}
+
+fn generate_ts_name() -> String {
+    format!(
+        "{}_{}",
+        current_segment_minute_bucket(),
+        synctv_common::snanoid!(12)
+    )
 }
 
 /// Segment metadata for M3U8 generation
@@ -240,15 +256,13 @@ impl CustomHlsRemuxer {
     pub async fn run(&mut self) -> Result<(), HlsRemuxerError> {
         tracing::info!("Custom HLS remuxer started");
 
-        // Clean up orphaned HLS segments from previous restart
-        // This removes all segments (they are ephemeral and rebuilt on stream publish)
+        // Clean up only segments older than the configured retention window.
+        // Shared storage backends may be used by multiple replicas, so startup
+        // must not purge fresh objects written by another live publisher.
         match self.segment_manager.cleanup_expired().await {
             Ok(deleted) => {
                 if deleted > 0 {
-                    tracing::info!(
-                        "Cleaned up {} orphaned HLS segments from previous restart",
-                        deleted
-                    );
+                    tracing::info!("Cleaned up {} expired HLS segments on startup", deleted);
                 }
             }
             Err(e) => {
@@ -547,22 +561,13 @@ impl StreamHandler {
         // This prevents registry leaks on the early-return error path above.
         registry_guard.active = false;
 
-        // Mark the stream state as eligible for immediate cleanup.
-        // This allows the background cleanup task to free memory based on
-        // memory pressure rather than waiting for the full 60-second delay.
-        // This fixes the memory spike issue when a new publisher starts
-        // while an old handler is still in its grace period.
+        // Mark the stream state as ended. Storage cleanup is intentionally
+        // age-based and asynchronous; deleting by stream prefix is unsafe for
+        // shared backends because another replica can republish the same
+        // room/media key while this handler is in its grace period.
         {
             let mut state_guard = state.write();
-            // Capture the segment names BEFORE marking for cleanup. The cleanup
-            // task will only delete these specific segments, not a blanket delete
-            // of the entire stream key -- preventing a race where a new handler
-            // has already started writing new segments for the same stream.
-            state_guard.cleanup_segment_names = state_guard
-                .segments
-                .iter()
-                .map(|s| s.ts_name.clone())
-                .collect();
+            state_guard.cleanup_segment_names.clear();
             state_guard.marked_for_cleanup = true;
         }
 
@@ -571,10 +576,9 @@ impl StreamHandler {
         // we can detect if a new publisher has already replaced this handler.
         tokio::time::sleep(tokio::time::Duration::from_mins(1)).await;
 
-        // Only remove/clean up if the entry still belongs to this handler.
+        // Only remove the registry entry if it still belongs to this handler.
         // If a new publisher started within the 60s window, its registry entry
-        // will have a different created_at — we must not remove it or delete
-        // its segments.
+        // will have a different created_at.
         let is_still_owner = self
             .stream_registry
             .get(&registry_key)
@@ -582,25 +586,9 @@ impl StreamHandler {
 
         if is_still_owner {
             self.stream_registry.remove(&registry_key);
-
-            // Explicitly clean up segments for this stream to free memory immediately
-            // rather than waiting for the periodic cleanup cycle (LS-3).
-            // Safe: we confirmed no new publisher owns this stream key.
-            if let Err(e) = self
-                .segment_manager
-                .cleanup_stream(&self.app_name, &self.stream_name)
-                .await
-            {
-                tracing::warn!(
-                    "Failed to cleanup segments for {}/{}: {}",
-                    self.app_name,
-                    self.stream_name,
-                    e
-                );
-            }
         } else {
             tracing::info!(
-                "HLS cleanup for {}/{}: skipped — a new publisher has taken over within the grace period",
+                "HLS registry cleanup for {}/{}: skipped because a new publisher has taken over within the grace period",
                 self.app_name,
                 self.stream_name,
             );
@@ -1016,8 +1004,10 @@ impl StreamProcessor {
         };
         let ts_data_len = ts_data.len();
 
-        // Generate TS filename using the shared base62 ID generator (12 chars)
-        let ts_name = synctv_common::snanoid!(12);
+        // Generate TS filename with a minute bucket prefix. OSS storage maps
+        // this prefix to a real directory while HTTP routes keep a slash-free
+        // opaque segment name.
+        let ts_name = generate_ts_name();
 
         // Write segment to storage with retry using structured (app, stream, name)
         let storage = self.segment_manager.storage().clone();

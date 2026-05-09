@@ -12,6 +12,55 @@ pub mod oss;
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::io::{Error, ErrorKind, Result};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
+pub(crate) const HLS_SEGMENTS_ROOT: &str = "segments";
+const MIN_EPOCH_MINUTE_BUCKET_DIGITS: usize = 8;
+
+pub(crate) fn segment_minute_bucket(name: &str) -> Option<&str> {
+    let (bucket, _) = name.split_once('_')?;
+    if is_minute_bucket(bucket) {
+        Some(bucket)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn is_minute_bucket(value: &str) -> bool {
+    value.len() >= MIN_EPOCH_MINUTE_BUCKET_DIGITS
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value.parse::<u64>().is_ok()
+}
+
+pub(crate) fn minute_bucket_is_expired(bucket: &str, older_than: Duration) -> bool {
+    if !is_minute_bucket(bucket) {
+        return false;
+    }
+
+    let Ok(bucket_minute) = bucket.parse::<u64>() else {
+        return false;
+    };
+
+    let Some(bucket_end_secs) = bucket_minute
+        .checked_add(1)
+        .and_then(|minute| minute.checked_mul(SECONDS_PER_MINUTE))
+    else {
+        return false;
+    };
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let cutoff = now.checked_sub(older_than).unwrap_or_default().as_secs();
+
+    bucket_end_secs <= cutoff
+}
+
+#[cfg(feature = "oss")]
+pub(crate) fn path_leaf(path: &str) -> Option<&str> {
+    path.trim_end_matches('/').rsplit('/').next()
+}
 
 /// Validate a single storage key component (app, stream, or name).
 ///
@@ -61,7 +110,7 @@ pub trait HlsStorage: Send + Sync {
     /// # Arguments
     /// * `app` - Application name (e.g., `room_id`)
     /// * `stream` - Stream name (e.g., `media_id`)
-    /// * `name` - Segment name (e.g., "a1b2c3d4e5f6")
+    /// * `name` - Segment name (e.g., "29676270_a1b2c3d4e5f6")
     /// * `data` - Binary data to store
     async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()>;
 
@@ -177,3 +226,21 @@ pub enum StorageBackend {
 pub use file::FileStorage;
 pub use memory::MemoryStorage;
 pub use oss::{OssConfig, OssStorage};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minute_bucket_rejects_short_numeric_ids() {
+        assert!(!is_minute_bucket("123"));
+        assert_eq!(segment_minute_bucket("123_segment"), None);
+        assert!(!minute_bucket_is_expired("123", Duration::from_mins(3)));
+    }
+
+    #[test]
+    fn minute_bucket_accepts_epoch_minute_prefix() {
+        assert!(is_minute_bucket("29676270"));
+        assert_eq!(segment_minute_bucket("29676270_segment"), Some("29676270"));
+    }
+}

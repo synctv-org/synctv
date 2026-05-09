@@ -80,6 +80,7 @@ pub async fn init_livestream(
     config: &Config,
     synctv_services: &synctv_core::bootstrap::services::Services,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
     node_id: &str,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(
@@ -211,6 +212,7 @@ pub async fn init_livestream(
     // One-shot facade: start all xiu components
     let handle = livestream_server
         .with_auth(rtmp_auth)
+        .with_hls_cleanup_leader(hls_cleanup_leader)
         .with_rtmp_listener(rtmp_listener)
         .start()
         .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;
@@ -297,10 +299,18 @@ mod tests {
             config: &Config,
             services: &synctv_core::bootstrap::services::Services,
             runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+            hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
             node_id: &str,
             cancel: tokio_util::sync::CancellationToken,
         ) {
-            std::mem::drop(init_livestream(config, services, runtime, node_id, cancel));
+            std::mem::drop(init_livestream(
+                config,
+                services,
+                runtime,
+                hls_cleanup_leader,
+                node_id,
+                cancel,
+            ));
         }
 
         let _ = assert_signature;

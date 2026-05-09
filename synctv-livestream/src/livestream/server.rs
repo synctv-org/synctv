@@ -20,6 +20,8 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_core::config::{HlsOssConfig, HlsStorageBackend};
+use synctv_core::service::LeaderCheck;
+use synctv_xiu::hls::segment_manager::CleanupAuthority;
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage};
 use synctv_xiu::streamhub::StreamsHub;
@@ -32,6 +34,29 @@ use tracing::{error, info, warn};
 /// Used to size the stop-streams notification channel to prevent signal loss
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
+
+struct LeaderCleanupAuthority {
+    leader_check: Arc<dyn LeaderCheck>,
+}
+
+impl LeaderCleanupAuthority {
+    fn new(leader_check: Arc<dyn LeaderCheck>) -> Self {
+        Self { leader_check }
+    }
+}
+
+impl CleanupAuthority for LeaderCleanupAuthority {
+    fn should_cleanup(&self) -> bool {
+        self.leader_check.is_leader()
+    }
+}
+
+fn hls_cleanup_should_use_leader(backend: HlsStorageBackend) -> bool {
+    matches!(
+        backend,
+        HlsStorageBackend::SharedFile | HlsStorageBackend::Oss
+    )
+}
 
 struct HubCycleTasks {
     rtmp_cancel_token: CancellationToken,
@@ -465,6 +490,7 @@ pub struct LivestreamServer {
     publisher_registry: Arc<dyn StreamRegistryTrait>,
     user_stream_tracker: Arc<StreamTracker>,
     auth: Option<Arc<dyn AuthCallback>>,
+    hls_cleanup_leader: Arc<dyn LeaderCheck>,
     /// Pre-bound RTMP listener for early port conflict detection.
     rtmp_listener: Option<tokio::net::TcpListener>,
     /// Shared flag to reject publications during StreamHub restart.
@@ -483,6 +509,7 @@ impl LivestreamServer {
             publisher_registry,
             user_stream_tracker,
             auth: None,
+            hls_cleanup_leader: Arc::new(synctv_core::service::AlwaysLeader),
             rtmp_listener: None,
             is_restarting_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -500,6 +527,17 @@ impl LivestreamServer {
     #[must_use]
     pub fn with_auth(mut self, auth: Arc<dyn AuthCallback>) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    /// Set the leader check used for shared HLS storage cleanup.
+    ///
+    /// Only `shared_file` and `oss` use this gate. Local `file` and `memory`
+    /// backends still clean on every replica because their data is per-process
+    /// or per-node.
+    #[must_use]
+    pub fn with_hls_cleanup_leader(mut self, leader_check: Arc<dyn LeaderCheck>) -> Self {
+        self.hls_cleanup_leader = leader_check;
         self
     }
 
@@ -844,7 +882,17 @@ impl LivestreamServer {
         // 3. Start HLS remuxer (converts RTMP to HLS segments)
         let hls_storage = build_hls_storage(&self.config)?;
 
-        let segment_manager = Arc::new(SegmentManager::new(hls_storage, CleanupConfig::default()));
+        let mut segment_manager = SegmentManager::new(hls_storage, CleanupConfig::default());
+        if hls_cleanup_should_use_leader(self.config.hls_storage_backend) {
+            info!(
+                hls_storage_backend = ?self.config.hls_storage_backend,
+                "HLS shared storage cleanup will run only on the cluster leader"
+            );
+            segment_manager = segment_manager.with_cleanup_authority(Arc::new(
+                LeaderCleanupAuthority::new(self.hls_cleanup_leader.clone()),
+            ));
+        }
+        let segment_manager = Arc::new(segment_manager);
         let stream_registry: StreamRegistry = Arc::new(DashMap::new());
         let hls_shutdown_token = CancellationToken::new();
 
@@ -1104,6 +1152,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_hls_cleanup_leader_gate_only_for_shared_backends() {
+        assert!(!hls_cleanup_should_use_leader(HlsStorageBackend::Memory));
+        assert!(!hls_cleanup_should_use_leader(HlsStorageBackend::File));
+        assert!(hls_cleanup_should_use_leader(HlsStorageBackend::SharedFile));
+        assert!(hls_cleanup_should_use_leader(HlsStorageBackend::Oss));
+    }
+
     #[tokio::test]
     async fn test_build_hls_storage_uses_memory_when_shared_storage_disabled() {
         let dir = tempdir().expect("tempdir should be created");
@@ -1136,16 +1192,20 @@ mod tests {
         config.hls_storage_path = dir.path().display().to_string();
 
         let storage = build_hls_storage(&config).expect("storage should be built");
+        let bucket = chrono::Utc::now().timestamp() / 60;
+        let segment = format!("{bucket}_seg1");
         storage
-            .write("room1", "media1", "seg1", Bytes::from_static(b"segment"))
+            .write("room1", "media1", &segment, Bytes::from_static(b"segment"))
             .await
             .expect("segment write should succeed");
 
         assert!(
             dir.path()
+                .join("segments")
+                .join(bucket.to_string())
                 .join("room1")
                 .join("media1")
-                .join("seg1")
+                .join(segment)
                 .exists(),
             "shared storage should persist HLS segments on disk"
         );

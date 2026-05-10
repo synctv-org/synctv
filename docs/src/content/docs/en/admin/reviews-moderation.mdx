@@ -1,0 +1,36 @@
+---
+title: Reviews and Moderation
+description: Handle registration reviews, room creation reviews, room join reviews, user bans, and room moderation.
+---
+
+Review queues control who can register, create rooms, or join controlled rooms. Rejections, bans, and kicks should include clear reasons for audit and appeals.
+
+## Review Types
+
+| Type | Trigger | Handler |
+| --- | --- | --- |
+| User registration | Registration policy requires approval | Platform administrator |
+| Room creation | Room creation requires approval | Platform administrator |
+| Room join | Room has `require_approval` enabled | Room administrator or creator |
+
+## Common Commands
+
+```bash
+synctv review user-registration list
+synctv review user-registration approve <REVIEW_ID>
+synctv review user-registration reject <REVIEW_ID> --reason "reason"
+```
+
+Use [CLI Reference](../../reference/cli/) for exact command families.
+
+## Moderation Rules
+
+| Scenario | Prefer |
+| --- | --- |
+| Incomplete registration | Reject with the missing information |
+| Suspected abuse | Reject or ban, then keep evidence and reason |
+| Room abuse | Room-level ban or visibility restriction |
+| One disruptive member | Room kick/ban or permission removal |
+| Platform-level risky user | User ban, affecting sign-in, room creation, and room joining |
+
+Before bulk bans, list users or room members and confirm the target set.

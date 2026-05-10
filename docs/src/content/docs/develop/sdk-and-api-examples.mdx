@@ -1,0 +1,222 @@
+---
+title: SDK 与 API 示例
+description: HTTP/OpenAPI、gRPC、WebSocket Realtime 和 Provider API 的最小可运行集成示例。
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 目标
+
+下面是一组可串联执行的 API 示例：登录、刷新 token、创建房间、创建 WebSocket ticket、连接 Realtime、读取播放状态、处理错误和调用 Provider。字段完整定义以 OpenAPI JSON 和 protobuf 为准。
+
+先读 [客户端集成指南](../client-integration/) 理解总体约定，再按示例落地代码。
+
+## 接口选择
+
+| 目标 | 接口 |
+| --- | --- |
+| 生成多语言 SDK | HTTP OpenAPI |
+| 强类型服务端或桌面客户端 | gRPC/protobuf |
+| 房间实时消息、聊天、播放同步 | WebSocket Realtime |
+| 管理实例和运维 | CLI 或 management gRPC |
+| Provider 浏览、登录、代理 | HTTP Provider routes 或 provider gRPC |
+
+## 准备 OpenAPI SDK
+
+启动带 OpenAPI 的服务：
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve
+```
+
+导出 schema：
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+TypeScript 类型：
+
+```bash
+npx openapi-typescript openapi.json -o synctv-api.d.ts
+```
+
+完整入口见 [OpenAPI 文档入口](../../reference/openapi/)。
+
+## HTTP 最小闭环
+
+<Tabs syncKey="http-api-examples">
+  <TabItem label="登录" icon="approve-check-circle">
+
+```bash
+BASE_URL=http://localhost:8080
+
+curl -sS "$BASE_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"root","password":"change-this-password"}'
+```
+
+如果响应里 `mfa.required=true`，继续完成 MFA；不要把这次响应当作最终登录。
+
+  </TabItem>
+  <TabItem label="刷新 token" icon="random">
+
+```bash
+curl -sS "$BASE_URL/api/auth/refresh" \
+  -H 'Content-Type: application/json' \
+  -d '{"refresh_token":"paste-refresh-token"}'
+```
+
+刷新成功后替换本地保存的 access token 和 refresh token，避免多个并发请求继续使用旧 refresh token。
+
+  </TabItem>
+  <TabItem label="创建房间" icon="puzzle">
+
+```bash
+ACCESS_TOKEN=paste-access-token
+
+curl -sS "$BASE_URL/api/rooms" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Friday Watch","description":"Team movie night"}'
+```
+
+保存响应中的 `room.id`，后续 HTTP、gRPC metadata 和 WebSocket URL 都需要它。
+
+  </TabItem>
+  <TabItem label="创建 ticket" icon="document">
+
+```bash
+ROOM_ID=room_1
+
+curl -sS "$BASE_URL/api/tickets" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"room_id\":\"$ROOM_ID\"}"
+```
+
+ticket 是短期、一次性、房间绑定凭据。浏览器 WebSocket 使用 ticket，原生客户端可以使用 `Authorization` header。
+
+  </TabItem>
+</Tabs>
+
+## Realtime 最小闭环
+
+浏览器示例使用 protobufjs 生成的类型名作为说明，实际导入路径取决于你的构建。
+
+```ts
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  dispatchServerMessage(message);
+};
+
+function send(message: ClientMessage) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+
+send({
+  observeResource: {
+    observeId: 'playback-state',
+    version: cachedVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    playbackState: {},
+  },
+});
+```
+
+资源观察、delivery mode、重连和错误处理见 [Realtime API](../realtime-api/)。
+
+## gRPC 示例
+
+公开 gRPC 共用主端口：
+
+```bash
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+登录：
+
+```bash
+grpcurl -plaintext \
+  -d '{"username":"root","password":"change-this-password"}' \
+  localhost:8080 synctv.client.AuthService/Login
+```
+
+房间内 RPC 需要 room metadata：
+
+```bash
+grpcurl -plaintext \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "x-room-id: $ROOM_ID" \
+  -d '{}' \
+  localhost:8080 synctv.client.RoomService/GetPlayback
+```
+
+不要把管理端点暴露给普通客户端。CLI/management gRPC 是运维控制面，和公开 gRPC 不是同一个入口。
+
+## Provider 示例
+
+Provider 管理 API 用于实例配置；Provider 业务 API 用于登录、浏览、搜索或解析。
+
+```bash
+curl -sS "$BASE_URL/api/providers/instances/available" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Alist 列表请求示例：
+
+```bash
+curl -sS "$BASE_URL/api/providers/alist/list" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/","provider_instance_name":"alist-main"}'
+```
+
+添加媒体时，`provider`、`provider_instance_name` 和 `source_config` 的组合由 Provider 定义。Provider 凭据不应该直接塞进 `source_config`；凭据由用户、实例或服务端 Provider 管理层解析。
+
+## 错误处理模板
+
+HTTP 错误响应：
+
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": 1002,
+  "request_id": "01HX..."
+}
+```
+
+客户端规则：
+
+- 按 HTTP `status` 决定大类。
+- 按 `code` 做程序化分支。
+- 记录 `request_id`，便于服务端日志排查。
+- `429` 时读取 `Retry-After`。
+- `5xx` 文案会被服务端脱敏，不要依赖原始错误文本。
+
+完整错误码见 [错误参考](../../reference/errors/)。
+
+## 幂等、重试和缓存
+
+| 操作 | 处理 |
+| --- | --- |
+| 登录、MFA、OAuth2 exchange | 不要无脑重试；失败可能触发限流或 state 失效 |
+| 读取列表、设置、播放状态 | 可按退避重试；Realtime 资源观察优先使用版本判断 |
+| 创建房间、添加媒体、修改设置 | 请求超时后先重新读取资源，避免重复创建 |
+| WebSocket 断线 | 重新申请 ticket，重建观察，带上缓存版本 |
+| Provider 请求 | 对上游超时做退避，区分凭据失效和上游不可用 |
+
+## 继续阅读
+
+- [客户端集成指南](../client-integration/)
+- [Realtime API](../realtime-api/)
+- [错误参考](../../reference/errors/)
+- [API 与 protobuf 演进策略](../../reference/api-versioning/)

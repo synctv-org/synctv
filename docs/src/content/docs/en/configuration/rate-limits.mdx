@@ -3,14 +3,7 @@ title: Rate Limits and Connection Limits
 description: HTTP/gRPC request limits, chat and danmaku limits, WebSocket limits, and streaming protection.
 ---
 
-## Why Rate Limits Matter
-
-Rate limits protect SyncTV from both attacks and accidental client loops:
-
-- Password guessing on login endpoints.
-- Buggy clients retrying every second.
-- Users spamming chat or danmaku.
-- HLS/FLV/proxy requests overloading upstream providers or the SyncTV node.
+Rate limits protect login, API, chat, WebSocket connection attempts, and streaming paths. Multi-replica deployments depend on Redis for shared rate-limit state.
 
 ## `connection_limits`
 
@@ -112,14 +105,14 @@ grpc_rate_limits:
 
 Email limits should stay strict because email endpoints can create real delivery cost and are easy to abuse.
 
-## Redis and Multi-Replica Behavior
+## Redis And Multi-Replica Behavior
 
 Without Redis, rate limit state is stored in process memory.
 
 For multi-replica deployments, Redis is required for meaningful global limits. Otherwise each replica counts separately. With three replicas and an auth limit of 5 per minute, a client could effectively get 15 attempts per minute if requests are distributed across all replicas.
 
-Guidance:
-
-- Local single-node testing: Redis optional.
-- Production single-node: Redis recommended.
-- Multi-replica: Redis required.
+| Deployment shape | Requirement |
+| --- | --- |
+| Local testing | Redis optional |
+| Production single-node | Configure Redis |
+| Multi-replica | Redis required |

@@ -5,7 +5,7 @@ description: SyncTV version upgrades, database migrations, configuration changes
 
 import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Upgrade Principles
+## Upgrade Model
 
 Treat three things separately:
 
@@ -17,20 +17,22 @@ Treat three things separately:
 An image rollback is not always a system rollback. If a migration changed the database schema, verify that the old version can still read it.
 </Aside>
 
-## Preflight
+## Release Preflight
 
 <Steps>
 1. Read release notes or change logs for the target version.
 2. Back up PostgreSQL and production secrets.
-3. Restore production-like data into a test environment, start the target version, and verify automatic migrations and business reads/writes.
-4. Run `synctv config validate`.
-5. Save `synctv config show --output yaml` as the current effective config snapshot.
-6. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
-7. For Helm, run `helm lint` and `helm template`.
-8. For Compose, run `docker compose config`.
+3. If the secret management model changes, first use [Security Hardening and Rotation](../security-hardening-and-rotation/) to decide whether direct rotation is safe.
+4. Restore production-like data into a test environment, start the target version, and verify automatic migrations and business reads/writes.
+5. Run `synctv config validate`.
+6. Save `synctv config show --output yaml` as the current effective config snapshot.
+7. Compare against the [Configuration Index](../../reference/configuration-index/) and [Full Configuration Example](../../configuration/full-example/).
+8. If protocol or protobuf behavior changes, confirm [API and Protobuf Evolution](../../reference/api-versioning/) and client examples are updated.
+9. For Helm, run `helm lint` and `helm template`.
+10. For Compose, run `docker compose config`.
 </Steps>
 
-## Database Migrations
+## Database Migration
 
 SyncTV runs embedded SQLx migrations automatically during service startup. Migration state is stored in `_sqlx_migrations`, and SQLx uses database-side locking so the same migration set is not executed concurrently by multiple replicas. Multi-replica startup does not require a Job to manually serialize migrations, and administrators do not need to decide whether an upgrade needs migrations.
 
@@ -58,7 +60,7 @@ Running `synctv db migrate` separately in production is a release-process choice
 
 ## Docker Compose Upgrade
 
-Run these commands from the production Compose file directory. If you do not have a deployment directory yet, first get `docker-compose.yml`, env examples, and the init script from [Docker Compose Deployment](../../deployment/docker-compose/#get-production-compose-files).
+Run these commands from the production Compose file directory. If you do not have a deployment directory yet, first get `docker-compose.yml`, env examples, and the init script from [Docker Compose Deployment](../../install/docker-compose/#get-production-compose-files).
 
 <Steps>
 1. Pull the new image.
@@ -80,7 +82,7 @@ docker compose logs -f synctv
 ## Helm Upgrade
 
 <Tabs syncKey="helm-upgrade">
-  <TabItem label="Render Check" icon="seti:kubernetes">
+  <TabItem label="Render Check" icon="cloud-download">
 
 ```bash
 helm lint ./helm/synctv
@@ -113,7 +115,7 @@ kubectl -n synctv get ingress,svc,pod
 
 SyncTV has WebSocket, HTTP-FLV, HLS, gRPC streams, and streaming proxy requests. Rolling updates need enough drain time.
 
-Recommendations:
+Release rules:
 
 - Align `server.shutdown_drain_timeout_seconds` with Kubernetes `terminationGracePeriodSeconds`.
 - Make readiness fail quickly once shutdown starts.
@@ -168,3 +170,4 @@ Confirm at least:
 - Provider direct and proxy paths work.
 - Metrics are scraped.
 - Logs do not show sustained migration, Redis, database, or provider errors.
+- If capacity or connection behavior changed, revisit database connections, Redis, WebSocket, and proxy bandwidth with [Capacity Planning](../capacity-planning/).

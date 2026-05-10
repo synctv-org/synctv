@@ -1,137 +1,66 @@
 ---
 title: Troubleshooting
-description: Diagnose SyncTV startup, configuration, deployment, authentication, proxy, livestream, and cluster issues by error text, status code, and symptom.
+description: Diagnose SyncTV issues by error text, status code, and runtime symptom.
 ---
 
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Classify the Problem First
+## Run These First
 
-Do not start by reading every configuration field. Classify the failure, then run the matching checks.
+<Tabs syncKey="troubleshooting-runtime">
+  <TabItem label="Binary" icon="laptop">
 
-<CardGrid>
-  <Card title="Process does not start" icon="rocket">
-    Check validation errors, required secrets, database connectivity, Redis dependencies, and port conflicts.
-  </Card>
-  <Card title="Starts but access fails" icon="setting">
-    Check readiness, reverse proxy behavior, CORS, trusted proxies, Ingress, HTTP/gRPC protocol handling, and port mappings.
-  </Card>
-  <Card title="Login or account issues" icon="approve-check-circle">
-    Check SMTP, OAuth2 redirects, WebAuthn origins, MFA factors, rate limits, and token state.
-  </Card>
-  <Card title="Media playback issues" icon="puzzle">
-    Check provider headers, Range behavior, slice cache, HLS storage, and RTMP/FLV/STUN ports.
-  </Card>
-</CardGrid>
-
-## Fast Diagnosis Path
-
-<Tabs syncKey="runtime">
-  <TabItem label="Local Binary" icon="laptop">
-
-<Steps>
-1. Inspect the effective configuration:
-
-   ```bash
-   synctv --config /etc/synctv/synctv.yaml config show --output yaml
-   ```
-
-2. Validate configuration:
-
-   ```bash
-   synctv --config /etc/synctv/synctv.yaml config validate
-   ```
-
-3. Start in the foreground and inspect the first error:
-
-   ```bash
-   synctv --config /etc/synctv/synctv.yaml serve
-   ```
-
-4. Check the management endpoint:
-
-   ```bash
-   synctv system stats
-   ```
-</Steps>
+```bash
+synctv --config /etc/synctv/synctv.yaml config show --output yaml
+synctv --config /etc/synctv/synctv.yaml config validate
+synctv --config /etc/synctv/synctv.yaml serve
+```
 
   </TabItem>
   <TabItem label="Docker Compose" icon="seti:docker">
 
-<Steps>
-1. Inspect rendered Compose:
-
-   ```bash
-   docker compose config
-   ```
-
-2. Check status and logs:
-
-   ```bash
-   docker compose ps
-   docker compose logs -f synctv
-   ```
-
-3. Run a management command inside the container:
-
-   ```bash
-   docker compose exec synctv synctv system stats
-   ```
-
-4. If production Compose reports a missing required variable, first get the files from [Docker Compose Deployment](../../deployment/docker-compose/#get-production-compose-files), then fill `.env.postgres` and `.env.synctv`.
-</Steps>
+```bash
+docker compose config
+docker compose ps
+docker compose logs -f synctv
+docker compose exec synctv synctv system stats
+```
 
   </TabItem>
-  <TabItem label="Kubernetes/Helm" icon="cloud-download">
+  <TabItem label="Helm" icon="cloud-download">
 
-<Steps>
-1. Render the chart:
-
-   ```bash
-   helm lint ./helm/synctv
-   helm template synctv ./helm/synctv --values my-values.yaml
-   ```
-
-2. Inspect Pods and events:
-
-   ```bash
-   kubectl get pods -n synctv
-   kubectl describe pod -n synctv -l app.kubernetes.io/name=synctv
-   kubectl logs -n synctv deploy/synctv -f
-   ```
-
-3. Check ConfigMaps and Secret keys:
-
-   ```bash
-   kubectl get configmap -n synctv
-   kubectl get secret -n synctv
-   ```
-
-4. Test HTTP Service, gRPC Service, and Ingress separately. gRPC Ingress must use a gRPC backend protocol.
-</Steps>
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv --values values.yaml
+kubectl -n synctv get pods
+kubectl -n synctv describe pod -l app.kubernetes.io/name=synctv
+kubectl -n synctv logs deploy/synctv -f
+```
 
   </TabItem>
 </Tabs>
 
-## Error Text Lookup
+Start with the first error. Later errors are often cascading failures.
 
-| Error or symptom | Common cause | Action |
+## Error Lookup
+
+| Symptom or error | Cause | Action |
 | --- | --- | --- |
-| `jwt.secret` is a placeholder or too weak | Production still uses the default secret | Generate `openssl rand -base64 32` and inject it as a secret |
-| `opaque_server_setup_secret` is empty or invalid | OPAQUE long-lived secret is not configured | Generate `openssl rand -base64 48`, save it, and keep it stable |
-| `credential_encryption_key` has invalid format | Not 64 hex characters | Use `openssl rand -hex 32` |
-| `required variable ... is missing` | Production Compose is missing `.env.postgres` or `.env.synctv` | Run `./scripts/init-compose-env.sh` and set the root password |
-| `/health/ready` is not 200 | Database, Redis, ticket backend, or another dependency is not ready | Inspect readiness body and the first service log error |
-| Browser CORS errors | Origin missing, path used instead of origin, or proxy blocks OPTIONS | Configure exact origins in `server.cors_allowed_origins` |
+| `jwt.secret` is a placeholder or too weak | Production still uses an example secret | Generate a strong secret and inject it through secret/env |
+| `opaque_server_setup_secret` is empty or invalid | OPAQUE long-lived secret is missing | Generate and preserve `security.opaque_server_setup_secret` |
+| `credential_encryption_key` has invalid format | Not 64 hex characters | Generate it with `openssl rand -hex 32` |
+| `required variable ... is missing` | Production Compose is missing `.env.postgres` or `.env.synctv` | Run `./scripts/init-compose-env.sh` |
+| `/health/ready` is not 200 | Database, Redis, or startup dependency is not ready | Inspect readiness body and first startup log error |
+| Browser CORS error | Origin missing, path used as origin, or proxy blocks OPTIONS | Use real origins only in `server.cors_allowed_origins` |
 | gRPC Ingress fails but HTTP works | Missing separate gRPC Ingress or backend protocol | Set `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` |
-| `synctv system stats` cannot connect | management endpoint, Unix socket, TCP token, or env var mismatch | Check `management.*` and `SYNCTV_MANAGEMENT_ENDPOINT` |
-| WebSocket 401/403 | Expired token, expired ticket, not a room member, or rejected origin | Request a new ticket and confirm membership/origin |
-| OAuth2 callback/state errors | Redirect mismatch or multi-replica deployment without shared Redis | Align runtime settings with provider registration and configure Redis |
-| WebAuthn/passkey errors | `rp_origin` does not match the actual HTTPS origin | Configure exact origin and valid `rp_id` |
-| Range seek or proxy playback fails | Provider headers are incomplete or upstream lacks Range support | Check provider headers and upstream `Accept-Ranges` |
-| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or storage model mismatch | Use publisher-node proxy, `shared_file`, or OSS |
+| `synctv system stats` cannot connect | management endpoint, socket, TCP token, or env var mismatch | Check `management.*` and `SYNCTV_MANAGEMENT_ENDPOINT` |
+| WebSocket 401/403 | Expired token/ticket, missing room membership, or rejected origin | Request a new ticket and verify membership/origin |
+| OAuth2 callback/state error | Redirect mismatch or multi-replica deployment without shared Redis | Match provider registration and configure Redis for replicas |
+| WebAuthn/passkey failure | `rp_origin` does not match the real HTTPS origin | Fix `webauthn.rp_origin` and `webauthn.rp_id` |
+| Range seek or proxy playback failure | Provider headers are incomplete or upstream lacks Range | Check Provider headers and upstream `Accept-Ranges` |
+| Intermittent HLS 404 in multi-replica mode | Publisher node unreachable or HLS storage model mismatch | Use publisher-node proxy, `shared_file`, or OSS |
 
-## Command Templates
+## Quick Checks
 
 ### Readiness
 
@@ -139,9 +68,9 @@ Do not start by reading every configuration field. Classify the failure, then ru
 curl -i http://localhost:8080/health/ready
 ```
 
-Expected: `HTTP/1.1 200 OK`. If not, inspect the response body and then the first service log error.
+Success is HTTP 200. On failure, inspect the response body and service logs.
 
-### CORS Preflight
+### CORS
 
 ```bash
 curl -i \
@@ -151,113 +80,40 @@ curl -i \
   http://localhost:8080/api/auth/login
 ```
 
-Expected header:
+The response should include:
 
 ```http
 Access-Control-Allow-Origin: https://app.example.com
 ```
 
-If it is missing or wrong, check `server.cors_allowed_origins`. Values must be origins, not paths.
-
-### HTTP Error Body
-
-```json
-{
-  "error": "Invalid username or password",
-  "status": 401,
-  "code": null,
-  "request_id": "..."
-}
-```
-
-Clients should handle HTTP status and optional `code` first, not only match `error` text.
-
-### Provider Range Check
+### Provider Range
 
 ```bash
 curl -I -H 'Range: bytes=0-1023' 'https://upstream.example.com/video.mp4'
 ```
 
-Range-capable upstreams usually return `206 Partial Content`. If an upstream returns `200 OK`, SyncTV bypasses slice cache and does not store full-body responses.
+Range-capable upstreams usually return `206 Partial Content`. If they return `200 OK`, SyncTV bypasses slice cache and does not write full-body cache.
 
-## Configuration Problems
+## Diagnose By Layer
 
-Use commands to inspect the effective configuration. Do not rely only on the YAML file because environment variables and CLI flags may override it.
+| Layer | Check | Page |
+| --- | --- | --- |
+| Configuration | Effective config, secrets, environment overrides, `*_file` paths | [How Configuration Works](../../configuration/how-configuration-works/) |
+| Deployment | Compose env, Helm values, Services, Ingresses, Secret keys | [Docker Compose](../../install/docker-compose/), [Helm](../../install/helm/) |
+| Authentication | SMTP, OAuth2 redirect, WebAuthn origin, 2FA, rate limits | [Security Model](../../admin/authentication-security/), [Email and OAuth2](../../configuration/email-oauth2/), [WebAuthn](../../configuration/webauthn/) |
+| Media | Provider headers, Range, proxy, slice cache, HLS backend | [Playback and Proxy Model](../../use/playback-and-proxy/) |
+| Capacity | WebSocket, database pool, Redis, Provider, proxy bandwidth, livestreaming | [Capacity Planning](../capacity-planning/), [Metrics Catalog](../../reference/metrics-catalog/) |
 
-```bash
-synctv --config /etc/synctv/synctv.yaml config show --output yaml
-synctv --config /etc/synctv/synctv.yaml config validate
-```
-
-If the effective config is not what you expect, check:
-
-- Whether the intended config file is loaded.
-- Whether `.env` is loaded, or whether `--no-dotenv` is used.
-- Whether environment variables override YAML values.
-- Whether `*_file` secret paths are relative to the config file directory, not `data_dir`.
-- Whether `data_dir` only affects runtime-owned output paths.
-
-See [How Configuration Works](../../configuration/how-configuration-works/) for the full model.
-
-## Deployment Problems
-
-### Docker Compose
-
-Production Compose intentionally requires populated `.env.postgres` and `.env.synctv` files in the Compose file directory.
-
-```bash
-./scripts/init-compose-env.sh
-# Fill SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv, then inspect the rendered config.
-docker compose config
-docker compose up -d
-```
-
-See [Docker Compose Deployment](../../deployment/docker-compose/) for details.
-
-### Helm
-
-A successful Helm render only proves that Kubernetes manifests are syntactically valid. It does not prove that the SyncTV runtime configuration is safe. Check startup logs and validation behavior.
-
-Important checks:
-
-- HTTP and gRPC use separate Services.
-- HTTP and gRPC use separate Ingresses.
-- gRPC Ingress has its own annotations.
-- ServiceMonitor or VMServiceScrape targets the intended Service.
-- Multi-replica HLS uses `shared_file` or OSS when publisher-node proxying is not enough.
-- `existingSecret` contains all required chart keys.
-
-See [Helm Deployment](../../deployment/helm/) for details.
-
-## Authentication and Account Problems
-
-Local MFA only applies to local factors: password, WebAuthn/passkey, and verified email. OAuth2 does not participate in local MFA, but users with MFA enabled may still log in through OAuth2.
-
-If MFA-enabled users cannot log in, check:
-
-- The user still has at least two usable local verification methods.
-- SMTP is available when email is used as a second factor.
-- WebAuthn origin is correct when passkey is used as a second factor.
-- Refresh tokens come from an authentication context accepted by the current MFA policy.
-
-Related pages:
-
-- [Security and Secrets](../../configuration/security/)
-- [Email and OAuth2](../../configuration/email-oauth2/)
-- [WebAuthn and Passkeys](../../configuration/webauthn/)
-- [Rate Limits and Connection Limits](../../configuration/rate-limits/)
-
-## Information to Collect
-
-For issue reports or internal debugging, collect:
+## Collect
 
 - SyncTV version and deployment method.
-- Output of `synctv config show --output yaml`. Review it before sharing, even though secrets are redacted.
+- Output of `synctv config show --output yaml`. Review it for sensitive values before sharing.
 - Full `synctv config validate` error.
-- Relevant Compose or Helm rendered Service, Ingress, ConfigMap, and Secret key names.
-- The first service log error, not only the final cascading error.
-- Request path, method, status code, and necessary headers. Do not share tokens, cookies, passwords, SMTP secrets, or provider credentials.
+- Rendered Compose/Helm Service, Ingress, ConfigMap, and Secret key names.
+- First service log error.
+- HTTP error `request_id`, `status`, and `code`.
+- Request path, method, status code, and required headers.
 
 <Aside type="caution">
-Never paste Secret values, JWTs, OAuth2 codes, cookies, provider tokens, SMTP passwords, or database URLs into issues, chat, or log systems.
+Do not share JWTs, OAuth2 codes, cookies, Provider tokens, SMTP passwords, database URLs, or plaintext secrets.
 </Aside>

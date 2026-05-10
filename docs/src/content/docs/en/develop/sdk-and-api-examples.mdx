@@ -1,0 +1,218 @@
+---
+title: SDK and API Examples
+description: Minimal HTTP/OpenAPI, gRPC, WebSocket Realtime, and Provider API examples for SyncTV clients.
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Goal
+
+These examples form one runnable chain: login, refresh token, create room, create WebSocket ticket, connect Realtime, read playback state, handle errors, and call Providers. Complete fields are defined by OpenAPI JSON and protobuf.
+
+Read [Client Integration Guide](../client-integration/) first for the protocol boundaries.
+
+## Choose an Interface
+
+| Goal | Interface |
+| --- | --- |
+| Generate multi-language SDKs | HTTP OpenAPI |
+| Strongly typed backend or desktop clients | gRPC/protobuf |
+| Room realtime messages and playback sync | WebSocket Realtime |
+| Instance operations | CLI or management gRPC |
+| Provider browse, login, proxy | HTTP Provider routes or provider gRPC |
+
+## Prepare an OpenAPI SDK
+
+Start with OpenAPI enabled:
+
+```bash
+cargo run -p synctv --features openapi --bin synctv -- serve
+```
+
+Export the schema:
+
+```bash
+curl -fsSL http://localhost:8080/api-docs/openapi.json -o openapi.json
+```
+
+Generate TypeScript types:
+
+```bash
+npx openapi-typescript openapi.json -o synctv-api.d.ts
+```
+
+See [OpenAPI Access](../../reference/openapi/) for details.
+
+## Minimal HTTP Flow
+
+<Tabs syncKey="http-api-examples-en">
+  <TabItem label="Login" icon="approve-check-circle">
+
+```bash
+BASE_URL=http://localhost:8080
+
+curl -sS "$BASE_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"root","password":"change-this-password"}'
+```
+
+If `mfa.required=true`, complete MFA before treating the user as logged in.
+
+  </TabItem>
+  <TabItem label="Refresh" icon="random">
+
+```bash
+curl -sS "$BASE_URL/api/auth/refresh" \
+  -H 'Content-Type: application/json' \
+  -d '{"refresh_token":"paste-refresh-token"}'
+```
+
+Replace locally stored tokens after refresh succeeds.
+
+  </TabItem>
+  <TabItem label="Create room" icon="puzzle">
+
+```bash
+ACCESS_TOKEN=paste-access-token
+
+curl -sS "$BASE_URL/api/rooms" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Friday Watch","description":"Team movie night"}'
+```
+
+Save `room.id`; HTTP, gRPC metadata, and WebSocket URLs all need it.
+
+  </TabItem>
+  <TabItem label="Create ticket" icon="document">
+
+```bash
+ROOM_ID=room_1
+
+curl -sS "$BASE_URL/api/tickets" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"room_id\":\"$ROOM_ID\"}"
+```
+
+The ticket is short-lived, one-time, and room-bound.
+
+  </TabItem>
+</Tabs>
+
+## Minimal Realtime Flow
+
+```ts
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  dispatchServerMessage(message);
+};
+
+function send(message: ClientMessage) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+
+send({
+  observeResource: {
+    observeId: 'playback-state',
+    version: cachedVersion ?? '',
+    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    playbackState: {},
+  },
+});
+```
+
+See [Realtime API](../realtime-api/) for resource observation, delivery modes, reconnects, and errors.
+
+## gRPC Example
+
+Public gRPC uses the main port:
+
+```bash
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+Login:
+
+```bash
+grpcurl -plaintext \
+  -d '{"username":"root","password":"change-this-password"}' \
+  localhost:8080 synctv.client.AuthService/Login
+```
+
+Room RPCs need room metadata:
+
+```bash
+grpcurl -plaintext \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "x-room-id: $ROOM_ID" \
+  -d '{}' \
+  localhost:8080 synctv.client.RoomService/GetPlayback
+```
+
+Do not expose management gRPC to normal clients.
+
+## Provider Example
+
+```bash
+curl -sS "$BASE_URL/api/providers/instances/available" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Alist list request:
+
+```bash
+curl -sS "$BASE_URL/api/providers/alist/list" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/","provider_instance_name":"alist-main"}'
+```
+
+Provider credentials should not be placed directly in `source_config`; they are resolved by the server-side Provider credential layer.
+
+## Error Handling
+
+HTTP error response:
+
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": 1002,
+  "request_id": "01HX..."
+}
+```
+
+Client rules:
+
+- Use HTTP `status` for the broad category.
+- Use `code` for programmatic branches.
+- Log `request_id` for support.
+- Respect `Retry-After` on `429`.
+- Do not depend on raw 5xx text; it is sanitized.
+
+See [Errors](../../reference/errors/).
+
+## Idempotency, Retry, and Cache
+
+| Operation | Handling |
+| --- | --- |
+| Login, MFA, OAuth2 exchange | Do not blindly retry; state or rate limits may be affected |
+| Reads | Retry with backoff; use Realtime versions where possible |
+| Create room, add media, update settings | On timeout, read back state before repeating |
+| WebSocket reconnect | Create a new ticket and rebuild observations |
+| Provider request | Back off upstream failures and distinguish credential expiry |
+
+## Continue Reading
+
+- [Client Integration Guide](../client-integration/)
+- [Realtime API](../realtime-api/)
+- [Errors](../../reference/errors/)
+- [API and Protobuf Evolution](../../reference/api-versioning/)

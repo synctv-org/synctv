@@ -3,9 +3,9 @@ title: Observability Runbook
 description: SyncTV health checks, metrics, logs, key monitoring signals, and incident data collection.
 ---
 
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Observability Goals
+## Goals
 
 Production observability should verify more than process liveness:
 
@@ -24,7 +24,7 @@ Main service readiness:
 curl -fsS http://localhost:8080/health/ready
 ```
 
-Recommendations:
+Probe requirements:
 
 - Use readiness semantics for readiness probes, not only TCP checks.
 - Keep liveness probes conservative to avoid restart loops during transient dependency issues.
@@ -99,7 +99,7 @@ Notes:
   </Card>
 </CardGrid>
 
-## Alert Ideas
+## Alert Starting Points
 
 | Alert | Possible cause | First checks |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ Collect shareable information first. Do not paste secrets.
 ## Kubernetes Quick Checks
 
 <Tabs syncKey="k8s-observability">
-  <TabItem label="Pod" icon="seti:kubernetes">
+  <TabItem label="Pod" icon="cloud-download">
 
 ```bash
 kubectl -n synctv get pod -o wide
@@ -155,10 +155,12 @@ kubectl -n synctv rollout history deploy/synctv
   </TabItem>
 </Tabs>
 
-## Runbook Links
+## Continue Reading
 
 - Startup or configuration failures: [Troubleshooting](../troubleshooting/).
-- Launch checks: [Production Checklist](../../deployment/production-checklist/).
+- Capacity, connections, database, Redis, or media bandwidth planning: [Capacity Planning](../capacity-planning/).
+- Metric names and groups: [Metrics Catalog](../../reference/metrics-catalog/).
+- Launch checks: [Production Checklist](../../install/production-checklist/).
 - Data recovery: [Backup and Restore](../backup-restore/).
 - Releases: [Upgrades and Migrations](../upgrades/).
 - Metrics configuration: [Metrics Monitoring](../../configuration/metrics/).

@@ -1,0 +1,108 @@
+---
+title: Quick Start
+description: Start a single-node SyncTV deployment with Docker Compose and verify it is running.
+---
+
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import {
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeFileUrl,
+  englishComposeDeploymentDocsUrl,
+} from '../../../../lib/project';
+
+This path is for single-node production: one SyncTV process, one PostgreSQL instance, and one Redis instance. For Kubernetes or multiple replicas, complete this path first, then read [Helm Deployment](../../install/helm/) and [Cluster Configuration](../../configuration/cluster/).
+
+## Prerequisites
+
+- Docker and Docker Compose are available.
+- The current directory can permanently store Compose files, `.env.postgres`, `.env.synctv`, and volumes.
+- You have an initial root password. Use a password manager in production.
+
+## Start
+
+<Steps>
+1. Create a directory and download the Compose files:
+
+   <Code
+     code={[
+       'mkdir synctv-compose',
+       'cd synctv-compose',
+       `curl -fsSLO ${dockerComposeFileUrl}`,
+       `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+       `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+       'mkdir -p scripts',
+       `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+       'chmod +x scripts/init-compose-env.sh',
+     ].join('\n')}
+     lang="bash"
+   />
+
+2. Generate `.env.postgres` and `.env.synctv`:
+
+   ```bash
+   ./scripts/init-compose-env.sh
+   ```
+
+3. Edit `.env.synctv` and set the root password:
+
+   ```dotenv
+   SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+   ```
+
+4. Check the rendered Compose config:
+
+   ```bash
+   docker compose config
+   ```
+
+5. Start the service:
+
+   ```bash
+   docker compose up -d
+   ```
+</Steps>
+
+## Verify
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8080/health/ready
+```
+
+Then open:
+
+```text
+http://localhost:8080
+```
+
+The default root username is `root`. Its password comes from `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` in `.env.synctv`.
+
+## Values To Keep
+
+| Environment variable | Purpose |
+| --- | --- |
+| `SYNCTV_JWT_SECRET` | Signs access, refresh, and guest tokens |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | Long-lived server secret for OPAQUE password authentication |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts Provider credentials |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | Creates the initial root user |
+
+<Aside type="caution">
+Do not delete or regenerate the long-lived secrets in `.env.synctv`. Changing `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` or `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` can make existing password records or Provider credentials unusable.
+</Aside>
+
+## Common Failures
+
+| Symptom | Action |
+| --- | --- |
+| `docker compose config` reports missing variables | Run `./scripts/init-compose-env.sh` and keep `.env.postgres` and `.env.synctv` in the current directory. |
+| `/health/ready` fails | Run `docker compose logs -f synctv` and inspect the first startup error. |
+| Browser CORS errors | Set `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS` in `.env.synctv`; use origins only. |
+| Root user cannot log in | Confirm `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` was set before first database startup and inspect bootstrap logs. |
+
+## Continue Reading
+
+- Complete the [Production Checklist](../../install/production-checklist/) for TLS, backups, metrics, and alerts.
+- Read <a href={englishComposeDeploymentDocsUrl}>Docker Compose Deployment</a> for Compose file, port, and volume details.
+- For local source development, read [Development Guide](../../develop/local-development/).

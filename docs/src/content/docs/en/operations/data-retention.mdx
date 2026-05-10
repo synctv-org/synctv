@@ -5,10 +5,6 @@ description: What SyncTV stores, which fields are sensitive, how cleanup works, 
 
 import { Aside } from '@astrojs/starlight/components';
 
-## Purpose
-
-This page is for deployers, administrators, and security reviewers. It explains what SyncTV stores in PostgreSQL, Redis, runtime directories, logs, and backups, and what the default cleanup behavior is. It is not a legal compliance statement; actual compliance requirements depend on your jurisdiction, organization policy, and user terms.
-
 ## Data Locations
 
 | Location | Data | Persistence |
@@ -19,9 +15,9 @@ This page is for deployers, administrators, and security reviewers. It explains 
 | Logging platform | Requests, errors, audit context, dependency failures, runtime state | Retained according to your logging policy |
 | Backups | PostgreSQL dumps, secrets, config files, optional HLS or cache data | Retained according to your backup policy |
 
-## Personal and Sensitive Data
+## Sensitive Data
 
-| Data | Examples | Risk |
+| Category | Examples | Handling requirement |
 | --- | --- | --- |
 | User identifiers | Username, user ID, role, creation time | Can be linked to user activity |
 | Email | User email, email identity, notification recipient | PII; only return to the user themselves or administrators |
@@ -62,7 +58,7 @@ Requirements:
 
 See [Security and Secrets](../../configuration/security/) and [Media Providers](../../configuration/media-providers/).
 
-## Default Retention Behavior
+## Retention Behavior
 
 | Data | Default behavior | Configuration surface |
 | --- | --- | --- |
@@ -98,11 +94,9 @@ User deletion uses soft delete plus transactional resource cleanup:
 
 Room deletion also starts with soft delete and cleans room playlists, media, members, invitations, review records, playback state, and related resources. The room row is hard-deleted after the retention window.
 
-## Data in Backups
+## Backups
 
-Backups usually contain the most complete and sensitive data set.
-
-Protect:
+Backups usually contain the most complete and sensitive data set. Protect:
 
 - PostgreSQL backups.
 - `jwt.secret`, `security.opaque_server_setup_secret`, and `security.credential_encryption_key`.
@@ -113,23 +107,23 @@ Deleting data from the live database does not remove it from historical backups.
 
 ## Logs and Metrics
 
-Logging guidance:
+Logs:
 
 - Use structured logs in production.
 - Do not log Authorization, Cookie, OAuth2 codes, email codes, passwords, provider tokens, or SMTP passwords.
 - Review `config show`, request headers, and error logs before sharing them in issues or internal tickets.
 
-Metrics guidance:
+Metrics:
 
 - Do not expose `/metrics` publicly.
 - Inject metrics bearer tokens or Basic passwords through secrets.
 - Metrics should describe capacity, error rates, connection counts, and latency. They should not contain user content.
 
-## Related Pages
+## Continue Reading
 
 - [Backup and Restore](../backup-restore/)
 - [Upgrades and Migrations](../upgrades/)
 - [Observability Runbook](../observability/)
-- [Authentication and Security Model](../../guides/security-model/)
-- [Rooms, Permissions, and Preferences](../../guides/rooms-permissions/)
+- [Authentication and Security Model](../../admin/authentication-security/)
+- [Rooms, Permissions, and Preferences](../../use/rooms-permissions/)
 - [Runtime Settings Reference](../../reference/runtime-settings/)

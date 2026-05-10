@@ -8,24 +8,22 @@ import clusterRuntimeDark from '../../../assets/diagrams/cluster-runtime-zh-dark
 import clusterRuntimeLight from '../../../assets/diagrams/cluster-runtime-zh-light.svg';
 import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 
-## 什么时候需要集群模式？
+## 启用条件
 
-如果你只运行一个 SyncTV 进程，通常不需要开启集群模式。
+单进程部署不需要集群模式。
 
-需要开启的场景：
+以下场景启用：
 
 - Kubernetes 中运行多个副本。
 - 多台服务器共同服务同一个 SyncTV 实例。
 - 需要跨节点踢人、房间同步、缓存失效、直播协调。
-
-开启方式：
 
 ```yaml
 cluster:
   enabled: true
 ```
 
-开启后，Redis 和 `server.cluster_secret` 都是必需项。
+启用后，Redis 和 `server.cluster_secret` 必填。
 
 ## 设计目标
 
@@ -35,7 +33,7 @@ cluster:
   <Card title="状态单一来源" icon="seti:db">
     PostgreSQL 保存 durable state：用户、房间、权限、Provider、偏好设置和审计数据。所有节点必须连接同一个数据库。
   </Card>
-  <Card title="运行时协调" icon="seti:redis">
+  <Card title="运行时协调" icon="setting">
     Redis 保存 ephemeral/shared state：节点注册、pub/sub、Redis Stream catch-up、leader election、限流和短期认证状态。
   </Card>
   <Card title="节点间信任" icon="setting">
@@ -53,7 +51,7 @@ cluster:
   caption="集群模式下，业务持久状态进入 PostgreSQL，跨节点运行时状态进入 Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
 />
 
-## 工作原理
+## 工作流
 
 <Steps>
 1. 每个节点启动后使用相同配置连接 PostgreSQL 和 Redis，并生成或读取自己的节点 ID。
@@ -68,44 +66,31 @@ cluster:
 集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `server.cluster_secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，OSS 则提供对象存储分片。
 </Aside>
 
-## 选择部署形态
+## 部署形态
 
 | 部署形态 | 适用场景 | 推荐配置 |
 | --- | --- | --- |
-| 单进程 | 小规模、自托管、开发测试 | `cluster.enabled=false`，Redis 可选但生产建议配置 |
+| 单进程 | 小规模、自托管、开发测试 | `cluster.enabled=false`；生产仍建议配置 Redis |
 | 多进程固定节点 | 多台 VM 或裸机，节点数量稳定 | `cluster.enabled=true`、`discovery_mode=static` 或 `redis` |
 | Kubernetes 多副本 | 水平扩缩容、滚动升级、Ingress 暴露 | `cluster.enabled=true`、`discovery_mode=redis` 或 `k8s_dns`、HTTP/gRPC 独立 Service |
 | 多副本直播，小流量 | HLS/FLV 需要跨节点播放，但 segment 请求量不高 | `cluster.enabled=true`，可使用 `memory` 或本地 `file`，依赖 publisher-node proxy |
 | 多副本直播，高流量 | HLS 请求量高、需要更稳定的滚动升级边界 | 在集群配置基础上增加 `shared_file` 或 `oss` HLS backend |
 
-## `cluster.enabled`
-
-默认值：`false`。
-
-开启后，SyncTV 会启用跨节点协调逻辑。
-
-必须满足：
+## 必备条件
 
 - 所有节点连接同一个 PostgreSQL。
 - 所有节点连接同一个 Redis。
 - 所有节点使用同一个 `server.cluster_secret`。
 - 节点之间能访问彼此的 API/gRPC 地址。
 
-## `cluster.critical_channel_capacity`
+## 事件通道容量
 
-默认值：`1000`。
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `cluster.critical_channel_capacity` | `1000` | 踢人、权限变更等高优先级事件 |
+| `cluster.publish_channel_capacity` | `10000` | 普通 Redis publish 事件 |
 
-作用：高优先级事件通道容量，例如踢人、权限变更等不能随便丢的事件。
-
-满了以后发送方会等待，而不是丢弃事件。
-
-## `cluster.publish_channel_capacity`
-
-默认值：`10000`。
-
-作用：普通 Redis publish 通道容量。
-
-普通事件在极端拥塞时可能丢弃并记录 warning，避免拖垮主流程。
+critical 事件满队列时会反压发送方；普通事件在极端拥塞时可能丢弃并记录 warning。
 
 ## `cluster.discovery_mode`
 
@@ -117,13 +102,7 @@ cluster:
 
 ### `redis`
 
-默认值。节点通过 Redis 注册和发现。
-
-优点：
-
-- 跨环境通用。
-- 不依赖 Kubernetes DNS。
-- 配置简单。
+默认模式。节点通过 Redis 注册和发现，适合 Docker、服务器和 Kubernetes。
 
 ### `static`
 
@@ -145,29 +124,19 @@ cluster:
 
 通过 Kubernetes headless service DNS 发现 Pod。
 
-需要环境变量：
+必需环境变量：
 
 - `HEADLESS_SERVICE_NAME`
 - `POD_NAMESPACE`
 
-注意：`k8s_dns` 仍然需要 Redis。DNS 只帮助更快发现 Pod，不替代 Redis 的健康监控、负载均衡和 pub/sub。
+`k8s_dns` 不替代 Redis。Redis 仍负责健康状态、负载状态、pub/sub 和 catch-up。
 
-## `cluster.leader_election_mode`
+## Leader election
 
-可选值：
-
-- `redis`
-- `k8s_lease`
-
-### `redis`
-
-默认值。通过 Redis 锁做 leader election。
-
-适合 Docker Compose、普通服务器、Kubernetes。
-
-### `k8s_lease`
-
-使用 Kubernetes `coordination.k8s.io/v1 Lease`。
+| 模式 | 场景 |
+| --- | --- |
+| `redis` | 默认；适合 Docker、服务器和 Kubernetes |
+| `k8s_lease` | 使用 Kubernetes `coordination.k8s.io/v1 Lease` |
 
 需要：
 
@@ -177,29 +146,11 @@ cluster:
 
 Helm chart 会在需要时渲染相关 RBAC。
 
-## `cluster.catchup_window_secs`
+## Stream catch-up
 
-默认值：`300`。
+`cluster.catchup_window_secs` 默认值：`300`。节点加入或重连时，在这个窗口内回放 Redis Stream 事件。
 
-作用：新节点加入时，从 Redis Stream 回放多久以内的事件，避免刚订阅时漏掉短时间内发布的事件。
-
-调大：
-
-- 事件量不大，但你希望更保守。
-- 节点启动慢。
-
-调小：
-
-- 事件量很大。
-- 想缩短启动回放时间。
-
-## `cluster.stream_max_length`
-
-默认值：`10000`。
-
-作用：每个 Redis Stream 大约保留多少条事件。
-
-高流量房间很多时，太小可能导致断线节点还没追上，事件就被裁剪。太大则占用更多 Redis 内存。
+`cluster.stream_max_length` 默认值：`10000`。它控制 Redis Stream 近似保留长度。太小会让断线节点还没追上时事件已被裁剪；太大会占用更多 Redis 内存。
 
 ## 多副本 HLS 模型
 
@@ -258,11 +209,11 @@ livestream:
 
 ## Helm 中的集群建议
 
-Helm chart 默认不启用集群模式。扩容前必须显式开启 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy 模型；如果需要更稳定的分片存储和恢复边界，建议配置 `shared_file` 共享存储或 `oss` 对象存储。
+Helm chart 默认不启用集群模式。扩容前显式设置 `config.cluster.enabled=true`。HLS 可以先使用 publisher-node proxy；需要更稳定的分片存储和恢复边界时，使用 `shared_file` 或 `oss`。
 
 扩容前必须确认：
 
 - Redis 可用。
-- `server.cluster_secret` 已设置。
+- `server.cluster_secret` 稳定且所有副本一致。
 - HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `shared_file + RWX/PVC` 或 `oss`。
 - gRPC Service/Ingress 与内部节点访问符合你的网络设计。

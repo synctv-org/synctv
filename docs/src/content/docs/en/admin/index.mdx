@@ -1,0 +1,36 @@
+---
+title: Administer SyncTV
+description: Manage users, rooms, members, reviews, Providers, livestreaming, runtime settings, and maintenance tasks.
+---
+
+import { LinkCard, CardGrid, Aside } from '@astrojs/starlight/components';
+
+Administration docs are organized by managed object. Choose the object first, then read the impact, operation order, and validation steps.
+
+<Aside type="caution">
+management gRPC, metrics, and internal debugging endpoints are not public management surfaces. Prefer Unix sockets, private networks, VPNs, bastions, or Kubernetes exec. TCP management must set `management.auth_token`.
+</Aside>
+
+<CardGrid>
+  <LinkCard title="User Management" href="./users/" description="Create users, ban and unban, change global roles, and inspect account security state." />
+  <LinkCard title="Room and Member Management" href="./rooms-members/" description="Manage room lifecycle, members, settings, playback controls, and live entries." />
+  <LinkCard title="Reviews and Moderation" href="./reviews-moderation/" description="Handle registration, room creation, join reviews, and moderation actions." />
+  <LinkCard title="Provider Management" href="./providers/" description="Create, enable, disable, update, reconnect, and delete Provider instances." />
+  <LinkCard title="Runtime Settings" href="./runtime-settings/" description="Hot-update registration, room creation, proxy policy, CORS, and retention policy." />
+  <LinkCard title="Maintenance Tasks" href="./maintenance/" description="Inspect system state, clear streams, evict slice cache, and validate after maintenance." />
+  <LinkCard title="Authentication and Security Model" href="./authentication-security/" description="Understand sign-in methods, 2FA, token context, Provider headers, and management boundaries." />
+</CardGrid>
+
+## Managed Objects
+
+| Object | Common actions | Check first |
+| --- | --- | --- |
+| Users | Create, ban, unban, change role, inspect preferences | Global role, effective status, 2FA state |
+| Rooms | Create, delete, transfer, ban, update settings | Creator, join rules, member limit, default permissions |
+| Members | Add, kick, ban, change role, change permissions | Whether role or member override is the right tool |
+| Reviews | Approve or reject registration, room creation, room join | Applicant, target room, rejection reason |
+| Providers | Create, enable, disable, update, reconnect, delete | Credential ownership, proxy policy, remaining references |
+| Runtime settings | Change registration, CORS, proxy policy, retention | Whether the value is runtime policy, not startup configuration |
+| System and cache | Inspect status, clear streams, evict slice cache | Whether the action affects online playback or cache hit rate |
+
+Command flags are in [CLI Reference](../reference/cli/). Runtime boundaries are covered in [Runtime Boundaries](../concepts/runtime-boundaries/).

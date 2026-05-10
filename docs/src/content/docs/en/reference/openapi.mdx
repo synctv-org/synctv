@@ -3,11 +3,7 @@ title: OpenAPI Access
 description: How to enable, access, and export the built-in OpenAPI JSON and Swagger UI.
 ---
 
-## What This Page Answers
-
-SyncTV includes built-in OpenAPI documentation, but it is only available when the binary is built with the `openapi` feature.
-
-Use this page to find where Swagger UI and the OpenAPI JSON are served. It does not claim that every endpoint is complete or stable.
+SyncTV includes built-in OpenAPI JSON and Swagger UI. The binary must be built with the `openapi` feature to expose these endpoints.
 
 ## Enable OpenAPI
 
@@ -82,16 +78,19 @@ Other compatible tools include orval and Kiota.
 
 ## Deployment Notes
 
-If production should expose Swagger UI:
+Before exposing Swagger UI in production:
 
 - Build the binary with the `openapi` feature.
 - Allow `/swagger-ui/` through the reverse proxy.
 - Allow `/api-docs/openapi.json` through the reverse proxy.
 - Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.
 
-If you do not want to expose API structure in production, build without the `openapi` feature and enable it only in development or staging.
+To avoid exposing API structure in production, build without the `openapi` feature.
 
-## Next Pages
+## Continue Reading
 
-- [Client Integration Guide](../../guides/client-integration/)
+- [SDK and API Examples](../../develop/sdk-and-api-examples/)
+- [Client Integration Guide](../../develop/client-integration/)
 - [gRPC Debugging](../grpc/)
+- [Errors](../errors/)
+- [API and Protobuf Evolution](../api-versioning/)

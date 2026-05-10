@@ -1,0 +1,187 @@
+---
+title: Rooms, Permissions, and Preferences
+description: SyncTV global user roles, room roles, permission names, room settings, member overrides, and user preferences.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Diagram from '../../../../components/Diagram.astro';
+import permissionEvaluationDark from '../../../../assets/diagrams/permission-evaluation-dark.svg';
+import permissionEvaluationLight from '../../../../assets/diagrams/permission-evaluation-light.svg';
+
+## Two Role Layers
+
+SyncTV has two role layers. Keep them separate.
+
+| Layer | Roles | Scope |
+| --- | --- | --- |
+| Global user role | `root`, `admin`, `user` | Platform administration, user management, room management, system settings |
+| Room role | `creator`, `admin`, `member`, `guest` | Playback, members, media, chat, and settings inside one room |
+
+A global `admin` is not automatically a room `admin`. A room `admin` is not a platform administrator.
+
+## Global User Roles
+
+| Role | Boundary |
+| --- | --- |
+| `root` | Super administrator; can manage root/admin/user accounts, global settings, and all rooms |
+| `admin` | Platform administrator; can manage normal users and rooms, but cannot modify root or equally privileged admins |
+| `user` | Normal user; uses rooms and media features according to business permissions |
+
+User status is derived from ban records:
+
+| Status | Effect |
+| --- | --- |
+| `active` | Can log in, create rooms, and join rooms |
+| `banned` | Cannot log in, create rooms, or join rooms |
+
+## Room Roles
+
+| Room role | Default meaning |
+| --- | --- |
+| `creator` | Room creator; has all room permissions and cannot be weakened by room settings |
+| `admin` | Room administrator; can manage members, playback, media, room settings, and moderation by default |
+| `member` | Normal member; can chat, add/edit/delete own media, and view playlist/member/chat data by default |
+| `guest` | Read-only guest; can view playlist by default |
+
+Room roles provide base permissions. Room settings and member overrides then add or remove permissions.
+
+## Permission Evaluation
+
+Effective permissions are evaluated in three layers:
+
+<Diagram
+  light={permissionEvaluationLight}
+  dark={permissionEvaluationDark}
+  alt="Room effective permission evaluation model showing room role base permissions, room settings added and removed permissions, member added and removed overrides, and the creator special case that always keeps all room permissions."
+  caption="Effective permissions start from the room role base, then apply room settings and member-specific overrides. If the same bit is both added and removed, removal wins."
+/>
+
+Rules:
+
+- `creator` always has all room permissions.
+- Add is applied before remove. If the same bit is both added and removed, remove wins.
+- `member_added_permissions` cannot exceed the admin-level ceiling.
+- `guest_added_permissions` cannot exceed the member-level ceiling.
+- `DELETE_ROOM` is not a room-delegable permission. Room deletion belongs to the creator or the platform management plane.
+
+## Major Permission Names
+
+Runtime settings and administration surfaces use stable snake_case permission names.
+
+| Permission name | Meaning |
+| --- | --- |
+| `send_chat` | Send chat and danmaku messages |
+| `add_media` | Add media |
+| `delete_media_self` / `delete_media_any` | Delete own media / delete any media |
+| `edit_media_self` / `edit_media_any` | Edit own media / edit any media |
+| `reorder_playlist` | Reorder playlist |
+| `clear_playlist` | Clear playlist |
+| `start_live` | Start livestream publishing |
+| `play_control` | Play, pause, and seek |
+| `change_current_media` | Switch current media |
+| `change_playback_rate` | Change playback speed |
+| `approve_member` | Approve or reject join requests |
+| `kick_member` | Kick members |
+| `ban_member` | Ban or unban members |
+| `set_member_permissions` | Change member permissions |
+| `add_member` | Add members directly |
+| `set_room_settings` | Modify room settings |
+| `delete_chat` | Delete chat messages |
+| `delete_room` | Delete room; not a normal room-delegable permission |
+| `view_playlist` | View playlist |
+| `view_member_list` | View member list |
+| `view_chat_history` | View chat history |
+| `use_webrtc` | Use WebRTC voice/video features |
+
+## Room Settings
+
+Room settings control join policy, room features, and default permissions.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `require_password` | `false` | Require room password |
+| `allow_guest_join` | `false` | Allow guests to join |
+| `max_members` | `100` | Maximum members; upper bound `10000` |
+| `require_approval` | `false` | Require join approval |
+| `allow_auto_join` | `true` | Allow eligible users to auto-join |
+| `chat_enabled` | `true` | Enable chat |
+| `danmaku_enabled` | `true` | Enable danmaku |
+| `auto_play` | `{}` | Auto-play policy JSON |
+| `admin_added_permissions` / `admin_removed_permissions` | Empty permission set | Admin default permission changes |
+| `member_added_permissions` / `member_removed_permissions` | Empty permission set | Member default permission changes |
+| `guest_added_permissions` / `guest_removed_permissions` | Empty permission set | Guest default permission changes |
+
+Example:
+
+```bash
+synctv room settings get <ROOM_ID>
+synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
+```
+
+## Member Overrides
+
+Member overrides are for exceptions, such as muting one member, granting playback control to one member, or removing ban capability from one administrator.
+
+Semantics:
+
+- Base permissions come from the room role.
+- `added_permissions` adds normal member permissions.
+- `removed_permissions` removes normal member permissions.
+- Administrators can also have `admin_added_permissions` and `admin_removed_permissions`.
+- Weakening `creator` permissions has no effect.
+
+Management rules:
+
+- Use roles for long-term permission design and member overrides for exceptions.
+- Too many overrides make troubleshooting harder; clean up stale overrides.
+- When removing administrator privileges, consider changing the role instead of stacking many deny bits.
+
+## User Preferences
+
+User preferences are database-backed user-level settings, not YAML configuration.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `two_factor_enabled` | `false` | User-level 2FA |
+| `notifications.room_invitation_in_app` | `true` | In-app room invitation notifications |
+| `notifications.room_event_in_app` | `true` | In-app room event notifications |
+| `notifications.system_announcement_in_app` | `true` | In-app system announcements |
+| `notifications.room_invitation_email` | `false` | Email room invitation notifications |
+| `notifications.room_event_email` | `false` | Email room event notifications |
+| `notifications.system_announcement_email` | `true` | Email system announcements |
+| `provider_defaults.alist_instance_name` | `null` | Default Alist instance |
+| `provider_defaults.emby_instance_name` | `null` | Default Emby instance |
+| `provider_defaults.bilibili_instance_name` | `null` | Default Bilibili instance |
+
+The database table also has a `settings` JSONB extension payload for low-priority experimental preferences. Stable product preferences should use explicit columns. Do not store secrets, tokens, cookies, passwords, or provider credentials in it.
+
+2FA constraints:
+
+- Enabling 2FA requires at least two local methods: password, WebAuthn/passkey, verified email.
+- OAuth2 is not counted as a local 2FA factor, but 2FA-enabled users may log in with OAuth2.
+- Removing an authentication method while 2FA is enabled must still leave at least two usable local methods.
+
+## Administration Strategy
+
+<CardGrid>
+  <Card title="Use Permission Names" icon="setting">
+    Permission configuration should use stable permission-name sets so changes are readable, reviewable, and easy to roll back.
+  </Card>
+  <Card title="Separate Scopes" icon="puzzle">
+    Platform admin and room admin are separate concepts. Diagnose permission issues by layer first.
+  </Card>
+  <Card title="Preferences Are Runtime Data" icon="document">
+    User preferences are changed through API/CLI and should not live in YAML or Helm values.
+  </Card>
+  <Card title="Verify Behavior" icon="rocket">
+    After changing join rules, permissions, or 2FA, test real login, room join, and playback flows.
+  </Card>
+</CardGrid>
+
+## Continue Reading
+
+- [Administer SyncTV](../../admin/)
+- [Authentication and Security Model](../../admin/authentication-security/)
+- [Data, Privacy, and Retention](../../operations/data-retention/)
+- [Runtime Settings Reference](../../reference/runtime-settings/)
+- [CLI Reference](../../reference/cli/)

@@ -1,0 +1,36 @@
+---
+title: Room and Member Management
+description: Manage room lifecycle, member roles, member permissions, room settings, playback controls, and livestream entries.
+---
+
+Room management affects online users. Query current state first, then validate joining, playback, chat, and permissions from a normal member account.
+
+## Scope
+
+| Category | Common commands | Risk |
+| --- | --- | --- |
+| Lifecycle | `room create`, `room delete`, `room ban`, `room transfer-owner` | Visibility, ownership, and data retention |
+| Members | `room member add/kick/ban/unban/set-permissions` | Access and administration capability |
+| Settings | `room settings update/reset` | Join rules, guests, chat, danmaku, and defaults |
+| Playback | `room playback play/pause/seek/start/stop` | All online members see the change |
+| Livestream | `room stream list`, `provider rtmp create-publish-key` | Publish keys and live sessions |
+
+## Operation Order
+
+1. Query room, members, and current settings.
+2. Decide whether the change is long-term responsibility or a single-member exception.
+3. Use room roles or defaults for long-term changes; use member overrides for exceptions.
+4. Do not delegate `DELETE_ROOM` as an ordinary room capability.
+5. Validate WebSocket sync, join flow, chat, and playback controls.
+6. Keep reasons for delete, ban, and ownership-transfer actions.
+
+## Member Issues
+
+| Goal | Action | Note |
+| --- | --- | --- |
+| Temporarily mute | Remove `send_chat` from the member | Smaller blast radius than disabling chat |
+| Allow playback control | Add `play_control` | Media switching also needs `change_current_media` |
+| Remove disruptive member | Kick or ban member | Room ban is not a platform ban |
+| Change long-term responsibility | Change room role or defaults | Avoid long-lived piles of member overrides |
+
+Room concepts are in [Rooms](../../concepts/rooms/). Permission evaluation is in [Permissions Model](../../concepts/permissions/).

@@ -13,7 +13,7 @@ Production deployments must back up two categories of data:
 | --- | --- | --- |
 | PostgreSQL | Required | Users, rooms, permissions, provider instances, preferences, audit data, and business data live there |
 | Production secrets | Required | JWT, OPAQUE, credential encryption, cluster, and management secrets affect login and decryption |
-| Configuration files | Strongly recommended | Restore requires exact listeners, domains, dependencies, paths, and feature flags |
+| Configuration files | Recommended | Restore requires exact listeners, domains, dependencies, paths, and feature flags |
 | Shared HLS storage | As needed | Required if you need to preserve HLS files or shared multi-replica segments |
 | Proxy slice cache | Usually no | It is reproducible cache; losing it only lowers hit rate |
 | Redis | Usually not long-term | Redis stores short-lived auth, rate-limit, and coordination state |
@@ -63,7 +63,7 @@ psql "$DATABASE_URL" < synctv-20260504-120000.sql
 ```
 
   </TabItem>
-  <TabItem label="Kubernetes" icon="seti:kubernetes">
+  <TabItem label="Kubernetes" icon="cloud-download">
 
 If PostgreSQL runs inside Kubernetes, port-forward and back up locally:
 
@@ -93,6 +93,8 @@ Store at least these values:
 | Provider token/API key/cookie | Secret Manager or encrypted database storage |
 
 If you use `_file` settings, back up the file contents, not just the paths.
+
+For secret classes, rotation safety, and keys that should not be casually rotated, see [Security Hardening and Rotation](../security-hardening-and-rotation/).
 
 ## Restore Order
 
@@ -126,9 +128,7 @@ Business checks:
 - WebAuthn challenge and origin settings work if enabled.
 - OAuth2 redirect state reads and writes through Redis if enabled.
 
-## Restore Drill Frequency
-
-Recommended:
+## Restore Drills
 
 - Run a restore drill before each major upgrade.
 - Run one after changing secret-management strategy.
@@ -148,3 +148,10 @@ Redis loss does not usually destroy durable business data, but it changes short-
 - Cluster nodes must register and catch up again.
 
 If strong token revocation is required, use highly available Redis and keep token lifetimes short.
+
+## Continue Reading
+
+- [Security Hardening and Rotation](../security-hardening-and-rotation/)
+- [Upgrades and Migrations](../upgrades/)
+- [Production Checklist](../../install/production-checklist/)
+- [Troubleshooting](../troubleshooting/)

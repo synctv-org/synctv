@@ -13,7 +13,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | --- | --- | --- |
 | PostgreSQL | 必须 | 用户、房间、权限、Provider 实例、用户偏好、审计和业务数据都在数据库中 |
 | 生产 secret | 必须 | JWT、OPAQUE、Provider 凭据加密 key、cluster secret、management token 等影响登录和数据解密 |
-| 配置文件 | 强烈建议 | 恢复时需要精确还原监听、域名、依赖、路径和功能开关 |
+| 配置文件 | 建议 | 恢复时需要精确还原监听、域名、依赖、路径和功能开关 |
 | HLS 共享存储 | 按需 | 如果你需要保留直播 HLS 文件或多副本共享片段 |
 | proxy slice cache | 通常不必 | 这是可再生缓存，丢失后只会降低缓存命中率 |
 | Redis | 通常不必长期备份 | Redis 保存短期状态和协调状态，清空会影响正在进行的登录、验证码、限流窗口和集群短期状态 |
@@ -63,7 +63,7 @@ psql "$DATABASE_URL" < synctv-20260504-120000.sql
 ```
 
   </TabItem>
-  <TabItem label="Kubernetes" icon="seti:kubernetes">
+  <TabItem label="Kubernetes" icon="cloud-download">
 
 如果 PostgreSQL 在集群内，可以临时 port-forward 后从本地备份：
 
@@ -93,6 +93,8 @@ pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
 | Provider token/API key/cookie | Secret Manager 或数据库内加密存储 |
 
 如果你使用 `_file` 配置，把文件内容备份，而不是只备份路径。
+
+密钥如何分类、哪些可以轮换、哪些不能随意轮换，见 [安全加固与密钥轮换](../security-hardening-and-rotation/)。
 
 ## 恢复顺序
 
@@ -126,9 +128,7 @@ curl -fsS http://localhost:8080/health/ready
 - 如果启用 WebAuthn，passkey challenge 和 origin 配置正常。
 - 如果启用 OAuth2，redirect state 能在 Redis 正常读写。
 
-## 恢复演练频率
-
-建议：
+## 恢复演练
 
 - 每次大版本升级前做一次恢复演练。
 - 每次调整 secret 管理方式后做一次恢复演练。
@@ -148,3 +148,10 @@ Redis 丢失通常不破坏持久业务数据，但会造成短期行为变化�
 - 集群节点需要重新注册和 catch-up。
 
 如果你依赖强 token 吊销语义，Redis 应使用高可用部署，并把 token 有效期设置得足够短。
+
+## 继续阅读
+
+- [安全加固与密钥轮换](../security-hardening-and-rotation/)
+- [升级与迁移](../upgrades/)
+- [生产部署清单](../../install/production-checklist/)
+- [排障入口](../troubleshooting/)

@@ -1,0 +1,108 @@
+---
+title: 快速开始
+description: 用 Docker Compose 启动单机 SyncTV，并验证服务可用。
+---
+
+import { Aside, Code, Steps } from '@astrojs/starlight/components';
+import {
+  composeDeploymentDocsUrl,
+  composeInitScriptUrl,
+  composePostgresEnvExampleUrl,
+  composeSynctvEnvExampleUrl,
+  dockerComposeFileUrl,
+} from '../../../lib/project';
+
+单机生产部署包含一个 SyncTV 进程、一个 PostgreSQL 和一个 Redis。Kubernetes 或多副本部署先完成单机闭环，再进入 [Helm 部署](../../install/helm/) 和 [集群配置](../../configuration/cluster/)。
+
+## 前置条件
+
+- Docker 和 Docker Compose 可用。
+- 当前目录可以长期保存 Compose 文件、`.env.postgres`、`.env.synctv` 和数据卷。
+- 已准备 root 用户密码。生产环境使用密码管理器生成。
+
+## 启动
+
+<Steps>
+1. 创建目录并下载 Compose 文件：
+
+   <Code
+     code={[
+       'mkdir synctv-compose',
+       'cd synctv-compose',
+       `curl -fsSLO ${dockerComposeFileUrl}`,
+       `curl -fsSLO ${composePostgresEnvExampleUrl}`,
+       `curl -fsSLO ${composeSynctvEnvExampleUrl}`,
+       'mkdir -p scripts',
+       `curl -fsSL ${composeInitScriptUrl} -o scripts/init-compose-env.sh`,
+       'chmod +x scripts/init-compose-env.sh',
+     ].join('\n')}
+     lang="bash"
+   />
+
+2. 生成 `.env.postgres` 和 `.env.synctv`：
+
+   ```bash
+   ./scripts/init-compose-env.sh
+   ```
+
+3. 编辑 `.env.synctv`，至少设置 root 密码：
+
+   ```dotenv
+   SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
+   ```
+
+4. 检查 Compose 渲染结果：
+
+   ```bash
+   docker compose config
+   ```
+
+5. 启动服务：
+
+   ```bash
+   docker compose up -d
+   ```
+</Steps>
+
+## 验证
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8080/health/ready
+```
+
+成功后打开：
+
+```text
+http://localhost:8080
+```
+
+默认 root 用户名是 `root`。密码来自 `.env.synctv` 中的 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`。
+
+## 必须保存的值
+
+| 环境变量 | 用途 |
+| --- | --- |
+| `SYNCTV_JWT_SECRET` | 签发 access token、refresh token 和 guest token |
+| `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` | OPAQUE 密码认证的服务端长期 secret |
+| `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` | 加密 Provider 凭据 |
+| `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` | 首次创建 root 用户 |
+
+<Aside type="caution">
+不要删除或重新生成 `.env.synctv` 中的长期 secret。`SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET` 和 `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY` 变化后，已有密码记录或 Provider 凭据可能不可用。
+</Aside>
+
+## 常见失败
+
+| 现象 | 处理 |
+| --- | --- |
+| `docker compose config` 提示变量缺失 | 确认已运行 `./scripts/init-compose-env.sh`，并在当前目录保留 `.env.postgres` 和 `.env.synctv`。 |
+| `/health/ready` 失败 | 运行 `docker compose logs -f synctv`，先看第一条启动错误。 |
+| 浏览器跨域错误 | 在 `.env.synctv` 中设置 `SYNCTV_SERVER_CORS_ALLOWED_ORIGINS`，只填写 origin。 |
+| root 用户无法登录 | 确认数据库首次启动时已设置 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，并查看启动日志中的 bootstrap 结果。 |
+
+## 继续阅读
+
+- 按 [生产部署清单](../../install/production-checklist/) 补齐 TLS、备份、metrics 和告警。
+- 需要解释 Compose 文件、端口和数据卷时，读 <a href={composeDeploymentDocsUrl}>Docker Compose 部署</a>。
+- 本地源码开发见 [开发指南](../../develop/local-development/)。

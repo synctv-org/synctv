@@ -1,0 +1,41 @@
+---
+title: Provider 管理
+description: 创建、启停、更新、重连和删除 Provider instance，并保护外部媒体源凭据。
+---
+
+Provider instance 是外部媒体源的连接配置。实例配置通常包含 URL、token、cookie、UA、认证信息、远程 gRPC 信息或特定后端参数。
+
+## 常见操作
+
+```bash
+synctv provider available
+synctv provider list
+synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
+synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
+synctv provider enable <NAME>
+synctv provider disable <NAME>
+synctv provider reconnect <NAME>
+synctv provider delete <NAME>
+```
+
+## 操作前检查
+
+| 操作 | 先确认 |
+| --- | --- |
+| 创建 | `security.credential_encryption_key` 已配置，凭据不会进入日志或 shell history |
+| 更新 | 新旧 endpoint、header、UA、代理策略和认证方式 |
+| 禁用 | 当前是否仍有用户默认 Provider 或房间媒体依赖 |
+| 删除 | 是否仍被播放列表、用户偏好或远程实例引用 |
+| 重连 | 上游是否可达，凭据是否过期 |
+
+## 播放验证
+
+修改 Provider 后，至少验证：
+
+1. 管理员账号可以浏览或搜索媒体。
+2. 普通用户能按权限看到可用媒体。
+3. 直连播放和代理播放都符合预期。
+4. 支持 Range 的上游可以 seek。
+5. Bilibili、Alist 等对 header 敏感的来源使用了正确的 `User-Agent`、`Referer`、`Range` 和认证 header。
+
+媒体源概念见 [媒体源](../../concepts/media-providers/)；用户接入步骤见 [添加媒体](../../use/media-sources/)。

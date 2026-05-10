@@ -1,0 +1,30 @@
+---
+title: 运行设置
+description: 管理存储在数据库中的 runtime settings，并区分它们和启动配置。
+---
+
+runtime settings 是存储在 PostgreSQL 的热更新产品策略。它们适合运行中调整注册、房间创建、代理策略、CORS、聊天保留等行为；不适合保存启动期必须固定的 secret、监听端口、数据库连接、Redis 连接或 cache 启用状态。
+
+## 基本操作
+
+```bash
+synctv settings list
+synctv settings get user.enable_password_signup
+synctv settings update user --set enable_password_signup=true
+```
+
+## 判断是否属于 runtime settings
+
+| 想修改 | 应该去哪里 |
+| --- | --- |
+| 注册开关、房间创建策略、代理策略、CORS、聊天保留 | runtime settings |
+| JWT secret、OPAQUE setup secret、凭据加密 key | 启动配置和 secret 管理 |
+| PostgreSQL、Redis、监听端口、TLS、data_dir | 启动配置 |
+| 用户 2FA、通知偏好、默认 Provider | 用户偏好 |
+| Provider URL、token、Cookie | Provider instance 管理 |
+
+## 多副本行为
+
+runtime settings 写入 PostgreSQL 后，通过 PostgreSQL LISTEN/NOTIFY 通知其他副本刷新本地缓存。修改后观察所有副本日志和行为；如果副本没有同步，先检查数据库连接、通知监听和部署版本。
+
+完整字段、默认值和校验规则见 [Runtime settings 参考](../../reference/runtime-settings/)。

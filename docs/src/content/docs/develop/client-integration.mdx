@@ -1,0 +1,294 @@
+---
+title: 客户端集成指南
+description: 面向客户端、SDK 和第三方集成的 HTTP、gRPC、WebSocket、认证、MFA、OAuth2 和实时连接约定。
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 集成入口
+
+OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要处理认证、MFA、Realtime、媒体 header 和错误重试。Web、桌面、移动端、CLI、机器人和第三方 SDK 都按这组约定集成。
+
+如果你需要最小可运行调用链，直接看 [SDK 与 API 示例](../sdk-and-api-examples/)；如果你正在实现统一错误处理，看 [错误参考](../../reference/errors/)。
+
+## 常见集成配方
+
+| 目标 | 实现顺序 | 关键页面 |
+| --- | --- | --- |
+| 登录并保持会话 | 登录、处理 MFA、保存 access/refresh token、刷新会话、处理 401 | 本页“Token 使用”和“本地登录和 MFA” |
+| 进入房间实时状态 | 获取房间、创建 WebSocket ticket、连接 `/ws/rooms/{room_id}`、解码 protobuf | [Realtime API](../realtime-api/) |
+| 展示同步播放 | 读取当前播放状态、获取播放快照、订阅 `playback_state` 和 `playback_snapshot` | [播放模型](../../concepts/playback-model/) |
+| 添加媒体 | 选择 Provider、浏览或搜索媒体、提交播放列表项、处理 Provider 错误 | [媒体源](../../concepts/media-providers/) |
+| 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放快照、切换媒体后丢弃旧 URL | [播放与代理模型](../../use/playback-and-proxy/) |
+| 实现重连 | WebSocket 断开后重新申请 ticket、重连、用本地版本重新观察资源 | [Realtime API](../realtime-api/) |
+| 统一错误体验 | 按 HTTP status、业务 code、`request_id`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
+
+先实现登录、房间列表、ticket、Realtime 和播放快照，再扩展 Provider、聊天、弹幕、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
+
+## 选择哪种接口
+
+| 场景 | 接口 | 说明 |
+| --- | --- | --- |
+| 普通业务操作 | HTTP/OpenAPI 或公开 gRPC | 用户、房间、播放列表、通知、Provider 等业务都可以按客户端技术栈选择。 |
+| 生成 SDK | HTTP/OpenAPI | 通过 `/api-docs/openapi.json` 生成 TypeScript、Kotlin、Swift、Go 等客户端。 |
+| 强类型内部客户端 | gRPC | 直接使用 `synctv-proto/proto/client.proto`、`oauth2.proto` 和 provider proto。 |
+| 房间实时状态 | WebSocket 或 gRPC stream | 需要收发实时播放、聊天、弹幕、WebRTC 信令时使用。 |
+| 运维管理 | management gRPC/CLI | 不要把 management 端点暴露给普通客户端。CLI 是日常入口。 |
+| 媒体播放 | Provider 返回的直连 URL 或 SyncTV proxy URL | Provider 决定 header、代理策略和 Range 行为。客户端不要猜测底层上游规则。 |
+
+## 最小 HTTP 流程
+
+下面的例子用于说明组合方式。字段的完整结构以 `/api-docs/openapi.json` 和 protobuf 为准。
+
+<Tabs syncKey="client-http-flow">
+  <TabItem label="登录" icon="approve-check-circle">
+
+```bash
+curl -sS http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "root",
+    "password": "change-this-password"
+  }'
+```
+
+典型成功响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA，不要把这次响应当作已登录。
+
+  </TabItem>
+  <TabItem label="创建 WebSocket ticket" icon="document">
+
+```bash
+ACCESS_TOKEN='paste-access-token-here'
+ROOM_ID='room_1' # 使用创建或列表接口返回的 room.id
+
+curl -sS http://localhost:8080/api/tickets \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"room_id\":\"${ROOM_ID}\"}"
+```
+
+响应中的 `ticket` 是短期、一次性、房间绑定的 WebSocket 凭据。
+
+  </TabItem>
+  <TabItem label="连接 WebSocket" icon="puzzle">
+
+浏览器不能可靠设置 WebSocket `Authorization` header，因此使用 ticket：
+
+```js
+const roomId = 'room_1'; // 使用创建或列表接口返回的 room.id
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes); // 使用 client.proto 生成的类型
+  console.log(message);
+};
+```
+
+原生客户端或服务端 SDK 可以使用：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+  </TabItem>
+</Tabs>
+
+## Token 使用
+
+业务接口使用 Bearer token：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+客户端规则：
+
+- access token 只用于短期 API 调用。
+- refresh token 只用于刷新会话，不要传给 WebSocket query、媒体 URL 或第三方服务。
+- refresh token 刷新后应按服务端返回结果更新本地保存的 token；不要继续使用旧 refresh token 做并发刷新。
+- 用户开启 2FA 后，本地登录必须完成 MFA 后才能拿到满足策略的 token。OAuth2 登录不参与本地 2FA，但 OAuth2 登录签发的 token 可用于该登录路径。
+
+生产环境必须用 TLS。登录、注册、改密码、密码找回、MFA password 都必须走 HTTPS 或受信任的加密隧道。
+
+## 本地登录和 MFA
+
+`LoginResponse` 永远是同一个结构：可能直接返回 token，也可能返回 `mfa.required=true` 的挑战。
+
+客户端处理逻辑：
+
+<Steps>
+1. 发起第一因素登录，例如密码、OPAQUE、passkey 或邮箱验证码登录。
+2. 读取 `LoginResponse.mfa.required`。
+3. 如果 `required=false`，保存 `access_token` 和 `refresh_token`，登录结束。
+4. 如果 `required=true`，保存短期 `mfa.session_id`，展示 `available_methods`。
+5. 如果可用方式包含 `MFA_METHOD_EMAIL`，客户端可以直接调用 `RequestMfaEmailCode` 发送第二步验证码。
+6. 如果可用方式包含 `MFA_METHOD_WEBAUTHN`，先调用 `StartMfaPasskey` 获取 WebAuthn options，再调用 `FinishMfaPasskey`。
+7. 如果可用方式包含 `MFA_METHOD_PASSWORD`，调用 `VerifyMfaPassword`。失败会计入暴力破解保护。
+8. 第二因素成功后，最终响应会返回可用 token。
+</Steps>
+
+`GetUserPreferences` 会返回 `auth_factors`，用于展示当前用户是否具备 password、webauthn、email 这些本地验证方式。开启 2FA 前必须至少有两种本地验证方式；OAuth2 不计入本地 2FA 因素。
+
+<Aside type="note">
+OPAQUE 是密码登录协议，但客户端不能自行推断它是否可作为 password MFA。只有服务端在 `available_methods` 中返回 `MFA_METHOD_PASSWORD` 时，客户端才展示 password 第二因素。
+</Aside>
+
+## 邮箱验证码
+
+邮箱验证码可以用于登录、MFA、邮箱验证和密码找回，具体接口以 OpenAPI/protobuf 为准。客户端应区分用途，不要复用不同流程的验证码输入框状态。
+
+独立邮箱登录流程：
+
+```bash
+curl -sS http://localhost:8080/api/auth/email/request \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"user@example.com"}'
+```
+
+随后用 `email` + `email_token` 调用登录接口。不要把邮箱登录 token 和 MFA 邮件验证码混用；MFA 邮件验证码必须绑定 `mfa_session_id`。
+
+客户端规则：
+
+- 发送验证码后启用倒计时，避免用户连续点击触发限流。
+- 接口返回限流错误时，按服务端错误展示，不要本地无限重试。
+- MFA 邮箱验证码使用 `mfa_session_id`，不是普通邮箱登录 token。
+
+## OAuth2
+
+OAuth2/OIDC 是前端驱动流程：
+
+<Steps>
+1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signup_enabled` 和 `signup_need_review`。
+2. 调用 `GET /api/oauth2/{provider}/authorize?redirect_url=<callback>` 获取第三方授权 URL 和 state。
+3. 把用户跳转到第三方授权页面。
+4. 第三方回调到客户端 URL，带回 `code` 和 `state`。
+5. 客户端调用 `POST /api/oauth2/{provider}/exchange`。
+6. 如果响应包含 `registration_review_required=true`，展示待审核状态并保存 `registration_review_id`，不要把它当作已登录。
+7. 如果响应包含 token，保存 SyncTV access/refresh token。
+</Steps>
+
+最小交换示例：
+
+```bash
+curl -sS http://localhost:8080/api/oauth2/github/exchange \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "code": "code-from-callback",
+    "state": "stateFromAuthorizeResponse123456"
+  }'
+```
+
+绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirect_url=<callback>`，这类请求需要当前用户认证上下文。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
+
+## gRPC 示例
+
+公开 gRPC 使用同一个主端口。调试时可以用 reflection：
+
+```bash
+grpcurl -plaintext localhost:8080 list synctv.client.AuthService
+```
+
+登录示例：
+
+```bash
+grpcurl -plaintext \
+  -d '{"username":"root","password":"change-this-password"}' \
+  localhost:8080 synctv.client.AuthService/Login
+```
+
+房间内 RPC 需要同时发送用户身份和房间上下文：
+
+```bash
+grpcurl -plaintext \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "x-room-id: ${ROOM_ID}" \
+  -d '{}' \
+  localhost:8080 synctv.client.RoomService/GetPlayback
+```
+
+不要把 room id 只放在请求 body 里然后期待服务端推断。`client.proto` 中标注 `x-room-id metadata` 的 RPC 都应显式传 metadata。
+
+## WebSocket
+
+WebSocket 地址格式：
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+认证有两种方式：
+
+| 方式 | 适用客户端 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <token>` | 原生客户端、CLI、服务端 SDK | token 不进入 URL。 |
+| `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先调用 `POST /api/tickets` 获取短期一次性 ticket，再连接。 |
+
+浏览器流程：
+
+<Steps>
+1. 使用普通 Bearer token 调用 `POST /api/tickets`，传入目标 `room_id`。
+2. 得到 `ticket` 和过期时间。
+3. 连接 `wss://<host>/ws/rooms/<room_id>?ticket=<ticket>`。
+4. 连接成功后不要复用 ticket；失败也应重新申请。
+</Steps>
+
+WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`；文本帧会被忽略。浏览器客户端应把生成代码编码出的 `Uint8Array` 作为 payload 发送，并把收到的 `Blob` 或 `ArrayBuffer` 解码成 `ServerMessage`。
+
+## 实时资源观察
+
+实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放快照、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
+
+完整协议、delivery mode、版本同步、每类资源示例、重连和错误处理见 [Realtime API](../realtime-api/)。
+
+## 媒体 URL 与请求头
+
+Provider 返回的媒体播放结果可能包含 URL、代理模式、直连模式和必须使用的 header。客户端规则：
+
+- 使用 Provider 返回的 header，不要自行拼接 `User-Agent`、`Referer`、`Range`。
+- 如果 Provider 返回直连 URL 且要求 header，客户端必须确认自身运行环境可以设置这些 header。
+- 如果客户端不能设置必要 header，应使用 Provider 返回的代理 URL 或请求代理模式。
+- Range 播放是否可用由 Provider 和上游共同决定；SyncTV proxy 不会自动转发原始客户端 header。
+
+更多 Provider 行为见 [媒体 Provider](../../configuration/media-providers/) 和 [Proxy slice cache](../../configuration/proxy-slice-cache/)。
+
+## 错误处理
+
+HTTP API 的错误体形状：
+
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": null,
+  "request_id": "..."
+}
+```
+
+客户端应该按错误类别处理，而不是只判断文本：
+
+| 状态 | 含义 | 客户端动作 |
+| --- | --- | --- |
+| `400` | 请求结构或字段不合法 | 修正输入，必要时显示字段错误 |
+| `401` | token 过期、ticket 无效、未登录 | 进入登录或刷新流程 |
+| `403` | 身份有效但无权限 | 展示权限不足，不要无限重试 |
+| `404` | 资源不存在 | 刷新本地列表或引导用户返回 |
+| `409` | 状态冲突 | 重新拉取资源后再提交 |
+| `429` | 限流 | 按 `Retry-After` 或服务端提示退避 |
+| `5xx` | 服务端或依赖异常 | 展示重试入口并收集 `request_id`、时间、路径 |
+
+## 开发入口
+
+- [OpenAPI 文档入口](../../reference/openapi/)：Swagger UI 和 `/api-docs/openapi.json`。
+- [gRPC 调试](../../reference/grpc/)：reflection、grpcurl 和 protobuf 文件位置。
+- [SDK 与 API 示例](../sdk-and-api-examples/)：登录、refresh、房间、ticket、Realtime、Provider 和错误处理示例。
+- [Realtime API](../realtime-api/)：WebSocket protobuf、资源观察、版本同步和重连处理。
+- [错误参考](../../reference/errors/)：HTTP/gRPC/Realtime/Provider 错误结构和错误码。
+- [认证与安全模型](../../admin/authentication-security/)：2FA、OAuth2、token 上下文和 Provider header 边界。
+- [房间、权限与用户偏好](../../use/rooms-permissions/)：角色、权限名称、room settings 和用户偏好。
+- [排障入口](../../operations/troubleshooting/)：按现象定位 CORS、WebSocket、登录、Provider 和 Range 问题。

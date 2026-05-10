@@ -3,22 +3,15 @@ title: 配置总索引
 description: 按源码配置结构逐项列出 SyncTV 所有配置字段、类型、默认值和详细说明页面。
 ---
 
-## 这页怎么用？
+静态配置字段索引列出源码默认值；实际生效值还会叠加配置文件、环境变量、CLI 覆盖、路径解析和时区 fallback。
 
-这页是配置覆盖索引，用来快速确认某个 YAML 字段是否已经被文档覆盖。详细解释、风险和完整示例请进入对应配置页。
+完整 YAML 模板见 [完整配置示例](../../configuration/full-example/)。当前二进制的生效配置可用 `synctv config show --output yaml` 查看，secret 会打码。
 
-字段默认值以源码默认配置为准。OAuth2 provider 实例属于 runtime settings，见 [运行时设置](../runtime-settings/#oauth2)。远程 media provider instance 通过管理 API/CLI 持久化，不属于静态配置文件。
+OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。远程 media provider instance 通过管理 API/CLI 持久化，不属于静态配置文件。
 
-## 完整配置示例
+## 配置决策
 
-配置示例不直接塞进本页，避免索引过长。建议使用以下入口：
-
-- [完整配置示例](../../configuration/full-example/)：最小生产配置骨架、覆盖全部静态字段的全量 YAML 模板、URL/拆分配置示例。
-- `synctv config show --output yaml`：输出当前二进制支持的完整有效配置，并自动打码 secret。
-
-## 先做配置决策
-
-如果你不是在查某个字段，先用这张表判断“现在该不该改”。绝大多数字段保留默认值即可，生产上线优先处理 secret、数据库、入口、安全边界和备份。
+绝大多数字段可以保留默认值。生产上线优先处理 secret、数据库、入口、安全边界和备份。
 
 | 配置 | 什么时候要改 | 常见错误 | 改动后 | 生产建议 |
 | --- | --- | --- | --- | --- |
@@ -47,7 +40,7 @@ curl -fsS http://localhost:8080/health/ready
 
 ## 单机生产重点字段
 
-如果你使用生产 Compose，优先维护 `.env.postgres` 和 `.env.synctv`，通常不需要手写完整 YAML。上线前重点确认：
+生产 Compose 优先维护 `.env.postgres` 和 `.env.synctv`，不需要手写完整 YAML。上线前确认：
 
 | 目标 | Compose/env 重点 | 对应配置字段 |
 | --- | --- | --- |
@@ -60,7 +53,7 @@ curl -fsS http://localhost:8080/health/ready
 | Redis | Compose Redis 服务和 key prefix | `redis.*` |
 | 运行时文件 | Compose `/data` volume | `data_dir` |
 
-当你离开 Compose 路径，改用裸机、Kubernetes、secret file 或自定义配置文件时，再使用下面的字段索引逐项查配置。
+裸机、Kubernetes、secret file 或自定义配置文件使用下面的字段索引。
 
 ## 顶层配置
 

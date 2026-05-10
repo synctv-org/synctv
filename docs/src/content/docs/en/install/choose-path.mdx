@@ -1,0 +1,75 @@
+---
+title: Choose a Deployment Path
+description: Choose between single-node production Compose, local evaluation, source runs, and Helm/Kubernetes.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Diagram from '../../../../components/Diagram.astro';
+import deploymentPathDark from '../../../../assets/diagrams/deployment-path-dark.svg';
+import deploymentPathLight from '../../../../assets/diagrams/deployment-path-light.svg';
+
+## Paths
+
+Use **single-node production Compose** for a long-running instance on one machine. Switch paths only for source changes, temporary local evaluation, or an existing Kubernetes platform.
+
+<Diagram
+  light={deploymentPathLight}
+  dark={deploymentPathDark}
+  alt="SyncTV deployment path decision diagram choosing single-node production Compose, local evaluation, source run, or Helm based on long-running service, source work, and Kubernetes multi-replica needs."
+  caption="Decide the operating goal first, then open the matching deployment guide."
+/>
+
+## Decision Table
+
+| Path | Best for | Startup style | Production fit | Next page |
+| --- | --- | --- | --- | --- |
+| Single-node production Compose | Self-hosters, small teams, one server | Prebuilt image + `.env.postgres` + `.env.synctv` | Default production path | [Quick Start](../../install/quick-start/) |
+| Local evaluation | Temporary UI or feature preview | `docker-compose.dev.yml` | Not for public or long-running use | [Development Environment](../../develop/local-development/) |
+| Source run | Developers, API debugging, code changes | Container dependencies + local `cargo run` | Not a deployment path | [Development Guide](../../develop/local-development/) |
+| Helm/Kubernetes | Multi-replica or platform teams | Helm values + Kubernetes Secret/PVC/Ingress | Production capable, higher complexity | [Helm Deployment](../helm/) |
+
+## Single-Node Production Compose
+
+Choose it if any of these are true:
+
+- You have one server, NAS, or VM.
+- You want the shortest path to a long-running SyncTV instance.
+- You do not want to start with Kubernetes, Ingress controllers, PVCs, or Secret operators.
+- You can manage PostgreSQL backups and a few long-lived secrets.
+
+Success signals:
+
+- `.env.postgres` and `.env.synctv` are persisted and backed up.
+- `docker compose config` passes.
+- `/health/ready` returns 200.
+- The root user can log in.
+- PostgreSQL has a backup plan.
+
+Execution path:
+
+1. [Quick Start](../../install/quick-start/): download Compose files, generate env files, set the root password, and start the service.
+2. [Docker Compose Deployment](../docker-compose/): review production Compose, development Compose, volumes, and ports.
+3. [Production Checklist](../production-checklist/): verify TLS, secrets, backups, metrics, alerts, and upgrade strategy.
+
+## Exception Paths
+
+| Scenario | Path | Boundary |
+| --- | --- | --- |
+| Temporary evaluation | Local evaluation | Fast startup, but includes development secrets and must not face the public internet or run long term. |
+| Source changes | Source run | PostgreSQL and Redis can come from development Compose while SyncTV runs from the local Rust toolchain. |
+| Existing Kubernetes platform | Helm | Decide HTTP/gRPC Ingress, Secret, PVC, metrics, Redis, HLS storage, and rolling updates first. |
+| Multi-replica realtime | Helm or self-managed multi-replica | All replicas must share PostgreSQL, Redis, `redis.key_prefix`, and `server.cluster_secret`. |
+
+## Decision Rules
+
+<Steps>
+1. If it faces users, do not use development Compose secrets.
+2. If it runs long term, back up PostgreSQL and production secrets.
+3. If it runs multiple replicas, share PostgreSQL, Redis, `redis.key_prefix`, and `server.cluster_secret`.
+4. If HLS runs across replicas, choose publisher-node proxying, `shared_file`, or OSS explicitly.
+5. If the management plane uses TCP, configure a token and keep it away from normal public entrypoints.
+</Steps>
+
+<Aside type="tip">
+When unsure, choose single-node production Compose. It is the smallest production loop and can still be migrated to Helm or another orchestrator later.
+</Aside>

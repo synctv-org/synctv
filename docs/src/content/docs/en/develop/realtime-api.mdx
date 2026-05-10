@@ -1,0 +1,155 @@
+---
+title: Realtime API
+description: SyncTV room WebSocket realtime protocol, connection authentication, base messages, reconnects, and errors.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The Realtime API is the room-scoped long-lived connection protocol. It carries chat, danmaku, playback commands, playback progress, WebRTC signaling, and subscriptions to cacheable room resources.
+
+Use HTTP/OpenAPI or gRPC for one-shot reads and writes. Use Realtime when a client needs low-latency push, less polling, or continuously synchronized room state.
+
+## Connection and Authentication
+
+WebSocket URL:
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+Authentication options:
+
+| Method | Clients | Notes |
+| --- | --- | --- |
+| `Authorization: Bearer <access_token>` | Native clients, CLI, server-side SDKs | Token does not enter the URL |
+| `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to create a short-lived, one-time, room-bound ticket |
+
+WebSocket only handles binary protobuf frames. Clients send `synctv.client.ClientMessage`, and the server returns `synctv.client.ServerMessage`. Text frames, ping, pong, and other non-business frames are not processed as business messages.
+
+```js
+const roomId = 'room_1';
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  handleServerMessage(message);
+};
+
+function sendClientMessage(message) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+```
+
+<Aside type="caution">
+Do not put refresh tokens in WebSocket URLs. Browser clients should use WebSocket tickets. Do not reuse a ticket after success or failure.
+</Aside>
+
+## When to Use Realtime
+
+| Scenario | Why Realtime |
+| --- | --- |
+| Synchronized playback | Play, pause, seek, and media changes need low-latency propagation |
+| Chat and danmaku | Room members need messages immediately |
+| Playback snapshot | Expired URLs, Provider credential changes, and media switches need refreshes |
+| Room members | Joins, leaves, and permission changes need UI sync |
+| WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding |
+
+## Message Scope
+
+Common client messages:
+
+| `ClientMessage` field | Purpose |
+| --- | --- |
+| `chat` | Send chat or danmaku |
+| `heartbeat` | Client heartbeat |
+| `playback_progress` | Report current playback position and play/pause state |
+| `playback_update` | Send a playback state update command |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | Forward WebRTC signaling |
+| `webrtc_join` / `webrtc_leave` | Join or leave a WebRTC session |
+| `observe_resource` | Subscribe to a realtime resource |
+| `unobserve_resource` | Unsubscribe from a realtime resource |
+
+Common server messages:
+
+| `ServerMessage` field | Purpose |
+| --- | --- |
+| `chat` | Chat or danmaku received |
+| `heartbeat_ack` | Heartbeat acknowledgement |
+| `error` | General business error |
+| `playback_state` / `playing_changed` | Playback state or playback target changed |
+| `room_settings` | Room settings changed |
+| `media_added` / `media_updated` / `media_removed` | Media changed |
+| `playlist_created` / `playlist_updated` / `playlist_deleted` | Playlist changed |
+| `permission_changed` / `user_joined` / `user_left` / `room_members` | Member or permission changed |
+| `resource_observed` / `resource_changed` / `resource_observe_error` | Resource observation result |
+
+Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [SDK and API Examples](../sdk-and-api-examples/).
+
+## Message Dispatch
+
+All Realtime API business messages live in the `ClientMessage.message` and `ServerMessage.message` `oneof` fields. Dispatch by `oneof` type, not text fields or log strings.
+
+```ts
+function handleServerMessage(message) {
+  if (message.chat) {
+    appendChat(message.chat);
+    return;
+  }
+
+  if (message.playbackState) {
+    updatePlayback(message.playbackState);
+    return;
+  }
+
+  if (message.resourceChanged) {
+    handleResourceChanged(message.resourceChanged);
+    return;
+  }
+
+  if (message.error) {
+    handleRealtimeError(message.error);
+  }
+}
+```
+
+After connecting, subscribe to the resources needed by the current view. See [Realtime Resource Observation](../realtime-resource-observation/).
+
+## Reconnect Flow
+
+Observations are not retained across WebSocket connections. After disconnect, clients should:
+
+<Steps>
+1. Request a new WebSocket ticket, or reconnect with a valid access token.
+2. Re-send `observe_resource` for currently visible views.
+3. Include the locally saved `version` so the server can decide whether to send a snapshot.
+4. For `playback_snapshot`, also include cached `media_id`, `playlist_id`, `target`, and `playback_client_profile`.
+5. Keep the local cache when `resource_observed.changed=false`; replace it when `resource_changed` arrives.
+</Steps>
+
+If the connection has been down for a long time, fetch critical resources through HTTP/gRPC first, then restore observations. This avoids showing stale UI for too long.
+
+## Observation Errors
+
+Resource observation errors are returned as `ServerMessage.resource_observe_error`:
+
+| Scenario | Client action |
+| --- | --- |
+| Empty `observe_id` or longer than 128 characters | Fix client code. Do not retry the same request |
+| Missing `resource` | Fix client code |
+| More than 64 observations on one connection | Unobserve unused resources or merge list views |
+| Snapshot service unavailable or load failed | Show a temporary error and retry with backoff |
+| Permission, missing resource, or invalid input error | Re-fetch room state and navigate back when needed |
+
+If sending fails or the server closes the connection, do not assume observations remain active. Rebuild all observations after reconnecting.
+
+## Continue Reading
+
+- Resource fields and subscription examples: [Realtime Resource Observation](../realtime-resource-observation/).
+- End-to-end client examples: [SDK and API Examples](../sdk-and-api-examples/).
+- Unified error handling: [Errors](../../reference/errors/).

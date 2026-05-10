@@ -1,0 +1,108 @@
+---
+title: Production Checklist
+description: Security, data, networking, observability, and upgrade checks before launching SyncTV.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Use this checklist before launch. For field definitions, see [Configuration Index](../../reference/configuration-index/). For deployment steps, see [Docker Compose](../docker-compose/) or [Helm](../helm/).
+
+## Required
+
+| Check | Acceptance criteria |
+| --- | --- |
+| Config validation | `synctv config validate` passes. |
+| JWT secret | `jwt.secret` comes from a secret or environment variable and is not an example value. |
+| OPAQUE setup secret | `security.opaque_server_setup_secret` is generated, backed up, and stable across restarts. |
+| Credential encryption key | `security.credential_encryption_key` is 64 hex characters and backed up. |
+| Root password | `bootstrap.root_password` or `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` is not committed to Git. |
+| PostgreSQL | Uses persistent storage. |
+| Database backup | At least one restorable backup exists. |
+| Migration | Startup logs or `synctv db status` show healthy migration state. |
+| Readiness | `/health/ready` succeeds. |
+| TLS | Public entrypoints use HTTPS. |
+| Management | management gRPC is not exposed to normal public clients. |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret` and `security.credential_encryption_key` are long-lived keys. Losing or replacing them can make existing password records or Provider credentials unusable.
+</Aside>
+
+## Network And Entry Points
+
+| Check | Acceptance criteria |
+| --- | --- |
+| HTTP entrypoint | Reverse proxy or Ingress supports WebSocket upgrade. |
+| CORS | When frontend and API use different origins, `server.cors_allowed_origins` contains only real origins. |
+| Trusted proxies | `server.trusted_proxies` contains only proxy networks you control. |
+| gRPC | Public gRPC uses separate Service/Ingress resources from HTTP. |
+| Metrics | Metrics listener has authentication and is not exposed directly to the public internet. |
+| STUN/RTMP | Required UDP/TCP ports are open when built-in STUN or livestreaming is enabled. |
+
+## Runtime Dependencies
+
+| Check | Acceptance criteria |
+| --- | --- |
+| Redis | Redis is configured for production; multi-replica mode requires Redis. |
+| Redis key prefix | `redis.key_prefix` is not shared with test, staging, or another production environment. |
+| Logs | Logs are collected and searchable in the existing logging system. |
+| Metrics | A Prometheus-compatible scraper is configured, with alerts based on [Metrics Catalog](../../reference/metrics-catalog/). |
+| Capacity | WebSocket connections, database connections, Redis, proxy bandwidth, and livestream traffic are estimated. |
+
+## Feature Checks
+
+| Feature | Acceptance criteria |
+| --- | --- |
+| WebAuthn/passkeys | `webauthn.rp_id` and `webauthn.rp_origin` match the real HTTPS entrypoint. |
+| Email | SMTP is configured and verified with `synctv settings test-email`. |
+| OAuth2 | `redirect_url` matches provider registration. |
+| Provider credentials | Credentials are stored through secrets or controlled admin flows, not in the repository. |
+| File-backed slice cache | Cache directory has capacity planning and cleanup policy. |
+| Livestream HLS | Single-node storage is confirmed; multi-replica mode uses publisher-node proxy, `shared_file`, or OSS. |
+| Cluster mode | All replicas share PostgreSQL, Redis, `redis.key_prefix`, and `server.cluster_secret`. |
+| OpenAPI | Production exposure of `/swagger-ui/` and `/api-docs/openapi.json` has been decided. |
+
+## Verification Commands
+
+### General
+
+```bash
+synctv config validate
+synctv db status
+curl -fsS http://localhost:8080/health/ready
+```
+
+### Docker Compose
+
+```bash
+docker compose config
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 synctv
+```
+
+### Helm
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv --values values.yaml
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv get pods
+```
+
+## Before Upgrade
+
+| Check | Acceptance criteria |
+| --- | --- |
+| Database backup | PostgreSQL backup is complete before upgrade. |
+| Secret continuity | Target version uses the same production secrets. |
+| Test environment | Target version has started in a test environment with migrations, login, room reads/writes, and Provider access verified. |
+| Rolling update | `server.shutdown_drain_timeout_seconds` is lower than Kubernetes termination grace period. |
+| Rollback | Rollback version, database state, and config source are known. |
+
+## Continue Reading
+
+- [Backup and Restore](../../operations/backup-restore/)
+- [Observability Runbook](../../operations/observability/)
+- [Capacity Planning](../../operations/capacity-planning/)
+- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)
+- [Upgrades and Migrations](../../operations/upgrades/)

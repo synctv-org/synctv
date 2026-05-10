@@ -1,0 +1,108 @@
+---
+title: 生产部署清单
+description: SyncTV 上线前的安全、数据、网络、观测和升级检查项。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+这份清单用于上线前验收。字段含义查 [配置索引](../../reference/configuration-index/)，部署步骤查 [Docker Compose](../docker-compose/) 或 [Helm](../helm/)。
+
+## 必须通过
+
+| 检查项 | 验收标准 |
+| --- | --- |
+| 配置校验 | `synctv config validate` 通过。 |
+| JWT secret | `jwt.secret` 来自 secret 或环境变量，不是示例值。 |
+| OPAQUE setup secret | `security.opaque_server_setup_secret` 已生成、备份，并跨重启保持不变。 |
+| 凭据加密 key | `security.credential_encryption_key` 是 64 个十六进制字符，已备份。 |
+| Root 密码 | `bootstrap.root_password` 或 `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` 没有提交到 Git。 |
+| PostgreSQL | 使用持久化存储。 |
+| 数据库备份 | 至少完成一次可恢复备份。 |
+| Migration | 启动日志或 `synctv db status` 显示 migration 状态正常。 |
+| Readiness | `/health/ready` 返回成功。 |
+| TLS | 公网入口使用 HTTPS。 |
+| Management | management gRPC 不暴露给普通公网用户。 |
+
+<Aside type="caution">
+`security.opaque_server_setup_secret` 和 `security.credential_encryption_key` 是长期密钥。丢失或替换后，已有密码记录或 Provider 凭据可能不可用。
+</Aside>
+
+## 网络和入口
+
+| 检查项 | 验收标准 |
+| --- | --- |
+| HTTP 入口 | 反向代理或 Ingress 支持 WebSocket upgrade。 |
+| CORS | 前端和 API 不同 origin 时，`server.cors_allowed_origins` 只包含真实 origin。 |
+| 可信代理 | `server.trusted_proxies` 只包含你控制的代理网段。 |
+| gRPC | 对外暴露 gRPC 时，HTTP 和 gRPC 使用独立 Service/Ingress。 |
+| Metrics | metrics listener 有认证，且不直接暴露公网。 |
+| STUN/RTMP | 启用内置 STUN 或直播时，已放行对应 UDP/TCP 端口。 |
+
+## 运行依赖
+
+| 检查项 | 验收标准 |
+| --- | --- |
+| Redis | 生产环境已配置 Redis；多副本必须配置 Redis。 |
+| Redis key prefix | `redis.key_prefix` 不与测试、预发或其他生产环境共用。 |
+| 日志 | 日志能被现有日志系统采集和检索。 |
+| 指标 | 已接入 Prometheus 兼容采集端，并按 [指标目录](../../reference/metrics-catalog/) 配置告警。 |
+| 容量 | 已估算 WebSocket 连接数、数据库连接数、Redis、代理带宽和直播流量。 |
+
+## 按功能检查
+
+| 功能 | 验收标准 |
+| --- | --- |
+| WebAuthn/passkey | `webauthn.rp_id` 和 `webauthn.rp_origin` 与真实 HTTPS 入口匹配。 |
+| 邮件 | SMTP 配置完成，并用 `synctv settings test-email` 验证。 |
+| OAuth2 | `redirect_url` 与第三方平台注册值一致。 |
+| Provider 凭据 | 凭据通过 secret 或受控管理流程写入，不出现在仓库。 |
+| Slice cache 文件后端 | 缓存目录有容量规划和清理策略。 |
+| 直播 HLS | 单机已确认本地存储；多副本已选择 publisher-node proxy、`shared_file` 或 OSS。 |
+| 集群模式 | 所有副本共享 PostgreSQL、Redis、`redis.key_prefix` 和 `server.cluster_secret`。 |
+| OpenAPI | 已决定生产是否暴露 `/swagger-ui/` 和 `/api-docs/openapi.json`。 |
+
+## 验证命令
+
+### 通用
+
+```bash
+synctv config validate
+synctv db status
+curl -fsS http://localhost:8080/health/ready
+```
+
+### Docker Compose
+
+```bash
+docker compose config
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 synctv
+```
+
+### Helm
+
+```bash
+helm lint ./helm/synctv
+helm template synctv ./helm/synctv --values values.yaml
+kubectl -n synctv rollout status deploy/synctv
+kubectl -n synctv get pods
+```
+
+## 升级前
+
+| 检查项 | 验收标准 |
+| --- | --- |
+| 数据库备份 | 升级前已完成 PostgreSQL 备份。 |
+| Secret 保留 | 目标版本继续使用同一组生产 secret。 |
+| 测试环境 | 目标版本已在测试环境完成启动、migration、登录、房间读写和 Provider 访问。 |
+| 滚动更新 | `server.shutdown_drain_timeout_seconds` 小于 Kubernetes termination grace period。 |
+| 回滚 | 已确认回滚版本、数据库状态和配置文件来源。 |
+
+## 继续阅读
+
+- [备份与恢复](../../operations/backup-restore/)
+- [观测与运行手册](../../operations/observability/)
+- [容量规划](../../operations/capacity-planning/)
+- [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)
+- [升级与迁移](../../operations/upgrades/)

@@ -35,7 +35,7 @@ Livestreaming includes ingest, realtime packet distribution, FLV playback, HLS r
   <Card title="HTTP-FLV" icon="rocket">
     Best for low latency. Clients hold long-lived responses, and write timeouts protect the server from slow readers.
   </Card>
-  <Card title="HLS" icon="folder">
+  <Card title="HLS" icon="seti:folder">
     Best for broad player compatibility and shared storage/CDN-like deployments. It has higher latency but scales well across replicas.
   </Card>
 </CardGrid>
@@ -61,14 +61,14 @@ RTMP is mainly the publishing protocol in the current design. Playback should us
 Limitations: process restarts lose segments; in multi-replica deployments, non-publisher nodes must read playlist/segment data from the publisher node through the HLS gRPC proxy. It works, but it is not the preferred backend for high-traffic production HLS.
 
   </TabItem>
-  <TabItem label="file" icon="folder">
+  <TabItem label="file" icon="seti:folder">
 
 `file` writes segments to this node's `hls_storage_path`. Single replicas can use local disk. Multi-replica deployments can use local disk with publisher-node proxying.
 
 Do not configure shared storage as `file`; if every replica can read and write the same path, use `shared_file`.
 
   </TabItem>
-  <TabItem label="shared_file" icon="folder">
+  <TabItem label="shared_file" icon="seti:folder">
 
 `shared_file` writes segments to `hls_storage_path` visible to every replica. The publisher node writes segments, and any node that receives a `.ts` request reads the file from its own shared mount.
 

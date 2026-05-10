@@ -1,0 +1,18 @@
+---
+title: SyncTV Concepts
+description: Understand rooms, media sources, playback, permissions, and runtime boundaries before using task guides.
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Concept pages explain the product model. Use them when you need to know where a capability belongs, who controls it, and which layer to inspect when it fails.
+
+<CardGrid>
+  <LinkCard title="Rooms" href="./rooms/" description="How rooms organize members, playlists, chat, danmaku, livestreaming, and settings." />
+  <LinkCard title="Media Sources" href="./media-providers/" description="Provider, direct URL, remote Provider, livestream, and playback result boundaries." />
+  <LinkCard title="Playback Model" href="./playback-model/" description="Playback state, playback snapshots, Realtime, direct URLs, proxying, and Range seek." />
+  <LinkCard title="Permissions Model" href="./permissions/" description="Global roles, room roles, member overrides, room settings, and preferences." />
+  <LinkCard title="Runtime Boundaries" href="./runtime-boundaries/" description="PostgreSQL, Redis, secrets, management endpoints, metrics, proxying, and non-goals." />
+</CardGrid>
+
+After the concepts, continue with [Use SyncTV](../use/), [Administer SyncTV](../admin/), [Install and Upgrade](../install/choose-path/), or [Develop with SyncTV](../develop/client-integration/).

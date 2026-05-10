@@ -1,0 +1,139 @@
+---
+title: 错误参考
+description: SyncTV HTTP、gRPC、Realtime、Provider 和运维错误的响应结构、错误码、状态映射和客户端处理建议。
+---
+
+import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
+
+## HTTP 错误响应
+
+HTTP API 使用统一 JSON 错误体：
+
+```json
+{
+  "error": "Invalid username or password",
+  "status": 401,
+  "code": 1002,
+  "request_id": "01HX..."
+}
+```
+
+字段含义：
+
+| 字段 | 说明 |
+| --- | --- |
+| `error` | 可展示的错误摘要。5xx 会被服务端脱敏。 |
+| `status` | HTTP 状态码数字。 |
+| `code` | 可选应用错误码，用于程序化处理。 |
+| `request_id` | 请求 ID。排查服务端日志时优先提供它。 |
+
+`429` 可能带 `Retry-After` header，客户端应按它退避。
+
+## HTTP 状态码
+
+| 状态 | 含义 | 客户端动作 |
+| --- | --- | --- |
+| `400` | 请求结构、字段或格式错误 | 修正输入，不要用相同请求重试 |
+| `401` | 未登录、token 失效、ticket 失效、Provider 凭据失效 | 刷新 token、重新登录或重新绑定 Provider |
+| `403` | 身份有效但无权限、邮箱未验证、被封禁 | 展示权限原因，不要无限重试 |
+| `404` | 资源、房间、媒体、Provider instance 不存在 | 刷新本地列表或引导返回 |
+| `409` | 已存在、并发修改、状态冲突 | 重新拉取资源后再提交 |
+| `408` | 后端请求超时 | 可退避重试，保留 request_id |
+| `429` | 限流或资源耗尽 | 使用 `Retry-After` 或指数退避 |
+| `502` | 上游 Provider 或代理错误 | 检查 Provider、上游状态和 header |
+| `503` | 数据库、Redis、邮件、Provider 或服务依赖不可用 | 稍后重试，运维查看依赖健康 |
+| `504` | 上游超时 | 退避重试，检查上游和网络 |
+
+## 应用错误码
+
+错误码按区间分组：
+
+| 区间 | 代码 | 含义 |
+| --- | --- | --- |
+| 通用 | `0` | 未指定错误 |
+| 认证 | `1000` | 未认证 |
+| 认证 | `1001` | token 过期 |
+| 认证 | `1002` | 凭据错误 |
+| 资源 | `2000` | 资源不存在 |
+| 资源 | `2001` | 资源已存在 |
+| 资源 | `2002` | 资源耗尽或限流 |
+| 资源 | `2003` | 状态冲突 |
+| 校验 | `3000` | 参数无效 |
+| 校验 | `3001` | 格式无效 |
+| 校验 | `3002` | 值太短 |
+| 校验 | `3003` | 值太长 |
+| 校验 | `3004` | 缺少必填字段 |
+| 权限 | `4000` | 权限不足 |
+| 权限 | `4001` | 禁止访问 |
+| 权限 | `4002` | 被封禁 |
+| 服务端 | `9000` | 内部错误 |
+| 服务端 | `9001` | 数据库错误 |
+| 服务端 | `9002` | 服务不可用 |
+| 服务端 | `9003` | 超时 |
+
+客户端不应依赖 `error` 文本做稳定分支；文本可能为了可读性或安全脱敏而变化。
+
+## gRPC 错误
+
+gRPC 使用标准 status code 和 message。常见映射：
+
+| gRPC code | HTTP 类比 | 含义 |
+| --- | --- | --- |
+| `InvalidArgument` | `400` | 参数或格式错误 |
+| `Unauthenticated` | `401` | 缺少或无效认证 |
+| `PermissionDenied` | `403` | 身份有效但无权限 |
+| `NotFound` | `404` | 资源不存在 |
+| `AlreadyExists` | `409` | 资源已存在 |
+| `ResourceExhausted` | `429` | 限流或容量耗尽 |
+| `Unavailable` | `503` | 依赖或服务不可用 |
+| `DeadlineExceeded` | `504` | 超时 |
+| `Internal` | `500` | 服务端内部错误 |
+
+调试方式见 [gRPC 调试](../grpc/)。
+
+## Realtime 错误
+
+WebSocket 业务错误通过 protobuf 消息返回，不是 HTTP JSON：
+
+| 消息 | 场景 |
+| --- | --- |
+| `ServerMessage.error` | 普通业务错误，例如权限不足、输入无效 |
+| `ServerMessage.resource_observe_error` | 资源观察失败，例如 observe id 无效、超过订阅上限、资源加载失败 |
+| WebSocket close | 认证失败、ticket 失效、协议错误、连接限制或服务关闭 |
+
+资源观察错误不会自动关闭连接。客户端应修正订阅、减少观察数量或退避重试。
+
+## Provider 错误
+
+Provider 错误需要区分 SyncTV 与上游：
+
+| 现象 | 典型状态 | 处理 |
+| --- | --- | --- |
+| Provider 凭据失效 | `401` | 重新登录或重新绑定 Provider |
+| 上游资源不存在 | `404` | 刷新列表，移除失效媒体 |
+| 上游拒绝请求 | `400` 或 `502` | 检查 header、URL、格式 |
+| 上游限流或 5xx | `502`/`503`/`504` | 退避重试，观察上游状态 |
+| 未配置凭据加密 | `500` 脱敏错误 | 管理员配置 credential encryption key |
+
+## 客户端处理准则
+
+<CardGrid>
+  <Card title="按状态分类" icon="document">
+    先按 HTTP/gRPC 状态决定登录、权限、重试或刷新本地状态。
+  </Card>
+  <Card title="使用错误码" icon="setting">
+    有 `code` 时按错误码做程序化分支，不解析英文错误文本。
+  </Card>
+  <Card title="记录 request_id" icon="magnifier">
+    用户提交问题时收集 `request_id`、时间、路径和状态码。
+  </Card>
+  <Card title="保护敏感信息" icon="approve-check-circle">
+    不要记录 token、Cookie、OAuth2 code、Provider 凭据或密码。
+  </Card>
+</CardGrid>
+
+## 继续阅读
+
+- [客户端集成指南](../../develop/client-integration/)
+- [SDK 与 API 示例](../../develop/sdk-and-api-examples/)
+- [排障入口](../../operations/troubleshooting/)

@@ -1,0 +1,178 @@
+---
+title: 架构总览
+description: 从最小单机模型到生产集群模型理解 SyncTV 的进程边界、网络入口、状态层和媒体能力。
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import architectureDiagramDark from '../../../assets/diagrams/architecture-zh-dark.svg';
+import architectureDiagramLight from '../../../assets/diagrams/architecture-zh-light.svg';
+import kubernetesTopologyDark from '../../../assets/diagrams/kubernetes-topology-zh-dark.svg';
+import kubernetesTopologyLight from '../../../assets/diagrams/kubernetes-topology-zh-light.svg';
+import productionMinimalDark from '../../../assets/diagrams/production-minimal-zh-dark.svg';
+import productionMinimalLight from '../../../assets/diagrams/production-minimal-zh-light.svg';
+import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 先建立模型
+
+SyncTV 是一个单二进制服务。一个进程里同时包含 HTTP API、公开 gRPC、WebSocket 实时房间、management gRPC、媒体 Provider、代理、直播和集群协调逻辑。
+
+生产从单机模型开始：客户端经 TLS 反向代理或 Ingress 访问 SyncTV，SyncTV 连接 PostgreSQL，Redis 承载共享短期状态。
+
+<Diagram
+  light={productionMinimalLight}
+  dark={productionMinimalDark}
+  alt="最小生产拓扑图，展示客户端经 TLS 反向代理或 Ingress 访问 SyncTV，SyncTV 连接 PostgreSQL 和 Redis。"
+  caption="入门生产模型：一个 SyncTV 服务入口、一个 PostgreSQL、一个 Redis。Redis 在简单单节点场景可选，生产环境应配置。"
+/>
+
+PostgreSQL 是持久业务数据源。Redis 是共享短期状态和集群协调层。`data_dir` 是本地运行时文件目录。需要横向扩展时，再引入多个 SyncTV 副本、统一入口、共享 PostgreSQL/Redis，以及明确的 HLS 存储或 publisher-node proxy 模型。
+
+<Diagram
+  light={architectureDiagramLight}
+  dark={architectureDiagramDark}
+  alt="SyncTV 架构总览图，展示客户端、Ingress、SyncTV 单二进制、PostgreSQL、Redis、外部 Provider 和 HLS 存储之间的关系。"
+  caption="SyncTV 的核心边界：一个服务进程承载业务 API、实时协作、管理控制面、媒体代理和直播能力，持久状态进入 PostgreSQL，跨节点短期状态进入 Redis。"
+/>
+
+## 部署层级
+
+| 层级 | 适合场景 | 必需组件 | 额外注意 |
+| --- | --- | --- | --- |
+| 生产单机 | 小团队或单服务器 | SyncTV、PostgreSQL、生产 secret | 配置 Redis，必须有备份 |
+| 本地临时试用 | 只看界面或开发前预览 | SyncTV、PostgreSQL | 可使用开发 Compose 内置 secret，不能公网或长期运行 |
+| 多副本生产 | 横向扩展、滚动更新、高可用入口 | 多个 SyncTV、PostgreSQL、Redis、cluster secret | HTTP/gRPC Ingress 分开，HLS 模型要明确 |
+
+## 主要组件
+
+<CardGrid>
+  <Card title="API 与实时协作" icon="document">
+    HTTP REST、公开 gRPC、WebSocket 和房间实时事件共享同一套业务服务与权限模型。
+  </Card>
+  <Card title="身份认证" icon="approve-check-circle">
+    本地密码、OPAQUE、passkey/WebAuthn、邮箱验证码、OAuth2、用户级 2FA 和 JWT token 共同构成登录层。
+  </Card>
+  <Card title="媒体能力" icon="puzzle">
+    Provider 负责解析外部媒体，proxy 负责可控转发，slice cache 只缓存 Range slice，不做 full-body cache。
+  </Card>
+  <Card title="横向扩展" icon="cloud-download">
+    多节点通过 Redis、节点发现、leader election 和事务型 outbox 同步实时事件与后台任务边界。
+  </Card>
+</CardGrid>
+
+## 运行时入口
+
+| 入口 | 默认端口或路径 | 作用 | 生产处理 |
+| --- | --- | --- | --- |
+| HTTP REST | `server.port=8080` | 客户端业务 API、健康检查、OpenAPI UI | 通过反向代理或 Ingress 暴露 |
+| 公开 gRPC | `server.port=8080` | 客户端或 SDK 使用的 gRPC API | Kubernetes 中使用独立 Service 和独立 Ingress |
+| WebSocket | `server.port=8080` | 房间实时事件、播放同步、聊天等长连接 | 配置连接限制和合理 shutdown drain |
+| management gRPC | Unix socket 或 `management.port=50052` | CLI、管理命令、运维控制面 | 优先 Unix socket；TCP 必须配置 token |
+| metrics | `metrics.port=9090` | Prometheus 指标出口 | 不直接暴露公网，启用鉴权 |
+| RTMP | `livestream.rtmp_port=1935` | 直播推流入口 | 只在需要直播时放行 |
+| STUN UDP | `webrtc.stun_port=3478` | WebRTC NAT 辅助 | 只在需要内置 STUN 时放行 |
+
+HTTP REST 和公开 gRPC 共享主端口；Kubernetes 中拆成两个 Service 和两个 Ingress。这样可以给 gRPC Ingress 单独设置 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`，也更容易分别做路由、TLS 和观测。
+
+## 状态与存储
+
+<Tabs syncKey="state-layer">
+  <TabItem label="PostgreSQL" icon="seti:db">
+
+PostgreSQL 是唯一必须持久化的核心状态层。用户、房间、权限、Provider 实例、用户偏好、审计和业务数据都在这里。
+
+生产要求：启动阶段会自动执行 embedded SQLx migrations；必须有备份与恢复流程；数据库连接池大小不能超过数据库和连接代理的容量；回滚前必须确认数据库 migration 是否可逆。
+
+  </TabItem>
+  <TabItem label="Redis" icon="setting">
+
+Redis 是共享短期状态和分布式协调层。单节点可以不配置 Redis，生产和多副本应配置。
+
+Redis 影响：限流和暴力破解防护、token blacklist、OAuth2 state、WebAuthn challenge、邮箱验证码短期状态、L2 缓存、集群节点注册和事件 catch-up。
+
+Redis 通常不作为长期持久数据备份对象，但重启或清空会影响正在进行的登录、验证码、限流窗口和集群短期状态。
+
+  </TabItem>
+  <TabItem label="data_dir" icon="seti:folder">
+
+`data_dir` 是 SyncTV 写入本地运行时文件的根目录。
+
+常见内容：management Unix socket、文件日志、HLS 文件、proxy slice cache 文件后端。
+
+`*_file` secret、TLS 证书等静态输入文件不会被 `data_dir` 自动重定位。
+
+  </TabItem>
+</Tabs>
+
+## 请求链路
+
+### 普通 API 请求
+
+<Steps>
+1. 客户端通过 HTTP 或 gRPC 访问 SyncTV。
+2. API 层完成认证、限流、权限检查和请求解析。
+3. 业务服务读写 PostgreSQL，并按需使用 Redis/L1 缓存。
+4. 事务型业务变更提交后，实时变更通过 WebSocket 推送给本节点连接；多副本模式下通过数据库 outbox 和共享事件通道同步到其他节点。部分成员状态或运行时事件是 best-effort fanout，不承诺和数据库事务同一边界。
+</Steps>
+
+### 媒体 Provider 和代理请求
+
+<Steps>
+1. Provider 根据实例配置解析媒体地址，并决定返回直连地址还是代理地址。
+2. Provider 明确声明上游请求需要哪些 header，例如 `User-Agent`、`Referer`、`Range` 或认证 header。
+3. proxy 底层只使用 Provider 给出的 header，不自行转发原始客户端 header。
+4. slice cache 只处理支持 Range 的上游响应；上游不支持 Range 时直接 bypass，不缓存完整响应体。
+</Steps>
+
+<Aside type="note">
+Provider header 是边界设计的一部分。这样可以避免底层 proxy 猜测客户端请求头，也避免把不该传给上游的客户端 header 泄露出去。
+</Aside>
+
+## 集群模型
+
+集群模式适合多副本部署。开启 `cluster.enabled=true` 后，Redis 和 `server.cluster_secret` 都是必需项。
+
+关键配置：
+
+| 配置 | 作用 |
+| --- | --- |
+| `cluster.discovery_mode` | 节点发现方式，支持 `redis`、`static`、`k8s_dns` |
+| `cluster.leader_election_mode` | 后台任务 leader 选举方式，支持 `redis`、`k8s_lease` |
+| `server.advertise_host` | 其他节点连接当前节点时使用的地址 |
+| `server.cluster_secret` | 节点间 gRPC 调用认证 |
+| `cluster.catchup_window_secs` | 节点短暂断开后事件回放窗口 |
+
+多副本时还要确认：
+
+- 所有副本共享同一个 PostgreSQL。
+- 所有副本共享同一个 Redis 和 `redis.key_prefix`。
+- WebSocket ticket 后端必须能跨节点验证，不能只保存在单节点内存中。
+- 本地 HLS backend 走 publisher-node proxy；`shared_file` 会让当前节点从共享挂载读取 TS 分片，OSS 提供对象存储分片。
+- Pod 关闭时给足 `server.shutdown_drain_timeout_seconds` 和 Kubernetes termination grace period。
+
+更完整的运行时设计、发现模式、leader election 和集群直播边界见 [集群配置](../../configuration/cluster/)。
+
+## 直播模型
+
+直播路径和点播 proxy 路径不同。RTMP 是推流入口；HTTP-FLV 面向低延迟播放；HLS 通过 remuxer 生成 playlist/segment 并写入 `memory`、`file`、`shared_file` 或 `oss` backend。多副本时，publisher 所在节点通过共享 registry 暴露给其他节点；本地 backend 通过 HLS gRPC proxy 向 publisher 节点读取远端 playlist/segment，`shared_file` 的 TS 分片由当前节点从共享挂载读取。
+
+详细的 RTMP/StreamHub/HTTP-FLV/HLS pipeline、backend 选择和集群直播故障边界见 [直播与 HLS/FLV](../../configuration/livestream/)。
+
+## 生产拓扑
+
+Kubernetes 多副本拓扑：
+
+<Diagram
+  light={kubernetesTopologyLight}
+  dark={kubernetesTopologyDark}
+  alt="Kubernetes 多副本拓扑图，展示 HTTP Ingress、gRPC Ingress、两个独立 Service、多个 SyncTV Pod、PostgreSQL、Redis、HLS backend 或 publisher-node proxy，以及外部媒体 Provider。"
+  caption="Kubernetes 多副本部署应拆分 HTTP 与 gRPC 的 Service/Ingress，同时让所有 Pod 共享 PostgreSQL、Redis。本地 HLS backend 使用 publisher-node proxy；shared_file 会让当前节点从共享挂载读取 TS 分片，OSS 则提供对象存储边界。"
+/>
+
+## 继续阅读
+
+- [快速开始](../../install/quick-start/)
+- [配置总索引](../../reference/configuration-index/)
+- [生产部署清单](../../install/production-checklist/)
+- [备份与恢复](../../operations/backup-restore/)
+- [升级与迁移](../../operations/upgrades/)
+- [观测与运行手册](../../operations/observability/)

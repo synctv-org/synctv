@@ -1,0 +1,44 @@
+---
+title: Playback Model
+description: How playback state, playback snapshots, Realtime, direct URLs, proxying, Range seek, and livestreaming fit together.
+---
+
+Synchronized watching is driven by server-side room state. A client should not treat its local player state as the source of truth. It follows room playback state and submits control actions only when the user has permission.
+
+## Two Kinds of State
+
+| State | Owner | Used for |
+| --- | --- | --- |
+| Current playback state | SyncTV server | Current media, play/pause, position, speed, and version |
+| Playback snapshot | Provider and SyncTV | Playback URL, proxy URL, headers, subtitles, variants, and expiry |
+
+Current playback state answers “what is the room watching and where is it?”. A playback snapshot answers “how should this client play that media now?”.
+
+## Realtime Flow
+
+Room WebSocket connections carry playback controls, chat, danmaku, WebRTC signaling, and resource observation events. After reconnecting, clients should fetch key resources again instead of assuming old subscriptions are still active.
+
+1. Enter a room.
+2. Fetch current playback state and a playback snapshot.
+3. Connect Realtime.
+4. Receive play, pause, seek, or media-change events.
+5. Refresh the playback snapshot when the media URL expires, Provider credentials change, or resource versions change.
+
+## Direct and Proxy Playback
+
+| Mode | Good for | Risk |
+| --- | --- | --- |
+| Direct | Clients can reach the upstream URL and set required headers | Browsers may block required headers |
+| SyncTV proxy | Hide upstream credentials, normalize headers, handle Range, or cross client limits | SyncTV carries egress bandwidth and proxy latency |
+
+Providers explicitly return the headers to use. The proxy does not forward arbitrary client headers to upstream services.
+
+## Range and Cache
+
+Seeking usually depends on HTTP Range. When upstream supports Range, proxy slice cache can cache fixed byte slices. If upstream does not support Range, SyncTV bypasses slice cache and does not write full-file cache entries.
+
+## Next Steps
+
+- User playback issues: [Watch Together](../../use/watch-together/) and [User Troubleshooting](../../use/troubleshooting/).
+- Client implementation: [Client Integration Guide](../../develop/client-integration/).
+- Proxy cache configuration: [Proxy Slice Cache](../../configuration/proxy-slice-cache/).

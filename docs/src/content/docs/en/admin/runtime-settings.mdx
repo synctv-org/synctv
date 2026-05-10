@@ -1,0 +1,30 @@
+---
+title: Runtime Settings
+description: Manage database-backed runtime settings and distinguish them from startup configuration.
+---
+
+Runtime settings are hot-updated product policy stored in PostgreSQL. Use them for registration, room creation, proxy policy, CORS, chat retention, and similar behavior. Do not use them for startup secrets, listener ports, database connections, Redis connections, or cache enablement.
+
+## Basic Commands
+
+```bash
+synctv settings list
+synctv settings get user.enable_password_signup
+synctv settings update user --set enable_password_signup=true
+```
+
+## Where a Change Belongs
+
+| Change | Location |
+| --- | --- |
+| Registration switches, room creation policy, proxy policy, CORS, chat retention | Runtime settings |
+| JWT secret, OPAQUE setup secret, credential encryption key | Startup configuration and secret management |
+| PostgreSQL, Redis, listener ports, TLS, data_dir | Startup configuration |
+| User 2FA, notifications, default Provider | User preferences |
+| Provider URL, token, cookie | Provider instance management |
+
+## Multi-Replica Behavior
+
+After a runtime setting is written to PostgreSQL, LISTEN/NOTIFY tells other replicas to refresh local caches. If a replica does not update, inspect database connectivity, notification listeners, and version skew.
+
+Fields, defaults, and validation rules are in [Runtime Settings Reference](../../reference/runtime-settings/).

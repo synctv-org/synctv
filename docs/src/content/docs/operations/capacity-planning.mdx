@@ -1,0 +1,129 @@
+---
+title: 容量规划
+description: SyncTV 的连接数、数据库、Redis、WebSocket、Provider、代理带宽、直播和多副本容量规划方法。
+---
+
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## 规划维度
+
+SyncTV 的容量瓶颈通常来自六类资源：
+
+| 资源 | 受什么影响 | 主要指标 |
+| --- | --- | --- |
+| HTTP/gRPC 请求 | 登录、列表、Provider 浏览、客户端轮询 | `http_requests_total`、延迟、错误率 |
+| WebSocket | 在线用户、房间数、每用户多连接 | `websocket_connections_active`、消息量、断开率 |
+| PostgreSQL | 房间、成员、列表、权限、通知、审计 | 连接池、查询延迟、等待连接数 |
+| Redis | 限流、OAuth2/WebAuthn 短期状态、L2 cache、集群协调 | 延迟、错误、pub/sub 健康 |
+| Provider/Proxy | 上游请求、Range、带宽、slice cache | Provider 错误、proxy 延迟、cache 命中 |
+| 直播 | RTMP 推流、HLS/FLV、存储和长连接 | 活跃 publisher/viewer、字节量、拉流错误 |
+
+## 从单机到多副本
+
+| 部署形态 | 适合规模 | 必需动作 |
+| --- | --- | --- |
+| 单机 SyncTV + PostgreSQL | 小规模试用或个人长期服务 | 持久 secret、数据库备份、TLS |
+| 单机 + Redis | 生产基线 | Redis 高可用或可接受短期状态丢失 |
+| 多副本 SyncTV | 需要滚动更新或横向扩展 | 共享 PostgreSQL、Redis、cluster secret、Ingress drain |
+| 多副本 + 直播 | 大量直播或高可用入口 | 明确 HLS backend，验证 publisher-node proxy 或共享存储 |
+
+不要为了“看起来高可用”过早多副本。如果数据库、Redis、secret 和 HLS 模型没处理好，多副本会放大问题。
+
+## 估算方法
+
+<Steps>
+1. 估算同时在线用户数和每用户连接数。浏览器多标签页会产生多个 WebSocket。
+2. 估算同时活跃房间数、每房间成员数和消息频率。
+3. 估算每分钟登录、刷新、Provider 浏览、播放快照刷新和列表读取量。
+4. 估算媒体播放模式：直连比例、代理比例、直播比例、平均码率。
+5. 计算代理带宽：代理用户数 × 平均码率 × 峰值系数。
+6. 计算数据库连接池：副本数 × `database.max_connections` 不能超过数据库上限。
+7. 给 Redis、PostgreSQL、Ingress 和 SyncTV 设置独立告警阈值。
+</Steps>
+
+## 关键配置
+
+| 配置 | 作用 |
+| --- | --- |
+| `database.max_connections` | 单副本数据库连接池上限 |
+| `redis.*` | L2 cache、限流、短期状态和集群协调 |
+| `connection_limits.*` | WebSocket 用户、房间、全局、连接生命周期和单连接消息限制 |
+| `http_rate_limits.websocket_*` | WebSocket 建连限流 |
+| `http_rate_limits.*` | HTTP 登录、API、媒体、管理和 streaming 限流 |
+| `grpc_rate_limits.*` | gRPC API 和验证码限流 |
+| `messaging_rate_limits.*` | 聊天和弹幕消息限流 |
+| `proxy_slice_cache.*` | Range slice cache 是否启用和是否使用文件后端 |
+| `server.shutdown_drain_timeout_seconds` | 滚动更新时长连接 drain |
+| `cluster.*` | 多副本节点发现、leader election 和 catch-up |
+| `livestream.*` | RTMP/FLV/HLS 和 backend |
+
+配置字段见 [配置总索引](../../reference/configuration-index/)。
+
+## 数据库和 Redis
+
+数据库规则：
+
+- 连接池总量不要超过数据库 `max_connections` 的 60%-80%，给维护任务和迁移留余量。
+- 多副本时按副本数乘以单副本池大小计算总连接。
+- 大列表查询优先分页，不要把 Provider 浏览或成员列表做成无界请求。
+- 发布前确认 migration 能在真实数据量上完成。
+
+Redis 规则：
+
+- 多副本必须使用共享 Redis 和一致的 `redis.key_prefix`。
+- Redis 重启会影响 OAuth2 state、WebAuthn challenge、邮箱验证码、限流窗口、token blacklist 和集群短期状态。
+- 如果依赖强 token 吊销语义，使用 Redis HA，并缩短 JWT access token 有效期。
+
+## 媒体带宽
+
+代理播放会让 SyncTV 进入媒体数据路径。粗略估算：
+
+```text
+proxy egress bandwidth = concurrent_proxy_viewers * average_bitrate * peak_factor
+```
+
+示例：40 个代理观看者，平均 6 Mbps，峰值系数 1.3：
+
+```text
+40 * 6 Mbps * 1.3 = 312 Mbps
+```
+
+如果同一媒体被多人观看，slice cache 可以降低上游回源，但不能降低 SyncTV 到客户端的出口带宽。
+
+## 告警起点
+
+| 告警 | 阈值思路 |
+| --- | --- |
+| HTTP 5xx 持续增长 | 按服务和路由分组，持续 5-10 分钟告警 |
+| p95 HTTP 延迟升高 | 区分 API、Provider 和 proxy 路径 |
+| WebSocket 活跃连接接近上限 | 达到限制的 70%-80% 预警 |
+| 数据库连接等待 | 非零持续存在就需要排查 |
+| Redis pub/sub 健康异常 | 多副本实时同步风险 |
+| Provider 5xx/timeout | 先区分上游故障和本机网络 |
+| 直播拉流错误增长 | 检查 publisher、HLS backend 和慢客户端 |
+
+指标名称见 [Metrics Catalog](../../reference/metrics-catalog/)。
+
+## 压测和验收
+
+<Tabs syncKey="capacity-tests">
+  <TabItem label="API" icon="document">
+    用真实登录、房间列表、成员列表、播放快照和 Provider 浏览路径压测。不要只压 `/health/ready`。
+  </TabItem>
+  <TabItem label="WebSocket" icon="puzzle">
+    模拟连接、心跳、聊天、播放状态和资源观察。关注连接建立速率、断开重连和每房间 fanout。
+  </TabItem>
+  <TabItem label="媒体" icon="youtube">
+    同时测试直连、proxy、Range seek 和 slice cache 命中。记录上游和 SyncTV 出口带宽。
+  </TabItem>
+  <TabItem label="滚动更新" icon="rocket">
+    在有 WebSocket 和直播连接时发布，确认 readiness 及时摘流，drain 时间足够。
+  </TabItem>
+</Tabs>
+
+## 继续阅读
+
+- [观测与运行手册](../observability/)
+- [配置：限流与连接限制](../../configuration/rate-limits/)
+- [播放与代理模型](../../use/playback-and-proxy/)
+- [集群配置](../../configuration/cluster/)

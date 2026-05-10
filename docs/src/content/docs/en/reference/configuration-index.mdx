@@ -3,22 +3,15 @@ title: Configuration Index
 description: Source-aligned list of all SyncTV configuration fields, types, defaults, and detailed documentation pages.
 ---
 
-## How to Use This Page
+This static configuration index lists source-level defaults. Effective values also include config files, environment variables, CLI overrides, path resolution, and timezone fallback.
 
-This page is the configuration coverage index. Use it to confirm whether a YAML field is documented and to find the detailed page for that field.
+See [Full Configuration Example](../../configuration/full-example/) for YAML templates. Run `synctv config show --output yaml` to inspect the effective configuration for the current binary with secrets redacted.
 
-Defaults in this page are source-level defaults. `synctv config show --output yaml` prints the effective configuration after defaults, config file, environment variables, CLI overrides, path resolution, and timezone fallback are applied. OAuth2 provider instances are runtime settings; see [Runtime Settings](../runtime-settings/#oauth2). Remote media provider instances are persisted through the management API/CLI and are not static config-file fields.
+OAuth2 provider instances are [Runtime Settings](../runtime-settings/#oauth2). Remote media provider instances are persisted through the management API/CLI and are not static config-file fields.
 
-## Full Configuration Example
+## Configuration Decisions
 
-The full YAML template is kept on a dedicated page so this index stays scannable:
-
-- [Full Configuration Example](../../configuration/full-example/): minimal production skeleton, full YAML template covering all static fields, and URL/split configuration examples.
-- `synctv config show --output yaml`: prints the current binary's complete effective configuration with secrets redacted.
-
-## Make Configuration Decisions First
-
-If you are not looking up a specific field, use this table to decide what actually needs changing. Most fields can keep their defaults. Production launch should prioritize secrets, database, entrypoints, security boundaries, and backups.
+Most fields can keep their defaults. Production launch should prioritize secrets, database, entrypoints, security boundaries, and backups.
 
 | Setting | When to change it | Common mistake | After change | Production guidance |
 | --- | --- | --- | --- | --- |
@@ -47,7 +40,7 @@ curl -fsS http://localhost:8080/health/ready
 
 ## Single-node Production Focus
 
-If you use production Compose, maintain `.env.postgres` and `.env.synctv` first. You usually do not need to hand-write a full YAML file. Before launch, confirm:
+Production Compose uses `.env.postgres` and `.env.synctv`; it does not require a hand-written full YAML file. Before launch, confirm:
 
 | Goal | Compose/env focus | Config field |
 | --- | --- | --- |
@@ -60,7 +53,7 @@ If you use production Compose, maintain `.env.postgres` and `.env.synctv` first.
 | Redis | Compose Redis service and key prefix | `redis.*` |
 | Runtime files | Compose `/data` volume | `data_dir` |
 
-Use the full field index below when you leave the Compose path for bare-metal, Kubernetes, secret files, or custom YAML.
+Use the field index below for bare-metal, Kubernetes, secret files, or custom YAML.
 
 ## Top-Level Configuration
 

@@ -35,7 +35,7 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
   <Card title="HTTP-FLV" icon="rocket">
     适合低延迟观看。客户端保持长连接，服务端持续写 FLV chunk，并通过写超时保护慢客户端。
   </Card>
-  <Card title="HLS" icon="folder">
+  <Card title="HLS" icon="seti:folder">
     适合通用播放器和 CDN/对象存储形态。延迟更高，但对客户端兼容性和多副本扩展更友好。
   </Card>
 </CardGrid>
@@ -61,14 +61,14 @@ RTMP 在当前设计中主要是推流入口，不作为播放器拉流协议。
 限制：进程重启会丢分片；多副本下非 publisher 节点需要通过 HLS gRPC proxy 到 publisher 节点读取 playlist/segment。它可以工作，但不适合作为高并发生产 HLS 的首选。
 
   </TabItem>
-  <TabItem label="file" icon="folder">
+  <TabItem label="file" icon="seti:folder">
 
 `file` 把分片写入当前节点的 `hls_storage_path`。单副本可以用本地磁盘；多副本可以使用本地磁盘并依赖 publisher-node proxy。
 
 不要把共享文件系统配置成 `file`；如果所有副本都能读写同一路径，使用 `shared_file`。
 
   </TabItem>
-  <TabItem label="shared_file" icon="folder">
+  <TabItem label="shared_file" icon="seti:folder">
 
 `shared_file` 把分片写入所有副本可见的 `hls_storage_path`。Publisher 节点写入分片，任意节点收到 `.ts` 请求时从当前节点挂载的共享路径读取。
 

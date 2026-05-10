@@ -3,9 +3,9 @@ title: 观测与运行手册
 description: SyncTV 的健康检查、metrics、日志、关键监控项和事故排查信息收集。
 ---
 
-import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## 观测目标
+## 目标
 
 生产环境的观测不是只看进程是否存活，而是要确认：
 
@@ -24,7 +24,7 @@ import { Aside, Card, CardGrid, Steps, TabItem, Tabs } from '@astrojs/starlight/
 curl -fsS http://localhost:8080/health/ready
 ```
 
-建议：
+探针要求：
 
 - readiness probe 使用 ready 语义，不要只检查 TCP 端口。
 - liveness probe 不要过于激进，避免依赖短暂抖动导致反复重启。
@@ -60,7 +60,7 @@ curl -fsS \
 
 ## 日志
 
-生产建议使用 JSON 日志：
+生产使用 JSON 日志：
 
 ```yaml
 logging:
@@ -99,7 +99,7 @@ logging:
   </Card>
 </CardGrid>
 
-## 常见告警建议
+## 告警起点
 
 | 告警 | 可能原因 | 第一检查点 |
 | --- | --- | --- |
@@ -127,7 +127,7 @@ logging:
 ## Kubernetes 快速检查
 
 <Tabs syncKey="k8s-observability">
-  <TabItem label="Pod" icon="seti:kubernetes">
+  <TabItem label="Pod" icon="cloud-download">
 
 ```bash
 kubectl -n synctv get pod -o wide
@@ -155,10 +155,12 @@ kubectl -n synctv rollout history deploy/synctv
   </TabItem>
 </Tabs>
 
-## 运行手册入口
+## 继续阅读
 
 - 启动或配置错误：先看 [排障入口](../troubleshooting/)。
-- 上线前检查：看 [生产部署清单](../../deployment/production-checklist/)。
+- 容量、连接数、数据库、Redis 或媒体带宽规划：看 [容量规划](../capacity-planning/)。
+- 指标名称和分组：看 [Metrics Catalog](../../reference/metrics-catalog/)。
+- 上线前检查：看 [生产部署清单](../../install/production-checklist/)。
 - 数据恢复：看 [备份与恢复](../backup-restore/)。
 - 版本发布：看 [升级与迁移](../upgrades/)。
 - metrics 配置：看 [Metrics 监控](../../configuration/metrics/)。

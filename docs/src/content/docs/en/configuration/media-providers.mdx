@@ -30,6 +30,8 @@ media_providers:
 
 Remote provider instances are not configured in this YAML object. They are persisted through the management API/CLI and only store connection details that SyncTV needs to reach the remote provider, such as `endpoint`, `tls`, `jwt_secret`, `custom_ca`, `timeout`, `insecure_tls`, and `providers`. The remote provider's own Alist, Emby, or Bilibili configuration belongs in the remote provider deployment.
 
+For scenario-based setup guidance for Alist, Emby/Jellyfin, Bilibili, direct URLs, RTMP, or remote Providers, start with [Add Media](../../use/media-sources/).
+
 ## Local Provider Timeout Fields
 
 `request_timeout_seconds` default: `30`.
@@ -109,3 +111,9 @@ security:
 ```
 
 Without a stable credential encryption key, creating or updating encrypted provider credentials may fail, and previously encrypted credentials may become unreadable if the key is lost.
+
+## Continue Reading
+
+- [Add Media](../../use/media-sources/)
+- [Playback and Proxy Model](../../use/playback-and-proxy/)
+- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)

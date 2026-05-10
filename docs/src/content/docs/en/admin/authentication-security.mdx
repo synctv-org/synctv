@@ -1,0 +1,133 @@
+---
+title: Authentication and Security Model
+description: SyncTV login methods, 2FA semantics, token context, management permissions, and security boundaries.
+---
+
+import Diagram from '../../../../components/Diagram.astro';
+import securityAuthBoundaryDiagramDark from '../../../../assets/diagrams/security-auth-boundary-dark.svg';
+import securityAuthBoundaryDiagramLight from '../../../../assets/diagrams/security-auth-boundary-light.svg';
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
+## Security Boundaries
+
+SyncTV separates security into several boundaries:
+
+- **User authentication**: password, OPAQUE, WebAuthn/passkey, email codes, and OAuth2.
+- **User 2FA**: optional per user and requires at least two local authentication methods.
+- **Access tokens**: issued after login completion for HTTP/gRPC business APIs.
+- **Management control plane**: the CLI management endpoint, separate from user tokens.
+- **Provider upstream access**: providers own upstream headers and credentials; the proxy does not guess client headers.
+- **Cluster internal authentication**: inter-node gRPC uses `server.cluster_secret`.
+
+<Diagram
+  light={securityAuthBoundaryDiagramLight}
+  dark={securityAuthBoundaryDiagramDark}
+  alt="Authentication and 2FA boundary showing local first factors, MFA sessions, OAuth2, tokens, business APIs, and the management plane."
+  caption="Local login and OAuth2 are separate trust paths. When 2FA is enabled, local login must complete a second factor. OAuth2 does not count as local 2FA, but it can independently issue an accepted authentication context."
+/>
+
+## Login Methods and 2FA
+
+| Method | First factor | Second factor | Notes |
+| --- | --- | --- | --- |
+| Password/OPAQUE | Yes | Available only when the server returns `MFA_METHOD_PASSWORD` | OPAQUE login is not the same as the password MFA verifier |
+| WebAuthn/passkey | Yes | Yes | Requires WebAuthn configuration and a bound credential |
+| Email code | Yes | Yes | Requires SMTP and email-code delivery |
+| OAuth2 | Yes | No | OAuth2 does not participate in local 2FA, but 2FA-enabled users may log in with OAuth2 |
+
+Before enabling 2FA, SyncTV verifies that the user has at least two usable local methods. After enabling 2FA, local single-factor login creates an MFA session instead of immediately issuing final tokens.
+
+<Aside type="note">
+OAuth2 is an independent login trust source. It is not counted as a local 2FA first or second factor. A 2FA-enabled user can still log in with OAuth2, and OAuth2-issued tokens are accepted for that login path.
+</Aside>
+
+## Token Context
+
+After 2FA is enabled, old single-factor refresh tokens should not keep rotating the session. Tokens issued after MFA or OAuth2 carry an accepted authentication context.
+
+Semantics:
+
+- 2FA disabled: normal local login, MFA login, and OAuth2 tokens follow normal token rules.
+- 2FA enabled: local login must complete a second factor; refresh tokens must come from MFA or OAuth2 context.
+- 2FA disabled again: single-factor and MFA/OAuth2 contexts are accepted until token expiry or revocation.
+
+## MFA Sessions
+
+When a local first factor succeeds and a second factor is required, SyncTV creates a short-lived MFA session instead of issuing final tokens.
+
+Client flow:
+
+<Steps>
+1. Complete the first-factor login request.
+2. If MFA is required, read the remaining available methods.
+3. If email is available, call the email-code send API immediately.
+4. Complete MFA with the session ID and second-factor proof.
+5. Store the final access and refresh tokens.
+</Steps>
+
+Failed MFA password attempts are recorded by brute-force protection and cannot bypass the normal password failure counters.
+
+## User Preferences and Security Settings
+
+User preferences store user-level settings. `two_factor_enabled` is security-sensitive.
+
+Constraints:
+
+- Enabling 2FA requires at least two usable local methods.
+- Removing a passkey while 2FA is enabled must still leave at least two usable local methods. Other authentication-method removal flows should follow the same product rule.
+- Admin-initiated preference updates must respect role hierarchy. A non-root admin cannot modify root or equally privileged users.
+
+## Management Control Plane
+
+Management gRPC is used by the CLI and operational commands.
+
+Production rules:
+
+- Prefer Unix socket transport.
+- If using TCP, set `management.auth_token`.
+- Do not expose management TCP publicly.
+- Inject tokens from files or secret managers.
+- Keep `management.enable_reflection` disabled in production.
+
+The management token is not a user access token. Treat it as infrastructure-level secret material.
+
+## Provider and Proxy Security
+
+Providers decide upstream request headers. The proxy layer executes provider-supplied headers only.
+
+Consequences:
+
+- Raw client `Range`, `Accept`, `User-Agent`, and similar headers are not automatically forwarded by the proxy.
+- If an upstream requires `Range`, the provider must explicitly select it.
+- If a direct URL is bound to `User-Agent`, client-facing headers and proxy upstream headers should match.
+- If a client cannot set required headers, use proxy mode.
+
+For Provider credentials, direct/proxy selection, and playback snapshot details, see [Add Media](../../use/media-sources/) and [Playback and Proxy Model](../../use/playback-and-proxy/).
+
+## Required Reading
+
+<CardGrid>
+  <Card title="Security and Secrets" icon="approve-check-circle">
+    Configure JWT, OPAQUE, provider credential encryption, password policy, CORS, and trusted proxies.
+  </Card>
+  <Card title="Email and OAuth2" icon="document">
+    Configure email codes, SMTP, and runtime OAuth2 provider settings.
+  </Card>
+  <Card title="WebAuthn" icon="puzzle">
+    Configure passkey RP ID, origins, allowed origins, and challenge timeout.
+  </Card>
+  <Card title="Rate Limits" icon="setting">
+    Configure HTTP, gRPC, chat, danmaku, WebSocket, and authentication rate limits.
+  </Card>
+</CardGrid>
+
+## Continue Reading
+
+- [Client Integration Guide](../../develop/client-integration/)
+- [Errors](../../reference/errors/)
+- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)
+- [Data, Privacy, and Retention](../../operations/data-retention/)
+- [Security and Secrets](../../configuration/security/)
+- [Email and OAuth2](../../configuration/email-oauth2/)
+- [WebAuthn and Passkeys](../../configuration/webauthn/)
+- [Rate Limits and Connection Limits](../../configuration/rate-limits/)

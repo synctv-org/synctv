@@ -1,0 +1,110 @@
+---
+title: Metrics Catalog
+description: SyncTV Prometheus 指标名称、类型和标签。
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## 抓取
+
+指标由独立 metrics listener 暴露。启用方式见 [Metrics 监控](../../configuration/metrics/)。
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $METRICS_TOKEN" \
+  http://localhost:9090/metrics
+```
+
+<Aside type="note">
+没有启用的功能可能不会产生对应指标。不要把 metrics listener 直接暴露公网。
+</Aside>
+
+## HTTP 和 WebSocket
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `http_requests_total` | counter | `method`, `path`, `status` | HTTP 请求数 |
+| `http_request_duration_seconds` | histogram | `method`, `path` | HTTP 请求耗时 |
+| `http_error_rate_total` | counter | `method`, `path`, `error_type` | HTTP 错误数 |
+| `http_requests_in_flight` | gauge | none | 正在处理的 HTTP 请求 |
+| `websocket_connections_active` | gauge | none | 当前 WebSocket 连接 |
+| `websocket_connections_total` | counter | `status` | WebSocket 建连次数 |
+| `websocket_messages_total` | counter | `direction`, `type` | WebSocket 消息数 |
+| `websocket_errors_total` | counter | `error_type` | WebSocket 错误数 |
+| `websocket_connection_duration_seconds` | histogram | none | WebSocket 连接持续时间 |
+| `users_online` | gauge | none | 在线用户 |
+| `rooms_active` | gauge | none | 活跃房间 |
+
+## 数据库和缓存
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `db_query_duration_seconds` | histogram | `operation`, `table` | 数据库查询耗时 |
+| `db_operations_total` | counter | `operation`, `table`, `result` | 数据库操作数 |
+| `db_connections_active` | gauge | none | 活跃数据库连接 |
+| `db_connections_idle` | gauge | none | 空闲数据库连接 |
+| `db_connections_waiting` | gauge | none | 等待数据库连接的请求 |
+| `db_pool_utilization_ratio` | gauge | `pool` | 连接池利用率，取值 0 到 1 |
+| `db_connection_acquire_duration_seconds` | histogram | `pool` | 获取连接耗时 |
+| `db_query_errors_total` | counter | `operation`, `error_type` | 数据库查询错误数 |
+| `cache_hits_total` | counter | `cache_type`, `level` | 缓存命中数 |
+| `cache_misses_total` | counter | `cache_type`, `level` | 缓存未命中数 |
+| `cache_evictions_total` | counter | `cache_type` | 缓存淘汰数 |
+| `cache_errors_total` | counter | `cache_type`, `operation` | 缓存操作错误数 |
+| `cache_fill_duration_seconds` | histogram | `cache_type` | 缓存填充耗时 |
+
+## 业务和限流
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `chat_messages_total` | counter | none | 持久化聊天消息数 |
+| `playlist_items_total` | counter | none | 播放列表项新增数 |
+| `webrtc_peers_active` | gauge | none | 活跃 WebRTC peer |
+| `active_connections` | gauge | none | 活跃连接 |
+| `spawned_task_panics_total` | counter | `task_name` | `spawn_monitored` 捕获的后台任务 panic |
+| `rate_limit_checks_total` | counter | `backend`, `category` | 限流检查数 |
+| `rate_limit_rejections_total` | counter | `backend`, `category` | 限流拒绝数 |
+| `rate_limit_redis_fallbacks_total` | counter | `category` | Redis 限流失败后的内存降级次数 |
+
+## 集群
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `synctv_cluster_connections_total` | gauge | none | 当前节点的集群连接 |
+| `synctv_cluster_events_published_total` | counter | `event_type` | 已发布集群事件 |
+| `synctv_cluster_events_dropped_total` | counter | `reason` | 被丢弃的集群事件 |
+| `synctv_cluster_heartbeat_failures` | gauge | none | 连续 heartbeat 失败数 |
+| `synctv_node_active_rooms` | gauge | none | 当前节点活跃房间 |
+| `synctv_cluster_node_health_status` | gauge | none | 节点健康状态，1 表示 healthy |
+| `synctv_cluster_leader_election_state` | gauge | none | leader election 状态，1 表示 leader |
+| `synctv_cluster_leader_election_epoch` | gauge | none | 当前 leader epoch |
+| `synctv_cluster_leader_election_consecutive_failures` | gauge | none | 连续选主失败数 |
+| `synctv_cluster_epoch_mismatch_quarantine` | gauge | none | epoch mismatch 隔离状态 |
+| `synctv_cluster_redis_pubsub_health` | gauge | none | Redis pub/sub 连接健康状态 |
+| `synctv_cluster_member_count` | gauge | none | 集群成员数 |
+| `synctv_cluster_sync_errors_total` | counter | `error_type` | 集群同步错误数 |
+
+## 媒体和直播
+
+| 指标 | 类型 | Labels | 含义 |
+| --- | --- | --- | --- |
+| `stream_relay_duration_seconds` | histogram | `stream_type` | stream relay 操作耗时 |
+| `active_relay_streams` | gauge | none | 活跃 relay stream |
+| `stream_errors_total` | counter | `stream_type`, `error_type` | stream 错误数 |
+| `streamhub_restarts_total` | counter | `reason` | StreamHub event loop 重启次数 |
+| `livestream_active_publishers` | gauge | none | 活跃直播 publisher |
+| `livestream_active_viewers` | gauge | none | 活跃直播 viewer |
+| `livestream_bytes_total` | counter | `direction` | 直播传输字节数 |
+| `livestream_stream_duration_seconds` | histogram | `stream_type` | 直播 session 持续时间 |
+| `livestream_pull_errors_total` | counter | `error_type` | 直播拉流错误数 |
+| `livestream_relay_frame_drops_total` | counter | none | backpressure 导致的 relay 丢帧 |
+| `gop_cache_size` | gauge | none | 当前 GOP cache 条目数 |
+| `gop_cache_drops_total` | counter | none | GOP cache 淘汰数 |
+| `gop_cache_memory_bytes` | gauge | none | GOP cache 内存占用 |
+| `livestream_flv_slow_client_terminations_total` | counter | none | FLV 慢客户端断开次数 |
+
+## 继续阅读
+
+- [Metrics 监控](../../configuration/metrics/)
+- [观测与运行手册](../../operations/observability/)
+- [容量规划](../../operations/capacity-planning/)

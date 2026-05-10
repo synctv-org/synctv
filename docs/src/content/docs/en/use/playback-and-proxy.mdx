@@ -1,0 +1,101 @@
+---
+title: Playback and Proxy Model
+description: SyncTV playback snapshots, playback URLs, Provider headers, proxy modes, Range, slice cache, WebRTC, and livestream boundaries.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## Boundary
+
+Playback issues often sit between the client, SyncTV, Provider, and upstream media server. Providers explicitly return playback information and upstream headers, clients follow that result, and the proxy does not guess client headers.
+
+## Playback Flow
+
+<Steps>
+1. The client requests the current room playback or a playback snapshot for a media item.
+2. SyncTV uses room state, media, user, Provider credentials, and client profile to build `PlaybackSnapshot`.
+3. The Provider returns one or more `PlaybackInfo` entries with URL, format, headers, subtitles, expiry, and metadata.
+4. The client chooses direct URL, proxy URL, transcode variant, HLS, FLV, or subtitle URL.
+5. When URL expiry, media switch, credential change, or client capability changes, the client refreshes the snapshot.
+</Steps>
+
+## Direct and Proxy Playback
+
+| Mode | Best for | Risk |
+| --- | --- | --- |
+| Direct | Client can access upstream and set headers | Browser header limits, CORS, upstream exposure |
+| SyncTV proxy | Upstream is server-only or requires server-controlled headers | SyncTV carries bandwidth and latency |
+| Provider variants | Multiple qualities, codecs, subtitles, or transcoding | Client must choose by capability |
+| HLS/FLV live | RTMP publish to playback | Multi-replica deployments need HLS backend or publisher proxy |
+
+<Aside type="note">
+SyncTV proxy uses only headers explicitly provided by the Provider. It does not automatically forward browser cookies, Authorization, or arbitrary request headers upstream.
+</Aside>
+
+## Client Selection Strategy
+
+| Client condition | Handling |
+| --- | --- |
+| Browser cannot set `Referer` or custom headers | Prefer proxy URL |
+| Native client can set headers and access upstream | Direct URL can be used |
+| Mobile client lacks codec/container support | Declare capabilities in `PlaybackClientProfile` |
+| URL has `expires_at` | Refresh snapshot before expiry |
+| Subtitle has separate headers | Use subtitle-specific headers or proxy subtitle URL |
+
+## Range and Slice Cache
+
+Seeking usually depends on HTTP Range:
+
+```http
+Range: bytes=1048576-2097151
+```
+
+Proxy slice cache boundaries:
+
+- Caches only Range slices.
+- Does not cache full response bodies.
+- Bypasses upstreams that do not support Range.
+- File backend can survive process restarts, but has no cross-process index or distributed lock.
+- Shared storage in multi-replica mode is possible, but this is not a strongly consistent distributed cache.
+
+See [Proxy Slice Cache](../../configuration/proxy-slice-cache/).
+
+## Playback Snapshot and Realtime
+
+New clients observe playback resources over Realtime:
+
+- `playback_state`: current position, state, and version.
+- `playback_snapshot`: playback URLs, headers, subtitles, and expiry.
+
+On reconnect, send local `version`, `media_id`, `playlist_id`, `target`, and `playback_client_profile`. The server decides whether the cached snapshot is still valid.
+
+See [Realtime API](../../develop/realtime-api/).
+
+## WebRTC and Livestreaming
+
+| Capability | Boundary |
+| --- | --- |
+| WebRTC | Room realtime audio/video or signaling; depends on ICE/STUN/TURN and `use_webrtc` |
+| RTMP publish | Publisher entry, usually used by streamer or room admin |
+| HTTP-FLV | Low-latency live playback, sensitive to long connections and slow clients |
+| HLS | Playlist/segment files; multi-replica requires local proxy, shared file, or OSS backend |
+
+WebRTC configuration is in [WebRTC Configuration](../../configuration/webrtc/). Livestreaming is in [Livestream Configuration](../../configuration/livestream/).
+
+## Troubleshooting Matrix
+
+| Symptom | Likely layer | Check |
+| --- | --- | --- |
+| Player gets 403 immediately | Provider credential or header | Provider headers and upstream status |
+| Seek fails | Range or slice cache | `Accept-Ranges`, `Content-Range`, proxy logs |
+| Browser only fails | CORS or header restrictions | Use proxy and inspect browser Network |
+| Proxy only fails | Server-to-upstream network or headers | DNS, server network, proxy headers |
+| Multi-replica live randomly fails | HLS storage model | Publisher node, shared storage, OSS, gRPC proxy |
+| URL stops working later | `expires_at` | Observe or fetch a new playback snapshot |
+
+## Continue Reading
+
+- [Add Media](../media-sources/)
+- [Client Integration Guide](../../develop/client-integration/)
+- [Realtime API](../../develop/realtime-api/)
+- [Capacity Planning](../../operations/capacity-planning/)

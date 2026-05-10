@@ -7,8 +7,6 @@ import Diagram from '../../../../components/Diagram.astro';
 import proxySliceCacheDark from '../../../../assets/diagrams/proxy-slice-cache-dark.svg';
 import proxySliceCacheLight from '../../../../assets/diagrams/proxy-slice-cache-light.svg';
 
-## What This Page Covers
-
 `proxy_slice_cache` belongs to media proxying. It caches upstream media as HTTP Range slices to reduce repeated provider bandwidth and latency.
 
 It is not a business cache and does not live under `cache`. Business L1/L2 caches are covered in [Business Cache](../cache/).
@@ -49,7 +47,7 @@ Effective file path:
 
 ## Fields
 
-| Field | Default | Change When | If Misconfigured |
+| Field | Default | Change when | Risk |
 | --- | --- | --- | --- |
 | `proxy_slice_cache.enabled` | `true` | Media Range-slice caching must be disabled entirely | Proxying still works, but repeated playback returns to upstream more often |
 | `proxy_slice_cache.file_backend_enabled` | `false` | Cache should survive process restarts and a persistent directory is mounted | Startup or writes can fail if the container has no writable volume |
@@ -63,7 +61,7 @@ SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED=true
 SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR=cache/proxy-slice
 ```
 
-## Production Guidance
+## Production
 
 For single-node production, mount `data_dir` or `file_cache_dir` to persistent storage if the file backend is enabled, and monitor capacity plus cleanup.
 

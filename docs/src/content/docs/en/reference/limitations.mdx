@@ -1,0 +1,80 @@
+---
+title: Limitations and Non-goals
+description: Current SyncTV boundaries, design tradeoffs, and capabilities that should not be assumed.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+Current design boundaries are not long-term roadmap commitments.
+
+## Deployment Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| Single-node | Supported and recommended for initial production |
+| Multi-replica | Supported, but requires shared PostgreSQL, Redis, and consistent secrets |
+| PostgreSQL | Required durable business data store |
+| Redis | Optional for simple single-node, recommended in production, required for multi-replica |
+| Automatic migrations | Embedded SQLx migrations run at service startup |
+| management gRPC | Operations control plane, not for normal clients or public exposure |
+
+## Media and Proxy Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| proxy slice cache | Caches only Range slices; no full-body cache |
+| multi-replica slice cache | File backend has no cross-process shared index or distributed lock |
+| header forwarding | Proxy only uses Provider-provided headers |
+| direct playback | Requires the client to access the URL and set required headers |
+| upstream availability | SyncTV cannot guarantee third-party Provider, CDN, or media stability |
+| Bilibili | Upstream policy, cookies, Referer, User-Agent, and Range behavior can change |
+
+## Realtime and Cluster Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| WebSocket observations | Not preserved across disconnect; reconnect must rebuild them |
+| Observation count | Per-connection limit applies; merge or unobserve views |
+| Transaction consistency | Database-backed changes fan out after commit; some runtime state is best-effort |
+| Cluster catch-up | Covers short disconnect windows, not long offline sync |
+| Rolling update | Long connections need drain time; not all connections move instantly |
+
+## Security and Account Boundaries
+
+| Topic | Current boundary |
+| --- | --- |
+| 2FA | Local 2FA uses password, passkey, verified email; OAuth2 is not a local factor |
+| JWT revocation | Strong revocation depends on Redis token blacklist and token lifetime |
+| OPAQUE secret | Long-term binding to password records; not for routine rotation |
+| Provider encryption | Depends on credential encryption key; losing it affects decryption |
+| OpenAPI UI | Only exposed when built with the `openapi` feature |
+
+## API Stability
+
+SyncTV is in a new-project phase. Its own protobuf, HTTP fields, and Realtime messages can still be cleaned up without draft backward compatibility. Third-party vendored proto is outside this policy and should not be edited casually.
+
+See [API and Protobuf Evolution](../api-versioning/).
+
+## Non-goals
+
+<CardGrid>
+  <Card title="Not media storage" icon="document">
+    SyncTV aggregates and proxies external media; it does not replace object storage or media libraries.
+  </Card>
+  <Card title="Not a CDN" icon="cloud-download">
+    Proxy and slice cache do not replace CDN capacity planning.
+  </Card>
+  <Card title="Not a universal transcoder" icon="puzzle">
+    Transcoding depends on the Provider or upstream media system.
+  </Card>
+  <Card title="Not a public management plane" icon="setting">
+    management gRPC and metrics need controlled access.
+  </Card>
+</CardGrid>
+
+## Continue Reading
+
+- [Architecture Overview](../../overview/architecture/)
+- [Playback and Proxy Model](../../use/playback-and-proxy/)
+- [Capacity Planning](../../operations/capacity-planning/)
+- [Security Hardening and Rotation](../../operations/security-hardening-and-rotation/)

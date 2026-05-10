@@ -1,0 +1,38 @@
+---
+title: Media Sources
+description: Provider, direct URL, remote Provider, livestream, and playback result responsibilities in SyncTV.
+---
+
+SyncTV does not store media files. It resolves external media into playback results, then lets clients play directly or through the SyncTV proxy. The resolving layer is called a Provider.
+
+## What Providers Do
+
+| Capability | Meaning |
+| --- | --- |
+| Browse and search | List media from Alist, Emby/Jellyfin, Bilibili, remote services, or other backends |
+| Resolve playback | Return playback URLs, proxy URLs, headers, subtitles, variants, or metadata |
+| Manage credentials | Store tokens, cookies, API keys, or account credentials for upstream services |
+| Expose behavior | Tell clients whether direct play, proxying, Range, livestreaming, or backend features are available |
+
+A Provider returns a playback decision, not only a URL. Clients should use the headers and proxy mode returned by the Provider instead of inventing `User-Agent`, `Referer`, Cookie, or Range rules.
+
+## Common Sources
+
+| Source | Good for | Watch out for |
+| --- | --- | --- |
+| Direct URL | A stable URL already reachable by clients | Browser header restrictions |
+| Alist | Cloud drive and file browsing | Upstream auth, directory permissions, Range support |
+| Emby/Jellyfin | Existing media libraries | Transcoding, subtitles, bitrate, upstream user permissions |
+| Bilibili | Platform video resolving | Cookie, Referer, UA, and upstream policy changes |
+| Remote Provider | Isolating media resolving into another service | Auth, network, and version compatibility |
+| RTMP/live | Room livestreaming | Multi-replica HLS backend or publisher-node proxy |
+
+## Security Boundary
+
+Provider credentials are sensitive. Configure `security.credential_encryption_key` in production, and keep tokens, cookies, and API keys out of logs, shell history, and public configuration.
+
+## Next Steps
+
+- Add media by source: [Add Media](../../use/media-sources/).
+- Understand direct/proxy playback: [Playback Model](../playback-model/).
+- Configure Provider behavior: [Media Providers](../../configuration/media-providers/).

@@ -1,0 +1,39 @@
+---
+title: Provider Management
+description: Create, enable, disable, update, reconnect, and delete Provider instances while protecting upstream credentials.
+---
+
+A Provider instance is connection configuration for an external media source. It can include URL, token, cookie, user agent, authentication data, remote gRPC details, or backend-specific parameters.
+
+## Common Commands
+
+```bash
+synctv provider available
+synctv provider list
+synctv provider create <NAME> <PROVIDER_ENDPOINT> --provider alist
+synctv provider update <NAME> --provider-endpoint <PROVIDER_ENDPOINT> --provider alist
+synctv provider enable <NAME>
+synctv provider disable <NAME>
+synctv provider reconnect <NAME>
+synctv provider delete <NAME>
+```
+
+## Before You Change a Provider
+
+| Operation | Check first |
+| --- | --- |
+| Create | `security.credential_encryption_key` is configured and credentials will not enter logs or shell history |
+| Update | Endpoint, headers, user agent, proxy policy, and authentication method |
+| Disable | Whether user defaults or room media still depend on it |
+| Delete | Whether playlists, user preferences, or remote instances still reference it |
+| Reconnect | Upstream reachability and credential expiry |
+
+## Playback Validation
+
+1. An administrator can browse or search media.
+2. A normal user sees media according to permissions.
+3. Direct and proxy playback behave as expected.
+4. Range seek works for upstreams that support Range.
+5. Header-sensitive sources use correct `User-Agent`, `Referer`, `Range`, and authentication headers.
+
+Concepts are in [Media Sources](../../concepts/media-providers/). User-facing setup is in [Add Media](../../use/media-sources/).

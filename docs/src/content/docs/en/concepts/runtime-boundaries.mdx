@@ -1,0 +1,37 @@
+---
+title: Runtime Boundaries
+description: PostgreSQL, Redis, secrets, management endpoints, metrics, media proxying, and SyncTV non-goals.
+---
+
+SyncTV is an application service. It is not a database, object store, media library, CDN, or public management platform. Confirm these boundaries before production deployment.
+
+## Required and Recommended Dependencies
+
+| Component | Role | Production requirement |
+| --- | --- | --- |
+| PostgreSQL | Source of record | Durable storage, backups, and migration checks before upgrades |
+| Redis | Short-lived shared state and coordination | Recommended for production, required for multi-replica |
+| Secrets | Tokens, credential encryption, OPAQUE, management auth | Stable and protected from logs and repositories |
+| TLS | Protects login, tokens, cookies, MFA, and management traffic | Required for public entry points |
+
+PostgreSQL stores users, rooms, permissions, Provider instances, preferences, notifications, reviews, and audit data. Redis stores OAuth2 state, WebAuthn challenges, email codes, rate limits, token blacklists, cluster coordination, and cache invalidation state.
+
+## Management Is Not Public
+
+management gRPC, metrics, and internal debugging endpoints are for administrators and operators, not normal users or third-party clients. Use Unix sockets, private networks, VPNs, bastions, Kubernetes exec, or controlled scraping paths. If TCP management is enabled, set `management.auth_token`.
+
+## SyncTV Does Not Provide
+
+| Non-goal | Meaning |
+| --- | --- |
+| Media storage | SyncTV aggregates, resolves, and proxies external media; it does not replace object storage, cloud drives, media libraries, or CDNs |
+| General transcoding platform | Transcoding depends on Providers or upstream media systems |
+| Public management plane | Management endpoints must not be exposed to the public internet |
+| CDN | Proxy and slice cache do not replace bandwidth planning and edge distribution |
+| Strongly consistent collaboration database | Realtime is for room events and resource observation, not a database transaction boundary |
+
+## Next Steps
+
+- Production launch: [Production Checklist](../../install/production-checklist/).
+- Database and Redis configuration: [Database and Redis](../../configuration/database-and-redis/).
+- Full limitations: [Limitations and Non-goals](../../reference/limitations/).

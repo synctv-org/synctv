@@ -1,0 +1,123 @@
+---
+title: Security Hardening and Rotation
+description: Production security baseline and rotation strategy for JWT, OPAQUE, credential encryption, cluster, management, and metrics secrets.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Security Baseline
+
+Production deployments should have:
+
+- HTTPS for all user traffic.
+- PostgreSQL, Redis, management gRPC, and metrics not exposed publicly.
+- Root password, JWT secret, OPAQUE setup secret, credential encryption key, and cluster secret managed in a Secret Manager or Kubernetes Secret.
+- No default weak secrets.
+- Database and secrets backed up and restored together.
+- Metrics restricted by source or authentication.
+
+## Secret Classes
+
+| Secret | Impact if lost | Rotation difficulty | Handling |
+| --- | --- | --- | --- |
+| `jwt.secret` | Existing tokens become invalid | Medium | Plan rotation and expect re-login |
+| `security.opaque_server_setup_secret` | OPAQUE password records may fail | High | Do not routinely rotate; back it up |
+| `security.credential_encryption_key` | Encrypted Provider credentials cannot be decrypted | High | Migrate credentials before replacement |
+| `server.cluster_secret` | Node-to-node auth fails | Medium | Coordinate all replicas |
+| `management.auth_token` | CLI/management TCP auth | Low | Rotate regularly if TCP is used |
+| `metrics.auth.bearer_token` | Metrics scrape auth | Low | Sync monitoring config |
+| SMTP/OAuth2/Provider credentials | Email, login, or media failures | Medium | Follow upstream rotation policy |
+
+<Aside type="caution">
+Do not treat the OPAQUE setup secret or credential encryption key as ordinary tokens. They are bound to stored authentication data and encrypted Provider credentials.
+</Aside>
+
+## Pre-rotation Checklist
+
+<Steps>
+1. Back up PostgreSQL, config files, and all production secrets.
+2. Identify the target and blast radius: login, Provider credentials, cluster, management, or metrics.
+3. Validate in a production-like test environment.
+4. Prepare rollback: old secret, old config, old image, or database backup.
+5. Notify users if re-login or Provider rebind may be required.
+6. Rotate during a quiet window and watch login failures, Provider decrypt errors, and WebSocket reconnects.
+</Steps>
+
+## Common Rotation Flows
+
+<Tabs syncKey="secret-rotation-en">
+  <TabItem label="JWT secret" icon="seti:lock">
+    1. Generate a new secret.
+    2. Update secret storage.
+    3. Restart all SyncTV replicas.
+    4. Expect old access and refresh tokens to fail.
+    5. Watch `401`, login success rate, and WebSocket reconnects.
+  </TabItem>
+  <TabItem label="Management token" icon="laptop">
+    1. Generate a new token.
+    2. Update `management.auth_token` or `_file`.
+    3. Restart the relevant service entry.
+    4. Update CLI environment or Secret.
+    5. Validate with `synctv system stats`.
+  </TabItem>
+  <TabItem label="Metrics token" icon="magnifier">
+    1. Generate a new bearer token.
+    2. Update SyncTV metrics config.
+    3. Update Prometheus, ServiceMonitor, or scraper Secret.
+    4. Verify old token fails and new token succeeds.
+  </TabItem>
+  <TabItem label="Cluster secret" icon="cloud-download">
+    1. Prepare a maintenance window.
+    2. Ensure all replicas will use the same new value.
+    3. Roll or restart replicas; node-to-node failures may occur during the transition.
+    4. Watch heartbeat, Redis pub/sub, and cross-node WebSocket events.
+  </TabItem>
+</Tabs>
+
+## Credential Encryption Key Migration
+
+If `security.credential_encryption_key` must change, do not simply replace it and start the service. A safe flow is:
+
+<Steps>
+1. Back up the database and old key.
+2. Stop writes to Provider credentials.
+3. Decrypt existing Provider credentials with the old key.
+4. Encrypt them with the new key and write them back.
+5. Update configuration to the new key.
+6. Start SyncTV and verify Provider login, browse, and playback.
+</Steps>
+
+If no migration tool exists, keep the old key or delete and recreate affected Provider credentials.
+
+## OPAQUE Setup Secret
+
+The OPAQUE setup secret is a long-lived server secret for password authentication. Do not rotate it unless you have an account password migration or forced reset plan.
+
+If it leaks:
+
+- Assess scope immediately.
+- Force password reset or OPAQUE record recreation.
+- Rotate JWT secret and clear sessions.
+- Keep audit records and an incident timeline.
+
+## Hardening Checklist
+
+| Item | Action |
+| --- | --- |
+| TLS | Public traffic only over HTTPS/WSS |
+| CORS | Allow only real frontend origins, no path |
+| Trusted proxy | Trust only actual reverse proxy addresses |
+| Rate limits | Configure login, verification, WebSocket, and API limits |
+| WebAuthn | Match `rp_origin` to real HTTPS origin |
+| OAuth2 | Exact redirect URL and Redis-backed state |
+| Provider | Encrypt credentials; no tokens in `source_config` |
+| Logs | JSON logs without secrets, cookies, or JWTs |
+| Metrics | No public exposure; use bearer or platform auth |
+| Backups | Back up and restore database and secrets together |
+
+## Continue Reading
+
+- [Security and Secrets](../../configuration/security/)
+- [Authentication and Security Model](../../admin/authentication-security/)
+- [Backup and Restore](../backup-restore/)
+- [Errors](../../reference/errors/)

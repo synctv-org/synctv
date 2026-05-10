@@ -1,39 +1,35 @@
 ---
 title: 安全与密钥
-description: JWT、OPAQUE、Provider 凭据加密、CORS、可信代理和密码策略配置说明。
+description: JWT、OPAQUE、Provider 凭据加密、密码策略、CORS、可信代理和 2FA 行为。
 ---
 
-## 先理解三类 secret
+## 关键 secret
 
-SyncTV 里有三类最重要的密钥，它们用途不同，不能混用。
-
-| 配置 | 用途 | 是否必须稳定 | 泄露或丢失的影响 |
+| 配置 | 用途 | 必须稳定 | 丢失或泄露影响 |
 | --- | --- | --- | --- |
-| `jwt.secret` | 签发登录 token | 可以轮换，但会影响登录状态 | 泄露后攻击者可能伪造 token |
-| `security.opaque_server_setup_secret` | OPAQUE 密码认证 | 必须稳定 | 改错会导致 OPAQUE 密码记录无法验证 |
-| `security.credential_encryption_key` | 加密 Provider 凭据 | 必须妥善保存 | 丢失后已加密凭据可能无法读取 |
+| `jwt.secret` | 签发 access、refresh 和 guest token | 可轮换，但会影响登录状态 | 泄露后可能伪造 token |
+| `security.opaque_server_setup_secret` | OPAQUE 密码认证服务端 setup secret | 是 | 改错会导致 OPAQUE 密码记录无法验证 |
+| `security.credential_encryption_key` | 加密 Provider 凭据 | 是 | 丢失后已加密 Provider 凭据可能无法读取 |
 
-生产环境建议全部通过环境变量或 secret 文件注入，不要写在 Git 仓库里。
+生产环境使用环境变量或 secret file 注入，不提交到仓库。
 
-## `jwt`
+## `jwt.secret`
 
-### `jwt.secret`
-
-作用：签发访问 token、刷新 token 和游客 token。
+用途：签发登录 token。
 
 要求：
 
 - 至少 32 个字符。
 - 高熵随机值。
-- 不要使用 `change-me`、项目名、域名、生日、普通单词等可猜值。
+- 不是占位值、项目名、域名、日期或常见单词。
 
-生成方式：
+生成：
 
 ```bash
 openssl rand -base64 32
 ```
 
-配置示例：
+推荐 YAML：
 
 ```yaml
 jwt:
@@ -47,71 +43,35 @@ SYNCTV_JWT_SECRET=...
 SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 ```
 
-轮换影响：
+轮换会让已有 access token 和 refresh token 失效。怀疑泄露时立即轮换。
 
-- 旧 access token 会失效。
-- 旧 refresh token 也可能失效。
-- 用户需要重新登录。
+## Token 时长
 
-如果怀疑泄露，应立即轮换。
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `jwt.access_token_duration_hours` | `1` | Access token 有效期 |
+| `jwt.refresh_token_duration_days` | `30` | Refresh token 有效期 |
+| `jwt.guest_token_duration_hours` | `4` | Guest token 有效期 |
+| `jwt.clock_skew_leeway_secs` | `60` | 时钟偏移容忍 |
 
-### `jwt.access_token_duration_hours`
+公网部署保持较短 access token，通过 refresh token 续期。服务器时间漂移应使用 NTP 修正，不靠调大 clock skew 掩盖。
 
-默认值：`1`。
+## `security.credential_encryption_key`
 
-作用：普通登录 token 的有效期。
+用途：加密 Provider token、API key 和其他 Provider secret。
 
-建议：
+格式：
 
-- 面向公网：1 到 2 小时。
-- 内网自用：可以略长，但不建议超过 12 小时。
-
-### `jwt.refresh_token_duration_days`
-
-默认值：`30`。
-
-作用：刷新 token 的有效期。用户在这个时间内可以无需重新输入密码换取新的 access token。
-
-建议：
-
-- 普通自托管：30 天。
-- 更严格安全环境：7 天或更短。
-- 长期家庭使用：可以更长，但风险也更高。
-
-### `jwt.guest_token_duration_hours`
-
-默认值：`4`。
-
-作用：游客或匿名访问 token 的有效期。
-
-如果你不开放游客能力，这个值影响较小。
-
-### `jwt.clock_skew_leeway_secs`
-
-默认值：`60`。
-
-作用：允许服务器和客户端之间存在少量时间误差。
-
-如果多节点服务器时间不同步，token 可能提前过期或暂时不可用。生产环境更应该配置 NTP，而不是单纯调大这个值。
-
-## `security`
-
-### `security.credential_encryption_key`
-
-作用：加密敏感 Provider 凭据，例如媒体服务 token、API key、自定义 CA 相关 secret 等。
-
-格式要求：
-
-- 必须是 64 个十六进制字符。
+- 64 个十六进制字符。
 - 等价于 32 字节 AES-256-GCM key。
 
-生成方式：
+生成：
 
 ```bash
 openssl rand -hex 32
 ```
 
-配置示例：
+推荐 YAML：
 
 ```yaml
 security:
@@ -125,36 +85,19 @@ SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
 SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential_encryption_key
 ```
 
-什么时候可以为空：
+保存加密 Provider 凭据前备份这个 key。没有迁移方案时不要随意轮换。
 
-- 只做本地临时测试。
-- 不使用需要保存敏感凭据的 Provider。
+## `security.opaque_server_setup_secret`
 
-生产建议：
+用途：OPAQUE 密码认证使用的稳定服务端 secret。
 
-- 一定配置。
-- 备份到密码管理器或 secret manager。
-- 不要随意轮换。轮换前需要考虑已加密数据迁移。
-
-### `security.opaque_server_setup_secret`
-
-作用：OPAQUE 密码认证使用的服务端 setup secret。
-
-OPAQUE 是一种避免服务器直接处理明文密码的密码认证协议。这个 secret 参与服务器端密码验证材料的生成，因此必须长期稳定。
-
-要求：
-
-- 必填。
-- 至少 32 字符。
-- 不能是占位值。
-
-生成方式：
+生成：
 
 ```bash
 openssl rand -base64 48
 ```
 
-配置示例：
+推荐 YAML：
 
 ```yaml
 security:
@@ -168,18 +111,14 @@ SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
 SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE=/run/secrets/opaque_server_setup_secret
 ```
 
-非常重要：
+约束：
 
-- 不要跟 `jwt.secret` 使用同一个值。
-- 不要每次容器启动随机生成新值。
-- Kubernetes/Helm 升级时必须保留原值。
-- 如果改错，已有 OPAQUE 密码记录可能无法继续登录。
+- 不要复用 `jwt.secret`。
+- 不要在每次容器启动时生成新值。
+- Helm 升级和重新部署必须保留原值。
+- 改错会破坏已有密码登录记录。
 
-## `password_complexity`
-
-这组配置控制用户账户密码强度。它不控制房间密码。
-
-默认配置：
+## 密码复杂度
 
 ```yaml
 password_complexity:
@@ -191,41 +130,15 @@ password_complexity:
   max_repeated_chars: 3
 ```
 
-### `min_length`
+这组策略作用于用户账户密码，不作用于房间密码。
 
-密码最短长度。生产建议至少 12，但如果你有很多非技术用户，过高会增加使用成本。
+生产策略通常更应该依赖更长密码和限流，而不是在电视端、移动端等输入体验差的客户端强制大量特殊字符。
 
-### `require_uppercase`
+`max_repeated_chars=0` 会关闭连续重复字符检查。
 
-是否要求至少一个大写字母。
+## CORS 和可信代理
 
-### `require_lowercase`
-
-是否要求至少一个小写字母。
-
-### `require_digit`
-
-是否要求至少一个数字。
-
-### `require_special`
-
-是否要求特殊字符。
-
-特殊字符能提高复杂度，但会增加移动端、电视端输入成本。如果客户端输入体验有限，可以保持 `false`，通过更长密码提高安全性。
-
-### `max_repeated_chars`
-
-限制连续重复字符数量。例如设置为 `3` 时，`aaaa` 这类连续重复会被拒绝。
-
-设置为 `0` 表示关闭这个检查。
-
-## CORS 和可信代理也属于安全配置
-
-虽然它们在 `server` 下，但安全影响很大。
-
-### `server.cors_allowed_origins`
-
-只填写你真正使用的前端域名：
+CORS 控制哪些浏览器 origin 可以调用 API：
 
 ```yaml
 server:
@@ -233,32 +146,34 @@ server:
     - "https://app.example.com"
 ```
 
-不要把随便找到的“允许所有跨域”配置复制到生产环境。
+origin 不能包含路径、query 或 fragment。
 
-### `server.trusted_proxies`
+可信代理控制 SyncTV 是否信任 `X-Forwarded-For` 等转发头：
 
-只填写你控制的反向代理 IP 或内网网段。不要填写全网。
+```yaml
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+```
+
+只添加你控制的代理 IP 或 CIDR。为空时，SyncTV 使用 socket peer address。
 
 ## SSRF 默认策略
 
-SyncTV 的媒体 Provider、媒体代理和远程视频源默认允许访问内网地址。这样设计是为了自托管和内网部署场景：很多用户会把 Alist、Emby、反向代理、NAS、IPTV 或其他视频源放在局域网里。
+SyncTV 默认允许访问私有网络媒体源、代理目标和远程视频源。自托管场景中，Alist、Emby、NAS、IPTV 和反向代理经常位于内网。
 
-这意味着 SSRF 私网拦截不是全局默认开启的安全边界。代码里仍保留显式严格策略，给需要公网多租户或托管服务形态的调用点使用；但默认产品行为优先保证内网视频源开箱可用。
+这意味着私有地址 SSRF 拦截不是全局默认安全边界。需要严格出站控制的调用点应显式使用 strict policy。
 
-运维建议：
+公网部署应通过反向代理、NetworkPolicy、防火墙和 Provider 凭据范围限制可达网络。不要把内部管理端点作为普通媒体源暴露给不可信用户。
 
-- 公开部署时，通过反向代理、网络策略、防火墙和 Provider 凭据权限限制可访问范围。
-- 不要把高权限内网管理端点作为普通媒体源开放给不可信用户。
-- 如果你维护自定义 Provider 或出站 HTTP 调用，需要显式选择是否启用严格 SSRF guard。
+## WebAuthn 和 2FA
 
-## WebAuthn 与 2FA
+WebAuthn/passkey 配置见 [WebAuthn 配置](../webauthn/)。
 
-WebAuthn/passkey 的底层配置在 [WebAuthn 配置](../webauthn/) 页面解释。
+用户级 2FA 是用户偏好，不是全局 YAML 开关。开启 2FA 前，用户必须至少有两种可用本地验证方式：
 
-用户级别的两步验证不是通过全局 YAML 配置强制开启，而是用户偏好设置。开启两步验证前，用户必须拥有至少两种本地验证方式，例如：
+- 密码。
+- WebAuthn/passkey。
+- 已验证邮箱。
 
-- password
-- webauthn/passkey
-- email
-
-OAuth2 登录不参与本地 2FA，但开启 2FA 的用户仍然可以使用 OAuth2 登录。
+OAuth2 不参与本地 2FA，但开启 2FA 的用户仍可用 OAuth2 登录。开启 2FA 后，一因素本地 token 不应满足 refresh 或敏感偏好修改。

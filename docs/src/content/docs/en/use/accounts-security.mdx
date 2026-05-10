@@ -1,0 +1,47 @@
+---
+title: Sign In and Account Security
+description: How users sign in to SyncTV and safely use passwords, OPAQUE, passkeys, email, OAuth2, and 2FA.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+SyncTV can enable several sign-in methods. The methods shown in the UI depend on administrator configuration.
+
+## Sign-In Methods
+
+| Method | Requires | Good for |
+| --- | --- | --- |
+| Username and password | Username and password | Common local sign-in |
+| OPAQUE password login | Local password | Password login without storing direct password-verifier equivalents |
+| Passkey/WebAuthn | Browser, OS account, or security key | Passwordless sign-in or second factor |
+| Email code | A reachable verified email address | Sign-in, verification, recovery, or MFA |
+| OAuth2/OIDC | Third-party account | GitHub, Google, Logto, or generic OIDC |
+
+## Before Enabling 2FA
+
+Make sure you have at least two local verification methods: password, passkey/WebAuthn, or verified email. OAuth2 does not count as a local 2FA factor.
+
+<Aside type="caution">
+Do not keep only one passkey and remove password or verified email. Device loss, browser profile damage, or passkey sync issues can block account recovery.
+</Aside>
+
+## When a Second Factor Is Required
+
+<Steps>
+1. Complete the first factor: password, OPAQUE, passkey, email sign-in, or OAuth2.
+2. If SyncTV asks for 2FA, choose one of the available second factors.
+3. Complete email code, passkey, or password MFA.
+4. After signing in, confirm that at least two local verification methods remain available.
+</Steps>
+
+## Account Issues
+
+| Symptom | Check first |
+| --- | --- |
+| Password login fails | Username, password, account ban, 2FA requirement |
+| Email code does not arrive | Address, spam folder, verified email, SMTP availability |
+| OAuth2 callback does not sign in | Registration review, existing binding, callback URL |
+| Passkey is unavailable | Browser, OS account, security key, current domain |
+| 2FA blocks access | Whether two local verification methods still exist |
+
+When reporting a problem, include time, username, sign-in method, error text, and `request_id`. Do not send passwords, tokens, cookies, OAuth2 codes, or verification codes.

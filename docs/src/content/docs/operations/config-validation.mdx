@@ -19,7 +19,7 @@ cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
 
 ## 常见错误
 
-这页只覆盖配置校验错误。如果服务已经启动但访问、认证、媒体播放或 Ingress 行为异常，优先看 [排障入口](../troubleshooting/)。
+服务已经启动但访问、认证、媒体播放或 Ingress 行为异常时，先看 [排障入口](../troubleshooting/)。
 
 ### OPAQUE secret 为空
 
@@ -94,7 +94,7 @@ export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 
 ## Compose 排错
 
-先确认你已经按 [Docker Compose 部署](../../deployment/docker-compose/#获取生产-compose-文件) 获取生产 Compose 文件，并在同一目录生成 `.env.postgres` 和 `.env.synctv`。
+先确认你已经按 [Docker Compose 部署](../../install/docker-compose/#获取生产-compose-文件) 获取生产 Compose 文件，并在同一目录生成 `.env.postgres` 和 `.env.synctv`。
 
 查看最终 Compose 配置：
 

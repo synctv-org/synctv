@@ -1,0 +1,75 @@
+---
+title: 部署路径选择
+description: 在单机生产 Compose、本地试用、源码运行和 Helm/Kubernetes 之间选择正确路径。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Diagram from '../../../components/Diagram.astro';
+import deploymentPathDark from '../../../assets/diagrams/deployment-path-zh-dark.svg';
+import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-light.svg';
+
+## 路径
+
+长期运行的单机实例使用 **单机生产 Compose**。只有改代码、临时本地试用，或已经有 Kubernetes 平台时才切换路径。
+
+<Diagram
+  light={deploymentPathLight}
+  dark={deploymentPathDark}
+  alt="SyncTV 部署路径选择图，按照是否长期运行、是否改代码、是否需要 Kubernetes 多副本选择单机生产 Compose、本地试用、源码运行或 Helm。"
+  caption="先判断运行目标，再进入对应部署文档。"
+/>
+
+## 选择表
+
+| 路径 | 适合谁 | 启动方式 | 生产可用性 | 下一页 |
+| --- | --- | --- | --- | --- |
+| 单机生产 Compose | 自托管用户、小团队、一台服务器 | 预构建镜像 + `.env.postgres` + `.env.synctv` | 默认生产路径 | [快速开始](../../install/quick-start/) |
+| 本地试用 | 临时看界面或功能 | `docker-compose.dev.yml` | 不可用于公网或长期运行 | [开发环境](../../develop/local-development/) |
+| 源码运行 | 开发者、调试 API、改代码 | 容器依赖 + 本机 `cargo run` | 不作为部署方式 | [开发指南](../../develop/local-development/) |
+| Helm/Kubernetes | 多副本、平台团队、统一 Ingress/监控 | Helm values + Kubernetes Secret/PVC/Ingress | 可用于生产，但复杂度更高 | [Helm 部署](../helm/) |
+
+## 单机生产 Compose
+
+满足任一条件时使用：
+
+- 只有一台服务器或一台 NAS/VM。
+- 想尽快得到一个长期可用的 SyncTV 实例。
+- 不想先理解 Kubernetes、Ingress controller、PVC、Secret operator。
+- 可以自己管理 PostgreSQL 备份和几个长期 secret。
+
+成功标准：
+
+- `.env.postgres` 和 `.env.synctv` 已持久保存并备份。
+- `docker compose config` 通过。
+- `/health/ready` 返回 200。
+- root 用户可以登录。
+- PostgreSQL 有备份方案。
+
+执行路径：
+
+1. [快速开始](../../install/quick-start/)：下载 Compose 文件、生成 env、设置 root 密码、启动服务。
+2. [Docker Compose 部署](../docker-compose/)：确认生产 Compose、开发 Compose、数据卷和端口边界。
+3. [生产部署清单](../production-checklist/)：上线前检查 TLS、secret、备份、metrics、告警和升级策略。
+
+## 例外路径
+
+| 场景 | 使用路径 | 边界 |
+| --- | --- | --- |
+| 只想临时体验 | 本地试用 | 启动快，但包含开发 secret，不能暴露公网或长期运行。 |
+| 要改代码 | 源码运行 | PostgreSQL 和 Redis 可由开发 Compose 提供，SyncTV 本体由本机 Rust 工具链启动。 |
+| 已有 Kubernetes 平台 | Helm | 先确定 HTTP/gRPC Ingress、Secret、PVC、metrics、Redis、HLS 存储和滚动更新策略。 |
+| 需要多副本实时协作 | Helm 或自管多副本 | 所有副本必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `server.cluster_secret`。 |
+
+## 决策底线
+
+<Steps>
+1. 只要对外提供服务，就不要使用开发 Compose 的内置 secret。
+2. 只要长期运行，就必须备份 PostgreSQL 和生产 secret。
+3. 只要多副本运行，就必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `server.cluster_secret`。
+4. 只要启用 HLS 多副本，就必须选择 publisher-node proxy、`shared_file` 或 OSS 之一。
+5. 只要管理控制面使用 TCP，就必须配置 token，并避免暴露给普通公网入口。
+</Steps>
+
+<Aside type="tip">
+如果还不确定，选单机生产 Compose。它是最小的生产闭环，后续仍可以迁移到 Helm 或其他编排系统。
+</Aside>

@@ -3,8 +3,6 @@ title: Business Cache
 description: SyncTV L1/L2, username, and permission cache configuration.
 ---
 
-## What This Page Covers
-
 `cache` only controls business-data caches: small objects such as users, rooms, usernames, and permissions. It reduces database reads. It does not cache media bytes.
 
 Media proxy Range-slice caching is configured separately in [Proxy Slice Cache](../proxy-slice-cache/).
@@ -24,7 +22,7 @@ cache:
 
 ## Fields
 
-| Field | Default | Change When | If Misconfigured |
+| Field | Default | Change when | Risk |
 | --- | --- | --- | --- |
 | `cache.l1_capacity` | `500` | One node has enough memory and user/room cache churn is visible | Too low increases database reads; too high increases memory use |
 | `cache.l1_ttl_seconds` | `300` | In-process entries should expire faster or stay longer | Too long delays visible changes; too short increases database pressure |
@@ -34,7 +32,7 @@ cache:
 | `cache.permission_cache_capacity` | `1000` | Permission cache capacity needs explicit tuning | Too low increases permission-read overhead |
 | `cache.permission_cache_ttl_seconds` | `300` | Permission changes should propagate faster or slower | Too long delays permission visibility |
 
-## Single-Node Production Guidance
+## Single-Node Production
 
 Defaults are suitable for most single-node production deployments. Confirm PostgreSQL, Redis, and indexes first, then tune cache capacities if database read pressure is still high.
 

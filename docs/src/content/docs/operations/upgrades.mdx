@@ -5,7 +5,7 @@ description: SyncTV 版本升级、数据库 migration、配置变更、Helm/Com
 
 import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## 升级原则
+## 升级模型
 
 升级时要把三件事分开看：
 
@@ -17,20 +17,22 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 不要把“镜像可以回滚”理解成“系统一定可以回滚”。如果 migration 修改了数据库结构，回滚前必须确认旧版本是否还能读取新结构。
 </Aside>
 
-## 升级前检查
+## 发布前检查
 
 <Steps>
 1. 阅读新版本 release notes 或变更记录。
 2. 备份 PostgreSQL 和生产 secret。
-3. 在测试环境使用生产同结构数据启动目标版本，验证自动 migration 和业务读写。
-4. 运行 `synctv config validate`。
-5. 运行 `synctv config show --output yaml` 保存当前有效配置快照。
-6. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
-7. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
-8. 如果使用 Compose，执行 `docker compose config`。
+3. 如果涉及 secret 管理方式变化，先按 [安全加固与密钥轮换](../security-hardening-and-rotation/) 判断是否能直接轮换。
+4. 在测试环境使用生产同结构数据启动目标版本，验证自动 migration 和业务读写。
+5. 运行 `synctv config validate`。
+6. 运行 `synctv config show --output yaml` 保存当前有效配置快照。
+7. 对比 [配置总索引](../../reference/configuration-index/) 和 [完整配置示例](../../configuration/full-example/)。
+8. 如果协议或 protobuf 变更，确认 [API 与 protobuf 演进策略](../../reference/api-versioning/) 和客户端示例已同步。
+9. 如果使用 Helm，执行 `helm lint` 和 `helm template`。
+10. 如果使用 Compose，执行 `docker compose config`。
 </Steps>
 
-## 数据库 migration
+## 数据库 Migration
 
 SyncTV 服务启动阶段会自动执行 embedded SQLx migrations。migration 状态记录在 `_sqlx_migrations`，并由 SQLx 在数据库侧加锁保证同一套 migration 不会被多个副本并发执行。多副本同时启动时，不需要额外用 Job 来人工串行化 migration，也不需要管理员判断“这次是否需要迁移”。
 
@@ -58,7 +60,7 @@ docker compose run --rm synctv synctv db migrate
 
 ## Docker Compose 升级
 
-以下命令需要在生产 Compose 文件目录执行。如果还没有部署目录，先按 [Docker Compose 部署](../../deployment/docker-compose/#获取生产-compose-文件) 获取 `docker-compose.yml`、env example 和初始化脚本。
+以下命令需要在生产 Compose 文件目录执行。如果还没有部署目录，先按 [Docker Compose 部署](../../install/docker-compose/#获取生产-compose-文件) 获取 `docker-compose.yml`、env example 和初始化脚本。
 
 <Steps>
 1. 拉取新镜像。
@@ -80,7 +82,7 @@ docker compose logs -f synctv
 ## Helm 升级
 
 <Tabs syncKey="helm-upgrade">
-  <TabItem label="渲染检查" icon="seti:kubernetes">
+  <TabItem label="渲染检查" icon="cloud-download">
 
 ```bash
 helm lint ./helm/synctv
@@ -113,7 +115,7 @@ kubectl -n synctv get ingress,svc,pod
 
 SyncTV 有 WebSocket、HTTP-FLV、HLS、gRPC stream 等长连接或流式请求。滚动更新时要给连接 drain 留时间。
 
-建议：
+发布规则：
 
 - `server.shutdown_drain_timeout_seconds` 与 Kubernetes `terminationGracePeriodSeconds` 匹配。
 - readiness probe 在进程开始关闭时尽快失败。
@@ -122,7 +124,7 @@ SyncTV 有 WebSocket、HTTP-FLV、HLS、gRPC stream 等长连接或流式请求�
 
 ## 配置变更策略
 
-升级时不要无差别复制全量默认配置。建议：
+升级时不要无差别复制全量默认配置。先保存有效配置：
 
 ```bash
 synctv --config /etc/synctv/synctv.yaml config show --output yaml > effective-before.yaml
@@ -140,7 +142,7 @@ synctv --config /etc/synctv/synctv.yaml config show --output yaml > effective-be
 
 回滚前先判断：
 
-| 情况 | 建议 |
+| 情况 | 处理 |
 | --- | --- |
 | 只改了配置或镜像，目标版本没有新的 migration | 可以按部署系统回滚 |
 | 新版本已启动并自动执行 migration，但旧版本兼容新 schema | 可以回滚镜像，但要重点观察错误日志 |
@@ -168,3 +170,4 @@ curl -fsS http://localhost:8080/health/ready
 - Provider 直连和代理路径正常。
 - metrics 能被抓取。
 - 日志没有持续 migration、Redis、数据库连接或 Provider 错误。
+- 高峰容量或连接模型变化时，按 [容量规划](../capacity-planning/) 复查数据库连接、Redis、WebSocket 和代理带宽。

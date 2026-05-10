@@ -5,34 +5,32 @@ description: SyncTV 最小生产配置骨架和覆盖全部静态字段的 YAML 
 
 import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## 使用原则
+## 使用方式
 
-完整配置模板用于查字段、确认层级和准备自己的配置文件，不建议把所有默认值原样复制到生产环境。生产配置应只固定你明确负责的值，例如 secret、数据库、Redis、域名、反向代理、存储路径和已启用功能。
+生产配置只固定你负责的值：secret、数据库、Redis、域名、反向代理、存储路径和已启用功能。不要把全量默认值整份复制到生产环境。
 
-推荐流程：
-
-1. 从下面的“最小生产配置骨架”开始。
-2. 需要启用某个能力时，再从“全量配置模板”复制对应段落。
-3. 使用 `synctv config validate` 校验生产配置。
-4. 使用 `synctv config show --output yaml` 查看最终生效配置。这个命令会合并默认值、配置文件、环境变量和 CLI 覆盖，并自动打码 secret。
+| 目标 | 使用内容 |
+| --- | --- |
+| Docker Compose 单机部署 | 使用 Compose env，不写 `synctv.yaml` |
+| 裸机或 Kubernetes | 从最小生产配置开始 |
+| 查字段层级 | 查看全量配置模板 |
+| 查当前二进制的最终配置 | 运行 `synctv config show --output yaml` |
 
 ## 配置模板
 
 <Tabs syncKey="config-example">
   <TabItem label="Compose env" icon="seti:docker">
 
-如果你按 [快速开始](../../guides/quick-start/) 使用生产 Compose，通常不需要先写 `synctv.yaml`。默认入口是 `.env.postgres` 和 `.env.synctv`。
-
-最小需要确认：
+[快速开始](../../install/quick-start/) 的生产 Compose 使用 `.env.postgres` 和 `.env.synctv`。最小需要确认：
 
 ```dotenv
 # .env.synctv
 SYNCTV_BOOTSTRAP_ROOT_PASSWORD=replace-with-a-strong-password
 
-# 如果前端和 API 不同 origin，使用 JSON 数组。
+# 前端和 API 不同 origin 时填写 JSON 数组。
 SYNCTV_SERVER_CORS_ALLOWED_ORIGINS=["https://app.example.com"]
 
-# init-compose-env.sh 会生成这些长期 secret。请备份并复用同一组文件。
+# init-compose-env.sh 会生成这些长期 secret。备份并复用同一组文件。
 SYNCTV_JWT_SECRET=...
 SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=...
 SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=...
@@ -46,15 +44,15 @@ docker compose up -d
 curl -fsS http://localhost:8080/health/ready
 ```
 
-需要裸机、Kubernetes、自定义 secret file 或完整 YAML 时，再看下面的 YAML 模板。
+裸机、Kubernetes 或自定义 secret file 使用下面的 YAML 模板。
 
   </TabItem>
   <TabItem label="最小生产配置" icon="rocket">
 
-下面示例覆盖生产部署最常见的必填项。secret 建议用 `_file` 形式注入，不要直接写在 YAML 里。
+这个示例覆盖生产部署的常见必填项。secret 使用 `_file` 形式注入。
 
 <Aside type="note">
-这份 YAML 骨架更适合裸机、Kubernetes 或自定义 secret file 部署。生产 Compose 用户优先维护 `.env.postgres` 和 `.env.synctv`。
+生产 Compose 用户维护 `.env.postgres` 和 `.env.synctv`；不要同时维护第二份 YAML secret。
 </Aside>
 
 ```yaml
@@ -109,14 +107,14 @@ metrics:
     bearer_token_file: "/run/secrets/metrics_bearer_token"
 ```
 
-这个骨架没有启用集群、WebAuthn、OAuth2、SMTP、Provider、HLS 文件存储或 slice cache 文件后端。需要这些能力时再进入对应配置页补充。
+这个骨架没有启用集群、WebAuthn、OAuth2、SMTP、Provider、HLS 文件存储或 slice cache 文件后端。按功能补充对应配置页。
 
   </TabItem>
   <TabItem label="全量配置模板" icon="setting">
 
-这份模板覆盖当前版本的全部静态配置字段。Provider 相关字段只配置本进程内置 local provider adapter；远程 provider instance 通过管理 API/CLI 持久化，详见 [媒体 Provider](../media-providers/)。
+这份模板覆盖当前版本的全部静态配置字段。Provider 相关字段只配置本进程内置 local provider adapter；远程 provider instance 通过管理 API/CLI 持久化，见 [媒体 Provider](../media-providers/)。
 
-模板中同时列出 secret 直填字段和 `*_file` 字段是为了展示层级。生产配置不要两种方式照抄混用；优先使用 `*_file` 或环境变量注入，并确保引用的文件真实存在。
+模板同时列出 secret 直填字段和 `*_file` 字段，用于展示层级。生产配置使用 `*_file` 或环境变量注入。
 
 ```yaml
 server:
@@ -449,15 +447,15 @@ synctv --config /etc/synctv/synctv.yaml config show --output toml
 synctv --config /etc/synctv/synctv.yaml config validate
 ```
 
-这个命令会检查：
+检查内容：
 
 - 必要 secret 是否为空或仍为默认值。
 - `cluster.enabled=true` 时 Redis 和 `server.cluster_secret` 是否满足要求。
 - TCP management 是否配置了 `management.auth_token`。
 - CORS origin、gRPC message size、WebAuthn origin 等字段是否合法。
-- 路径类配置是否能按预期解析。
+- 路径类配置能否解析。
 
-## 相关页面
+## 继续阅读
 
 - [配置总索引](../../reference/configuration-index/)：按字段列出类型、默认值和详细说明页面。
 - [常用环境变量](../../reference/environment-variables/)：列出源码支持的 `SYNCTV_*` 环境变量。

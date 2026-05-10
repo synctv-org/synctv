@@ -1,0 +1,38 @@
+---
+title: 媒体源
+description: Provider、直链、远程 Provider、直播入口和播放结果在 SyncTV 中的职责。
+---
+
+SyncTV 不保存媒体文件。它把外部媒体源解析成播放结果，再让客户端直连或通过 SyncTV proxy 播放。这个解析层叫 Provider。
+
+## Provider 做什么
+
+| 能力 | 说明 |
+| --- | --- |
+| 浏览和搜索 | 从 Alist、Emby/Jellyfin、Bilibili、远程服务或其他后端列出媒体 |
+| 解析播放 | 把选中的媒体转换成播放 URL、代理 URL、header、字幕或变体 |
+| 管理凭据 | 保存访问外部服务需要的 token、Cookie、API key 或账号信息 |
+| 暴露能力 | 告诉客户端是否支持直连、代理、Range、直播或特定后端能力 |
+
+Provider 返回的是播放决策，不只是一个 URL。客户端应使用 Provider 返回的 header 和代理模式，不要自行猜测 `User-Agent`、`Referer`、Cookie 或 Range 规则。
+
+## 常见来源
+
+| 来源 | 适合场景 | 注意点 |
+| --- | --- | --- |
+| 直链 | URL 已经可被客户端访问 | 特殊 header 可能无法由浏览器设置 |
+| Alist | 聚合网盘或文件服务 | 上游认证、目录权限和 Range 支持会影响播放 |
+| Emby/Jellyfin | 私有媒体库 | 转码、字幕、码率和用户权限来自上游 |
+| Bilibili | 平台视频解析 | Cookie、Referer、UA 和风控变化会影响可用性 |
+| 远程 Provider | 把媒体解析能力放到独立服务 | 需要稳定的认证、网络和版本约定 |
+| RTMP/直播 | 房间内直播和推流 | 多副本时要明确 HLS backend 或 publisher-node proxy |
+
+## 安全边界
+
+Provider 凭据属于敏感信息。生产环境应配置 `security.credential_encryption_key`，并避免把 token、Cookie、API key 写入日志、命令历史或公开配置。删除 Provider instance 前，先确认是否仍被用户默认设置、房间媒体或播放列表引用。
+
+## 下一步
+
+- 按来源接入媒体：读 [添加媒体](../../use/media-sources/)。
+- 理解直连、代理和播放快照：读 [播放模型](../playback-model/)。
+- 配置 Provider 行为：读 [媒体 Provider 配置](../../configuration/media-providers/)。

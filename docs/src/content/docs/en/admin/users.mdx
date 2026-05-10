@@ -1,0 +1,45 @@
+---
+title: User Management
+description: Manage SyncTV users, global roles, ban state, account security state, and sensitive operations.
+---
+
+Users have global roles, effective state, and security preferences. When handling user issues, first decide whether the cause is account state, authentication method, global role, or room permissions.
+
+## User State
+
+| Concept | Values | Impact |
+| --- | --- | --- |
+| Global role | `root`, `admin`, `user` | Platform administration capability |
+| Effective state | `active`, `banned` | Sign-in, room creation, and room joining |
+| Preferences | 2FA, notifications, Provider defaults | User-level settings, not YAML configuration |
+| Auth methods | password, OPAQUE, passkey, email, OAuth2 | Sign-in and recovery options |
+
+## Role Boundaries
+
+- `root` can manage all users and administrators.
+- `admin` can manage normal users but cannot manage root or equally privileged administrators.
+- `user` can use rooms and media features according to business permissions.
+
+## Common Commands
+
+```bash
+synctv user list
+synctv user get alice
+synctv user create alice --password 'StrongPass123'
+synctv user ban alice --reason "abuse"
+synctv user unban alice
+synctv user set-role alice admin
+synctv user preferences get alice
+```
+
+## Rules
+
+| Scenario | Prefer |
+| --- | --- |
+| Abuse | Use `ban`, keep the reason, avoid deleting audit context |
+| Account recovery | Verify identity and bound methods before changing password, email, or 2FA |
+| Promote administrator | Use a root account and record the reason |
+| Change 2FA preference | Confirm at least two local verification methods remain |
+| Delete account | Evaluate room, media, review, notification, and audit impact first |
+
+Authentication details are in [Authentication and Security Model](../authentication-security/). User-facing behavior is in [Sign In and Account Security](../../use/accounts-security/).

@@ -3,13 +3,9 @@ title: Glossary
 description: Short definitions for common SyncTV security, deployment, media, realtime, and cluster terms.
 ---
 
-## Why This Page Exists
-
-SyncTV spans self-hosting, media proxying, realtime collaboration, authentication security, and multi-node deployment. Use this page as a vocabulary map before going deep into configuration and operations.
-
 ## Core Terms
 
-| Term | Short definition | Where you see it |
+| Term | Definition | Context |
 | --- | --- | --- |
 | SyncTV single binary | One process hosts HTTP, public gRPC, WebSocket, management, providers, proxying, livestreaming, and cluster logic | Architecture, deployment, ports |
 | PostgreSQL | Durable business data store for users, rooms, permissions, provider instances, preferences, and audit data | All deployments |
@@ -41,10 +37,10 @@ SyncTV spans self-hosting, media proxying, realtime collaboration, authenticatio
 | fail-closed | Rejecting a business request when a critical dependency or event write fails, avoiding split database/cache state | write operations, cluster events, transactional outbox |
 | fanout | Distributing one business change to local connections, nodes, or subscribers | WebSocket and cluster realtime events |
 
-## Next Pages
+## Continue Reading
 
-- [Architecture Overview](../../guides/architecture/)
-- [Quick Start](../../guides/quick-start/)
+- [Architecture Overview](../../overview/architecture/)
+- [Quick Start](../../install/quick-start/)
 - [Configuration Index](../configuration-index/)
-- [Client Integration Guide](../../guides/client-integration/)
+- [Client Integration Guide](../../develop/client-integration/)
 - [Troubleshooting](../../operations/troubleshooting/)

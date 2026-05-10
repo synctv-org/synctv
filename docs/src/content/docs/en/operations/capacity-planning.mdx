@@ -1,0 +1,127 @@
+---
+title: Capacity Planning
+description: Plan SyncTV connection, database, Redis, WebSocket, Provider, proxy bandwidth, livestream, and multi-replica capacity.
+---
+
+import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Planning Dimensions
+
+| Resource | Driven by | Main signals |
+| --- | --- | --- |
+| HTTP/gRPC | Login, lists, Provider browse, polling | `http_requests_total`, latency, errors |
+| WebSocket | Online users, rooms, multi-tab clients | `websocket_connections_active`, message rate |
+| PostgreSQL | Rooms, members, playlists, permissions | Pool usage, query latency, waiting connections |
+| Redis | Rate limits, OAuth2/WebAuthn state, cache, cluster | Latency, errors, pub/sub health |
+| Provider/proxy | Upstream requests, Range, bandwidth, cache | Provider errors, proxy latency, cache hit ratio |
+| Livestream | RTMP publish, HLS/FLV, storage | Publishers, viewers, bytes, pull errors |
+
+## Deployment Shapes
+
+| Shape | Fits | Required action |
+| --- | --- | --- |
+| Single SyncTV + PostgreSQL | Small evaluation or personal production | Persistent secrets, DB backups, TLS |
+| Single node + Redis | Recommended production baseline | Redis HA or accepted short-state loss |
+| Multi-replica SyncTV | Rolling update or horizontal scale | Shared PostgreSQL, Redis, cluster secret, drain |
+| Multi-replica + livestream | Large live or highly available entry | Clear HLS backend and publisher proxy/storage validation |
+
+Do not add replicas before database, Redis, secrets, and HLS storage boundaries are clear.
+
+## Estimate Capacity
+
+<Steps>
+1. Estimate concurrent users and connections per user.
+2. Estimate active rooms, members per room, and message frequency.
+3. Estimate login, refresh, Provider browse, playback snapshot, and list requests per minute.
+4. Estimate media mode: direct, proxy, livestream, average bitrate.
+5. Calculate proxy bandwidth: proxy viewers times average bitrate times peak factor.
+6. Calculate database pool total: replicas times `database.max_connections`.
+7. Set independent alerts for Redis, PostgreSQL, Ingress, and SyncTV.
+</Steps>
+
+## Important Configuration
+
+| Configuration | Purpose |
+| --- | --- |
+| `database.max_connections` | Per-replica database pool limit |
+| `redis.*` | L2 cache, rate limits, short-lived state, cluster coordination |
+| `connection_limits.*` | WebSocket user, room, global, lifetime, and per-connection message limits |
+| `http_rate_limits.websocket_*` | WebSocket connection-attempt limits |
+| `http_rate_limits.*` | HTTP login, API, media, admin, and streaming limits |
+| `grpc_rate_limits.*` | gRPC API and verification limits |
+| `messaging_rate_limits.*` | Chat and danmaku message limits |
+| `proxy_slice_cache.*` | Range slice cache and file backend |
+| `server.shutdown_drain_timeout_seconds` | Connection drain during rolling updates |
+| `cluster.*` | Discovery, leader election, catch-up |
+| `livestream.*` | RTMP/FLV/HLS and backend |
+
+See [Configuration Index](../../reference/configuration-index/).
+
+## Database and Redis
+
+Database guidance:
+
+- Keep total pool size below the database limit, leaving room for migrations and operations.
+- In multi-replica mode, multiply pool size by replica count.
+- Use pagination for large lists.
+- Validate migrations against production-like data.
+
+Redis guidance:
+
+- Multi-replica mode requires shared Redis and a consistent `redis.key_prefix`.
+- Redis loss affects OAuth2 state, WebAuthn challenge, email codes, rate limits, token blacklist, and cluster short-lived state.
+- If strong token revocation matters, use Redis HA and shorter JWT access token lifetime.
+
+## Media Bandwidth
+
+Proxy playback puts SyncTV in the media data path:
+
+```text
+proxy egress bandwidth = concurrent_proxy_viewers * average_bitrate * peak_factor
+```
+
+Example:
+
+```text
+40 * 6 Mbps * 1.3 = 312 Mbps
+```
+
+Slice cache can reduce upstream fetches for shared content, but it does not reduce SyncTV-to-client egress bandwidth.
+
+## Alert Starting Points
+
+| Alert | Threshold idea |
+| --- | --- |
+| Sustained HTTP 5xx | Route-level growth for 5-10 minutes |
+| p95 HTTP latency | Separate API, Provider, and proxy paths |
+| WebSocket active near limit | Warn around 70%-80% |
+| DB connection waiting | Sustained nonzero waiting is actionable |
+| Redis pub/sub unhealthy | Multi-replica realtime risk |
+| Provider timeout/5xx | Separate upstream and local network |
+| Livestream pull errors | Check publisher, HLS backend, slow clients |
+
+Metric names are listed in [Metrics Catalog](../../reference/metrics-catalog/).
+
+## Validation Tests
+
+<Tabs syncKey="capacity-tests-en">
+  <TabItem label="API" icon="document">
+    Test real login, room lists, member lists, playback snapshots, and Provider browse paths. Do not only load test `/health/ready`.
+  </TabItem>
+  <TabItem label="WebSocket" icon="puzzle">
+    Simulate connections, heartbeat, chat, playback state, and resource observation.
+  </TabItem>
+  <TabItem label="Media" icon="youtube">
+    Test direct, proxy, Range seek, and slice cache hits. Record upstream and SyncTV egress bandwidth.
+  </TabItem>
+  <TabItem label="Rolling update" icon="rocket">
+    Deploy while WebSocket and live connections exist; confirm readiness removes traffic and drain time is enough.
+  </TabItem>
+</Tabs>
+
+## Continue Reading
+
+- [Observability Runbook](../observability/)
+- [Rate Limits and Connection Limits](../../configuration/rate-limits/)
+- [Playback and Proxy Model](../../use/playback-and-proxy/)
+- [Cluster Configuration](../../configuration/cluster/)

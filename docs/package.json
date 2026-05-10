@@ -10,7 +10,8 @@
     "build": "npm run diagrams && astro build",
     "preview": "astro preview",
     "check": "npm run diagrams && astro check",
-    "validate": "npm run diagrams && astro check && astro build"
+    "validate:content": "node scripts/validate-docs-content.mjs",
+    "validate": "npm run diagrams && npm run validate:content && astro check && astro build"
   },
   "dependencies": {
     "@astrojs/starlight": "0.38.4",

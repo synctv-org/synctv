@@ -1,26 +1,22 @@
 ---
 title: Metrics 监控
-description: Prometheus metrics 监听、TLS、静态鉴权和 Kubernetes TokenReview 鉴权配置。
+description: Prometheus metrics listener、TLS、静态鉴权和 Kubernetes TokenReview 鉴权。
 ---
 
-## Metrics 是什么？
+`metrics` 配置控制 Prometheus 兼容的 `/metrics` 端点。它不是客户端业务 API，供 Prometheus、VictoriaMetrics、Grafana Agent、OpenTelemetry Collector 等系统抓取。
 
-`metrics` 配置控制 SyncTV 的 Prometheus 指标出口。它不是客户端业务 API，而是给 Prometheus、VictoriaMetrics、Grafana Agent、OpenTelemetry Collector 等监控系统抓取 `/metrics` 使用。
-
-默认情况下 metrics 是关闭的：
+默认关闭：
 
 ```yaml
 metrics:
   enabled: false
 ```
 
-生产环境建议开启 metrics，但不要裸露到公网。最常见做法是只在内网、Kubernetes ServiceMonitor 或受控网段中访问。
+生产环境可以开启，但不要直接暴露公网。Linux 构建会把进程级指标和业务指标放在同一个 registry 中暴露。
 
-Linux 构建会在同一个 Prometheus registry 中注册进程级指标，例如 CPU、内存、文件描述符和进程启动时间。这些指标跟业务指标一起从 `/metrics` 暴露，不需要额外配置。
+## 常用示例
 
-## 完整示例
-
-静态 bearer token：
+Bearer token：
 
 ```yaml
 metrics:
@@ -43,9 +39,7 @@ metrics:
     basic_password_file: "/run/secrets/metrics_basic_password"
 ```
 
-Kubernetes TokenReview + SubjectAccessReview：
-
-这个模式要求 SyncTV 二进制编译时启用 `k8s` feature。Helm 可以渲染 RBAC、ServiceAccount token 和抓取资源，但不能改变镜像里的 feature set。
+Kubernetes TokenReview 和 SubjectAccessReview：
 
 ```yaml
 metrics:
@@ -58,87 +52,31 @@ metrics:
       authorization_cache_ttl_seconds: 60
 ```
 
-## `metrics.enabled`
+`kubernetes` 模式要求二进制启用 `k8s` feature。Helm 可以渲染 RBAC、ServiceAccount token 和抓取资源，不能改变镜像 feature set。
 
-类型：布尔值。
+## Listener 字段
 
-默认值：`false`。
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `metrics.enabled` | `false` | 启动独立 metrics listener |
+| `metrics.host` | `0.0.0.0` | 监听地址 |
+| `metrics.port` | `9090` | 监听端口 |
 
-作用：是否启动独立的 metrics HTTP 监听器。
-
-什么时候开启：
-
-- 你要接入 Prometheus 或 VictoriaMetrics。
-- 你要观察请求量、错误率、延迟、缓存命中、连接数等运行状态。
-- 你在 Kubernetes 中使用 ServiceMonitor 或 VMServiceScrape。
-
-什么时候关闭：
-
-- 本地临时测试。
-- 你没有任何监控系统。
-- 你无法保证 metrics 端点只被可信系统访问。
-
-环境变量：
-
-```bash
-SYNCTV_METRICS_ENABLED=true
-```
-
-## `metrics.host`
-
-类型：字符串，IP 地址或监听地址。
-
-默认值：`0.0.0.0`。
-
-作用：metrics 监听在哪个网卡地址。
-
-常见值：
+常见 host：
 
 | 值 | 含义 |
 | --- | --- |
-| `0.0.0.0` | 监听所有 IPv4 网卡，适合容器和 Kubernetes |
-| `127.0.0.1` | 只允许本机访问，适合单机加本地 agent |
-| `::` | 监听 IPv6 所有地址 |
+| `0.0.0.0` | 监听所有 IPv4 网卡，常见于容器 |
+| `127.0.0.1` | 只允许本机访问，适合本地 agent |
+| `::` | 监听所有 IPv6 网卡 |
 
-示例：
+metrics 端口和主服务 `server.port` 分离。
 
-```yaml
-metrics:
-  host: "127.0.0.1"
-```
+## TLS
 
-## `metrics.port`
+`metrics.tls.enabled` 默认值：`false`。
 
-类型：端口号。
-
-默认值：`9090`。
-
-作用：metrics 监听端口。
-
-示例：
-
-```yaml
-metrics:
-  port: 9090
-```
-
-注意：这个端口和主服务 `server.port` 不同。主服务默认 `8080`，metrics 默认 `9090`。
-
-## `metrics.tls.enabled`
-
-类型：布尔值。
-
-默认值：`false`。
-
-作用：是否让 metrics 监听器直接提供 HTTPS。
-
-建议：
-
-- Kubernetes 内部由 ServiceMonitor 抓取时，通常可以关闭 TLS，并通过 NetworkPolicy/RBAC 控制访问。
-- 裸机或跨网络抓取时，可以开启 TLS。
-- 如果前面已有反向代理终止 TLS，不需要在 SyncTV metrics 上再次开启。
-
-示例：
+Kubernetes 集群内抓取通常关闭 TLS，依赖 NetworkPolicy、service account 鉴权和集群网络。跨网络抓取时启用 TLS，或在反向代理处终止 TLS。
 
 ```yaml
 metrics:
@@ -148,63 +86,25 @@ metrics:
     key_path: "/etc/synctv/metrics/tls.key"
 ```
 
-## `metrics.tls.cert_path`
+`metrics.tls.cert_path` 和 `metrics.tls.key_path` 是输入文件路径；相对路径不通过 `data_dir` 重新定位。
 
-类型：文件路径。
+## 鉴权模式
 
-默认值：空字符串。
-
-作用：metrics HTTPS 使用的 PEM 证书链路径。
-
-路径规则：相对路径相对配置文件目录或当前工作目录，不相对 `data_dir`。
-
-## `metrics.tls.key_path`
-
-类型：文件路径。
-
-默认值：空字符串。
-
-作用：metrics HTTPS 使用的 PEM 私钥路径。
-
-安全建议：私钥文件只能允许 SyncTV 进程用户读取，不要放在公开目录。
-
-## `metrics.auth.mode`
-
-类型：枚举。
-
-默认值：`bearer_token`。
-
-可选值：
-
-| 值 | 含义 | 适合场景 |
+| 模式 | 含义 | 场景 |
 | --- | --- | --- |
-| `bearer_token` | 使用固定 bearer token | Docker Compose、单机、简单 Prometheus |
-| `basic` | 使用 HTTP Basic Auth | 某些传统抓取系统 |
-| `kubernetes` | 使用 Kubernetes TokenReview 和 SubjectAccessReview | Kubernetes 集群内，更符合平台权限模型 |
+| `bearer_token` | 静态 bearer token | Compose、单机、简单 Prometheus |
+| `basic` | HTTP Basic Auth | 传统抓取系统 |
+| `kubernetes` | TokenReview 和 SubjectAccessReview | Kubernetes 原生部署 |
 
-`kubernetes` 模式需要二进制启用 `k8s` feature；否则配置校验会失败。
+### Bearer Token
 
-示例：
-
-```yaml
-metrics:
-  auth:
-    mode: "bearer_token"
-```
-
-## `metrics.auth.bearer_token`
-
-类型：字符串 secret。
-
-默认值：空字符串。
-
-作用：当 `metrics.auth.mode=bearer_token` 时，抓取方必须携带：
+抓取方发送：
 
 ```http
 Authorization: Bearer <token>
 ```
 
-推荐使用文件：
+使用文件注入：
 
 ```yaml
 metrics:
@@ -212,81 +112,31 @@ metrics:
     bearer_token_file: "/run/secrets/metrics_token"
 ```
 
-生成示例：
+生成：
 
 ```bash
 openssl rand -base64 32
 ```
 
-## `metrics.auth.basic_username`
-
-类型：字符串。
-
-默认值：空字符串。
-
-作用：当 `metrics.auth.mode=basic` 时的 Basic Auth 用户名。
-
-示例：
+### Basic Auth
 
 ```yaml
 metrics:
   auth:
     mode: "basic"
     basic_username: "prometheus"
-```
-
-## `metrics.auth.basic_password`
-
-类型：字符串 secret。
-
-默认值：空字符串。
-
-作用：当 `metrics.auth.mode=basic` 时的 Basic Auth 密码。
-
-推荐使用文件：
-
-```yaml
-metrics:
-  auth:
     basic_password_file: "/run/secrets/metrics_basic_password"
 ```
 
-## `metrics.auth.kubernetes.audience`
+### Kubernetes 鉴权
 
-类型：字符串。
+`metrics.auth.kubernetes.audience` 会传给 TokenReview。Prometheus 支持 projected service account token audience 时，使用稳定值，例如 `synctv-metrics`。
 
-默认值：空字符串。
+`authentication_cache_ttl_seconds` 和 `authorization_cache_ttl_seconds` 默认 `60`。调高会降低 API Server 压力，但权限变更生效更慢。
 
-作用：传给 Kubernetes TokenReview 的 audience，用于校验抓取方 token 是否面向 SyncTV metrics 场景签发。
+## Helm
 
-建议：
-
-- 如果你的 Prometheus 支持 service account token audience，建议设置一个固定值，例如 `synctv-metrics`。
-- 如果平台没有启用 audience 校验，可以保持空字符串。
-
-## `metrics.auth.kubernetes.authentication_cache_ttl_seconds`
-
-类型：秒数。
-
-默认值：`60`。
-
-作用：Kubernetes TokenReview 成功或失败结果的缓存时间。
-
-调大可以减少 Kubernetes API Server 压力，但权限变化生效会更慢。调小更实时，但 API Server 压力更高。
-
-## `metrics.auth.kubernetes.authorization_cache_ttl_seconds`
-
-类型：秒数。
-
-默认值：`60`。
-
-作用：Kubernetes SubjectAccessReview 授权结果的缓存时间。
-
-建议保持默认。只有在你明确知道 Kubernetes API Server 压力或权限变更时效要求时再调整。
-
-## Helm 中的 metrics
-
-Helm values 通常这样开启：
+Prometheus Operator：
 
 ```yaml
 metrics:
@@ -297,7 +147,7 @@ metrics:
     enabled: true
 ```
 
-如果使用 VictoriaMetrics：
+VictoriaMetrics：
 
 ```yaml
 metrics:
@@ -306,4 +156,4 @@ metrics:
     enabled: true
 ```
 
-注意：Helm 中 HTTP/gRPC 是两个独立 Service，metrics selector 只应抓 HTTP/API 相关 Service，避免误抓 gRPC Service。
+Helm 中 HTTP 和 gRPC 使用独立 Service。metrics 抓取应指向 API/metrics Service，不抓 gRPC Service。

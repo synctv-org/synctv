@@ -1,0 +1,36 @@
+---
+title: 房间与成员管理
+description: 管理房间生命周期、成员角色、成员权限、房间设置、播放控制和直播入口。
+---
+
+房间管理影响在线成员的观影体验。修改前先查询当前状态，修改后用普通成员视角验证加入、播放、聊天和权限。
+
+## 管理范围
+
+| 类别 | 常见命令 | 风险 |
+| --- | --- | --- |
+| 生命周期 | `room create`、`room delete`、`room ban`、`room transfer-owner` | 影响房间可见性、所有权和数据保留 |
+| 成员 | `room member add/kick/ban/unban/set-permissions` | 改变访问和管理能力 |
+| 设置 | `room settings update/reset` | 改变加入规则、游客、聊天、弹幕和权限默认值 |
+| 播放 | `room playback play/pause/seek/start/stop` | 改变所有在线成员看到的播放状态 |
+| 直播 | `room stream list`、`provider rtmp create-publish-key` | 涉及推流密钥和直播会话 |
+
+## 操作顺序
+
+1. 查询房间、成员和当前设置。
+2. 判断目标是长期职责变化，还是单个成员的临时例外。
+3. 长期变化优先改房间角色或默认权限，临时例外再改成员覆盖。
+4. 不把 `DELETE_ROOM` 作为房间内可随意委派的能力。
+5. 修改后验证 WebSocket 同步、加入流程、聊天和播放控制。
+6. 删除、封禁、转让所有权时保留原因。
+
+## 成员问题
+
+| 目标 | 动作 | 注意 |
+| --- | --- | --- |
+| 临时禁言 | 移除成员 `send_chat` | 比关闭全房间聊天影响小 |
+| 允许控制播放 | 增加 `play_control` | 切换媒体还需要 `change_current_media` |
+| 清理扰乱成员 | kick 或 ban member | 房间封禁不等于平台封禁 |
+| 调整长期职责 | 修改房间角色或默认权限 | 不要长期堆叠大量个人覆盖 |
+
+房间对象见 [房间概念](../../concepts/rooms/)；权限计算见 [权限模型](../../concepts/permissions/)。

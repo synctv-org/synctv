@@ -1,25 +1,13 @@
 ---
 title: 服务监听与运行时路径
-description: server、time、data_dir、logging、management 配置详解。
+description: server、time、data_dir、logging、management 配置。
 ---
 
-## 这一页解决什么问题？
-
-这一页解释 SyncTV 进程“监听在哪、别人怎么访问它、运行时文件写到哪里、日志怎么输出、管理 CLI 如何连接服务”。
-
-这些配置通常在第一次部署时就要确认好：
-
-- `server.host`
-- `server.port`
-- `server.cors_allowed_origins`
-- `server.trusted_proxies`
-- `data_dir`
-- `logging`
-- `management`
+这些配置决定 SyncTV 监听地址、外部访问方式、运行时文件目录、日志格式和 CLI 管理端点。
 
 ## `server`
 
-`server` 控制公开 API 服务。HTTP REST 和公开 gRPC 使用同一个端口。
+HTTP REST 和公开 gRPC 共用 `server.port`。
 
 ### `server.host`
 
@@ -30,23 +18,11 @@ server:
   host: "0.0.0.0"
 ```
 
-作用：决定 SyncTV 监听哪个网卡地址。
-
-常见值：
-
-| 值 | 含义 | 适合场景 |
+| 值 | 含义 | 场景 |
 | --- | --- | --- |
 | `0.0.0.0` | 监听所有 IPv4 网卡 | Docker、Kubernetes、服务器部署 |
-| `127.0.0.1` | 只允许本机访问 | 本地开发、只通过反向代理访问 |
-| `::` | 监听 IPv6 所有地址 | IPv6 环境 |
-
-如果需要容器外、局域网或反向代理访问 SyncTV，通常使用 `0.0.0.0`。如果只允许本机访问，使用 `127.0.0.1`。
-
-环境变量：
-
-```bash
-SYNCTV_SERVER_HOST=0.0.0.0
-```
+| `127.0.0.1` | 只监听本机 | 本地开发、只允许反向代理访问 |
+| `::` | 监听所有 IPv6 网卡 | IPv6 环境 |
 
 ### `server.port`
 
@@ -57,91 +33,31 @@ server:
   port: 8080
 ```
 
-作用：HTTP REST API、公开 gRPC API、健康检查都走这个端口。
-
-注意：在 Kubernetes Helm 里，HTTP 和 gRPC 会被暴露成两个独立 Service，但它们最终仍指向同一个容器端口。
-
-环境变量：
-
-```bash
-SYNCTV_SERVER_PORT=8080
-```
+HTTP REST、公开 gRPC 和健康检查使用这个端口。Helm 会把 HTTP 和 gRPC 暴露成独立 Service，但它们仍指向同一个容器端口。
 
 ### `server.enable_reflection`
 
-默认值：
+默认值：`true`。
 
-```yaml
-server:
-  enable_reflection: true
-```
-
-作用：是否开启公开 gRPC reflection。Reflection 方便调试工具发现 gRPC 服务定义，但也会暴露更多接口结构信息。
-
-建议：
-
-- 本地开发可以开启。
-- 生产环境通常显式关闭。
-- 内网开发者平台可以按需开启。
+开启公开 gRPC reflection。本地开发和受控内网调试可以开启；公网生产环境关闭。
 
 ### `server.grpc_max_message_size_bytes`
 
-默认值：`16777216`，也就是 16 MB。
+默认值：`16777216`，即 16 MiB。
 
-作用：限制 gRPC 请求和响应的最大消息体大小，避免异常客户端发送超大消息导致内存压力。
-
-范围：
-
-- 最小：1 MB
-- 最大：1 GB
-
-什么时候要改：
-
-- 批量导入、批量媒体操作、管理接口返回内容很大时可以调高。
-- 如果暴露公网且客户端不可控，不建议调得太高。
+限制 gRPC 请求和响应大小。只有批量操作确实需要时才调高。
 
 ### `server.grpc_compression_enabled`
 
-默认值：
+默认值：`true`。
 
-```yaml
-server:
-  grpc_compression_enabled: true
-```
-
-作用：允许 gRPC 客户端和服务端协商 gzip 压缩。它不会强制所有请求都压缩，而是在客户端声明支持时压缩可受益的消息体。
-
-什么时候保持开启：
-
-- 跨节点 gRPC、远程管理、批量响应或列表类接口比较多。
-- 网络带宽比 CPU 更紧张。
-- Kubernetes/Ingress 链路存在跨节点转发。
-
-什么时候可以关闭：
-
-- 所有调用都在本机或极低延迟内网。
-- CPU 明显比带宽更紧张，并且 gRPC 消息体通常很小。
-
-环境变量：
-
-```bash
-SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED=true
-```
+允许 gRPC 客户端和服务端协商 gzip 压缩。它不强制所有请求压缩。
 
 ### `server.trusted_proxies`
 
-默认值：
+默认值：`[]`。
 
-```yaml
-server:
-  trusted_proxies: []
-```
-
-作用：告诉 SyncTV 哪些反向代理的 `X-Forwarded-For` / `X-Real-IP` 可信。
-
-为什么重要：限流、审计日志、安全判断通常需要知道真实客户端 IP。如果 SyncTV 直接相信任何客户端传来的 `X-Forwarded-For`，攻击者可以伪造 IP 绕过限制。
-
-示例：
+允许指定哪些反向代理的 `X-Forwarded-For` / `X-Real-IP` 可信：
 
 ```yaml
 server:
@@ -151,41 +67,23 @@ server:
     - "192.168.0.0/16"
 ```
 
-建议：
-
-- 如果 SyncTV 前面有 Nginx、Ingress、Cloudflare Tunnel、负载均衡器，只填写这些代理所在的内网网段或固定 IP。
-- 不要填写 `0.0.0.0/0` 或 `::/0`。
-- 不确定时保持空列表，SyncTV 会使用 socket 直连 IP。
+不要使用 `0.0.0.0/0` 或 `::/0`。不确定时保持空列表，SyncTV 使用 socket peer address。
 
 ### `server.cors_allowed_origins`
 
-默认值：
+默认值：`[]`。
 
-```yaml
-server:
-  cors_allowed_origins: []
-```
-
-作用：允许哪些 Web 前端域名跨域访问 SyncTV API。
-
-如果前端页面在 `https://app.example.com`，后端 API 在 `https://api.example.com`，浏览器会要求后端明确允许 `https://app.example.com`。
-
-示例：
+允许浏览器跨域访问 API 的前端 origin：
 
 ```yaml
 server:
   cors_allowed_origins:
     - "https://app.example.com"
-    - "https://admin.example.com"
 ```
 
-注意：
+值必须是 origin，只包含协议、域名和可选端口。不要包含路径、query 或 fragment。
 
-- 这里必须是 origin，只包含协议、域名和端口。
-- 不能包含路径，例如 `https://app.example.com/synctv` 是错的。
-- 生产环境不要随意使用通配策略。
-
-环境变量推荐 JSON：
+环境变量：
 
 ```bash
 SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
@@ -193,67 +91,38 @@ SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
 
 ### `server.cluster_secret`
 
-作用：多节点之间调用内部 gRPC 接口时使用的共享密钥。
+集群内部 gRPC 共享密钥。`cluster.enabled=true` 时必填。
 
-什么时候必填：
+```yaml
+server:
+  cluster_secret_file: "/run/secrets/cluster_secret"
+```
 
-- `cluster.enabled=true` 时必填。
-- 单机模式可以为空。
-
-生成方式：
+生成：
 
 ```bash
 openssl rand -hex 32
 ```
 
-环境变量：
-
-```bash
-SYNCTV_SERVER_CLUSTER_SECRET=...
-SYNCTV_SERVER_CLUSTER_SECRET_FILE=/run/secrets/cluster_secret
-```
-
-安全建议：
-
-- 只能在同一个集群内部节点之间共享。
-- 不要写进公开仓库。
-- 如果泄露，需要轮换所有节点配置并重启。
-
 ### `server.advertise_host`
 
-作用：告诉其他节点“应该用哪个地址连接我”。
+其他节点访问本节点时使用的地址。
 
-常见场景：
+| 场景 | 值 |
+| --- | --- |
+| Kubernetes | Pod IP 或可解析的 Pod DNS |
+| 静态多节点 | 内网 IP 或内部 DNS |
+| 单机 | 留空 |
 
-- Kubernetes：通常使用 Pod IP，通过 downward API 设置 `SYNCTV_SERVER_ADVERTISE_HOST`。
-- 静态多节点：填写内网 IP 或域名。
-- 单机：通常留空。
-
-留空时，SyncTV 会尝试使用 `POD_IP`，再尝试系统 hostname。
+留空时，SyncTV 会尝试 `POD_IP`，再尝试系统 hostname。
 
 ### `server.shutdown_drain_timeout_seconds`
 
 默认值：`30`。
 
-作用：进程关闭时等待已有连接自然结束的时间。
+关闭时等待已有连接 drain 的时间。Kubernetes rolling update 中，termination grace period 应大于这个值。
 
-什么时候调大：
-
-- 有大量长连接。
-- 反向代理或 Kubernetes 更新时希望更平滑下线。
-
-什么时候调小：
-
-- 开发环境。
-- 希望升级或重启更快完成。
-
-## `time`
-
-### `time.timezone`
-
-默认值为空，表示自动检测。
-
-作用：用于人类可读时间显示和本地时间解析。
+## `time.timezone`
 
 示例：
 
@@ -262,7 +131,7 @@ time:
   timezone: "Asia/Shanghai"
 ```
 
-优先级：
+解析顺序：
 
 1. `time.timezone`
 2. `SYNCTV_TIME_TIMEZONE`
@@ -270,162 +139,52 @@ time:
 4. 系统时区
 5. `UTC`
 
-如果用户都在中国大陆，建议显式设置：
-
-```yaml
-time:
-  timezone: "Asia/Shanghai"
-```
-
 ## `data_dir`
-
-示例：
 
 ```yaml
 data_dir: "/var/lib/synctv"
 ```
 
-作用：SyncTV 运行过程中自己写文件的根目录。
+`data_dir` 用于 SyncTV 自己写入的本地运行时文件：
 
-会放到这里的内容可能包括：
+- management Unix socket
+- 文件日志
+- HLS 直播分片
+- proxy slice cache 文件
 
-- 管理 Unix socket。
-- 日志文件。
-- HLS 直播分片。
-- proxy slice cache 文件。
-
-Docker/Helm 建议：
-
-- 容器内使用 `/data`。
-- 把 `/data` 挂载成 volume。
-
-本机服务建议：
-
-- Linux：`/var/lib/synctv`
-- macOS 开发：`~/.synctv`
+容器部署通常使用 `/data` 并挂载 volume。`data_dir` 不影响 `*_file` secret 路径。
 
 ## `logging`
 
-### `logging.level`
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `logging.level` | `info` | 日志级别 |
+| `logging.format` | `pretty` | 人类可读日志或 JSON |
+| `logging.filter` | `null` | tracing 过滤表达式 |
+| `logging.backtrace` | `false` | 是否输出 backtrace |
+| `logging.file_path` | `null` | 可选文件输出 |
 
-默认值：
+Kubernetes 或日志采集系统使用 JSON：
 
 ```yaml
 logging:
   level: "info"
-```
-
-常见值：
-
-| 值 | 含义 |
-| --- | --- |
-| `error` | 只输出错误 |
-| `warn` | 输出警告和错误 |
-| `info` | 推荐生产默认值 |
-| `debug` | 调试问题时使用 |
-| `trace` | 非常详细，通常只用于开发 |
-
-### `logging.format`
-
-常见值：
-
-- `pretty`：适合本地终端阅读。
-- `json`：适合 Kubernetes、ELK、Loki、Vector、Fluent Bit 等日志系统采集。
-
-生产 Kubernetes 推荐：
-
-```yaml
-logging:
   format: "json"
 ```
 
-### `logging.file_path`
-
-默认不写文件，输出到 stdout。
-
-如果设置相对路径，会相对 `data_dir`：
-
-```yaml
-data_dir: "/var/lib/synctv"
-logging:
-  file_path: "logs/synctv.log"
-```
-
-实际路径是：
-
-```text
-/var/lib/synctv/logs/synctv.log
-```
-
-容器和 Kubernetes 一般不建议写文件日志，建议保持 stdout。
-
-### `logging.filter`
-
-高级配置，用于精确控制 Rust tracing 模块日志级别。
-
-示例：
-
-```yaml
-logging:
-  filter: "info,synctv=debug,synctv_core::service=trace"
-```
-
-常规部署不需要设置。
-
-### `logging.backtrace`
-
-是否在错误时输出 backtrace。调试 panic 或深层错误时有用。
-
-生产环境通常保持 `false`，临时排查问题时可以开启。
+相对 `logging.file_path` 会解析到 `data_dir` 下。容器中通常输出到 stdout。
 
 ## `management`
 
-管理端点用于 `synctv` CLI 执行本地或受控管理操作，不属于客户端业务 API。
+management endpoint 供 `synctv` CLI 执行受控管理操作，不是客户端业务 API。
 
-### `management.enabled`
+| 字段 | 默认值 | 用途 |
+| --- | --- | --- |
+| `management.enabled` | `true` | 启用管理端点 |
+| `management.transport` | Unix-like 默认 Unix，其他平台默认 TCP | 传输模式 |
+| `management.port` | `50052` | TCP 管理端口 |
+| `management.unix_socket_path` | `data_dir` 下的平台相关路径 | Unix socket 路径 |
+| `management.auth_token` | `""` | TCP management bearer token |
+| `management.enable_reflection` | `false` | management gRPC reflection |
 
-默认值：`true`。
-
-关闭后，一些 CLI 管理命令不能连接到正在运行的服务。
-
-### `management.transport`
-
-可选值：
-
-- `unix`
-- `tcp`
-
-Unix-like 系统默认推荐 `unix`。Windows 使用 `tcp`。
-
-### `management.unix_socket_path`
-
-Unix socket 路径。相对路径会相对 `data_dir`。
-
-容器常见值：
-
-```yaml
-management:
-  unix_socket_path: "/run/synctv/synctv.sock"
-```
-
-### `management.port`
-
-当 `transport: "tcp"` 时使用。
-
-默认值：`50052`。
-
-注意：TCP 管理端点只应绑定本机回环或受控网络，不应该直接暴露公网。
-
-### `management.auth_token`
-
-TCP transport 必须设置。Unix transport 可选。
-
-建议：
-
-- TCP 模式必须使用强随机 token。
-- Kubernetes/生产环境用 Secret 注入。
-- 不要使用短密码或固定示例值。
-
-### `management.enable_reflection`
-
-是否开启管理 gRPC reflection。只建议开发和调试时开启。
+TCP management 必须配置强 token，不要暴露公网。Unix socket 路径可以相对 `data_dir`。

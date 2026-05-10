@@ -38,9 +38,9 @@ function dockerHubImage(repository: string): string {
 export const docsSite = readEnv('SYNCTV_DOCS_SITE') || 'https://synctv.wiki';
 export const docsBase = normalizeBasePath(readEnv('SYNCTV_DOCS_BASE'));
 export const docsUrl = `${stripSuffix(docsSite, '/')}${docsBase === '/' ? '/' : docsBase}`;
-export const composeDeploymentDocsUrl = new URL('deployment/docker-compose/', docsUrl).toString();
+export const composeDeploymentDocsUrl = new URL('install/docker-compose/', docsUrl).toString();
 export const englishComposeDeploymentDocsUrl = new URL(
-  'en/deployment/docker-compose/',
+  'en/install/docker-compose/',
   docsUrl
 ).toString();
 

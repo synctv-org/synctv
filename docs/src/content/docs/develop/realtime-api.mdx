@@ -1,0 +1,155 @@
+---
+title: Realtime API
+description: SyncTV 房间 WebSocket 实时协议、连接认证、基础消息、重连和错误处理。
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Realtime API 是房间内的长连接协议。它用于聊天、弹幕、播放控制、播放进度、WebRTC 信令，以及订阅房间内可缓存资源的变化。
+
+如果你只需要一次性读取或修改资源，优先使用 HTTP/OpenAPI 或 gRPC。只有需要低延迟推送、减少轮询、或保持房间实时状态时，才使用 Realtime API。
+
+## 连接与认证
+
+WebSocket 地址：
+
+```text
+wss://<host>/ws/rooms/<room_id>
+```
+
+认证方式：
+
+| 方式 | 适用客户端 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <access_token>` | 原生客户端、CLI、服务端 SDK | token 不进入 URL |
+| `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先通过 `POST /api/tickets` 创建短期、一次性、房间绑定 ticket |
+
+WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`。文本帧、ping、pong 等非业务帧不会被当作业务消息处理。
+
+```js
+const roomId = 'room_1';
+const ticket = ticketResponse.ticket;
+const ws = new WebSocket(`wss://app.example.com/ws/rooms/${roomId}?ticket=${ticket}`);
+ws.binaryType = 'arraybuffer';
+
+ws.onmessage = async (event) => {
+  const bytes =
+    event.data instanceof Blob
+      ? new Uint8Array(await event.data.arrayBuffer())
+      : new Uint8Array(event.data);
+  const message = ServerMessage.decode(bytes);
+  handleServerMessage(message);
+};
+
+function sendClientMessage(message) {
+  ws.send(ClientMessage.encode(message).finish());
+}
+```
+
+<Aside type="caution">
+不要把 refresh token 放进 WebSocket URL。浏览器客户端应使用 WebSocket ticket；ticket 使用后不要复用，连接失败也应重新申请。
+</Aside>
+
+## 什么时候使用 Realtime
+
+| 场景 | 使用 Realtime 的原因 |
+| --- | --- |
+| 同步播放 | 播放、暂停、seek、切换媒体需要低延迟传播 |
+| 聊天和弹幕 | 房间成员需要实时收到消息 |
+| 播放快照 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
+| 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
+| WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发 |
+
+## 消息范围
+
+常用客户端消息：
+
+| `ClientMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 发送聊天或弹幕消息 |
+| `heartbeat` | 客户端心跳 |
+| `playback_progress` | 上报当前播放位置和播放状态 |
+| `playback_update` | 发起播放状态更新命令 |
+| `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | WebRTC 信令转发 |
+| `webrtc_join` / `webrtc_leave` | 加入或离开 WebRTC 会话 |
+| `observe_resource` | 订阅实时资源 |
+| `unobserve_resource` | 取消订阅实时资源 |
+
+常用服务端消息：
+
+| `ServerMessage` 字段 | 用途 |
+| --- | --- |
+| `chat` | 收到聊天或弹幕 |
+| `heartbeat_ack` | 心跳确认 |
+| `error` | 普通业务错误 |
+| `playback_state` / `playing_changed` | 播放状态或播放目标变化 |
+| `room_settings` | 房间设置变更广播 |
+| `media_added` / `media_updated` / `media_removed` | 媒体变更广播 |
+| `playlist_created` / `playlist_updated` / `playlist_deleted` | 播放列表变更广播 |
+| `permission_changed` / `user_joined` / `user_left` / `room_members` | 成员和权限变化 |
+| `resource_observed` / `resource_changed` / `resource_observe_error` | 实时资源观察结果 |
+
+字段的完整结构以 `synctv-proto/proto/client.proto` 为准。端到端示例见 [SDK 与 API 示例](../sdk-and-api-examples/)。
+
+## 消息分发
+
+Realtime API 的所有业务消息都在 `ClientMessage.message` 和 `ServerMessage.message` 的 `oneof` 中。客户端应该按 `oneof` 类型分发，而不是按文本字段或日志字符串判断。
+
+```ts
+function handleServerMessage(message) {
+  if (message.chat) {
+    appendChat(message.chat);
+    return;
+  }
+
+  if (message.playbackState) {
+    updatePlayback(message.playbackState);
+    return;
+  }
+
+  if (message.resourceChanged) {
+    handleResourceChanged(message.resourceChanged);
+    return;
+  }
+
+  if (message.error) {
+    handleRealtimeError(message.error);
+  }
+}
+```
+
+连接建立后，先订阅当前页面需要的资源。资源观察见 [Realtime 资源观察](../realtime-resource-observation/)。
+
+## 重连流程
+
+WebSocket 断开后，观察不会跨连接保留。客户端重连时应该：
+
+<Steps>
+1. 重新获取 WebSocket ticket，或用有效 access token 重新连接。
+2. 为当前仍然打开的视图重新发送 `observe_resource`。
+3. 带上本地保存的 `version`，让服务端判断是否需要补发快照。
+4. 对 `playback_snapshot` 同时带上本地缓存的 `media_id`、`playlist_id`、`target` 和 `playback_client_profile`。
+5. 收到 `resource_observed.changed=false` 时保留本地缓存；收到 `resource_changed` 时替换对应缓存。
+</Steps>
+
+如果连接长时间断开，客户端可以先用 HTTP/gRPC 拉取关键资源，再恢复观察，避免用户看到过旧 UI。
+
+## 资源观察错误
+
+资源观察错误通过 `ServerMessage.resource_observe_error` 返回：
+
+| 场景 | 客户端动作 |
+| --- | --- |
+| `observe_id` 为空或超过 128 字符 | 修正客户端代码，不要重试同一请求 |
+| 未指定 `resource` | 修正客户端代码 |
+| 超过每连接 64 个观察 | 取消不需要的观察，或合并列表视图 |
+| 快照服务不可用或加载失败 | 展示临时错误，可按退避策略重试 |
+| 权限、资源不存在或输入无效 | 重新拉取房间状态，必要时引导用户返回 |
+
+发送失败或连接被服务端断开时，不要假设观察仍然有效。重连后完整重建观察。
+
+## 继续阅读
+
+- 资源字段和订阅示例见 [Realtime 资源观察](../realtime-resource-observation/)。
+- 客户端端到端示例见 [SDK 与 API 示例](../sdk-and-api-examples/)。
+- 统一错误体验见 [错误参考](../../reference/errors/)。

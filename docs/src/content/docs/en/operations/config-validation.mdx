@@ -17,7 +17,7 @@ Development via Cargo:
 cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
 ```
 
-This page covers configuration validation errors. If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).
+If the service starts but access, authentication, media playback, or Ingress behavior is wrong, start from [Troubleshooting](../troubleshooting/).
 
 ## Common Errors
 
@@ -94,7 +94,7 @@ export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"
 
 ## Compose Debugging
 
-First make sure you got the production Compose files from [Docker Compose Deployment](../../deployment/docker-compose/#get-production-compose-files), then generated `.env.postgres` and `.env.synctv` in the same directory.
+First make sure you got the production Compose files from [Docker Compose Deployment](../../install/docker-compose/#get-production-compose-files), then generated `.env.postgres` and `.env.synctv` in the same directory.
 
 Inspect final Compose config:
 

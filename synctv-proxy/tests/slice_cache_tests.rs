@@ -1,6 +1,4 @@
 //! Tests for the SliceCache range-request caching system.
-//!
-//! Following TDD: these tests are written first, then the implementation.
 
 #![allow(clippy::unwrap_used)]
 
@@ -2459,8 +2457,6 @@ fn test_parse_content_range_zero_start() {
     assert_eq!(cr.complete_length, Some(1));
 }
 
-// L2 fix: seen_keys bounded (moka-backed, not unbounded DashSet)
-
 /// After inserting entries, seen_keys should track them.
 #[tokio::test]
 async fn test_seen_keys_bounded_tracks_inserted() {
@@ -2503,8 +2499,6 @@ async fn test_seen_keys_bounded_tracks_inserted() {
     // After inserting one slice, seen_keys should have 1 entry
     assert_eq!(cache.seen_keys_count(), 1);
 }
-
-// L3 fix: stale lock cleanup
 
 /// After fetching slices and cleaning up, stale locks should be removed.
 #[tokio::test]
@@ -2557,8 +2551,6 @@ async fn test_stale_locks_cleaned_up() {
         "All locks should be cleaned up when no tasks hold them"
     );
 }
-
-// L4 fix: cached metadata avoids HEAD request on range request
 
 /// When resource metadata is cached (from a prior slice fetch), range
 /// requests should not issue a HEAD request to discover total_size.
@@ -3729,8 +3721,6 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
     );
 }
 
-// H1: lock timeout returns stale data instead of hanging forever
-
 /// When the lock cannot be acquired within the timeout (e.g., upstream
 /// hangs), the cache should return stale data or an error instead of
 /// blocking forever.
@@ -3781,8 +3771,6 @@ async fn test_lock_timeout_returns_stale_data() {
     });
     assert!(cache2.config().enabled);
 }
-
-// H3: 200 response rejected for slice request
 
 /// When upstream returns 200 OK instead of 206 Partial Content for a
 /// Range request, it should be rejected (upstream doesn't support Range).
@@ -3954,8 +3942,6 @@ async fn test_206_response_accepts_missing_content_range_total_when_slice_matche
     assert_eq!(status, CacheStatus::Miss);
     assert_eq!(cached, body);
 }
-
-// H4: FileBackend header_len bounds check
 
 /// A corrupted cache file with an absurdly large header_len should be
 /// rejected rather than causing OOM.

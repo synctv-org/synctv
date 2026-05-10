@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(pull_stream.stream_key(), "room-123:media-456");
     }
 
-    /// M4: Verify that get_existing() properly rolls back subscriber count
+    /// Verify that get_existing() properly rolls back subscriber count
     /// when a stream becomes unhealthy between the two health checks.
     #[tokio::test]
     async fn test_subscriber_count_rollback_on_unhealthy_stream() {

@@ -1111,10 +1111,8 @@ impl SyncTvServer {
         cleanup_cancel.cancel();
         self.lifecycle_controller.publish_runtime_draining();
 
-        // D6 fix: Track total shutdown start time to compute remaining budget for
-        // each phase. The total drain budget is `shutdown_drain_timeout_seconds`.
-        // Previously, both HTTP drain and connection drain each used the full
-        // timeout, potentially exceeding K8s grace period (2x the configured value).
+        // Track total shutdown start time to compute remaining budget for each
+        // phase. The total drain budget is `shutdown_drain_timeout_seconds`.
         let shutdown_start = tokio::time::Instant::now();
         let total_drain_budget =
             Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
@@ -1144,8 +1142,8 @@ impl SyncTvServer {
         // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
         // system to be alive so they can be broadcast to other replicas.
-        // D6 fix: Use the REMAINING time from the total budget instead of a
-        // separate full timeout, ensuring total shutdown stays within K8s grace period.
+        // Use the remaining time from the total budget instead of a separate
+        // full timeout, keeping total shutdown within K8s grace period.
         {
             self.lifecycle_controller.publish_connection_draining();
             let elapsed = shutdown_start.elapsed();

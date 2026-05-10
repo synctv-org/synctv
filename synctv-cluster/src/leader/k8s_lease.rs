@@ -289,9 +289,8 @@ impl K8sLeaderElector {
 
         let is_our_lease = holder == Some(self.identity.as_str());
 
-        // Check if the lease has expired
-        // CLUSTER-002: Add clock drift tolerance to prevent premature takeovers
-        // due to NTP adjustments or clock skew between nodes
+        // Check if the lease has expired. Include clock drift tolerance to
+        // prevent premature takeovers due to NTP adjustments or node clock skew.
         let lease_expired = if let Some(renew) = renew_time {
             // Add tolerance to lease duration to account for clock drift
             let effective_duration = i64::from(duration) + CLOCK_DRIFT_TOLERANCE_SECS;
@@ -430,9 +429,9 @@ impl K8sLeaderElector {
                 return;
             }
 
-            // LS-4: Use replace() instead of Patch::Merge to enforce
-            // resourceVersion optimistic locking. The API server rejects
-            // the request with 409 if the resourceVersion doesn't match.
+            // Use replace() instead of Patch::Merge to enforce resourceVersion
+            // optimistic locking. The API server rejects the request with 409 if
+            // the resourceVersion doesn't match.
             let mut updated_lease = current_lease.clone();
             if let Some(ref mut spec) = updated_lease.spec {
                 spec.renew_time = Some(current_micro_time());
@@ -561,8 +560,8 @@ impl K8sLeaderElector {
                 return;
             }
 
-            // LS-4: Use replace() instead of Patch::Merge to enforce
-            // resourceVersion optimistic locking on acquisition.
+            // Use replace() instead of Patch::Merge to enforce resourceVersion
+            // optimistic locking on acquisition.
             let mut updated_lease = current_lease.clone();
             if let Some(ref mut spec) = updated_lease.spec {
                 spec.holder_identity = Some(self.identity.clone());
@@ -667,7 +666,7 @@ impl K8sLeaderElector {
             return;
         }
 
-        // LS-4: Use replace() for resign as well, to enforce resourceVersion.
+        // Use replace() for resign as well to enforce resourceVersion.
         let mut updated_lease = current_lease;
         if let Some(ref mut spec) = updated_lease.spec {
             spec.holder_identity = None;

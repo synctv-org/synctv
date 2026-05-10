@@ -237,7 +237,7 @@ fn test_client_new_accepts_valid_url() {
     assert!(result.is_ok());
 }
 
-// TDD Tests: Verify non-success responses return errors (not silent success)
+// Verify non-success responses return errors instead of silent success.
 
 /// Test that logout returns an error when the server responds with 401 Unauthorized.
 /// Previously this method silently ignored non-success responses.

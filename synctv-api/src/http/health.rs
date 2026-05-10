@@ -1104,7 +1104,7 @@ mod tests {
         assert_eq!(check_email_health(&configured), "configured");
     }
 
-    /// M18: Verify that cgroup memory check is attempted on Linux.
+    /// Verify that cgroup memory check is attempted on Linux.
     /// On non-containerized Linux, it should fall back to /proc/meminfo.
     #[cfg(target_os = "linux")]
     #[test]
@@ -1118,7 +1118,7 @@ mod tests {
         assert!(overall.is_some() || cgroup_result.is_some());
     }
 
-    /// M18: Verify that proc_meminfo fallback works on Linux.
+    /// Verify that proc_meminfo fallback works on Linux.
     #[cfg(target_os = "linux")]
     #[test]
     fn test_proc_meminfo_returns_some() {

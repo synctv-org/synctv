@@ -305,15 +305,10 @@ impl MediaService {
         if let Some(ref playlist_id) = request.playlist_id {
             let playlist = self
                 .playlist_repo
-                .get_by_id(playlist_id)
+                .get_by_room_and_id(&room_id, playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(playlist.room_id, room_id);
         }
 
         let bound_provider_instance =
@@ -431,15 +426,10 @@ impl MediaService {
         if let Some(ref playlist_id) = request.playlist_id {
             let playlist = self
                 .playlist_repo
-                .get_by_id(playlist_id)
+                .get_by_room_and_id(&room_id, playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(playlist.room_id, room_id);
         }
 
         let bound_provider_instance =
@@ -544,15 +534,10 @@ impl MediaService {
         if let Some(ref playlist_id) = playlist_id {
             let playlist = self
                 .playlist_repo
-                .get_by_id(playlist_id)
+                .get_by_room_and_id(&room_id, playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(playlist.room_id, room_id);
         }
 
         if items.is_empty() {
@@ -701,16 +686,9 @@ impl MediaService {
             // Get existing media (fresh on every retry)
             let mut media = self
                 .media_repo
-                .get_by_id(&request.media_id)
+                .get_by_room_and_id(&room_id, &request.media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-            // Verify media belongs to the room
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
 
             // Check permission: EDIT_MEDIA_SELF if user owns the media, EDIT_MEDIA_ANY otherwise
             // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
@@ -805,15 +783,9 @@ impl MediaService {
         for attempt in 0..Self::EDIT_MAX_RETRIES {
             let mut media = self
                 .media_repo
-                .get_by_id(&request.media_id)
+                .get_by_room_and_id(&room_id, &request.media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
 
             let expected_version = media.version;
 
@@ -881,16 +853,9 @@ impl MediaService {
         // Get existing media to verify ownership
         let media = self
             .media_repo
-            .get_by_id(&media_id)
+            .get_by_room_and_id(&room_id, &media_id)
             .await?
             .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-        // Verify media belongs to the room
-        if media.room_id != room_id {
-            return Err(Error::Authorization(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
 
         // Check permission: DELETE_MEDIA_SELF if user owns the media, DELETE_MEDIA_ANY otherwise
         // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
@@ -959,14 +924,45 @@ impl MediaService {
         self.media_repo.get_by_id(media_id).await
     }
 
+    /// Get media by ID, scoped to a room.
+    pub async fn get_room_media(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+    ) -> Result<Option<Media>> {
+        self.media_repo.get_by_room_and_id(room_id, media_id).await
+    }
+
     /// Get multiple media items by IDs in a single query
     pub async fn get_media_batch(&self, media_ids: &[MediaId]) -> Result<Vec<Media>> {
         self.media_repo.get_by_ids(media_ids).await
     }
 
+    /// Get multiple media items by IDs, scoped to a room.
+    pub async fn get_room_media_batch(
+        &self,
+        room_id: &RoomId,
+        media_ids: &[MediaId],
+    ) -> Result<Vec<Media>> {
+        self.media_repo
+            .get_by_room_and_ids_with_executor(room_id, media_ids, self.media_repo.pool())
+            .await
+    }
+
     /// Get all media in a playlist.
     pub async fn get_playlist_media(&self, playlist_id: &PlaylistId) -> Result<Vec<Media>> {
         self.media_repo.get_by_playlist(playlist_id).await
+    }
+
+    /// Get all media in a playlist, scoped to a room.
+    pub async fn get_room_playlist_media(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<Vec<Media>> {
+        self.media_repo
+            .get_by_room_and_playlist(room_id, playlist_id)
+            .await
     }
 
     /// Get media directly under the room root.
@@ -1051,7 +1047,7 @@ impl MediaService {
         // Batch-load all media in a single query within the transaction
         let media_items = self
             .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
             .await?;
 
         if media_items.len() != media_ids.len() {
@@ -1060,15 +1056,10 @@ impl MediaService {
             ));
         }
 
-        // Verify all media belong to the room and split into owned/non-owned groups
+        // Split room-scoped media into owned/non-owned groups.
         let mut has_owned = false;
         let mut has_non_owned = false;
         for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
             if media.creator_id.as_ref() == Some(&user_id) {
                 has_owned = true;
             } else {
@@ -1218,17 +1209,16 @@ impl MediaService {
         if let Some(ref source_playlist_id) = request.source_playlist_id {
             let playlists = self
                 .playlist_repo
-                .get_by_ids_with_executor(std::slice::from_ref(source_playlist_id), &mut *tx)
+                .get_by_room_and_ids_with_executor(
+                    &room_id,
+                    std::slice::from_ref(source_playlist_id),
+                    &mut *tx,
+                )
                 .await?;
             let source_playlist = playlists
                 .into_iter()
                 .next()
                 .ok_or_else(|| Error::NotFound("Source playlist not found".to_string()))?;
-            if source_playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Source playlist does not belong to this room".to_string(),
-                ));
-            }
             if source_playlist.is_dynamic() {
                 return Err(Error::InvalidInput(
                     "Source playlist must be static".to_string(),
@@ -1239,17 +1229,16 @@ impl MediaService {
         if let Some(ref target_playlist_id) = request.target_playlist_id {
             let playlists = self
                 .playlist_repo
-                .get_by_ids_with_executor(std::slice::from_ref(target_playlist_id), &mut *tx)
+                .get_by_room_and_ids_with_executor(
+                    &room_id,
+                    std::slice::from_ref(target_playlist_id),
+                    &mut *tx,
+                )
                 .await?;
             let target_playlist = playlists
                 .into_iter()
                 .next()
                 .ok_or_else(|| Error::NotFound("Target playlist not found".to_string()))?;
-            if target_playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Target playlist does not belong to this room".to_string(),
-                ));
-            }
             if target_playlist.is_dynamic() {
                 return Err(Error::InvalidInput(
                     "Target playlist must be static".to_string(),
@@ -1264,7 +1253,7 @@ impl MediaService {
         } else {
             let fetched = self
                 .media_repo
-                .get_by_ids_with_executor(&explicit_media_ids, &mut *tx)
+                .get_by_room_and_ids_with_executor(&room_id, &explicit_media_ids, &mut *tx)
                 .await?;
             if fetched.len() != explicit_media_ids.len() {
                 return Err(Error::NotFound("Media not found".to_string()));
@@ -1282,12 +1271,6 @@ impl MediaService {
                 })
                 .collect::<Result<Vec<_>>>()?
         };
-
-        if original_media.iter().any(|media| media.room_id != room_id) {
-            return Err(Error::Authorization(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
 
         if request.all_from_scope && original_media.is_empty() {
             tx.commit().await?;
@@ -1432,15 +1415,9 @@ impl MediaService {
     ) -> Result<Vec<DirectoryItem>> {
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(&room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if !playlist.is_dynamic() {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
@@ -1476,15 +1453,9 @@ impl MediaService {
     ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(&room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if !playlist.is_dynamic() {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
@@ -1523,6 +1494,16 @@ impl MediaService {
 
     pub async fn count_playlist_media(&self, playlist_id: &PlaylistId) -> Result<i64> {
         self.media_repo.count_by_playlist(playlist_id).await
+    }
+
+    pub async fn count_room_playlist_media(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<i64> {
+        self.media_repo
+            .count_by_room_and_playlist(room_id, playlist_id)
+            .await
     }
 
     pub async fn count_playlist_media_accessible(&self, playlist_id: &PlaylistId) -> Result<i64> {
@@ -1588,16 +1569,9 @@ impl MediaService {
         // Get playlist
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(&room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        // Verify playlist belongs to the room
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         // Check if playlist is dynamic
         if !playlist.is_dynamic() {
@@ -1641,15 +1615,9 @@ impl MediaService {
     ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(&room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if !playlist.is_dynamic() {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
@@ -1685,6 +1653,17 @@ impl MediaService {
         self.playlist_repo.get_by_id(playlist_id).await
     }
 
+    /// Get playlist metadata scoped to a room.
+    pub async fn get_room_playlist(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<Option<crate::models::Playlist>> {
+        self.playlist_repo
+            .get_by_room_and_id(room_id, playlist_id)
+            .await
+    }
+
     /// Resolve a concrete playable item inside a dynamic playlist.
     pub async fn resolve_dynamic_playlist_item(
         &self,
@@ -1695,15 +1674,9 @@ impl MediaService {
     ) -> Result<Option<crate::provider::NextPlayItem>> {
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(&room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if !playlist.is_dynamic() {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
@@ -1745,15 +1718,9 @@ impl MediaService {
     ) -> Result<Option<crate::provider::NextPlayItem>> {
         let playlist = self
             .playlist_repo
-            .get_by_id(playlist_id)
+            .get_by_room_and_id(room_id, playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != *room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if !playlist.is_dynamic() {
             return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));

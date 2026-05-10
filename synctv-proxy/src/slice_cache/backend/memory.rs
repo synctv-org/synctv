@@ -482,10 +482,9 @@ mod tests {
         );
     }
 
-    /// Regression test for H5: replacing a key must not double-subtract the old
-    /// size.  Under the old code, `put()` manually subtracted the old size AND
-    /// moka's eviction listener could also subtract it (via `Size` cause during
-    /// capacity pressure), leading to underflow/wrap-around in total_bytes.
+    /// Replacing a key must not double-subtract the old size. `put()` and
+    /// moka's eviction listener can both observe the old entry during capacity
+    /// pressure, so size accounting must remain stable.
     #[tokio::test]
     async fn test_memory_backend_replace_size_tracking_no_double_subtract() {
         // Use a tight capacity so that moka is under pressure.
@@ -514,9 +513,8 @@ mod tests {
         backend.run_pending_tasks().await;
         let size_before_replace = backend.current_size();
 
-        // Replace the target key with a same-sized value.  Under the old code,
-        // if moka evicts the old "target" entry (Size cause) between the
-        // manual get() and insert(), total_bytes would be double-subtracted.
+        // Replace the target key with a same-sized value while the cache is
+        // under pressure.
         backend
             .put("target", make_entry(&[1u8; 80], Duration::from_hours(1)))
             .await
@@ -525,23 +523,18 @@ mod tests {
 
         let size_after_replace = backend.current_size();
 
-        // The size should be the same (replaced with identical-sized entry).
-        // With the old buggy code, this could underflow or be too small.
+        // The size should be the same after replacing with an identical-sized entry.
         assert_eq!(
             size_before_replace, size_after_replace,
             "Size should be unchanged after same-size replace (before={size_before_replace}, after={size_after_replace})"
         );
     }
 
-    /// Regression test: evict_to_size should not update moka's internal access
+    /// evict_to_size should not update moka's internal access
     /// times when collecting entries for LRU ordering.
     ///
-    /// The bug: the old implementation called `cache.get()` for each key during
-    /// evict_to_size, which updated moka's internal access time. This meant that
-    /// the first key accessed would have its timestamp refreshed, potentially
-    /// causing it to be incorrectly considered "recently used" and not evicted.
-    ///
-    /// The fix: use `cache.iter()` which does not update access times.
+    /// Calling `cache.get()` while selecting victims would refresh access times
+    /// and make old entries look recently used.
     #[tokio::test]
     async fn test_memory_backend_evict_to_size_lru_ordering_not_affected_by_get() {
         let backend = default_backend();

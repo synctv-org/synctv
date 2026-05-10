@@ -94,6 +94,43 @@ impl NotificationRepository {
         Ok(n)
     }
 
+    /// Get notification by ID, scoped to a user.
+    pub async fn get_by_user_and_id(
+        &self,
+        user_id: &UserId,
+        notification_id: i64,
+    ) -> Result<Option<Notification>> {
+        let now = Utc::now();
+        let one_year_ago = now - chrono::Duration::days(365);
+
+        let n = sqlx::query_as::<_, Notification>(
+            r"
+            SELECT id,
+                   user_id,
+                   type,
+                   title,
+                   content,
+                   data,
+                   is_read,
+                   created_at,
+                   updated_at
+            FROM notifications
+            WHERE user_id = $1
+              AND id = $2
+              AND created_at >= $3
+              AND created_at <= $4
+            ",
+        )
+        .bind(user_id.as_i64())
+        .bind(notification_id)
+        .bind(one_year_ago)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(n)
+    }
+
     /// List notifications for a user with pagination, filters, and total count.
     ///
     /// Uses `COUNT(*) OVER()` window function to return both the list and total count

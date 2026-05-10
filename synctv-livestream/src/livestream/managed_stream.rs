@@ -482,8 +482,8 @@ impl<S: ManagedStream> StreamPool<S> {
                             current_count,
                         );
 
-                        // L-03: Verify we're still the SAME stream in the DashMap using
-                        // Arc pointer equality. A concurrent viewer may have seen us as
+                        // Verify we're still the same stream in the DashMap using Arc
+                        // pointer equality. A concurrent viewer may have seen us as
                         // unhealthy (during mark_stopping), removed us, and created a
                         // replacement stream. If the stream in the map is a different
                         // instance, exit to avoid two concurrent streams for the same key.

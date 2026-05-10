@@ -1,7 +1,7 @@
 //! Room operations: list, create, get, join, leave, delete, settings, chat, hot rooms, public settings
 
 use crate::impls::ApiError;
-use synctv_core::models::UserId;
+use synctv_core::models::{PermissionBits, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
@@ -10,8 +10,8 @@ use super::convert::{
     resource_availability_enum_to_proto, room_role_to_proto, room_to_proto_basic,
     room_to_proto_with_availability,
 };
-use super::ClientApiImpl;
 use super::{validate_password_for_set, validate_password_for_verify};
+use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 fn settings_registry_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
@@ -294,7 +294,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Batch-fetch room settings for three-layer permission calculation (A6 fix)
+        // Batch-fetch room settings for full permission calculation.
         let room_ids: Vec<synctv_core::models::RoomId> =
             rooms.iter().map(|(room, _, _, _)| room.id).collect();
         let room_settings_map = self
@@ -305,9 +305,8 @@ impl ClientApiImpl {
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (room, role, _status, member_count) in &rooms {
-            // A6 fix: Use proper three-layer permission calculation instead of
-            // role.permissions() which only gives role-level defaults.
-            // calculate_role_default_permissions applies:
+            // Use the full permission calculation instead of role.permissions(),
+            // which only gives role-level defaults. calculate_role_default_permissions applies:
             //   1. Global default permissions (from SettingsRegistry)
             //   2. Room-level overrides (room_added / room_removed)
             let settings = room_settings_map.get(&room.id).cloned().unwrap_or_default();
@@ -408,15 +407,15 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_room_for_actor(&actor).await
+    }
 
-        // Check membership
-        self.room_service
-            .check_membership(&rid, &uid)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
+    pub async fn get_room_for_actor(
+        &self,
+        actor: &RoomActor,
+    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+        let rid = actor.room_id();
         let room = self
             .room_service
             .get_room(&rid)
@@ -444,6 +443,14 @@ impl ClientApiImpl {
             )),
             playback_state,
         })
+    }
+
+    pub async fn get_room_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+    ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+        self.get_room_for_actor(&RoomActor::Guest(access.clone()))
+            .await
     }
 
     pub async fn join_room(
@@ -832,15 +839,15 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_room_settings_for_actor(&actor).await
+    }
 
-        // Check membership before returning settings
-        self.room_service
-            .check_membership(&rid, &uid)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
+    pub async fn get_room_settings_for_actor(
+        &self,
+        actor: &RoomActor,
+    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
+        let rid = actor.room_id();
         let (settings, version) = self
             .room_service
             .get_room_settings_with_version(&rid)
@@ -854,6 +861,14 @@ impl ClientApiImpl {
             settings: settings_bytes,
             version,
         })
+    }
+
+    pub async fn get_room_settings_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+    ) -> Result<crate::proto::client::GetRoomSettingsResponse, ApiError> {
+        self.get_room_settings_for_actor(&RoomActor::Guest(access.clone()))
+            .await
     }
 
     /// Reset room settings to defaults
@@ -1123,19 +1138,19 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetChatHistoryRequest,
     ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_chat_history_for_actor(&actor, req).await
+    }
 
-        // Check membership before returning chat history
-        self.room_service
-            .check_membership(&rid, &uid)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
+    async fn get_chat_history_for_room_id(
+        &self,
+        rid: &synctv_core::models::RoomId,
+        req: crate::proto::client::GetChatHistoryRequest,
+    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
         let (limit, cursor) = build_get_chat_history_request(&req)?;
         let (messages, next) = self
             .room_service
-            .get_chat_history_cursor(&rid, cursor, limit)
+            .get_chat_history_cursor(rid, cursor, limit)
             .await
             .map_err(ApiError::from)?;
         let next_cursor_str = next.map(|(ts, id)| {
@@ -1200,6 +1215,26 @@ impl ClientApiImpl {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
         })
+    }
+
+    pub async fn get_chat_history_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        req: crate::proto::client::GetChatHistoryRequest,
+    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        self.get_chat_history_for_actor(&RoomActor::Guest(access.clone()), req)
+            .await
+    }
+
+    pub async fn get_chat_history_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::GetChatHistoryRequest,
+    ) -> Result<crate::proto::client::GetChatHistoryResponse, ApiError> {
+        self.require_room_permission(actor, PermissionBits::VIEW_CHAT_HISTORY)
+            .await?;
+        self.get_chat_history_for_room_id(&actor.room_id(), req)
+            .await
     }
 }
 

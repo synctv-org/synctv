@@ -29,7 +29,7 @@ pub(crate) type SettingProviders =
 pub struct SettingsService {
     repository: SettingsRepository,
     pool: PgPool,
-    // M-02: Lock-free cache using DashMap for concurrent reads
+    // Lock-free cache using DashMap for concurrent reads.
     cache: Arc<DashMap<String, SettingsGroup>>,
     // Change listeners
     listeners: Arc<RwLock<Vec<SettingsChangeListener>>>,

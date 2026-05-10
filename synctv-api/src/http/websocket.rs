@@ -35,7 +35,8 @@ use tracing::{error, info, warn};
 
 use crate::http::{AppError, AppState};
 use crate::impls::messaging::{
-    MessageSender, ProtoCodec, RealtimeJoinError, StreamMessage, StreamMessageHandler,
+    GuestRealtimeIdentity, MessageSender, ProtoCodec, RealtimeJoinError, RealtimePrincipal,
+    StreamMessage, StreamMessageHandler,
 };
 use crate::impls::{
     ApiError, EndpointRateLimitCategory, RequestMetadata as ApiRequestMetadata, TransportProtocol,
@@ -108,6 +109,7 @@ type WsQuery = crate::proto::client::WebSocketConnectRequest;
 pub enum AuthMethod {
     Header,
     Ticket,
+    GuestToken,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +121,7 @@ struct TicketAuthCommit {
 #[derive(Debug, Clone)]
 struct HandshakeAuthContext {
     user_id: UserId,
+    principal: RealtimePrincipal,
     ticket_commit: Option<TicketAuthCommit>,
 }
 
@@ -239,8 +242,57 @@ async fn extract_handshake_auth(
     room_id: &synctv_core::models::RoomId,
     handshake_control: &ExecutionControl,
 ) -> Result<HandshakeAuthContext, AppError> {
+    if request_meta.authorization.is_some() && !query.ticket.is_empty() {
+        return Err(AppError::bad_request(
+            "Use exactly one WebSocket authentication method",
+        ));
+    }
+
     if request_meta.authorization.is_some() {
         validate_websocket_authorization_header(request_meta.authorization.as_deref())?;
+        let token = JwtValidator::extract_bearer_token(
+            request_meta
+                .authorization
+                .as_deref()
+                .expect("authorization checked above"),
+        )
+        .map_err(|_| AppError::invalid_authorization_header())?;
+        if synctv_core::service::JwtService::token_type_hint(&token)
+            == Some(synctv_core::service::TokenType::Guest)
+        {
+            let public_room_id = state
+                .public_id_codec
+                .encode_room_id(*room_id)
+                .map_err(AppError::bad_request)?;
+            return state
+                .request_executor
+                .execute_public_with_control(
+                    request_meta,
+                    EndpointRateLimitCategory::WebSocket,
+                    move |_request_control| async move {
+                        let access = state
+                            .client_api
+                            .validate_guest_room_access(&token, &public_room_id)
+                            .await?;
+                        let identity = GuestRealtimeIdentity {
+                            guest_id: access.guest_id,
+                            display_name: access.display_name,
+                            session_id: access.session_id,
+                            token_jti: access.token_jti,
+                            room_guest_version: access.room_guest_version,
+                            permissions: access.permissions,
+                        };
+                        let principal = RealtimePrincipal::guest(*room_id, identity);
+                        Ok(HandshakeAuthContext {
+                            user_id: principal.connection_user_id(),
+                            principal,
+                            ticket_commit: None,
+                        })
+                    },
+                )
+                .await
+                .map_err(crate::http::error::map_api_error);
+        }
         return state
             .request_executor
             .execute_user_with_control(
@@ -249,6 +301,7 @@ async fn extract_handshake_auth(
                 |_request_control, authenticated| async move {
                     Ok(HandshakeAuthContext {
                         user_id: authenticated.user_id,
+                        principal: RealtimePrincipal::user(authenticated.user_id, String::new()),
                         ticket_commit: None,
                     })
                 },
@@ -284,6 +337,7 @@ async fn extract_handshake_auth(
 
                 Ok(HandshakeAuthContext {
                     user_id: pending.user_id,
+                    principal: RealtimePrincipal::user(pending.user_id, String::new()),
                     ticket_commit: Some(TicketAuthCommit {
                         ticket: query.ticket.clone(),
                         pending,
@@ -1109,7 +1163,8 @@ async fn prepare_websocket_upgrade(
         .decode_room_id(room_id)
         .map_err(|error| AppError::bad_request(format!("Invalid room_id: {error}")))?;
 
-    let auth = extract_handshake_auth(state, request_meta, query, &rid, handshake_control).await?;
+    let mut auth =
+        extract_handshake_auth(state, request_meta, query, &rid, handshake_control).await?;
     let user_id = auth.user_id;
 
     let room = state
@@ -1128,10 +1183,18 @@ async fn prepare_websocket_upgrade(
         ));
     }
 
-    validate_websocket_room_membership(&state.room_service, &room, &user_id).await?;
+    if !matches!(auth.principal, RealtimePrincipal::Guest { .. }) {
+        validate_websocket_room_membership(&state.room_service, &room, &user_id).await?;
+    }
 
     validate_websocket_runtime_dependencies(state)?;
-    let username = load_websocket_username(state, &user_id).await?;
+    let username = if matches!(auth.principal, RealtimePrincipal::Guest { .. }) {
+        auth.principal.username().to_string()
+    } else {
+        let username = load_websocket_username(state, &user_id).await?;
+        auth.principal = RealtimePrincipal::user(user_id, username.clone());
+        username
+    };
     let connection_id = StreamMessageHandler::generate_connection_id();
     let reservation =
         reserve_websocket_upgrade_slots(state.connection_manager.as_ref(), &rid, &user_id)?;
@@ -1181,11 +1244,12 @@ async fn handle_socket(
     state: AppState,
     room_id: RoomId,
     auth: HandshakeAuthContext,
-    username: String,
+    _username: String,
     connection_id: String,
     reservation: HandshakeReservation,
 ) {
     let user_id = auth.user_id;
+    let principal = auth.principal.clone();
     let mut reservation_cleanup =
         ReservationCleanupGuard::new(state.connection_manager.clone(), reservation.clone());
 
@@ -1235,10 +1299,9 @@ async fn handle_socket(
     };
 
     // Create StreamMessageHandler with all configuration
-    let stream_handler = StreamMessageHandler::new(
+    let stream_handler = StreamMessageHandler::new_with_principal(
         room_id,
-        user_id,
-        username.clone(),
+        principal,
         &state.room_service,
         chat_service,
         event_service,
@@ -1262,7 +1325,7 @@ async fn handle_socket(
             .ws_message_rate_limit_per_second,
     );
 
-    // H11: Wire notification service for direct real-time push
+    // Wire notification service for direct real-time push.
     let stream_handler = if let Some(ref notif_svc) = state.notification_service {
         stream_handler.with_notification_service(Arc::clone(notif_svc))
     } else {
@@ -2172,6 +2235,7 @@ mod tests {
             room_id,
             auth: HandshakeAuthContext {
                 user_id,
+                principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
                 ticket_commit: Some(TicketAuthCommit {
                     ticket: ticket.clone(),
                     pending,
@@ -2234,6 +2298,7 @@ mod tests {
             room_id,
             auth: HandshakeAuthContext {
                 user_id,
+                principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
                 ticket_commit: Some(TicketAuthCommit { ticket, pending }),
             },
             username: "ticket-user".to_string(),
@@ -2276,6 +2341,7 @@ mod tests {
             room_id,
             auth: HandshakeAuthContext {
                 user_id,
+                principal: RealtimePrincipal::user(user_id, "ticket-user".to_string()),
                 ticket_commit: None,
             },
             username: "ticket-user".to_string(),

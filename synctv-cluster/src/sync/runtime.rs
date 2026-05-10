@@ -126,6 +126,13 @@ pub trait ConnectionRuntime: Send + Sync {
         user_id: UserId,
     ) -> std::result::Result<(), String>;
 
+    async fn register_actor(
+        &self,
+        connection_id: String,
+        user_id: UserId,
+        actor_id: String,
+    ) -> std::result::Result<(), String>;
+
     async fn join_room(
         &self,
         connection_id: &str,
@@ -215,6 +222,15 @@ impl ConnectionRuntime for ConnectionManager {
         user_id: UserId,
     ) -> std::result::Result<(), String> {
         ConnectionManager::register(self, connection_id, user_id).await
+    }
+
+    async fn register_actor(
+        &self,
+        connection_id: String,
+        user_id: UserId,
+        actor_id: String,
+    ) -> std::result::Result<(), String> {
+        ConnectionManager::register_actor(self, connection_id, user_id, actor_id).await
     }
 
     async fn join_room(

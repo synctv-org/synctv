@@ -224,7 +224,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         &self,
         request: Request<PullRtmpStreamRequest>,
     ) -> Result<Response<Self::PullRtmpStreamStream>, Status> {
-        // HIGH-7: Authenticate the request using cluster shared secret
+        // Authenticate the request using the cluster shared secret.
         self.authenticate(&request)?;
 
         let req = request.into_inner();

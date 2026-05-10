@@ -1598,7 +1598,7 @@ mod tests {
         assert!(!service.supports_cluster_runtime());
     }
 
-    // Cluster mode Redis dependency tests (TDD)
+    // Cluster mode Redis dependency tests.
 
     /// Test: backend selection without Redis uses memory.
     #[test]

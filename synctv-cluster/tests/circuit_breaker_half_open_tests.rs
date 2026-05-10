@@ -1,4 +1,4 @@
-//! CL1: `GrpcCircuitBreakerRegistry` half-open probe concurrency
+//! `GrpcCircuitBreakerRegistry` half-open probe concurrency
 //!
 //! Tests that the circuit breaker correctly transitions between states and
 //! that the half-open probe guard allows exactly one concurrent caller.

@@ -875,14 +875,10 @@ impl BilibiliProvider {
             .services
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_room_media(&room_id, &media_id)
             .await
             .map_err(|e| ProviderError::ApiError(format!("Failed to get media: {e}")))?
             .ok_or(ProviderError::NotFound)?;
-
-        if media.room_id != room_id {
-            return Err(ProviderError::NotFound);
-        }
 
         // Parse source_config to extract live stream info
         let config = BilibiliSourceConfig::try_from(&media.source_config)

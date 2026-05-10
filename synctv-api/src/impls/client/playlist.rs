@@ -11,7 +11,7 @@ use synctv_core::service::playlist::{
 };
 
 use super::convert::playlist_to_proto_with_availability;
-use super::ClientApiImpl;
+use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::ApiError;
 
 const DEFAULT_PLAYLIST_PAGE_SIZE: i32 = 50;
@@ -193,7 +193,7 @@ impl ClientApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .unwrap_or(0);
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
@@ -254,7 +254,7 @@ impl ClientApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .unwrap_or(0);
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
@@ -313,7 +313,7 @@ impl ClientApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .unwrap_or(0);
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
@@ -358,25 +358,38 @@ impl ClientApiImpl {
         room_id: &str,
         playlist_id: &str,
     ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_playlist_for_actor(&actor, playlist_id).await
+    }
+
+    pub async fn get_playlist_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        playlist_id: &str,
+    ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
+        self.get_playlist_for_actor(&RoomActor::Guest(access.clone()), playlist_id)
+            .await
+    }
+
+    pub async fn get_playlist_for_actor(
+        &self,
+        actor: &RoomActor,
+        playlist_id: &str,
+    ) -> Result<crate::proto::client::GetPlaylistResponse, ApiError> {
+        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+            .await?;
+        let rid = actor.room_id();
         let pid = crate::impls::parse_playlist_id_param(
             playlist_id,
             "playlist_id",
             &self.public_id_codec,
         )?;
 
-        // Check membership
-        self.room_service
-            .check_membership(&rid, &uid)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
         // Get playlist
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(&pid)
+            .get_room_playlist(&rid, &pid)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
@@ -389,7 +402,7 @@ impl ClientApiImpl {
         let child_folder_count = self
             .room_service
             .playlist_service()
-            .count_children(&pid)
+            .count_room_children(&rid, &pid)
             .await
             .map_err(ApiError::from)?;
         let child_folder_count = i64_to_i32_api(child_folder_count, "child folder count")?;
@@ -397,7 +410,7 @@ impl ClientApiImpl {
         let media_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&pid)
+            .count_room_playlist_media(&rid, &pid)
             .await
             .unwrap_or(0);
         let media_count = i64_to_i32_api(media_count, "playlist media count")?;
@@ -425,16 +438,28 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.list_playlists_for_actor(&actor, req).await
+    }
 
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-
-        // Check membership before returning playlist data
-        self.room_service
-            .check_membership(&rid, &uid)
+    pub async fn list_playlists_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        req: crate::proto::client::ListPlaylistsRequest,
+    ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.list_playlists_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
-            .map_err(Self::map_room_access_error)?;
+    }
 
+    pub async fn list_playlists_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::ListPlaylistsRequest,
+    ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
+        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+            .await?;
+        let rid = actor.room_id();
         let page = page_i32_to_usize(req.page.max(1), "page")?;
         let page_size = if req.page_size <= 0 {
             page_i32_to_usize(DEFAULT_PLAYLIST_PAGE_SIZE, "page_size")?
@@ -471,15 +496,11 @@ impl ClientApiImpl {
             let parent = self
                 .room_service
                 .playlist_service()
-                .get_playlist(&parent_id)
+                .get_room_playlist(&rid, &parent_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
-            if parent.room_id != rid {
-                return Err(ApiError::Authorization(
-                    "Parent playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(parent.room_id, rid);
             Some(parent_id)
         };
         let query = synctv_core::models::PlaylistListQuery {

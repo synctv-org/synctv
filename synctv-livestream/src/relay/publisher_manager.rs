@@ -103,7 +103,7 @@ struct PublisherEntry {
     /// slow Redis from triggering false publisher cleanup. Only triggers
     /// cleanup when this reaches `MAX_CONSECUTIVE_REDIS_UNREACHABLE`.
     redis_unreachable_cycles: std::sync::atomic::AtomicU32,
-    /// User ID from the publisher registration (L-01: for reverse-index TTL refresh).
+    /// User ID from the publisher registration, used for reverse-index TTL refresh.
     user_id: String,
     /// Publisher epoch captured from the registry when tracking started.
     epoch: u64,
@@ -182,7 +182,7 @@ fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
 pub struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
     local_node_id: String,
-    /// Advertised shared API address of this node (L-05: used for re-registration after restart).
+    /// Advertised shared API address of this node, used for re-registration after restart.
     local_api_address: String,
     /// Active publishers (composite key -> `PublisherEntry`)
     /// Live streaming is media-level, not room-level
@@ -464,7 +464,7 @@ impl PublisherManager {
 
         // Track active publisher with composite key (room_id:media_id)
         // This publisher has already been registered to Redis in the auth phase.
-        // L-01: Query registry to get user_id for heartbeat TTL refresh.
+        // Query registry to get user_id for heartbeat TTL refresh.
         let publisher_key = format!("{room_id}:{media_id}");
         let entry = match self.registry.get_publisher(&room_id, &media_id).await {
             Ok(Some(info)) => {
@@ -815,12 +815,12 @@ impl PublisherManager {
     pub async fn reregister_all_publishers(&self) {
         self.set_restarting();
 
-        // Memory leak fix: First reconcile with registry to remove zombie entries
-        // (local entries that no longer exist in registry or were taken over).
+        // First reconcile with registry to remove zombie entries, meaning local
+        // entries that no longer exist in registry or were taken over.
         // This prevents memory leaks when UnPublish events are lost.
         self.reconcile_with_registry().await;
 
-        // L-05: Snapshot both key and entry to access stored user_id for re-registration
+        // Snapshot both key and entry to access stored user_id for re-registration.
         let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
             .iter()
@@ -1088,7 +1088,7 @@ impl PublisherManager {
     ///    for `silent_timeout_secs`, the publisher is considered dead even though
     ///    the TCP connection may still be alive.
     async fn run_heartbeat_cycle(self: &Arc<Self>) {
-        // M-8: Snapshot keys first to avoid holding DashMap read guard during async Redis ops.
+        // Snapshot keys first to avoid holding DashMap read guard during async Redis ops.
         let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
             .iter()
@@ -1101,7 +1101,6 @@ impl PublisherManager {
                 continue;
             };
 
-            // LS-5: Check for silent publisher (no media data for too long).
             // Skip during StreamHub restart to avoid false cleanups while
             // publishers are reconnecting to the new hub instance.
             let idle_secs = entry.idle_secs();
@@ -1119,7 +1118,7 @@ impl PublisherManager {
                 continue;
             }
 
-            // L-01: Pass stored user_id to refresh both publisher TTL and user reverse-index TTL
+            // Pass stored user_id to refresh both publisher TTL and user reverse-index TTL.
             let user_id = &entry.user_id;
 
             // Per-cycle heartbeat failure counting semantics:
@@ -2902,8 +2901,6 @@ mod tests {
         );
     }
 
-    /// Regression test for the `DashMap` memory leak.
-    ///
     /// This test simulates the exact scenario that causes the memory leak:
     /// 1. Multiple publishers are tracked locally
     /// 2. All registry entries expire or are removed

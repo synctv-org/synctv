@@ -111,7 +111,8 @@ impl PermissionBits {
         | Self::EDIT_MEDIA_SELF
         | Self::VIEW_PLAYLIST
         | Self::VIEW_MEMBER_LIST
-        | Self::VIEW_CHAT_HISTORY;
+        | Self::VIEW_CHAT_HISTORY
+        | Self::USE_WEBRTC;
 
     /// Default admin permissions
     pub const DEFAULT_ADMIN: u64 = Self::DEFAULT_MEMBER
@@ -129,11 +130,20 @@ impl PermissionBits {
         | Self::SET_MEMBER_PERMISSIONS
         | Self::ADD_MEMBER
         | Self::SET_ROOM_SETTINGS
-        | Self::DELETE_CHAT
-        | Self::USE_WEBRTC;
+        | Self::DELETE_CHAT;
 
-    /// Default guest permissions (read-only)
-    pub const DEFAULT_GUEST: u64 = Self::VIEW_PLAYLIST;
+    /// Default guest permissions.
+    ///
+    /// Guests can enter guest-enabled public rooms, but they do not receive
+    /// room resource permissions by default.
+    pub const DEFAULT_GUEST: u64 = Self::NONE;
+
+    /// Permissions that can be granted to guests.
+    ///
+    /// Guests are not room members and cannot receive write or moderation
+    /// capabilities. Playlist/media access is intentionally not included.
+    pub const GUEST_ASSIGNABLE: u64 =
+        Self::VIEW_MEMBER_LIST | Self::VIEW_CHAT_HISTORY | Self::USE_WEBRTC;
 
     pub const NONE: u64 = 0;
 
@@ -296,10 +306,11 @@ mod tests {
 
         let member_perms = Role::Member.permissions();
         assert!(member_perms.has(PermissionBits::SEND_CHAT));
+        assert!(member_perms.has(PermissionBits::USE_WEBRTC));
         assert!(!member_perms.has(PermissionBits::DELETE_ROOM));
 
         let guest_perms = Role::Guest.permissions();
-        assert!(guest_perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!guest_perms.has(PermissionBits::VIEW_PLAYLIST));
         assert!(!guest_perms.has(PermissionBits::ADD_MEDIA));
     }
 

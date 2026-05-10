@@ -114,19 +114,13 @@ impl ClientApiImpl {
         let (room_id, media_id) = build_create_publish_key_request(req, &self.public_id_codec)?;
         let rid = parse_room_id(&room_id, &self.public_id_codec)?;
 
-        let media = self
+        let _media = self
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_room_media(&rid, &media_id)
             .await
             .map_err(|e| Self::map_media_lookup_error(e, "Media not found"))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
-
-        if media.room_id != rid {
-            return Err(ApiError::InvalidInput(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
 
         let _room = self
             .room_service
@@ -247,19 +241,13 @@ impl AdminApiImpl {
         let (room_id, media_id) = build_create_publish_key_request(req, &self.public_id_codec)?;
         let rid = parse_room_id(&room_id, &self.public_id_codec)?;
 
-        let media = self
+        let _media = self
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_room_media(&rid, &media_id)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to load media: {e}")))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
-
-        if media.room_id != rid {
-            return Err(ApiError::InvalidInput(
-                "Media does not belong to this room".to_string(),
-            ));
-        }
 
         let publish_key_service = self
             .publish_key_service

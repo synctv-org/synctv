@@ -444,8 +444,8 @@ async fn test_unregister_cleanup_is_scoped_to_reused_connection_registration() {
 
 /// Test that distributed counter TTL is set to 2x the refresh interval.
 ///
-/// This verifies the fix for TTL should be 120s (2x 60s refresh interval)
-/// rather than 180s (3x), ensuring faster crash recovery while maintaining safety.
+/// The TTL should be 120s (2x 60s refresh interval) rather than 180s (3x),
+/// ensuring faster crash recovery while maintaining safety.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_distributed_counter_ttl_is_2x_refresh_interval() {

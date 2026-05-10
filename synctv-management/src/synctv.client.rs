@@ -145,6 +145,34 @@ pub mod auth_service_client {
                 .insert(GrpcMethod::new("synctv.client.AuthService", "Login"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn create_guest_token(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                ::synctv_proto::client::CreateGuestTokenRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::CreateGuestTokenResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.AuthService/CreateGuestToken",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.client.AuthService", "CreateGuestToken"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn start_opaque_registration(
             &mut self,
             request: impl tonic::IntoRequest<
@@ -600,6 +628,13 @@ pub mod auth_service_server {
             tonic::Response<::synctv_proto::client::LoginResponse>,
             tonic::Status,
         >;
+        async fn create_guest_token(
+            &self,
+            request: tonic::Request<::synctv_proto::client::CreateGuestTokenRequest>,
+        ) -> std::result::Result<
+            tonic::Response<::synctv_proto::client::CreateGuestTokenResponse>,
+            tonic::Status,
+        >;
         async fn start_opaque_registration(
             &self,
             request: tonic::Request<
@@ -875,6 +910,55 @@ pub mod auth_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LoginSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.AuthService/CreateGuestToken" => {
+                    #[allow(non_camel_case_types)]
+                    struct CreateGuestTokenSvc<T: AuthService>(pub Arc<T>);
+                    impl<
+                        T: AuthService,
+                    > tonic::server::UnaryService<
+                        ::synctv_proto::client::CreateGuestTokenRequest,
+                    > for CreateGuestTokenSvc<T> {
+                        type Response = ::synctv_proto::client::CreateGuestTokenResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                ::synctv_proto::client::CreateGuestTokenRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AuthService>::create_guest_token(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CreateGuestTokenSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

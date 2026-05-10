@@ -1,4 +1,4 @@
-//! CL7: `HealthMonitor` probe recovery
+//! `HealthMonitor` probe recovery
 //!
 //! - Pre-set node to Unhealthy, call `process_heartbeats` with fresh node
 //! - Assert status transitions to Healthy after `process_heartbeats` when node

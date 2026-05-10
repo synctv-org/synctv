@@ -21,7 +21,8 @@ Authentication options:
 
 | Method | Clients | Notes |
 | --- | --- | --- |
-| `Authorization: Bearer <access_token>` | Native clients, CLI, server-side SDKs | Token does not enter the URL |
+| `Authorization: Bearer <access_token>` | Native clients, CLI, server-side SDKs | Signed-in users |
+| `Authorization: Bearer <guest_token>` | Native clients, CLI, server-side SDKs | Guests; first call `POST /api/auth/guest-token` |
 | `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to create a short-lived, one-time, room-bound ticket |
 
 WebSocket only handles binary protobuf frames. Clients send `synctv.client.ClientMessage`, and the server returns `synctv.client.ServerMessage`. Text frames, ping, pong, and other non-business frames are not processed as business messages.
@@ -50,6 +51,38 @@ function sendClientMessage(message) {
 Do not put refresh tokens in WebSocket URLs. Browser clients should use WebSocket tickets. Do not reuse a ticket after success or failure.
 </Aside>
 
+## Guest Connections
+
+A guest is not a signed-in user. The server does not create a user row, member row, or login session for a guest. Guest identity is represented only by a room-bound guest token, and public guest IDs use the `gst_` prefix.
+
+A guest can enter only when all of these are true:
+
+- Global `user.enable_guest` is enabled.
+- Room `allow_guest_join` is enabled.
+- The room has no password and is not closed or banned.
+- The guest token still matches the room guest version. Disabling guests, adding a password, or revoking guest access invalidates older tokens.
+
+Guests receive only basic realtime room state by default. They cannot read playlists, send chat or danmaku, or manage media. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, playlist, media management, member administration, room administration, Provider credential, or management-plane APIs.
+
+```bash
+curl -sS "$BASE_URL/api/auth/guest-token" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id":"room_1"}'
+```
+
+Native WebSocket clients use the returned `token`:
+
+```http
+Authorization: Bearer <guest_token>
+```
+
+For gRPC `MessageStream`, send the same token:
+
+```text
+x-room-id: room_1
+authorization: Bearer <guest_token>
+```
+
 ## When to Use Realtime
 
 | Scenario | Why Realtime |
@@ -58,7 +91,9 @@ Do not put refresh tokens in WebSocket URLs. Browser clients should use WebSocke
 | Chat and danmaku | Room members need messages immediately |
 | Playback snapshot | Expired URLs, Provider credential changes, and media switches need refreshes |
 | Room members | Joins, leaves, and permission changes need UI sync |
-| WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding |
+| WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
+
+Before sending signaling messages, WebRTC clients call `GET /api/rooms/<room_id>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>`, and both need `use_webrtc`.
 
 ## Message Scope
 

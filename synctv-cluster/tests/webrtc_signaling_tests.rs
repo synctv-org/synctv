@@ -284,12 +284,11 @@ async fn test_sdp_offer_answer_flow() {
 #[test]
 fn test_webrtc_join_event() {
     let room = rid("room1");
-    let user = uid("user1");
 
     let event = ClusterEvent::WebRTCJoin {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        user_id: user,
+        actor_id: "usr_user1".to_string(),
         conn_id: "conn1".to_string(),
         username: "testuser".to_string(),
         timestamp: chrono::Utc::now(),
@@ -297,7 +296,7 @@ fn test_webrtc_join_event() {
 
     assert_eq!(event.event_type(), "webrtc_join");
     assert!(event.room_id().is_some());
-    assert!(event.user_id().is_some());
+    assert!(event.user_id().is_none());
     assert!(!event.is_critical(), "WebRTCJoin is not critical");
 }
 
@@ -305,19 +304,18 @@ fn test_webrtc_join_event() {
 #[test]
 fn test_webrtc_leave_event() {
     let room = rid("room1");
-    let user = uid("user1");
 
     let event = ClusterEvent::WebRTCLeave {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        user_id: user,
+        actor_id: "usr_user1".to_string(),
         conn_id: "conn1".to_string(),
         timestamp: chrono::Utc::now(),
     };
 
     assert_eq!(event.event_type(), "webrtc_leave");
     assert!(event.room_id().is_some());
-    assert!(event.user_id().is_some());
+    assert!(event.user_id().is_none());
     assert!(!event.is_critical(), "WebRTCLeave is not critical");
 }
 
@@ -342,7 +340,7 @@ async fn test_webrtc_join_leave_broadcast() {
     let join_event = ClusterEvent::WebRTCJoin {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        user_id: user1,
+        actor_id: "usr_user1".to_string(),
         conn_id: "conn1".to_string(),
         username: "user1".to_string(),
         timestamp: chrono::Utc::now(),
@@ -359,7 +357,7 @@ async fn test_webrtc_join_leave_broadcast() {
     let leave_event = ClusterEvent::WebRTCLeave {
         event_id: synctv_common::snanoid!(16),
         room_id: room,
-        user_id: user1,
+        actor_id: "usr_user1".to_string(),
         conn_id: "conn1".to_string(),
         timestamp: chrono::Utc::now(),
     };

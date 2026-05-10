@@ -75,6 +75,28 @@ impl PermissionSet {
     pub const fn bits(&self) -> PermissionBits {
         self.0
     }
+
+    fn names_for_bits(bits: u64) -> Vec<&'static str> {
+        NAMED_PERMISSIONS
+            .iter()
+            .filter_map(|(name, bit)| ((bits & *bit) != 0).then_some(*name))
+            .collect()
+    }
+
+    pub fn validate_guest_default(&self) -> crate::Result<()> {
+        let invalid = self.bits().0 & !PermissionBits::GUEST_ASSIGNABLE;
+        if invalid == 0 {
+            return Ok(());
+        }
+
+        let invalid_names = Self::names_for_bits(invalid);
+        let allowed_names = Self::names_for_bits(PermissionBits::GUEST_ASSIGNABLE);
+        Err(crate::Error::InvalidInput(format!(
+            "permissions.guest_default may only include guest-safe permissions: {}; invalid permissions: {}",
+            allowed_names.join(", "),
+            invalid_names.join(", "),
+        )))
+    }
 }
 
 const NAMED_PERMISSIONS: &[(&str, u64)] = &[
@@ -600,7 +622,8 @@ impl SettingsRegistry {
                 PermissionSet,
                 "permissions.guest_default",
                 storage.clone(),
-                PermissionSet::guest_default()
+                PermissionSet::guest_default(),
+                |permissions: &PermissionSet| permissions.validate_guest_default()
             ),
 
             // Room settings
@@ -974,6 +997,55 @@ mod tests {
         assert!(!settings.email_signup_need_review);
         assert!(!settings.enable_webauthn_signup);
         assert!(!settings.webauthn_signup_need_review);
+    }
+
+    #[test]
+    fn test_guest_default_permissions_accept_only_guest_safe_permissions() {
+        let allowed: PermissionSet = r#"["view_member_list","view_chat_history","use_webrtc"]"#
+            .parse()
+            .unwrap();
+        assert!(allowed.validate_guest_default().is_ok());
+
+        let empty: PermissionSet = "[]".parse().unwrap();
+        assert!(empty.validate_guest_default().is_ok());
+
+        let rejected: PermissionSet =
+            r#"["view_playlist","send_chat","add_media"]"#.parse().unwrap();
+        let error = rejected
+            .validate_guest_default()
+            .expect_err("playlist, chat, and media permissions must not be guest defaults");
+        assert!(error.to_string().contains("permissions.guest_default"));
+        assert!(error.to_string().contains("view_playlist"));
+        assert!(error.to_string().contains("send_chat"));
+        assert!(error.to_string().contains("add_media"));
+    }
+
+    #[tokio::test]
+    async fn test_settings_registry_rejects_unsafe_guest_default_permissions() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
+        let service = Arc::new(SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        let registry = SettingsRegistry::new(service);
+
+        let invalid = r#"["view_playlist","send_chat"]"#;
+        assert!(
+            !registry
+                .storage
+                .validate("permissions.guest_default", invalid),
+            "guest defaults must reject permissions outside GUEST_ASSIGNABLE"
+        );
+
+        let valid = r#"["view_member_list","use_webrtc"]"#;
+        assert!(
+            registry
+                .storage
+                .validate("permissions.guest_default", valid),
+            "guest defaults should accept guest-safe permissions"
+        );
     }
 
     #[test]

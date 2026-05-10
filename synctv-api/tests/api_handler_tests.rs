@@ -1577,7 +1577,7 @@ mod grpc_status_mapping {
     }
 }
 
-// P0-5/6: gRPC API Validation Tests
+// gRPC API validation tests.
 
 mod grpc_api_validation {
     use synctv_api::http::validation::{validate_id, ValidationError};
@@ -1658,7 +1658,7 @@ mod grpc_api_validation {
     }
 }
 
-// P0-6: add_media_batch provider_instance_name Tests
+// add_media_batch provider_instance_name tests.
 
 mod add_media_batch_provider_instance {
     use synctv_api::proto::client::AddMediaRequest;

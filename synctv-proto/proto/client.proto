@@ -15,6 +15,7 @@ import "proto/common.proto";
 service AuthService {
     rpc Register(RegisterRequest) returns (RegisterResponse);
     rpc Login(LoginRequest) returns (LoginResponse);
+    rpc CreateGuestToken(CreateGuestTokenRequest) returns (CreateGuestTokenResponse);
     rpc StartOpaqueRegistration(StartOpaqueRegistrationRequest) returns (StartOpaqueRegistrationResponse);
     rpc FinishOpaqueRegistration(FinishOpaqueRegistrationRequest) returns (RegisterResponse);
     rpc StartOpaqueLogin(StartOpaqueLoginRequest) returns (StartOpaqueLoginResponse);
@@ -793,6 +794,24 @@ message CreateWebSocketTicketResponse {
     string room_id = 2;
     uint64 expires_in_secs = 3;
     string usage = 4;
+}
+
+message CreateGuestTokenRequest {
+    string room_id = 1 [(buf.validate.field).string = {
+        min_len: 1,
+        max_len: 64,
+        pattern: "^room_[A-Za-z0-9]+$"
+    }];
+}
+
+message CreateGuestTokenResponse {
+    string token = 1;
+    string room_id = 2;
+    string guest_id = 3;
+    string display_name = 4;
+    int64 expires_at = 5;
+    uint64 expires_in_secs = 6;
+    string usage = 7;
 }
 
 message WebSocketConnectRequest {

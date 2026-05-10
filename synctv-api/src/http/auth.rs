@@ -10,9 +10,10 @@ use serde::de::DeserializeOwned;
 use super::{AppError, AppResult, AppState};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::client::{
-    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest,
-    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse,
-    LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
+    CreateGuestTokenRequest, CreateGuestTokenResponse, FinishMfaPasskeyRequest,
+    FinishOpaqueLoginRequest, FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest,
+    FinishPasskeyRegistrationRequest, LoginRequest, LoginResponse, LogoutResponse,
+    RefreshTokenRequest, RefreshTokenResponse, RegisterRequest, RegisterResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
     StartOpaqueLoginRequest, StartOpaqueLoginResponse, StartOpaqueRegistrationRequest,
@@ -238,6 +239,45 @@ pub async fn login(
                 Err(ApiError::InvalidInput(
                     "Email login token requires email only and cannot be combined with username or password.".to_string(),
                 ))
+            },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/guest-token",
+        tag = "Auth",
+        request_body = CreateGuestTokenRequest,
+        responses(
+            (status = 200, description = "Guest token issued for a public room", body = CreateGuestTokenResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Guest access is not allowed", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
+pub async fn create_guest_token(
+    State(state): State<AppState>,
+    request: Request,
+) -> AppResult<Json<CreateGuestTokenResponse>> {
+    let (request_meta, request) = extract_auth_request(&state, request).await?;
+    let client_api = state.client_api.clone();
+    let response = state
+        .client_api
+        .execute_public_endpoint_with_control(
+            &request_meta,
+            EndpointRateLimitCategory::Auth,
+            move |request_control| async move {
+                let req = parse_auth_json::<CreateGuestTokenRequest>(request).await?;
+                client_api
+                    .create_guest_token_with_control(req, Some(&request_control))
+                    .await
             },
         )
         .await

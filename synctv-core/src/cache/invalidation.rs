@@ -2097,7 +2097,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_state_sync_uses_shutdown_flag_not_ctrl_c() {
-        // L17: Verify that spawn_state_sync_task respects the shutdown AtomicBool
+        // Verify that spawn_state_sync_task respects the shutdown AtomicBool
         // rather than relying on tokio::signal::ctrl_c().
         let service = CacheInvalidationService::new(
             "test-node".to_string(),

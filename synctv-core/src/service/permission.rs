@@ -277,6 +277,11 @@ impl PermissionService {
         self.invalidation_service().is_some()
     }
 
+    /// Replace the global settings registry used for role defaults.
+    pub fn set_settings_registry(&mut self, registry: Arc<SettingsRegistry>) {
+        self.settings_registry = Some(registry);
+    }
+
     #[cfg(test)]
     pub(crate) const fn has_settings_registry(&self) -> bool {
         self.settings_registry.is_some()
@@ -1144,10 +1149,10 @@ mod tests {
     fn test_room_level_add_and_remove_for_admin() {
         let service = make_service();
         let mut settings = RoomSettings::default();
-        settings.admin_added_permissions = AdminAddedPermissions(PermissionBits::USE_WEBRTC);
+        settings.admin_added_permissions = AdminAddedPermissions(PermissionBits::PLAY_CONTROL);
         settings.admin_removed_permissions = AdminRemovedPermissions(PermissionBits::BAN_MEMBER);
         let perms = service.calculate_role_default_permissions(&RoomRole::Admin, &settings);
-        assert!(perms.has(PermissionBits::USE_WEBRTC));
+        assert!(perms.has(PermissionBits::PLAY_CONTROL));
         assert!(!perms.has(PermissionBits::BAN_MEMBER));
     }
 
@@ -1183,13 +1188,13 @@ mod tests {
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = make_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::USE_WEBRTC;
+        member.admin_added_permissions = PermissionBits::PLAY_CONTROL;
         member.admin_removed_permissions = PermissionBits::BAN_MEMBER;
         member.added_permissions = PermissionBits::USE_WEBRTC;
 
-        let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+        let role_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::USE_WEBRTC));
+        assert!(effective.has(PermissionBits::PLAY_CONTROL));
         assert!(!effective.has(PermissionBits::BAN_MEMBER));
     }
 
@@ -1206,11 +1211,12 @@ mod tests {
     #[test]
     fn test_guest_allow_deny_pattern() {
         let mut member = make_member(RoomRole::Guest);
-        member.added_permissions = PermissionBits::SEND_CHAT;
+        member.added_permissions = PermissionBits::USE_WEBRTC;
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::SEND_CHAT));
-        assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(effective.has(PermissionBits::USE_WEBRTC));
+        assert!(!effective.has(PermissionBits::SEND_CHAT));
+        assert!(!effective.has(PermissionBits::VIEW_PLAYLIST));
     }
 
     #[test]
@@ -1293,13 +1299,23 @@ mod tests {
     }
 
     #[test]
-    fn test_room_adds_send_chat_for_guest() {
+    fn test_room_rejects_send_chat_for_guest() {
         let service = make_service();
         let mut settings = RoomSettings::default();
         settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::SEND_CHAT);
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
-        assert!(perms.has(PermissionBits::SEND_CHAT));
-        assert!(perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!perms.has(PermissionBits::SEND_CHAT));
+        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+    }
+
+    #[test]
+    fn test_room_adds_webrtc_for_guest() {
+        let service = make_service();
+        let mut settings = RoomSettings::default();
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
+        let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
+        assert!(perms.has(PermissionBits::USE_WEBRTC));
+        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
     }
 
     #[test]
@@ -1323,20 +1339,20 @@ mod tests {
     fn test_three_layer_guest_chain() {
         let service = make_service();
 
-        // Layer 1: Global defaults for Guest (VIEW_PLAYLIST only)
-        // Layer 2: Room adds SEND_CHAT for guests
+        // Layer 1: Global defaults for Guest (no room resource permissions)
+        // Layer 2: Room adds WebRTC for guests
         let mut settings = RoomSettings::default();
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::SEND_CHAT);
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
         let role_default = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
-        assert!(role_default.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(role_default.has(PermissionBits::SEND_CHAT));
+        assert!(!role_default.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(role_default.has(PermissionBits::USE_WEBRTC));
 
-        // Layer 3: Member-level removes SEND_CHAT (e.g. muted guest)
+        // Layer 3: Per-actor removal can still remove guest-level permissions.
         let mut member = make_member(RoomRole::Guest);
-        member.removed_permissions = PermissionBits::SEND_CHAT;
+        member.removed_permissions = PermissionBits::USE_WEBRTC;
         let effective = member.effective_permissions(role_default);
-        assert!(effective.has(PermissionBits::VIEW_PLAYLIST));
-        assert!(!effective.has(PermissionBits::SEND_CHAT));
+        assert!(!effective.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!effective.has(PermissionBits::USE_WEBRTC));
     }
 
     #[test]
@@ -1395,7 +1411,7 @@ mod tests {
 
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         let effective = member.effective_permissions(role_default);
-        // DEFAULT_ADMIN already includes USE_WEBRTC; member-level grant is ignored.
+        // DEFAULT_MEMBER already includes USE_WEBRTC; member-level grant is redundant and ignored.
         assert!(effective.has(PermissionBits::USE_WEBRTC));
         // member-level SEND_CHAT deny should NOT apply to admin
         assert!(effective.has(PermissionBits::SEND_CHAT));
@@ -1453,11 +1469,11 @@ mod tests {
     fn test_room_level_add_and_remove_same_permission_for_guest() {
         let service = make_service();
         let mut settings = RoomSettings::default();
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::VIEW_PLAYLIST);
-        settings.guest_removed_permissions = GuestRemovedPermissions(PermissionBits::VIEW_PLAYLIST);
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
+        settings.guest_removed_permissions = GuestRemovedPermissions(PermissionBits::USE_WEBRTC);
         let perms = service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
         // Remove wins over add
-        assert!(!perms.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!perms.has(PermissionBits::USE_WEBRTC));
     }
 
     #[test]
@@ -1846,9 +1862,8 @@ mod tests {
         // This test verifies that invalidate_room_cache correctly invalidates
         // cache entries for all users in a room.
         // Note: moka's invalidate_entries_if is a background operation that may not
-        // be immediate. The broadcast test (test_invalidate_room_cache_receives_broadcast_after_fix)
-        // verifies the cross-replica behavior, which is the main fix for this issue.
-        // For local cache, we just verify the method doesn't panic and the broadcast is sent.
+        // be immediate. For local cache, verify the method doesn't panic and the
+        // broadcast is sent.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let (service, invalidation_service) = make_service_with_invalidation_no_rt();
@@ -1985,7 +2000,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                // No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));
@@ -1996,7 +2012,9 @@ mod tests {
             // Create a PermissionService with the invalidation service
             let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
             let member_repo = RoomMemberRepository::new(pool);
-            let room_repo = RoomRepository::new(sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap());
+            let room_repo = RoomRepository::new(
+                sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
+            );
 
             let service = PermissionService::with_invalidation(
                 member_repo,
@@ -2011,7 +2029,10 @@ mod tests {
             let room_id = RoomId::from(1);
             let user_id = UserId::from(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
-            service.cache.insert(cache_key.clone(), PermissionBits(PermissionBits::ALL)).await;
+            service
+                .cache
+                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .await;
 
             // Invalidate the cache - this should broadcast via invalidation_service
             service.invalidate_cache(&room_id, &user_id).await;
@@ -2020,17 +2041,18 @@ mod tests {
             assert!(service.cache.get(&cache_key).await.is_none());
 
             // Try to receive the broadcast message
-            // After the fix: invalidate_cache should use invalidate_and_broadcast_user_permission
-            // which broadcasts both locally AND to Redis. Since there's no Redis, only local
-            // broadcast happens, and we should receive it.
-            let result = tokio::time::timeout(
-                tokio::time::Duration::from_millis(100),
-                receiver.recv()
-            ).await;
+            // invalidate_cache broadcasts both locally and to Redis. Since there's
+            // no Redis here, only local broadcast happens and should be received.
+            let result =
+                tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv())
+                    .await;
 
             // After the fix, this should receive the message
             match result {
-                Ok(Ok(InvalidationMessage::UserPermission { room_id: rid, user_id: uid })) => {
+                Ok(Ok(InvalidationMessage::UserPermission {
+                    room_id: rid,
+                    user_id: uid,
+                })) => {
                     assert_eq!(rid, "1");
                     assert_eq!(uid, "1");
                     // Success! The broadcast was received.
@@ -2042,12 +2064,10 @@ mod tests {
                     panic!("Receiver error: {e:?}");
                 }
                 Err(timeout_error) => {
-                    // Timeout - this indicates the fix is not yet applied
-                    // Currently, broadcast_remote doesn't send to local channel
                     panic!(
                         "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
-                         invalidate_cache is not broadcasting locally. The fix should use \
-                         invalidate_and_broadcast_user_permission instead of invalidate_user_permission."
+                         invalidate_cache is not broadcasting locally. It should use \
+                         invalidate_and_broadcast_user_permission."
                     );
                 }
             }
@@ -2061,7 +2081,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Create a CacheInvalidationService without Redis
-            let invalidation_service = Arc::new(CacheInvalidationService::new(// No Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                // No Redis
                 "test-node".to_string(),
                 "test-stream".to_string(),
             ));
@@ -2072,7 +2093,9 @@ mod tests {
             // Create a PermissionService with the invalidation service
             let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
             let member_repo = RoomMemberRepository::new(pool);
-            let room_repo = RoomRepository::new(sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap());
+            let room_repo = RoomRepository::new(
+                sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
+            );
 
             let service = PermissionService::with_invalidation(
                 member_repo,
@@ -2088,10 +2111,9 @@ mod tests {
             service.invalidate_room_cache(&room_id).await;
 
             // Try to receive the broadcast message
-            let result = tokio::time::timeout(
-                tokio::time::Duration::from_millis(100),
-                receiver.recv()
-            ).await;
+            let result =
+                tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv())
+                    .await;
 
             // After the fix, this should receive the message
             match result {
@@ -2106,11 +2128,10 @@ mod tests {
                     panic!("Receiver error: {e:?}");
                 }
                 Err(timeout_error) => {
-                    // Timeout - this indicates the fix is not yet applied
                     panic!(
                         "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
-                         invalidate_room_cache is not broadcasting locally. The fix should use \
-                         invalidate_and_broadcast_room_permission instead of invalidate_room_permission."
+                         invalidate_room_cache is not broadcasting locally. It should use \
+                         invalidate_and_broadcast_room_permission."
                     );
                 }
             }
@@ -2169,11 +2190,9 @@ mod tests {
                     panic!("Receiver error: {e:?}");
                 }
                 Err(timeout_error) => {
-                    // Timeout - this indicates the fix is not yet applied
                     panic!(
                         "Timeout waiting for broadcast ({timeout_error:?}) - this indicates \
-                         clear_cache is not broadcasting locally. The fix should use \
-                         broadcast_all instead of invalidate_all."
+                         clear_cache is not broadcasting locally. It should use broadcast_all."
                     );
                 }
             }

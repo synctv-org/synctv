@@ -301,12 +301,22 @@ impl RoomMember {
 
                 PermissionBits(result)
             }
-            RoomRole::Member | RoomRole::Guest => {
+            RoomRole::Member => {
                 // Start with role default (already has global + room overrides)
                 let mut result = role_default.0;
 
                 // Apply member-level Allow/Deny modifications
                 result |= self.added_permissions;
+                result &= !self.removed_permissions;
+
+                PermissionBits(result)
+            }
+            RoomRole::Guest => {
+                // Guests are not members. Even if a synthetic or imported guest
+                // row has per-actor overrides, additions are capped to the
+                // dedicated guest ceiling.
+                let mut result = role_default.0 & PermissionBits::GUEST_ASSIGNABLE;
+                result |= self.added_permissions & PermissionBits::GUEST_ASSIGNABLE;
                 result &= !self.removed_permissions;
 
                 PermissionBits(result)
@@ -460,22 +470,31 @@ mod tests {
     #[test]
     fn test_admin_uses_admin_overrides() {
         let mut member = test_member(RoomRole::Admin);
-        member.admin_added_permissions = PermissionBits::USE_WEBRTC;
+        member.admin_added_permissions = PermissionBits::PLAY_CONTROL;
         member.admin_removed_permissions = PermissionBits::BAN_MEMBER;
-        let default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+        let default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::USE_WEBRTC));
+        assert!(result.has(PermissionBits::PLAY_CONTROL));
         assert!(!result.has(PermissionBits::BAN_MEMBER));
     }
 
     #[test]
-    fn test_guest_with_added_chat() {
+    fn test_guest_rejects_added_chat() {
         let mut member = test_member(RoomRole::Guest);
         member.added_permissions = PermissionBits::SEND_CHAT;
         let default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         let result = member.effective_permissions(default);
-        assert!(result.has(PermissionBits::SEND_CHAT));
-        assert!(result.has(PermissionBits::VIEW_PLAYLIST));
+        assert!(!result.has(PermissionBits::SEND_CHAT));
+        assert!(!result.has(PermissionBits::VIEW_PLAYLIST));
+    }
+
+    #[test]
+    fn test_guest_accepts_guest_assignable_override() {
+        let mut member = test_member(RoomRole::Guest);
+        member.added_permissions = PermissionBits::USE_WEBRTC;
+        let default = PermissionBits(PermissionBits::DEFAULT_GUEST);
+        let result = member.effective_permissions(default);
+        assert!(result.has(PermissionBits::USE_WEBRTC));
     }
 
     #[test]

@@ -1951,7 +1951,6 @@ mod tests {
 
     #[test]
     fn test_kick_stream_request_uses_body_fields() {
-        // L15: kick_stream uses room_id and media_id from body (not path).
         // Route is /streams/kick (no {stream_id} parameter).
         let req = admin::KickStreamRequest {
             room_id: "room123".to_string(),

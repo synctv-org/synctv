@@ -534,7 +534,7 @@ mod tests {
             .unwrap());
     }
 
-    /// M2: Test that max_segments_per_stream config enforces count bounds
+    /// Test that max_segments_per_stream config enforces count bounds.
     #[tokio::test]
     async fn test_segment_count_bound_deletes_oldest() {
         let storage = Arc::new(MemoryStorage::new());
@@ -571,7 +571,7 @@ mod tests {
         assert!(storage.exists("live", "room_123", "seg_4").await.unwrap());
     }
 
-    /// M2: Test that count bound does nothing when under limit
+    /// Test that count bound does nothing when under limit.
     #[tokio::test]
     async fn test_segment_count_bound_under_limit_no_op() {
         let storage = Arc::new(MemoryStorage::new());
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(storage.key_count(), 1);
     }
 
-    /// M2: Test list_streams returns all distinct app/stream pairs
+    /// Test list_streams returns all distinct app/stream pairs.
     #[tokio::test]
     async fn test_list_streams() {
         let storage = Arc::new(MemoryStorage::new());
@@ -620,7 +620,7 @@ mod tests {
         assert!(streams.contains(&("app2".to_string(), "stream1".to_string())));
     }
 
-    /// M2: Test count_stream_segments
+    /// Test count_stream_segments.
     #[tokio::test]
     async fn test_count_stream_segments() {
         let storage = Arc::new(MemoryStorage::new());
@@ -652,7 +652,7 @@ mod tests {
         );
     }
 
-    /// M2: Test CleanupConfig with max_segments_per_stream
+    /// Test CleanupConfig with max_segments_per_stream.
     #[tokio::test]
     async fn test_cleanup_config_with_segment_limit() {
         let config = CleanupConfig {

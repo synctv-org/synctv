@@ -10,6 +10,7 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use std::future::Future;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+use synctv_core::service::auth::{JwtValidator, TokenType};
 
 use super::validation::{StrictQuery, ValidatedQuery};
 use super::{middleware::RequestMetadata, AppResult, AppState, WithMediaId, WithPlaylistId};
@@ -276,6 +277,139 @@ where
     .boxed()
 }
 
+pub(super) fn execute_room_actor_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    public_room_id: String,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> BoxFuture<'a, Result<T, super::AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(std::sync::Arc<crate::impls::ClientApiImpl>, crate::impls::client::RoomActor) -> Fut
+        + Send
+        + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let authorization = request_meta.authorization.clone();
+        let token = authorization
+            .as_deref()
+            .map(JwtValidator::extract_bearer_token)
+            .transpose()
+            .map_err(|_| super::AppError::invalid_authorization_header())?
+            .ok_or_else(super::AppError::missing_authorization_header)?;
+        let is_guest_token =
+            synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
+        let executor = state.client_api.clone();
+        let client_api = state.client_api.clone();
+        if is_guest_token {
+            executor
+                .execute_public_endpoint(&request_meta, category, move || {
+                    let client_api = client_api.clone();
+                    async move {
+                        let access = client_api
+                            .validate_guest_room_access(&token, &public_room_id)
+                            .await?;
+                        operation(client_api, crate::impls::client::RoomActor::Guest(access)).await
+                    }
+                })
+                .await
+                .map_err(super::error::map_api_error)
+        } else {
+            executor
+                .execute_user_endpoint(&request_meta, category, move |authenticated| {
+                    let client_api = client_api.clone();
+                    async move {
+                        let actor = client_api
+                            .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                            .await?;
+                        operation(client_api, actor).await
+                    }
+                })
+                .await
+                .map_err(super::error::map_api_error)
+        }
+    }
+    .boxed()
+}
+
+fn execute_room_actor_endpoint_with_control<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    public_room_id: String,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> BoxFuture<'a, Result<T, super::AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+            std::sync::Arc<crate::impls::ClientApiImpl>,
+            synctv_core::provider::ExecutionControl,
+            crate::impls::client::RoomActor,
+        ) -> Fut
+        + Send
+        + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let authorization = request_meta.authorization.clone();
+        let token = authorization
+            .as_deref()
+            .map(JwtValidator::extract_bearer_token)
+            .transpose()
+            .map_err(|_| super::AppError::invalid_authorization_header())?
+            .ok_or_else(super::AppError::missing_authorization_header)?;
+        let is_guest_token =
+            synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
+        let executor = state.client_api.clone();
+        let client_api = state.client_api.clone();
+        if is_guest_token {
+            executor
+                .execute_public_endpoint_with_control(
+                    &request_meta,
+                    category,
+                    move |request_control| {
+                        let client_api = client_api.clone();
+                        async move {
+                            let access = client_api
+                                .validate_guest_room_access(&token, &public_room_id)
+                                .await?;
+                            operation(
+                                client_api,
+                                request_control,
+                                crate::impls::client::RoomActor::Guest(access),
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await
+                .map_err(super::error::map_api_error)
+        } else {
+            executor
+                .execute_user_endpoint_with_control(
+                    &request_meta,
+                    category,
+                    move |request_control, authenticated| {
+                        let client_api = client_api.clone();
+                        async move {
+                            let actor = client_api
+                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                                .await?;
+                            operation(client_api, request_control, actor).await
+                        }
+                    },
+                )
+                .await
+                .map_err(super::error::map_api_error)
+        }
+    }
+    .boxed()
+}
+
 /// Create a new room
 #[cfg_attr(
     feature = "openapi",
@@ -347,13 +481,12 @@ pub async fn get_room(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetRoomResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = execute_user_endpoint(
+    let response = execute_room_actor_endpoint(
         &state,
         request_meta,
+        room_id.clone(),
         EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api.get_room(&authenticated.user_id, &room_id).await
-        },
+        move |client_api, actor| async move { client_api.get_room_for_actor(&actor).await },
     )
     .await?;
 
@@ -711,14 +844,13 @@ pub async fn list_playlist_items(
     Json(req): Json<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = execute_user_endpoint(
+    let response = execute_room_actor_endpoint(
         &state,
         request_meta,
+        room_id.clone(),
         EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .list_playlist_items(&authenticated.user_id, &room_id, req)
-                .await
+        move |client_api, actor| async move {
+            client_api.list_playlist_items_for_actor(&actor, req).await
         },
     )
     .await?;
@@ -842,31 +974,23 @@ pub async fn get_playback(
 ) -> AppResult<Json<GetPlaybackResponse>> {
     let room_id = validate_room_path(path)?;
     let req = build_get_playback_request(&query)?;
-    let request_meta = request_metadata(request_meta);
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
-    let response = executor
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |request_control, authenticated| async move {
-                client_api
-                    .get_playback_with_context(
-                        &authenticated.user_id,
-                        &room_id,
-                        req,
-                        &request_control,
-                    )
-                    .await
-            },
-        )
-        .await
-        .map_err(super::error::map_api_error)?;
+    let response = execute_room_actor_endpoint_with_control(
+        &state,
+        request_meta,
+        room_id.clone(),
+        EndpointRateLimitCategory::Read,
+        move |client_api, request_control, actor| async move {
+            client_api
+                .get_playback_for_actor(&actor, req, Some(&request_control))
+                .await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }
 
-/// Get room members (E8: with pagination)
+/// Get room members with pagination.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -894,17 +1018,17 @@ pub async fn get_room_members(
     ValidatedQuery(req): ValidatedQuery<GetRoomMembersRequest>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = execute_user_endpoint(
-        &state,
-        request_meta,
-        EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .get_room_members(&authenticated.user_id, &room_id, req)
-                .await
-        },
-    )
-    .await?;
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id.clone(),
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.get_room_members_for_actor(&actor, req).await
+            },
+        )
+        .await?;
 
     Ok(Json(response))
 }
@@ -1053,15 +1177,12 @@ pub async fn get_room_settings(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetRoomSettingsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = execute_user_endpoint(
+    let response = execute_room_actor_endpoint(
         &state,
         request_meta,
+        room_id.clone(),
         EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .get_room_settings(&authenticated.user_id, &room_id)
-                .await
-        },
+        move |client_api, actor| async move { client_api.get_room_settings_for_actor(&actor).await },
     )
     .await?;
 
@@ -1225,17 +1346,17 @@ pub async fn get_media(
 ) -> AppResult<Json<crate::proto::client::Media>> {
     crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let media = execute_user_endpoint(
-        &state,
-        request_meta,
-        EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .get_media(&authenticated.user_id, &room_id, &media_id)
-                .await
-        },
-    )
-    .await?;
+    let media =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id.clone(),
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.get_media_for_actor(&actor, &media_id).await
+            },
+        )
+        .await?;
 
     Ok(Json(media))
 }
@@ -1271,13 +1392,14 @@ pub async fn get_playlist(
         room_id,
         playlist_id,
     } = path;
-    let response = execute_user_endpoint(
+    let response = execute_room_actor_endpoint(
         &state,
         request_meta,
+        room_id.clone(),
         EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
+        move |client_api, actor| async move {
             client_api
-                .get_playlist(&authenticated.user_id, &room_id, &playlist_id)
+                .get_playlist_for_actor(&actor, &playlist_id)
                 .await
         },
     )
@@ -1533,17 +1655,17 @@ pub async fn get_chat_history(
     } else {
         req.limit.clamp(1, 100)
     };
-    let response = execute_user_endpoint(
-        &state,
-        request_meta,
-        EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .get_chat_history(&authenticated.user_id, &room_id, req)
-                .await
-        },
-    )
-    .await?;
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id.clone(),
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.get_chat_history_for_actor(&actor, req).await
+            },
+        )
+        .await?;
 
     Ok(Json(response))
 }
@@ -1785,17 +1907,17 @@ pub async fn list_playlists(
     ValidatedQuery(req): ValidatedQuery<ListPlaylistsRequest>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
     let room_id = validate_room_path(path)?;
-    let response = execute_user_endpoint(
-        &state,
-        request_meta,
-        EndpointRateLimitCategory::Read,
-        move |client_api, authenticated| async move {
-            client_api
-                .list_playlists(&authenticated.user_id, &room_id, req)
-                .await
-        },
-    )
-    .await?;
+    let response =
+        execute_room_actor_endpoint(
+            &state,
+            request_meta,
+            room_id.clone(),
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.list_playlists_for_actor(&actor, req).await
+            },
+        )
+        .await?;
 
     Ok(Json(response))
 }

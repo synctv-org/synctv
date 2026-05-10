@@ -329,10 +329,8 @@ mod tests {
         assert!(cache.get(&user_id).await.unwrap().is_none());
     }
 
-    /// Regression test: set() with an invalidation service configured must NOT
-    /// self-invalidate. Previously, set() called invalidate_username() which
-    /// broadcast to all nodes including self, causing the just-written value
-    /// to be immediately deleted.
+    /// set() with an invalidation service configured must not self-invalidate
+    /// the value it just inserted.
     #[tokio::test]
     async fn test_set_with_invalidation_service_no_self_invalidation() {
         let invalidation_service = Arc::new(CacheInvalidationService::new(
@@ -361,8 +359,7 @@ mod tests {
         );
     }
 
-    /// Regression test: preload() calls set() for each entry. After fixing
-    /// set() to not broadcast invalidation, all preloaded entries must be
+    /// preload() calls set() for each entry, and all preloaded entries must be
     /// retrievable.
     #[tokio::test]
     async fn test_preload_all_entries_retrievable() {

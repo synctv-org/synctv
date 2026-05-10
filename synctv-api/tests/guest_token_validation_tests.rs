@@ -172,9 +172,8 @@ async fn test_valid_guest_token_passes_validation() {
 
 /// Test that a blacklisted guest token is rejected.
 ///
-/// This is the core security fix: when a guest is kicked from a room,
-/// their token's JTI is added to the blacklist. The validation must
-/// reject such tokens.
+/// When a guest is kicked from a room, their token's JTI is added to the
+/// blacklist. Validation must reject such tokens.
 #[tokio::test]
 async fn test_blacklisted_guest_token_is_rejected() {
     let validator = create_test_validator_with_blacklist();

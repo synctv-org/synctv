@@ -1,12 +1,10 @@
-//! OAuth2 State One-Time Use Validation Tests (TDD)
+//! OAuth2 State One-Time Use Validation Tests
 //!
 //! Tests that OAuth2 state parameters can only be used once to prevent replay attacks.
 //!
-//! Security Issue: If state tokens can be reused, an attacker who captures a valid
-//! state (e.g., via browser history, logs, or MITM) could replay it to authenticate
-//! as the victim.
-//!
-//! Fix: State tokens must be consumed atomically (GET + DEL) so that:
+//! State tokens must not be reusable; a captured state from browser history,
+//! logs, or MITM could otherwise be replayed to authenticate.
+//! State tokens must be consumed atomically (GET + DEL) so that:
 //! 1. First use succeeds
 //! 2. Second use fails with "Invalid or expired OAuth2 state"
 //! 3. Expired states fail even if somehow still in storage
@@ -39,8 +37,6 @@ fn create_test_state(instance_name: &str) -> OAuth2State {
     }
 }
 
-// TDD Test 1: First use of valid state should succeed
-
 #[tokio::test]
 async fn test_oauth2_state_first_use_succeeds() {
     let state_store = create_state_store();
@@ -68,8 +64,6 @@ async fn test_oauth2_state_first_use_succeeds() {
     assert_eq!(retrieved.instance_name, "github");
     assert_eq!(retrieved.pkce_verifier, "test_verifier_abc123");
 }
-
-// TDD Test 2: Second use of same state should fail (replay attack prevention)
 
 #[tokio::test]
 async fn test_oauth2_state_second_use_fails_prevents_replay() {
@@ -103,8 +97,6 @@ async fn test_oauth2_state_second_use_fails_prevents_replay() {
     );
 }
 
-// TDD Test 3: Expired state should fail
-
 #[tokio::test]
 async fn test_oauth2_state_expired_fails() {
     let state_store = create_state_store();
@@ -136,8 +128,6 @@ async fn test_oauth2_state_expired_fails() {
     assert!(result.is_none(), "Expired state should return None");
 }
 
-// TDD Test 4: Unknown state token should fail
-
 #[tokio::test]
 async fn test_oauth2_state_unknown_token_fails() {
     let state_store = create_state_store();
@@ -150,8 +140,6 @@ async fn test_oauth2_state_unknown_token_fails() {
 
     assert!(result.is_none(), "Unknown state token should return None");
 }
-
-// TDD Test 5: Different state tokens are independent
 
 #[tokio::test]
 async fn test_oauth2_state_different_tokens_independent() {
@@ -202,8 +190,6 @@ async fn test_oauth2_state_different_tokens_independent() {
         .expect("Consume should not error");
     assert!(result1_again.is_none(), "Token1 should be consumed");
 }
-
-// TDD Test 6: Concurrent consumption - only one succeeds
 
 #[tokio::test]
 async fn test_oauth2_state_concurrent_only_one_succeeds() {
@@ -256,8 +242,6 @@ async fn test_oauth2_state_concurrent_only_one_succeeds() {
     );
 }
 
-// TDD Test 7: State with bind_user_id is consumed correctly
-
 #[tokio::test]
 async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
     let state_store = create_state_store();
@@ -297,8 +281,6 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
     assert!(second.is_none(), "Second use of bind state should fail");
 }
 
-// TDD Test 8: Store capability is correct
-
 #[tokio::test]
 async fn test_in_memory_state_store_reports_single_node_scope() {
     let state_store = create_state_store();
@@ -307,8 +289,6 @@ async fn test_in_memory_state_store_reports_single_node_scope() {
         "InMemoryOAuthStateStore should remain single-node scoped"
     );
 }
-
-// TDD Test 9: TTL sweep removes expired entries on store
 
 #[tokio::test]
 async fn test_state_store_sweeps_expired_entries_on_store() {
@@ -350,8 +330,6 @@ async fn test_state_store_sweeps_expired_entries_on_store() {
         "Long-lived token should still be available"
     );
 }
-
-// TDD Test 10: Replay attack scenario simulation
 
 #[tokio::test]
 async fn test_oauth2_replay_attack_prevented() {

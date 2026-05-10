@@ -114,6 +114,66 @@ impl LogoutOutcome {
 }
 
 impl ClientApiImpl {
+    pub async fn create_guest_token_with_control(
+        &self,
+        req: crate::proto::client::CreateGuestTokenRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::CreateGuestTokenResponse, ApiError> {
+        let _ = control;
+        crate::impls::validate_proto_request(&req)?;
+
+        let room_id = self.parse_room_id(&req.room_id)?;
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        if room.is_banned {
+            return Err(ApiError::Authorization(
+                "This room has been banned".to_string(),
+            ));
+        }
+        if room.status.is_closed() {
+            return Err(ApiError::Authorization(
+                "This room is closed and not accepting new connections".to_string(),
+            ));
+        }
+
+        self.room_service
+            .check_guest_allowed(&room_id, self.settings_registry.as_ref().map(AsRef::as_ref))
+            .await
+            .map_err(ClientApiImpl::map_room_access_error)?;
+
+        let guest_version = self
+            .room_service
+            .get_room_guest_version(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        let token = self
+            .jwt_service
+            .sign_guest_token_with_version(&room_id, guest_version)
+            .map_err(ApiError::from)?;
+        let claims = self
+            .jwt_service
+            .verify_guest_token(&token)
+            .map_err(ApiError::from)?;
+        let guest_id = crate::impls::messaging::guest_public_id(&claims.session_id);
+        let display_name = crate::impls::messaging::guest_display_name(&claims.session_id);
+        let now = chrono::Utc::now().timestamp();
+        let expires_in_secs = claims.exp.saturating_sub(now).try_into().unwrap_or(0);
+
+        Ok(crate::proto::client::CreateGuestTokenResponse {
+            token,
+            room_id: req.room_id,
+            guest_id,
+            display_name,
+            expires_at: claims.exp,
+            expires_in_secs,
+            usage: "Pass this token as Authorization: Bearer <token> for supported room APIs in the bound public room."
+                .to_string(),
+        })
+    }
+
     pub async fn register(
         &self,
         req: crate::proto::client::RegisterRequest,

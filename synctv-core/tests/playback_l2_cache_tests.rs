@@ -1,4 +1,4 @@
-//! PlaybackState L2 cache integration tests (TDD)
+//! PlaybackState L2 cache integration tests
 //!
 //! Tests the L2 (Redis) caching layer for PlaybackService, including:
 //! - L1 hit behavior
@@ -150,9 +150,6 @@ async fn test_playback_state_l1_miss_hits_l2() {
     let mut conn = redis_conn.clone();
     let _: () = conn.set_ex("test:ping", "pong", 60).await.unwrap();
 
-    // For now, this test documents expected behavior
-    // The actual L2 cache integration will be implemented to make this pass
-
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
@@ -171,11 +168,10 @@ async fn test_playback_state_l1_miss_hits_l2() {
 
     let playback_service = room_service.playback_service();
 
-    // First call - populate L1 and L2 (when L2 is implemented)
+    // First call populates L1 and L2.
     let state1 = playback_service.get_state(&room.id).await.unwrap();
 
-    // After implementation: manually populate L2 to verify it's checked
-    // For now, we verify the basic flow works
+    // Manually populate L2 to verify it is checked.
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn));
     let l2_key = format!("synctv:playback:{}", room.id);
 
@@ -602,7 +598,7 @@ async fn test_playback_state_l2_fallback_when_pubsub_fails() {
         .await
         .unwrap();
 
-    // Write to L2 (simulating what implementation should do)
+    // Write to L2 to simulate a value produced by another replica.
     let l2_key = format!("synctv:playback:{}", room.id);
     let state_json = serde_json::to_string(&result.state).unwrap();
     l2.set(&l2_key, &state_json, 300).await.unwrap();

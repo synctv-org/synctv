@@ -431,7 +431,7 @@ async fn test_media_move_with_tx_reorders_scope() {
 
     let mut tx = ctx.pool.begin().await.unwrap();
     media_repo
-        .move_with_tx(&m2.id, Some(&m1.id), None, &mut tx)
+        .move_with_tx(&ctx.room.id, &m2.id, Some(&m1.id), None, &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

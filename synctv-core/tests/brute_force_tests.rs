@@ -231,7 +231,7 @@ async fn test_redis_tracker_reset() {
     let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3);
 
-    // Reset clears both Redis and fallback (verifies B5 fix: handles both Ok/Err)
+    // Reset clears both Redis and fallback state.
     tracker.reset(key).await.unwrap();
 
     let (count, _) = tracker.get_attempts(key).await.unwrap();

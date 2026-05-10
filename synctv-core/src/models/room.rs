@@ -478,11 +478,17 @@ impl RoomSettingsJson {
     /// Requires global default guest permissions from `SettingsRegistry`
     #[must_use]
     pub const fn guest_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        Self::effective_permissions_for_role(
-            global_default,
-            self.guest_added_permissions,
-            self.guest_removed_permissions,
-        )
+        let mut result = global_default.0 & PermissionBits::GUEST_ASSIGNABLE;
+
+        if let Some(added) = self.guest_added_permissions {
+            result |= added & PermissionBits::GUEST_ASSIGNABLE;
+        }
+
+        if let Some(removed) = self.guest_removed_permissions {
+            result &= !removed;
+        }
+
+        PermissionBits(result)
     }
 }
 

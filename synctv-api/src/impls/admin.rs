@@ -1055,7 +1055,7 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(playlist_id)
+            .get_room_playlist(room_id_model, playlist_id)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
@@ -1175,7 +1175,7 @@ impl AdminApiImpl {
             let media = self
                 .room_service
                 .media_service()
-                .get_media(media_id)
+                .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
@@ -1229,7 +1229,7 @@ impl AdminApiImpl {
             if let Some(media) = self
                 .room_service
                 .media_service()
-                .get_media(media_id)
+                .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
             {
@@ -1243,7 +1243,7 @@ impl AdminApiImpl {
             if let Some(playlist) = self
                 .room_service
                 .playlist_service()
-                .get_playlist(playlist_id)
+                .get_room_playlist(room_id, playlist_id)
                 .await
                 .map_err(ApiError::from)?
             {
@@ -2753,7 +2753,8 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Log to audit trail (best-effort: D11 - audit failure should not propagate)
+        // Log to audit trail. Audit failure is best-effort and should not
+        // prevent the password reset from completing.
         {
             let mut details_map = serde_json::Map::new();
             details_map.insert(
@@ -4308,7 +4309,7 @@ impl AdminApiImpl {
         &self,
         _req: crate::proto::admin::GetSystemStatsRequest,
     ) -> Result<crate::proto::admin::GetSystemStatsResponse, ApiError> {
-        // M-4: Run all 7 independent DB queries in parallel
+        // Run independent DB queries in parallel.
         let stats_pagination = synctv_core::models::PageParams::new(Some(1), Some(1));
         let query_all = synctv_core::models::UserListQuery {
             pagination: stats_pagination,
@@ -4829,28 +4830,22 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(&pid)
+            .get_room_playlist(&rid, &pid)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
-        if playlist.room_id != rid {
-            return Err(ApiError::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
-
         let child_folder_count = i64_to_i32_saturating(
             self.room_service
                 .playlist_service()
-                .count_children(&pid)
+                .count_room_children(&rid, &pid)
                 .await
                 .map_err(ApiError::from)?,
         );
         let media_count = i64_to_i32_saturating(
             self.room_service
                 .media_service()
-                .count_playlist_media(&pid)
+                .count_room_playlist_media(&rid, &pid)
                 .await
                 .unwrap_or(0),
         );
@@ -4894,15 +4889,11 @@ impl AdminApiImpl {
             let parent = self
                 .room_service
                 .playlist_service()
-                .get_playlist(&parent_id)
+                .get_room_playlist(&rid, &parent_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Parent playlist not found".to_string()))?;
-            if parent.room_id != rid {
-                return Err(ApiError::Authorization(
-                    "Parent playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(parent.room_id, rid);
             Some(parent_id)
         };
         let query = CorePlaylistListQuery {
@@ -5002,7 +4993,7 @@ impl AdminApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .map_or(0, i64_to_i32_saturating);
 
@@ -5054,7 +5045,7 @@ impl AdminApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .map_or(0, i64_to_i32_saturating);
 
@@ -5106,7 +5097,7 @@ impl AdminApiImpl {
         let item_count = self
             .room_service
             .media_service()
-            .count_playlist_media(&playlist.id)
+            .count_room_playlist_media(&rid, &playlist.id)
             .await
             .map_or(0, i64_to_i32_saturating);
 
@@ -5312,20 +5303,15 @@ impl AdminApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(&playlist_id)
+            .get_room_playlist(&rid, &playlist_id)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", req.playlist_id)))?;
-        if playlist.room_id != rid {
-            return Err(ApiError::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         let static_path = self
             .room_service
             .playlist_service()
-            .get_playlist_path(&playlist_id)
+            .get_room_playlist_path(&rid, &playlist_id)
             .await
             .map_err(ApiError::from)?;
         let mut current_path = static_path
@@ -5568,7 +5554,7 @@ impl AdminApiImpl {
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
-                .count_playlist_media(playlist_id)
+                .count_room_playlist_media(&rid, playlist_id)
                 .await
                 .map_err(ApiError::from)
                 .map(i64_to_usize_saturating)?

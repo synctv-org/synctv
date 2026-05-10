@@ -261,8 +261,8 @@ impl LiveStreamingInfrastructure {
                 !self.local_node_id.is_empty() && publisher_info.node_id == self.local_node_id;
 
             if is_local {
-                // LIVE-003 fix: Even for local publishers, validate epoch to detect
-                // stale streams from crashed and restarted publishers
+                // Even for local publishers, validate epoch to detect stale streams
+                // from crashed and restarted publishers.
                 match self
                     .registry
                     .validate_epoch(room_id, media_id, publisher_info.epoch)

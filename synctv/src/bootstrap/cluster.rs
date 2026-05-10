@@ -68,10 +68,9 @@ impl ClusterNodeActivator for DefaultClusterNodeActivator {
 /// This is the common code shared between the "`k8s_dns`" and "redis" discovery
 /// branches. Both modes use a Redis-backed `NodeRegistry` for health tracking.
 ///
-/// # D1 fix: When cluster is explicitly enabled (`cluster.enabled = true`),
-/// failures are treated as fatal and returned as `Err`. Previously, failures
-/// silently returned `(None, None, None)`, leaving the node in a ghost state
-/// where it believes it's in a cluster but has no registry or heartbeat.
+/// When cluster is explicitly enabled (`cluster.enabled = true`), failures are
+/// treated as fatal and returned as `Err` so a node cannot run in a ghost state
+/// with no registry or heartbeat.
 pub struct ClusterDiscoveryComponents {
     pub registry: Arc<dyn ClusterNodeDirectory>,
     pub health_monitor: Arc<dyn ClusterHealthRuntime>,
@@ -374,7 +373,6 @@ pub async fn activate_cluster_node(
 ///   "redis"   - Redis-based node registry (default)
 ///   "`k8s_dns`" - Kubernetes headless service DNS discovery
 ///
-/// # D1 fix: Returns `Result` instead of silently degrading to `(None, None, None, None)`.
 /// When cluster mode is explicitly enabled, any failure is propagated to the caller
 /// as a fatal error, preventing the node from running in a ghost state.
 pub async fn init_cluster_discovery(

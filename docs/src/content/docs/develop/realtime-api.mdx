@@ -21,7 +21,8 @@ wss://<host>/ws/rooms/<room_id>
 
 | 方式 | 适用客户端 | 说明 |
 | --- | --- | --- |
-| `Authorization: Bearer <access_token>` | 原生客户端、CLI、服务端 SDK | token 不进入 URL |
+| `Authorization: Bearer <access_token>` | 原生客户端、CLI、服务端 SDK | 登录用户 |
+| `Authorization: Bearer <guest_token>` | 原生客户端、CLI、服务端 SDK | 游客；先调用 `POST /api/auth/guest-token` |
 | `?ticket=<ticket>` | 浏览器和不方便设置 header 的客户端 | 先通过 `POST /api/tickets` 创建短期、一次性、房间绑定 ticket |
 
 WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.ClientMessage`，服务端返回 `synctv.client.ServerMessage`。文本帧、ping、pong 等非业务帧不会被当作业务消息处理。
@@ -50,6 +51,38 @@ function sendClientMessage(message) {
 不要把 refresh token 放进 WebSocket URL。浏览器客户端应使用 WebSocket ticket；ticket 使用后不要复用，连接失败也应重新申请。
 </Aside>
 
+## 游客连接
+
+游客不是登录用户。服务端不会为游客创建用户记录、成员记录或登录会话；游客身份只由房间绑定的 guest token 表示，对外 ID 使用 `gst_` 前缀。
+
+游客进入房间必须同时满足这些条件：
+
+- 全局 `user.enable_guest` 开启。
+- 房间 `allow_guest_join` 开启。
+- 房间没有密码，且未关闭、未封禁。
+- guest token 的房间版本仍然有效；房间关闭游客、设置密码或触发游客吊销后，旧 token 失效。
+
+游客默认只能接收基础房间实时状态，不能读取播放列表、发送聊天/弹幕或管理媒体。房间可以通过 `guest_added_permissions` 开放 guest 安全能力，例如成员列表、聊天历史或 WebRTC 信令；该上限独立于 member 权限。即使增加权限，游客仍不能调用账号、播放列表、媒体管理、成员管理、房间管理、Provider 凭据或管理面接口。
+
+```bash
+curl -sS "$BASE_URL/api/auth/guest-token" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id":"room_1"}'
+```
+
+原生 WebSocket 客户端使用响应中的 `token`：
+
+```http
+Authorization: Bearer <guest_token>
+```
+
+gRPC `MessageStream` 使用同一个 token：
+
+```text
+x-room-id: room_1
+authorization: Bearer <guest_token>
+```
+
 ## 什么时候使用 Realtime
 
 | 场景 | 使用 Realtime 的原因 |
@@ -58,7 +91,9 @@ function sendClientMessage(message) {
 | 聊天和弹幕 | 房间成员需要实时收到消息 |
 | 播放快照 | URL 过期、Provider 凭据变化或媒体切换后需要刷新 |
 | 房间成员列表 | 成员加入、离开、权限变化需要同步 UI |
-| WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发 |
+| WebRTC 信令 | offer、answer、ICE candidate 需要房间内转发；目标地址使用 `public_actor_id:conn_id`，登录用户是 `usr_*`，游客是 `gst_*` |
+
+WebRTC 客户端在发送信令前调用 `GET /api/rooms/<room_id>/webrtc/ice-servers` 获取 ICE servers。该接口和 Realtime 使用同一套房间 actor 权限：登录成员和游客都通过 `Authorization: Bearer <token>` 认证，并且都必须拥有 `use_webrtc`。
 
 ## 消息范围
 

@@ -338,7 +338,7 @@ impl LivestreamHandle {
         // Shutdown in reverse startup order
         info!("Starting shutdown of livestream components...");
 
-        // 1. D4 fix: Stop all managed stream pools to prevent zombie streams.
+        // 1. Stop all managed stream pools to prevent zombie streams.
         // This must happen before aborting cleanup tasks so in-flight stop operations
         // can complete properly.
         info!("Stopping all managed pull streams...");
@@ -399,8 +399,7 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // D4/Minor fix: Await HLS cleanup task during graceful shutdown
-        // (previously only aborted on non-graceful shutdown path).
+        // Await HLS cleanup task during graceful shutdown.
         if timeout(timeout_duration, &mut self.hls_cleanup_handle)
             .await
             .is_ok()
@@ -444,7 +443,7 @@ impl Drop for LivestreamHandle {
     /// are properly terminated, and all managed streams are stopped.
     /// This prevents task leaks, memory leaks from HLS segments, and zombie streams.
     fn drop(&mut self) {
-        // P1 fix: Stop all managed streams first to prevent zombie streams.
+        // Stop all managed streams first to prevent zombie streams.
         // Since Drop can't be async, we spawn a task to call stop_all().
         // The abort calls below will signal the cleanup tasks to exit,
         // and the stop_all() calls will clean up the actual stream resources.
@@ -728,7 +727,6 @@ impl LivestreamServer {
                 // Hub exited -- stop the RTMP server and forwarder for this cycle
                 hub_cycle_tasks_for_hub.lock().await.shutdown().await;
 
-                // L6: Reset RTMP metric gauges after aborting the server.
                 // Aborted sessions may not call their stop callbacks, leaving
                 // gauges permanently inflated. Reset to 0 since all sessions
                 // are terminated on restart.
@@ -796,10 +794,8 @@ impl LivestreamServer {
                 match stop_streams_tx.try_send(stop_done_tx) {
                     Ok(()) => {
                         // Wait for stop_all() to complete with a timeout.
-                        // D5 fix: Increased from 100ms to 5000ms. The original 100ms was
-                        // too short for streams that need to cleanly disconnect from
-                        // remote servers or flush pending data. 5 seconds gives enough
-                        // time for most cleanup operations while preventing indefinite blocks.
+                        // Use a bounded wait long enough for streams to disconnect from
+                        // remote servers or flush pending data.
                         match tokio::time::timeout(std::time::Duration::from_secs(5), stop_done_rx)
                             .await
                         {
@@ -1245,7 +1241,6 @@ mod tests {
     /// both the publisher manager task AND the re-registration task terminate,
     /// preventing task leaks.
     ///
-    /// Regression test for: <https://github.com/synctv-org/synctv/issues/27>
     #[tokio::test]
     async fn test_reregister_task_cleanup_on_shutdown() {
         // Create a mock registry
@@ -1420,7 +1415,6 @@ mod tests {
     /// This test verifies that the Drop implementation for `LivestreamHandle` cancels
     /// all cancellation tokens, preventing task leaks when the handle is dropped.
     ///
-    /// Regression test for: <https://github.com/synctv-org/synctv/issues/28>
     #[tokio::test]
     async fn test_drop_cleans_up_tasks() {
         let registry = Arc::new(MockStreamRegistry::new());

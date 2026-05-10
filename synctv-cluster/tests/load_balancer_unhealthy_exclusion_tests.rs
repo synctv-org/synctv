@@ -1,4 +1,4 @@
-//! CL8: `LoadBalancer` unhealthy exclusion
+//! `LoadBalancer` unhealthy exclusion
 //!
 //! - 3 nodes: 2 Unhealthy + 1 Healthy -> only healthy selected (10 calls)
 //! - All unhealthy -> fail closed (returns error)

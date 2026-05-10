@@ -588,26 +588,20 @@ impl HlsProxyClient {
     /// inaccessible through version-aware getters, even if the cache entries
     /// haven't been physically removed yet.
     pub async fn invalidate_stream_cache_sync(&self, room_id: &str, media_id: &str) {
-        // Step 1: Increment version synchronously (this is the primary consistency mechanism)
         let new_version = self.increment_cache_version(room_id, media_id);
 
-        // Step 2: Build prefix for predicate-based invalidation
         let prefix = format!("{room_id}:{media_id}:");
 
-        // Step 3: Invalidate playlist cache entries
         let playlist_prefix = prefix.clone();
         self.playlist_cache
             .invalidate_entries_if(move |key: &String, _| key.starts_with(&playlist_prefix))
             .ok();
 
-        // Step 4: Invalidate segment cache entries
         let segment_prefix = prefix.clone();
         self.segment_cache
             .invalidate_entries_if(move |key: &String, _| key.starts_with(&segment_prefix))
             .ok();
 
-        // Step 5: Run pending tasks to ensure immediate removal
-        // This forces moka to process the invalidation immediately
         self.segment_cache.run_pending_tasks().await;
         self.playlist_cache.run_pending_tasks().await;
 
@@ -911,7 +905,7 @@ mod tests {
         assert_eq!(cached1, Some(Some("#EXTM3U\nnew playlist".to_string())));
     }
 
-    // TDD Tests for synchronous cache invalidation consistency
+    // Tests for synchronous cache invalidation consistency.
 
     #[tokio::test]
     async fn test_invalidate_stream_cache_sync_increments_version_immediately() {

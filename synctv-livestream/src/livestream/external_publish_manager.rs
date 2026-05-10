@@ -482,7 +482,7 @@ impl ExternalPublishStream {
 
         let handle = tokio::spawn(async move {
             info!("External publish task started for {}/{}", room_id, media_id);
-            // S-2: Use new_async() for proper async DNS resolution and SSRF validation.
+            // Use new_async() for proper async DNS resolution and SSRF validation.
             // This resolves the hostname at creation time and pins the resolved IP address,
             // preventing DNS rebinding attacks during the connection phase.
             let puller = match ExternalStreamPuller::new_async(

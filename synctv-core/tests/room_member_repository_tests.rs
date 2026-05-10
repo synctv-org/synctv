@@ -1205,9 +1205,8 @@ async fn test_banned_by_restricts_user_delete() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_permissions_after_member_left_should_fail() {
-    // members who have left the room (left_at IS NOT NULL).
-    // FIXED: update_permissions now checks left_at IS NULL in the WHERE clause,
-    // returning OptimisticLockConflict for departed members.
+    // update_permissions must reject members who have left the room
+    // (left_at IS NOT NULL).
 
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

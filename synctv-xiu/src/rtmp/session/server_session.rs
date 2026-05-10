@@ -258,7 +258,7 @@ impl ServerSession {
     }
 
     async fn read_parse_chunks(&mut self) -> Result<(), SessionError> {
-        // M-2: Check overall session idle timeout (prevents slow-rate DoS)
+        // Check overall session idle timeout to prevent slow-rate DoS.
         if self.last_message_time.elapsed() > SESSION_IDLE_TIMEOUT {
             tracing::warn!(
                 "RTMP session idle timeout ({}s) for app={}, stream={}",
@@ -453,8 +453,8 @@ impl ServerSession {
     }
 
     fn on_set_chunk_size(&mut self, chunk_size: usize) {
-        // L-3: Clamp chunk_size to safe range [128, 65536] to prevent
-        // excessive buffer allocation from malicious clients.
+        // Clamp chunk_size to a safe range to prevent excessive buffer allocation
+        // from malicious clients.
         const MIN_CHUNK_SIZE: usize = 128;
         const MAX_CHUNK_SIZE: usize = 65536;
         let clamped = chunk_size.clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);

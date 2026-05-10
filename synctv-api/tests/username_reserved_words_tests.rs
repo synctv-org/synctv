@@ -1,4 +1,4 @@
-//! Username reserved words validation tests (TDD)
+//! Username reserved words validation tests
 //!
 //! Tests that reserved usernames (admin, system, root, etc.) are rejected
 //! during username validation to prevent phishing/impersonation attacks.

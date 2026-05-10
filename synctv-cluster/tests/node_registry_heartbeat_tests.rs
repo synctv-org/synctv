@@ -1,4 +1,4 @@
-//! CL2: `NodeRegistry` heartbeat TTL (testcontainer Redis)
+//! `NodeRegistry` heartbeat TTL (testcontainer Redis)
 //!
 //! - Register node, DEL Redis key manually, call `heartbeat()`, assert re-registered via `get_all_nodes()`
 //! - Force epoch mismatch by writing modified epoch to Redis, verify auto-retry

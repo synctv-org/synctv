@@ -252,6 +252,38 @@ impl PlaylistRepository {
         Ok(row.map(Into::into))
     }
 
+    /// Get playlist by ID, scoped to a room.
+    pub async fn get_by_room_and_id(
+        &self,
+        room_id: &RoomId,
+        id: &PlaylistId,
+    ) -> Result<Option<Playlist>> {
+        let row = sqlx::query_as::<_, PlaylistRow>(
+            r"
+            SELECT id,
+                   room_id,
+                   creator_id,
+                   name,
+                   parent_id,
+                   position,
+                   source_provider,
+                   source_config,
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at,
+                   updated_at,
+                   version
+            FROM playlists
+            WHERE room_id = $1 AND id = $2
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(id.as_i64())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(Into::into))
+    }
+
     /// Get playlists by IDs using a provided executor (for transaction support)
     pub async fn get_by_ids_with_executor<'e, E>(
         &self,
@@ -286,6 +318,47 @@ impl PlaylistRepository {
             "#,
             &id_strs,
         )
+        .fetch_all(executor)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Get playlists by IDs, scoped to a room.
+    pub async fn get_by_room_and_ids_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        playlist_ids: &[PlaylistId],
+        executor: E,
+    ) -> Result<Vec<Playlist>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if playlist_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
+        let rows = sqlx::query_as::<_, PlaylistRow>(
+            r"
+            SELECT id,
+                   room_id,
+                   creator_id,
+                   name,
+                   parent_id,
+                   position,
+                   source_provider,
+                   source_config,
+                   NULLIF(provider_instance_name, '') AS provider_instance_name,
+                   created_at,
+                   updated_at,
+                   version
+            FROM playlists
+            WHERE room_id = $1 AND id = ANY($2)
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(&id_strs)
         .fetch_all(executor)
         .await?;
 
@@ -409,6 +482,25 @@ impl PlaylistRepository {
         .await?;
 
         Ok(count.unwrap_or(0))
+    }
+
+    /// Get count of children playlists for a parent, scoped to a room.
+    pub async fn count_children_in_room(
+        &self,
+        room_id: &RoomId,
+        parent_id: &PlaylistId,
+    ) -> Result<i64> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*) FROM playlists WHERE room_id = $1 AND parent_id = $2
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(parent_id.as_i64())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
     }
 
     /// Get paginated children playlists for a parent.
@@ -806,6 +898,7 @@ impl PlaylistRepository {
 
     pub async fn move_with_tx(
         &self,
+        room_id: &RoomId,
         playlist_id: &PlaylistId,
         before_playlist_id: Option<&PlaylistId>,
         after_playlist_id: Option<&PlaylistId>,
@@ -825,55 +918,59 @@ impl PlaylistRepository {
             ));
         }
 
-        let moved: Playlist = sqlx::query_as!(
-            PlaylistRow,
-            r#"
-            SELECT id AS "id: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
+        let moved: Playlist = sqlx::query_as::<_, PlaylistRow>(
+            r"
+            SELECT id,
+                   room_id,
+                   creator_id,
                    name,
-                   parent_id AS "parent_id?: PlaylistId",
+                   parent_id,
                    position,
                    source_provider,
-                   source_config AS "source_config?: serde_json::Value",
+                   source_config,
                    NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+                   created_at,
+                   updated_at,
+                   version
             FROM playlists
-            WHERE id = $1
+            WHERE room_id = $1 AND id = $2
             FOR UPDATE
-            "#,
-            playlist_id.as_i64(),
+            ",
         )
+        .bind(room_id.as_i64())
+        .bind(playlist_id.as_i64())
         .fetch_optional(&mut **tx)
         .await?
         .map(Into::into)
         .ok_or_else(|| crate::Error::NotFound("Playlist not found".to_string()))?;
 
-        let anchor: Playlist = sqlx::query_as!(
-            PlaylistRow,
-            r#"
-            SELECT id AS "id: PlaylistId",
-                   room_id AS "room_id: RoomId",
-                   creator_id AS "creator_id?: crate::models::UserId",
+        let anchor: Playlist = sqlx::query_as::<_, PlaylistRow>(
+            r"
+            SELECT id,
+                   room_id,
+                   creator_id,
                    name,
-                   parent_id AS "parent_id?: PlaylistId",
+                   parent_id,
                    position,
                    source_provider,
-                   source_config AS "source_config?: serde_json::Value",
+                   source_config,
                    NULLIF(provider_instance_name, '') AS provider_instance_name,
-                   created_at, updated_at, version
+                   created_at,
+                   updated_at,
+                   version
             FROM playlists
-            WHERE id = $1
+            WHERE room_id = $1 AND id = $2
             FOR UPDATE
-            "#,
-            anchor_id.as_i64(),
+            ",
         )
+        .bind(room_id.as_i64())
+        .bind(anchor_id.as_i64())
         .fetch_optional(&mut **tx)
         .await?
         .map(Into::into)
         .ok_or_else(|| crate::Error::NotFound("Anchor playlist not found".to_string()))?;
 
-        if moved.room_id != anchor.room_id || moved.parent_id != anchor.parent_id {
+        if moved.parent_id != anchor.parent_id {
             return Err(crate::Error::InvalidInput(
                 "Playlist can only be moved relative to a sibling in the same parent scope"
                     .to_string(),
@@ -1029,6 +1126,73 @@ impl PlaylistRepository {
         Ok(true)
     }
 
+    /// Delete a playlist subtree scoped to a room.
+    pub async fn delete_in_room(&self, room_id: &RoomId, id: &PlaylistId) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM playlists WHERE room_id = $1 AND id = $2)",
+        )
+        .bind(room_id.as_i64())
+        .bind(id.as_i64())
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Ok(false);
+        }
+
+        let rows = sqlx::query(
+            r"WITH RECURSIVE playlist_tree AS (
+                SELECT id, 0 AS depth
+                FROM playlists
+                WHERE room_id = $1 AND id = $2
+                UNION ALL
+                SELECT p.id, pt.depth + 1
+                FROM playlists p
+                JOIN playlist_tree pt ON p.parent_id = pt.id
+                WHERE p.room_id = $1
+            )
+            SELECT id, MAX(depth) AS depth
+            FROM playlist_tree
+            GROUP BY id
+            ORDER BY MAX(depth) DESC, id",
+        )
+        .bind(room_id.as_i64())
+        .bind(id.as_i64())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
+        let mut playlist_ids = Vec::with_capacity(rows.len());
+        for row in rows {
+            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
+            let depth = row.try_get::<i32, _>("depth")?;
+            playlist_ids.push(playlist_id);
+            ids_by_depth.entry(depth).or_default().push(playlist_id);
+        }
+
+        if !playlist_ids.is_empty() {
+            let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
+            sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)")
+                .bind(room_id.as_i64())
+                .bind(&playlist_ids_raw)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        for (_depth, ids) in ids_by_depth.into_iter().rev() {
+            let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
+            sqlx::query("DELETE FROM playlists WHERE room_id = $1 AND id = ANY($2)")
+                .bind(room_id.as_i64())
+                .bind(&ids_raw)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Delete playlists by IDs using a provided executor (for transaction support)
     pub async fn delete_batch_with_executor<'e, E>(
         &self,
@@ -1106,6 +1270,52 @@ impl PlaylistRepository {
                 version: row.version,
             })
             .collect())
+    }
+
+    /// Get playlist path (breadcrumbs), scoped to a room.
+    pub async fn get_path_in_room(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<Vec<Playlist>> {
+        let rows = sqlx::query_as::<_, PlaylistRow>(
+            r"
+            WITH RECURSIVE ancestors AS (
+                SELECT id, room_id, creator_id, name, parent_id, position,
+                       source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
+                       created_at, updated_at, version, 0 AS depth
+                FROM playlists
+                WHERE room_id = $1 AND id = $2
+              UNION ALL
+                SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
+                       p.source_provider, p.source_config, NULLIF(p.provider_instance_name, '') AS provider_instance_name,
+                       p.created_at, p.updated_at, p.version, a.depth + 1
+                FROM playlists p
+                JOIN ancestors a ON p.id = a.parent_id AND p.room_id = a.room_id
+                WHERE a.depth < 50
+            )
+            SELECT id,
+                   room_id,
+                   creator_id,
+                   name,
+                   parent_id,
+                   position,
+                   source_provider,
+                   source_config,
+                   provider_instance_name,
+                   created_at,
+                   updated_at,
+                   version
+            FROM ancestors
+            ORDER BY depth DESC
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(playlist_id.as_i64())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 }
 
@@ -1610,6 +1820,60 @@ mod tests {
         // Delete non-existent returns false
         let deleted_again = playlist_repo.delete(&created.id).await.unwrap();
         assert!(!deleted_again);
+    }
+
+    /// Integration test: Delete playlist subtree scoped to a room.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_in_room() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let room_repo = RoomRepository::new(pool.clone());
+        let playlist_repo = PlaylistRepository::new(pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("delete_in_room_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Delete In Room Playlist Room")
+            .with_owner(owner.id)
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let other_room = RoomFixture::new()
+            .with_name("Delete In Room Other Room")
+            .with_owner(owner.id)
+            .build();
+        let other_room = room_repo.create(&other_room).await.unwrap();
+
+        let root = PlaylistFixture::new().with_room_id(room.id).build();
+        let root = playlist_repo.create(&root).await.unwrap();
+        let child = PlaylistFixture::new_child(root.id)
+            .with_room_id(room.id)
+            .with_name("Scoped Child")
+            .build();
+        let child = playlist_repo.create(&child).await.unwrap();
+
+        let wrong_room_deleted = playlist_repo
+            .delete_in_room(&other_room.id, &child.id)
+            .await
+            .unwrap();
+        assert!(!wrong_room_deleted);
+
+        let deleted = playlist_repo
+            .delete_in_room(&room.id, &child.id)
+            .await
+            .unwrap();
+        assert!(deleted);
+
+        let fetched = playlist_repo.get_by_id(&child.id).await.unwrap();
+        assert!(fetched.is_none());
     }
 
     /// Integration test: Delete removes descendant playlists too.

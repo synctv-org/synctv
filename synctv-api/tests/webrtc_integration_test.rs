@@ -208,6 +208,7 @@ mod permissions {
     use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
     use synctv_core::repository::SettingsRepository;
     use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::{
@@ -406,6 +407,102 @@ mod permissions {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    async fn test_guest_with_use_webrtc_permission_can_bootstrap_ice_servers() {
+        let fixture = build_client_api_fixture("api-webrtc-guest-ice").await;
+
+        fixture
+            .settings_registry
+            .external_ice_servers
+            .set(IceServerList(vec![ConfiguredIceServer::new(vec![
+                "turn:guest-turn.example.com:3478?transport=udp".to_string(),
+            ])
+            .with_auth("guest-turn-user", "guest-turn-password")]))
+            .await
+            .expect("set external ice servers");
+
+        let (creator, _, _) = fixture
+            .user_service
+            .register(
+                "webrtc_guest_creator".to_string(),
+                Some("webrtc_guest_creator@test.com".to_string()),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register creator");
+
+        let (room, _) = fixture
+            .room_service
+            .create_room(
+                "WebRTC Guest ICE Room".to_string(),
+                String::new(),
+                creator.id,
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+
+        let mut settings = fixture
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("load room settings");
+        settings.allow_guest_join = AllowGuestJoin(true);
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
+        fixture
+            .room_service
+            .set_settings(room.id, creator.id, settings)
+            .await
+            .expect("enable guest WebRTC");
+
+        let guest_version = fixture
+            .room_service
+            .get_room_guest_version(&room.id)
+            .await
+            .expect("guest version");
+        let token = fixture
+            .client_api
+            .jwt_service
+            .sign_guest_token_with_version(&room.id, guest_version)
+            .expect("guest token");
+        let public_room_id = fixture
+            .client_api
+            .public_id_codec
+            .encode_room_id(room.id)
+            .expect("public room id");
+        let actor = fixture
+            .client_api
+            .room_actor_for_authorization(&format!("Bearer {token}"), &public_room_id)
+            .await
+            .expect("guest actor");
+
+        let response = fixture
+            .client_api
+            .get_ice_servers_for_actor(&actor)
+            .await
+            .expect("guest ICE bootstrap");
+
+        assert_eq!(
+            response.servers[0].urls,
+            vec!["stun:test.example.com:3478".to_string()]
+        );
+        assert_eq!(
+            response.servers[1].urls,
+            vec!["turn:guest-turn.example.com:3478?transport=udp".to_string()]
+        );
+        assert_eq!(
+            response.servers[1].username.as_deref(),
+            Some("guest-turn-user")
+        );
+        assert_eq!(
+            response.servers[1].credential.as_deref(),
+            Some("guest-turn-password")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
     async fn test_get_ice_servers_denies_member_without_use_webrtc_permission() {
         let fixture = build_client_api_fixture("api-webrtc-permissions").await;
 
@@ -578,7 +675,7 @@ mod permissions {
             .expect("join room");
 
         let original_version = room.version;
-        room.status = synctv_core::models::RoomStatus::Closed;
+        room.close();
         synctv_core::repository::RoomRepository::new(fixture.pool.clone())
             .update(&room, original_version)
             .await

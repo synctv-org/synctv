@@ -4025,7 +4025,7 @@ mod websocket_e2e {
         match error_message.message {
             Some(server_message::Message::Error(error)) => {
                 assert!(
-                    error.message.contains("public_user_id:conn_id"),
+                    error.message.contains("public_actor_id:conn_id"),
                     "expected recipient format error, got: {}",
                     error.message
                 );

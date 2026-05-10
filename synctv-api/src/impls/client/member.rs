@@ -7,7 +7,7 @@ use sqlx::Row;
 use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, RoomId, UserId};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
-use super::ClientApiImpl;
+use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 pub(crate) fn compute_room_members_response_version(
     response: &crate::proto::client::GetRoomMembersResponse,
@@ -218,10 +218,10 @@ impl ClientApiImpl {
         })
     }
 
-    /// Get room members with pagination (E8 fix).
+    /// Get room members with pagination.
     ///
-    /// Uses `get_room_members_paginated` to avoid loading ALL members into memory,
-    /// matching the pattern used by the admin endpoint.
+    /// Uses the paginated service path so large rooms do not load every member
+    /// before building the response.
     pub async fn get_room_members(
         &self,
         user_id: &UserId,
@@ -229,28 +229,38 @@ impl ClientApiImpl {
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_room_members_for_actor(&actor, req).await
+    }
 
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-
-        // Check membership
-        self.room_service
-            .check_membership(&rid, &uid)
+    pub async fn get_room_members_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        req: crate::proto::client::GetRoomMembersRequest,
+    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.get_room_members_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
-            .map_err(Self::map_room_access_error)?;
+    }
 
-        let permissions = self
-            .room_service
-            .permission_service()
-            .get_user_permissions_no_cache(&rid, &uid)
-            .await
-            .map_err(ApiError::from)?;
+    pub async fn get_room_members_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::GetRoomMembersRequest,
+    ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        self.require_room_permission(actor, PermissionBits::VIEW_MEMBER_LIST)
+            .await?;
+        let rid = actor.room_id();
 
-        if !permissions.has(PermissionBits::VIEW_MEMBER_LIST) {
-            return Err(ApiError::Authorization(
-                "Forbidden: Permission denied".to_string(),
-            ));
-        }
+        let permissions = match actor {
+            RoomActor::User { room_id, user_id } => self
+                .room_service
+                .permission_service()
+                .get_user_permissions_no_cache(room_id, user_id)
+                .await
+                .map_err(ApiError::from)?,
+            RoomActor::Guest(access) => access.permissions,
+        };
 
         let role = match req
             .role
@@ -825,15 +835,9 @@ impl ClientApiImpl {
 impl crate::impls::room_members_snapshot::RoomMembersSnapshotService for ClientApiImpl {
     async fn get_room_members_snapshot(
         &self,
-        user_id: &UserId,
-        room_id: &synctv_core::models::RoomId,
+        actor: &crate::impls::client::RoomActor,
         req: &crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(*room_id)
-            .map_err(crate::impls::ApiError::InvalidInput)?;
-        self.get_room_members(user_id, &public_room_id, req.clone())
-            .await
+        self.get_room_members_for_actor(actor, req.clone()).await
     }
 }

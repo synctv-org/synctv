@@ -1,4 +1,4 @@
-//! Rate Limiter Fail Mode Behavior Tests (TDD)
+//! Rate Limiter Fail Mode Behavior Tests
 //!
 //! Tests for verifying the fail-open vs fail-closed behavior of the rate limiter.
 //!

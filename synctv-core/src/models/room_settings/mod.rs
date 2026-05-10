@@ -470,9 +470,9 @@ impl RoomSettings {
     /// Get effective permissions for Guest
     #[must_use]
     pub const fn guest_permissions(&self, global_default: PermissionBits) -> PermissionBits {
-        let mut result = global_default.0;
-        // Cap guest added permissions to DEFAULT_MEMBER ceiling
-        result |= self.guest_added_permissions.0 & PermissionBits::DEFAULT_MEMBER;
+        let mut result = global_default.0 & PermissionBits::GUEST_ASSIGNABLE;
+        // Cap guest added permissions to the guest-specific ceiling.
+        result |= self.guest_added_permissions.0 & PermissionBits::GUEST_ASSIGNABLE;
         result &= !self.guest_removed_permissions.0;
         PermissionBits(result)
     }
@@ -488,7 +488,7 @@ impl RoomSettings {
 
     /// Validate that permission overrides don't escalate beyond role ceilings
     ///
-    /// - Guest added permissions cannot exceed `DEFAULT_MEMBER`
+    /// - Guest added permissions cannot exceed `GUEST_ASSIGNABLE`
     /// - Member added permissions cannot exceed `DEFAULT_ADMIN`
     pub fn validate_permissions(&self) -> Result<()> {
         let admin_unassignable =
@@ -518,10 +518,10 @@ impl RoomSettings {
             ));
         }
 
-        let guest_overflow = self.guest_added_permissions.0 & !PermissionBits::DEFAULT_MEMBER;
+        let guest_overflow = self.guest_added_permissions.0 & !PermissionBits::GUEST_ASSIGNABLE;
         if guest_overflow != 0 {
             return Err(Error::InvalidInput(
-                "Guest added permissions cannot exceed member-level permissions".to_string(),
+                "Guest added permissions cannot exceed guest-level permissions".to_string(),
             ));
         }
 
@@ -643,12 +643,12 @@ mod tests {
     #[test]
     fn test_admin_permissions_with_added() {
         let settings = RoomSettings {
-            admin_added_permissions: AdminAddedPermissions(PermissionBits::USE_WEBRTC),
+            admin_added_permissions: AdminAddedPermissions(PermissionBits::PLAY_CONTROL),
             ..Default::default()
         };
-        let global = PermissionBits(PermissionBits::DEFAULT_ADMIN);
+        let global = PermissionBits(PermissionBits::DEFAULT_MEMBER);
         let result = settings.admin_permissions(global);
-        assert!(result.has(PermissionBits::USE_WEBRTC));
+        assert!(result.has(PermissionBits::PLAY_CONTROL));
         // Original permissions preserved
         assert!(result.has(PermissionBits::SEND_CHAT));
     }
@@ -670,15 +670,18 @@ mod tests {
     #[test]
     fn test_guest_permissions_with_added_and_removed() {
         let settings = RoomSettings {
-            // Give guests chat ability
-            guest_added_permissions: GuestAddedPermissions(PermissionBits::SEND_CHAT),
-            // But remove their playlist view
-            guest_removed_permissions: GuestRemovedPermissions(PermissionBits::VIEW_PLAYLIST),
+            // Give guests additional guest-level abilities.
+            guest_added_permissions: GuestAddedPermissions(
+                PermissionBits::USE_WEBRTC | PermissionBits::VIEW_MEMBER_LIST,
+            ),
+            // But remove one of them.
+            guest_removed_permissions: GuestRemovedPermissions(PermissionBits::VIEW_MEMBER_LIST),
             ..Default::default()
         };
         let global = PermissionBits(PermissionBits::DEFAULT_GUEST);
         let result = settings.guest_permissions(global);
-        assert!(result.has(PermissionBits::SEND_CHAT));
+        assert!(result.has(PermissionBits::USE_WEBRTC));
+        assert!(!result.has(PermissionBits::VIEW_MEMBER_LIST));
         assert!(!result.has(PermissionBits::VIEW_PLAYLIST));
     }
 

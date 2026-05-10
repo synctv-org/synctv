@@ -1,4 +1,4 @@
-//! Tiered Token Blacklist Consistency Tests (TDD)
+//! Tiered Token Blacklist Consistency Tests
 //!
 //! Tests for ensuring token blacklist consistency across cache tiers when Redis writes fail.
 //!

@@ -313,14 +313,7 @@ fn test_valid_cluster_mode_config() {
     );
 }
 
-/// D1: Verify that `init_cluster_components` returns `Result` (not `Option`).
-///
-/// Before the D1 fix, `init_cluster_components` returned `(None, None, None)` on failure,
-/// allowing the app to silently continue in a ghost state. After the fix, it returns
-/// `Err(...)` which the caller must handle, making failures fatal when cluster is enabled.
-///
-/// This test verifies the API contract by confirming that cluster config validation
-/// catches empty Redis URL when cluster is enabled, which works in tandem with the D1 fix.
+/// Cluster config validation catches an empty Redis URL when cluster mode is enabled.
 #[test]
 fn test_cluster_enabled_requires_redis_for_node_registry() {
     let mut config = cluster_test_config();
@@ -335,10 +328,7 @@ fn test_cluster_enabled_requires_redis_for_node_registry() {
     );
 }
 
-/// D1: Verify that standalone mode does NOT fail when Redis is unavailable.
-///
-/// This is the complement of the D1 fix: standalone mode should NOT treat
-/// cluster component failures as fatal, because the app can run without cluster.
+/// Standalone mode should not fail when Redis is unavailable.
 #[test]
 fn test_standalone_mode_tolerates_missing_redis() {
     let config = standalone_test_config();
@@ -352,9 +342,9 @@ fn test_standalone_mode_tolerates_missing_redis() {
     );
 }
 
-// P1 fix tests: Cluster initialization failure cleanup
+// Cluster initialization failure cleanup tests.
 
-mod p1_cluster_cleanup_tests {
+mod cluster_cleanup_tests {
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
@@ -376,7 +366,7 @@ mod p1_cluster_cleanup_tests {
         port
     }
 
-    /// P1: Verify that ClusterManager's cancel_token can stop the heartbeat loop.
+    /// Verify that ClusterManager's cancel_token can stop the heartbeat loop.
     ///
     /// When init_cluster_components fails after starting the heartbeat loop,
     /// the cleanup should cancel the heartbeat loop via the cancel token.
@@ -431,7 +421,7 @@ mod p1_cluster_cleanup_tests {
             "Cancel token should not be cancelled before cleanup"
         );
 
-        // Simulate P1 cleanup: cancel the token
+        // Simulate cleanup by cancelling the token.
         manager.cancel_token().cancel();
 
         // Token should now be cancelled
@@ -453,7 +443,7 @@ mod p1_cluster_cleanup_tests {
         );
     }
 
-    /// P1: Verify that NodeRegistry.unregister() can be called after register().
+    /// Verify that NodeRegistry.unregister() can be called after register().
     ///
     /// When init_cluster_components fails after registering the node,
     /// the cleanup should unregister the node from Redis.
@@ -495,12 +485,9 @@ mod p1_cluster_cleanup_tests {
         // The key point is that unregister() can be called without panic
     }
 
-    /// P1: Verify cleanup order is correct (cancel token first, then unregister).
+    /// Verify cleanup order is correct (cancel token first, then unregister).
     ///
-    /// The P1 fix requires that:
-    /// 1. Cancel token is triggered first to stop heartbeat loop
-    /// 2. Then unregister is called to remove node from registry
-    /// This order prevents the heartbeat loop from re-registering after unregister.
+    /// Cancel before unregister so the heartbeat loop cannot re-register the node.
     #[tokio::test]
     async fn test_cleanup_order_cancel_before_unregister() {
         // This test verifies the ordering concept, not actual execution
@@ -515,7 +502,7 @@ mod p1_cluster_cleanup_tests {
         // The key invariant: cancel happens before unregister
     }
 
-    /// P1: Verify that cleanup happens on any init_cluster_components failure.
+    /// Verify that cleanup happens on any init_cluster_components failure.
     ///
     /// This test documents the expected behavior: if init_cluster_components
     /// fails at any point after register() and start_heartbeat_loop(),
@@ -715,7 +702,7 @@ mod leader_election_fallback_tests {
     /// Document the split-brain prevention logic.
     ///
     /// This test documents the key invariant: in cluster mode, we must NEVER
-    /// fall back to AlwaysLeader when Redis is unavailable. The fix ensures:
+    /// fall back to AlwaysLeader when Redis is unavailable:
     /// 1. Config validation catches empty redis.url when cluster.enabled=true
     /// 2. init_leader_election returns an error (not AlwaysLeader fallback)
     ///

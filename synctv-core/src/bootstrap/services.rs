@@ -327,12 +327,9 @@ pub async fn init_services_with_options(
     // Extract a plain ConnectionManager snapshot for passing to individual services.
     // IMPORTANT (Sentinel mode): This snapshot is taken once at init time. In Sentinel
     // mode, the background health check hot-swaps the ConnectionManager inside
-    // `redis_handles.conn` (the Arc<RwLock<>>) on failover. However, services that
-    // store this snapshot will keep using the old ConnectionManager until they are
-    // recreated. ConnectionManager handles *transient* reconnection internally, but
-    // H8 fix: All services now receive the shared Arc<RwLock<ConnectionManager>>
-    // directly via redis_handles.conn, eliminating init-time snapshots that
-    // would become stale after Sentinel failover.
+    // `redis_handles.conn` (the Arc<RwLock<>>) on failover. Services receive the
+    // shared Arc directly so they do not hold init-time snapshots that would
+    // become stale after Sentinel failover.
     // Create L2 cache backend (Redis or Noop)
     // In Sentinel mode, use the shared Arc<RwLock<ConnectionManager>> so that
     // the L2 backend automatically follows Sentinel failover without holding a

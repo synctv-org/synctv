@@ -40,10 +40,24 @@ User status is derived from ban records:
 | --- | --- |
 | `creator` | Room creator; has all room permissions and cannot be weakened by room settings |
 | `admin` | Room administrator; can manage members, playback, media, room settings, and moderation by default |
-| `member` | Normal member; can chat, add/edit/delete own media, and view playlist/member/chat data by default |
-| `guest` | Read-only guest; can view playlist by default |
+| `member` | Normal member; can chat, use WebRTC, add/edit/delete own media, and view playlist/member/chat data by default |
+| `guest` | Guest, not a room member. Guests have no playlist, media, chat, or administration permissions by default. A room can only grant guest-safe capabilities such as member list, chat history, or WebRTC |
 
 Room roles provide base permissions. Room settings and member overrides then add or remove permissions.
+
+### Guest Boundary
+
+Guests can enter public rooms that explicitly allow guest access, but they do not become room members. Guest permissions use their own ceiling and do not inherit from `member`.
+
+| Capability | Default | Can be granted through guest permissions | Notes |
+| --- | --- | --- | --- |
+| Basic realtime room state | Yes | No setting required | Lets the client show room existence, settings, and playback state after connecting |
+| Member list | No | `view_member_list` | Read-only |
+| Chat history | No | `view_chat_history` | Read-only |
+| WebRTC signaling | No | `use_webrtc` | Allows signaling participation only; does not grant room administration |
+| Playlist and media | No | No | Guests cannot read playlists, browse media, or manage media |
+| Chat and danmaku sending | No | No | `send_chat` is only for signed-in members |
+| Playback control, member management, room settings | No | No | Requires a signed-in member with the matching permission |
 
 ## Permission Evaluation
 
@@ -61,7 +75,7 @@ Rules:
 - `creator` always has all room permissions.
 - Add is applied before remove. If the same bit is both added and removed, remove wins.
 - `member_added_permissions` cannot exceed the admin-level ceiling.
-- `guest_added_permissions` cannot exceed the member-level ceiling.
+- `guest_added_permissions` uses a dedicated guest ceiling. It cannot grant playlist, media, chat-write, or administration permissions.
 - `DELETE_ROOM` is not a room-delegable permission. Room deletion belongs to the creator or the platform management plane.
 
 ## Major Permission Names

@@ -101,15 +101,17 @@ Authorization: Bearer <access_token>
 
 ## Token Usage
 
-Business APIs use Bearer tokens:
+Business APIs use Bearer tokens. Signed-in users send access tokens; guests send guest tokens when reading public room resources:
 
 ```http
-Authorization: Bearer <access_token>
+Authorization: Bearer <access_token_or_guest_token>
 ```
 
 Client guidance:
 
 - Use access tokens only for short-lived API calls.
+- Use guest tokens only for the public room they were issued for. They can read or participate in guest-enabled room resources, but cannot log in, refresh a session, log out, or call account APIs.
+- When a room grants guests `use_webrtc`, guests use the same guest token to fetch ICE servers, connect to Realtime, and send WebRTC signaling.
 - Use refresh tokens only for session refresh. Do not put them in WebSocket query strings, media URLs, or third-party requests.
 - After refresh, replace the locally stored token pair with the server response. Avoid concurrent refresh attempts with stale refresh tokens.
 - When a user enables 2FA, local login must complete MFA before receiving an acceptable token. OAuth2 login is not part of local 2FA, but OAuth2-issued tokens are accepted for that login path.
@@ -239,6 +241,21 @@ WebSocket only handles binary protobuf frames. Clients send `synctv.client.Clien
 Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playback snapshots, room settings, playlist items, and room members. Clients send `ClientMessage.observe_resource`, and the server returns `resource_observed`, `resource_changed`, or `resource_observe_error`.
 
 See [Realtime API](../realtime-api/) for the full protocol, delivery modes, version synchronization, examples for every resource type, reconnect behavior, and error handling.
+
+## WebRTC Bootstrap
+
+WebRTC clients fetch ICE servers before connecting to Realtime for signaling. Signed-in members and authorized guests both use the standard Bearer token path:
+
+```http
+GET /api/rooms/<room_id>/webrtc/ice-servers
+Authorization: Bearer <access_token_or_guest_token>
+```
+
+Access rules:
+
+- A signed-in member must belong to the room and have `use_webrtc`.
+- A guest must use a guest token issued for that room, and the room must allow guests and grant `use_webrtc`.
+- If the room is closed, banned, password-protected, or guest access is revoked, guests cannot fetch fresh ICE configuration.
 
 ## Media URLs and Headers
 

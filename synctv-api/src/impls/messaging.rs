@@ -26,6 +26,8 @@ use synctv_core::{
 };
 use tokio::sync::Semaphore;
 
+use crate::impls::client::{GuestRoomAccess, RoomActor};
+
 /// Minimum position change (in seconds) required to trigger a DB write
 /// for playback progress reports. Reports with smaller position deltas
 /// are acknowledged but not persisted, reducing write amplification.
@@ -81,7 +83,130 @@ use crate::runtime::{
 };
 
 mod resource_observer;
-use resource_observer::ResourceObserver;
+use resource_observer::{ResourceObserver, ResourceObserverParams};
+
+const GUEST_INTERNAL_USER_ID_BASE: i64 = 8_000_000_000_000_000_000;
+const GUEST_INTERNAL_USER_ID_SPAN: u64 = 500_000_000_000_000_000;
+
+#[derive(Debug, Clone)]
+pub struct GuestRealtimeIdentity {
+    pub guest_id: String,
+    pub display_name: String,
+    pub session_id: String,
+    pub token_jti: String,
+    pub room_guest_version: i64,
+    pub permissions: PermissionBits,
+}
+
+#[derive(Debug, Clone)]
+pub enum RealtimePrincipal {
+    User {
+        user_id: UserId,
+        username: String,
+    },
+    Guest {
+        internal_user_id: UserId,
+        identity: GuestRealtimeIdentity,
+    },
+}
+
+impl RealtimePrincipal {
+    #[must_use]
+    pub fn user(user_id: UserId, username: String) -> Self {
+        Self::User { user_id, username }
+    }
+
+    #[must_use]
+    pub fn guest(room_id: RoomId, identity: GuestRealtimeIdentity) -> Self {
+        Self::Guest {
+            internal_user_id: internal_guest_user_id(room_id, &identity.session_id),
+            identity,
+        }
+    }
+
+    #[must_use]
+    pub fn connection_user_id(&self) -> UserId {
+        match self {
+            Self::User { user_id, .. } => *user_id,
+            Self::Guest {
+                internal_user_id, ..
+            } => *internal_user_id,
+        }
+    }
+
+    #[must_use]
+    pub fn username(&self) -> &str {
+        match self {
+            Self::User { username, .. } => username,
+            Self::Guest { identity, .. } => &identity.display_name,
+        }
+    }
+
+    #[must_use]
+    fn public_actor_id(&self, public_id_codec: &crate::PublicIdCodec) -> String {
+        match self {
+            Self::User { user_id, .. } => public_id_codec
+                .encode_user_id(*user_id)
+                .expect("positive user ID must encode"),
+            Self::Guest { identity, .. } => identity.guest_id.clone(),
+        }
+    }
+
+    #[must_use]
+    fn room_actor(&self, room_id: RoomId) -> RoomActor {
+        match self {
+            Self::User { user_id, .. } => RoomActor::User {
+                room_id,
+                user_id: *user_id,
+            },
+            Self::Guest { identity, .. } => RoomActor::Guest(GuestRoomAccess {
+                room_id,
+                guest_id: identity.guest_id.clone(),
+                display_name: identity.display_name.clone(),
+                session_id: identity.session_id.clone(),
+                token_jti: identity.token_jti.clone(),
+                permissions: identity.permissions,
+                room_guest_version: identity.room_guest_version,
+            }),
+        }
+    }
+
+    #[must_use]
+    fn is_guest(&self) -> bool {
+        matches!(self, Self::Guest { .. })
+    }
+
+    #[must_use]
+    fn guest_identity(&self) -> Option<&GuestRealtimeIdentity> {
+        match self {
+            Self::Guest { identity, .. } => Some(identity),
+            Self::User { .. } => None,
+        }
+    }
+}
+
+fn internal_guest_user_id(room_id: RoomId, session_id: &str) -> UserId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    "synctv:guest:v1".hash(&mut hasher);
+    room_id.hash(&mut hasher);
+    session_id.hash(&mut hasher);
+    let offset = hasher.finish() % GUEST_INTERNAL_USER_ID_SPAN;
+    UserId::from(GUEST_INTERNAL_USER_ID_BASE + i64::try_from(offset).unwrap_or(0))
+}
+
+#[must_use]
+pub fn guest_public_id(session_id: &str) -> String {
+    format!("gst_{session_id}")
+}
+
+#[must_use]
+pub fn guest_display_name(session_id: &str) -> String {
+    let short = session_id.chars().take(6).collect::<String>();
+    format!("Guest {short}")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeJoinError {
@@ -392,6 +517,7 @@ pub trait StreamMessage: Send + Sync {
 /// 2. Call `start()` to begin processing
 pub struct StreamMessageHandler {
     room_id: RoomId,
+    principal: RealtimePrincipal,
     user_id: UserId,
     username: String,
     connection_id: String,
@@ -454,6 +580,7 @@ impl Clone for StreamMessageHandler {
     fn clone(&self) -> Self {
         Self {
             room_id: self.room_id,
+            principal: self.principal.clone(),
             user_id: self.user_id,
             username: self.username.clone(),
             connection_id: self.connection_id.clone(),
@@ -491,12 +618,6 @@ impl StreamMessageHandler {
         format!("conn_c{}", synctv_common::snanoid!(16))
     }
 
-    fn encode_user_id_for_webrtc(&self, user_id: UserId) -> String {
-        self.public_id_codec
-            .encode_user_id(user_id)
-            .expect("positive WebRTC user ID must encode")
-    }
-
     fn error_server_message(error: impl Into<crate::impls::ApiError>) -> ServerMessage {
         let api_error: crate::impls::ApiError = error.into();
         ServerMessage {
@@ -507,8 +628,10 @@ impl StreamMessageHandler {
     }
 
     fn validate_webrtc_recipient(&self, recipient: &str) -> Result<(), String> {
-        let Some((target_user_id, target_conn_id)) = recipient.split_once(':') else {
-            return Err("WebRTC recipient must be formatted as public_user_id:conn_id".to_string());
+        let Some((target_actor_id, target_conn_id)) = recipient.rsplit_once(':') else {
+            return Err(
+                "WebRTC recipient must be formatted as public_actor_id:conn_id".to_string(),
+            );
         };
 
         let target = self
@@ -516,7 +639,7 @@ impl StreamMessageHandler {
             .get_connection(target_conn_id)
             .ok_or_else(|| "Target connection is no longer active".to_string())?;
 
-        if self.encode_user_id_for_webrtc(target.user_id) != target_user_id {
+        if target.actor_id != target_actor_id {
             return Err("WebRTC recipient does not match the target connection owner".to_string());
         }
 
@@ -536,7 +659,7 @@ impl StreamMessageHandler {
     }
 
     fn current_connection_matches_webrtc_recipient(&self, recipient: &str) -> bool {
-        let Some((target_user_id, target_conn_id)) = recipient.split_once(':') else {
+        let Some((target_actor_id, target_conn_id)) = recipient.rsplit_once(':') else {
             return false;
         };
 
@@ -548,9 +671,9 @@ impl StreamMessageHandler {
             return false;
         };
 
-        let user_matches = self.encode_user_id_for_webrtc(current.user_id) == target_user_id;
-
-        user_matches && current.room_id.as_ref() == Some(&self.room_id) && current.rtc_joined
+        current.actor_id == target_actor_id
+            && current.room_id.as_ref() == Some(&self.room_id)
+            && current.rtc_joined
     }
 
     fn ice_candidate_contains_private_ip(candidate: &str) -> bool {
@@ -576,10 +699,40 @@ impl StreamMessageHandler {
         public_id_codec: Arc<crate::PublicIdCodec>,
         sender: Arc<dyn MessageSender>,
     ) -> Self {
+        let principal = RealtimePrincipal::user(user_id, username);
+        Self::new_with_principal(
+            room_id,
+            principal,
+            room_service,
+            chat_service,
+            event_service,
+            connection_service,
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            public_id_codec,
+            sender,
+        )
+    }
+
+    /// Create a new stream message handler for either a logged-in user or a guest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_principal(
+        room_id: RoomId,
+        principal: RealtimePrincipal,
+        room_service: &Arc<RoomService>,
+        chat_service: Arc<ChatService>,
+        event_service: Arc<dyn RealtimeEventService>,
+        connection_service: Arc<dyn RealtimeConnectionService>,
+        rate_limiter: Arc<dyn RequestRateLimiterService>,
+        rate_limit_config: Arc<RateLimitConfig>,
+        content_filter: Arc<ContentFilter>,
+        public_id_codec: Arc<crate::PublicIdCodec>,
+        sender: Arc<dyn MessageSender>,
+    ) -> Self {
         Self::with_concurrency_config(
             room_id,
-            user_id,
-            username,
+            principal,
             room_service,
             chat_service,
             event_service,
@@ -600,8 +753,7 @@ impl StreamMessageHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn with_concurrency_config(
         room_id: RoomId,
-        user_id: UserId,
-        username: String,
+        principal: RealtimePrincipal,
         room_service: &Arc<RoomService>,
         chat_service: Arc<ChatService>,
         event_service: Arc<dyn RealtimeEventService>,
@@ -616,8 +768,7 @@ impl StreamMessageHandler {
         let connection_id = Self::generate_connection_id();
         Self::with_connection_id_and_concurrency_config(
             room_id,
-            user_id,
-            username,
+            principal,
             connection_id,
             room_service,
             chat_service,
@@ -635,8 +786,7 @@ impl StreamMessageHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn with_connection_id_and_concurrency_config(
         room_id: RoomId,
-        user_id: UserId,
-        username: String,
+        principal: RealtimePrincipal,
         connection_id: String,
         room_service: &Arc<RoomService>,
         chat_service: Arc<ChatService>,
@@ -649,6 +799,8 @@ impl StreamMessageHandler {
         sender: Arc<dyn MessageSender>,
         concurrency_config: Arc<MessageConcurrencyConfig>,
     ) -> Self {
+        let user_id = principal.connection_user_id();
+        let username = principal.username().to_string();
         // Create membership cache with TTL for heartbeat validation.
         // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (30s).
         let membership_cache = Arc::new(
@@ -658,18 +810,21 @@ impl StreamMessageHandler {
         );
         let room_settings_snapshot_service =
             default_room_settings_snapshot_service(Arc::clone(room_service));
-        let resource_observer = Arc::new(ResourceObserver::new(
+        let room_actor = principal.room_actor(room_id);
+        let resource_observer = Arc::new(ResourceObserver::new(ResourceObserverParams {
             room_id,
             user_id,
-            connection_id.clone(),
-            Arc::clone(room_service),
-            Arc::clone(&public_id_codec),
-            Arc::clone(&sender),
-            Arc::clone(&room_settings_snapshot_service),
-        ));
+            actor: room_actor,
+            connection_id: connection_id.clone(),
+            room_service: Arc::clone(room_service),
+            public_id_codec: Arc::clone(&public_id_codec),
+            sender: Arc::clone(&sender),
+            room_settings_snapshot_service: Arc::clone(&room_settings_snapshot_service),
+        }));
 
         Self {
             room_id,
+            principal,
             user_id,
             username,
             connection_id,
@@ -822,15 +977,181 @@ impl StreamMessageHandler {
             .expect("positive room ID must encode")
     }
 
-    fn public_user_id(&self) -> String {
-        self.public_id_codec
-            .encode_user_id(self.user_id)
-            .expect("positive user ID must encode")
+    fn public_actor_id(&self) -> String {
+        self.principal.public_actor_id(&self.public_id_codec)
+    }
+
+    async fn guest_permissions(&self) -> Result<PermissionBits, synctv_core::Error> {
+        self.room_service.get_guest_permissions(&self.room_id).await
+    }
+
+    async fn check_realtime_permission(&self, permission: u64) -> Result<(), synctv_core::Error> {
+        if self.principal.is_guest() {
+            let permissions = self.guest_permissions().await?;
+            if permissions.has(permission) {
+                Ok(())
+            } else {
+                Err(synctv_core::Error::Authorization(
+                    "Guests do not have permission to perform this action".to_string(),
+                ))
+            }
+        } else {
+            self.room_service
+                .check_permission(&self.room_id, &self.user_id, permission)
+                .await
+        }
+    }
+
+    async fn ensure_observe_resource_allowed(
+        &self,
+        observe: &crate::proto::client::ObserveResource,
+    ) -> Result<(), String> {
+        if !self.principal.is_guest() {
+            return Ok(());
+        }
+
+        self.ensure_guest_admission_for_action().await?;
+
+        let Some(resource) = observe.resource.as_ref() else {
+            return Ok(());
+        };
+
+        match resource {
+            crate::proto::client::observe_resource::Resource::PlaybackState(_)
+            | crate::proto::client::observe_resource::Resource::RoomSettings(_) => Ok(()),
+            crate::proto::client::observe_resource::Resource::PlaylistItems(_) => {
+                Err("Guests cannot observe playlist items".to_string())
+            }
+            crate::proto::client::observe_resource::Resource::RoomMembers(_) => self
+                .check_realtime_permission(PermissionBits::VIEW_MEMBER_LIST)
+                .await
+                .map_err(|e| e.to_string()),
+            crate::proto::client::observe_resource::Resource::PlaybackSnapshot(_) => Err(
+                "Guests cannot observe playback snapshots because playback snapshots may depend on signed-in provider credentials"
+                    .to_string(),
+            ),
+        }
+    }
+
+    async fn guest_admission_denial_reason(&self) -> Result<Option<String>, RealtimeJoinError> {
+        let room = self.room_service.get_room(&self.room_id).await.map_err(|error| {
+            tracing::warn!(
+                error = %error,
+                room_id = %self.room_id,
+                user_id = %self.user_id,
+                "Failed to re-validate guest room access during pre_join; rejecting connection because final admission must fail closed"
+            );
+            RealtimeJoinError::ServiceUnavailable(
+                "Room re-validation temporarily unavailable".to_string(),
+            )
+        })?;
+
+        if room.is_banned {
+            return Ok(Some("This room has been banned".to_string()));
+        }
+        if room.status == RoomStatus::Closed {
+            return Ok(Some(
+                "This room is closed and not accepting new connections".to_string(),
+            ));
+        }
+
+        let policy_denial = self
+            .room_service
+            .check_guest_allowed(
+                &self.room_id,
+                self.room_service.settings_registry().map(AsRef::as_ref),
+            )
+            .await
+            .map_or_else(
+                |error| match guest_policy_error_to_denial_reason(error) {
+                    Ok(reason) => Ok(reason),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            room_id = %self.room_id,
+                            user_id = %self.user_id,
+                            "Failed to validate guest policy during pre_join"
+                        );
+                        Err(RealtimeJoinError::ServiceUnavailable(
+                            "Guest policy validation temporarily unavailable".to_string(),
+                        ))
+                    }
+                },
+                |()| Ok(None),
+            )?;
+        if let Some(reason) = policy_denial {
+            return Ok(Some(reason));
+        }
+
+        if let Some(identity) = self.principal.guest_identity() {
+            match self
+                .guest_token_blacklist_denial_reason(&identity.token_jti)
+                .await
+            {
+                Ok(Some(reason)) => return Ok(Some(reason)),
+                Ok(None) => {}
+                Err(error) => return Err(error),
+            }
+
+            let current_version = self
+                .room_service
+                .get_room_guest_version(&self.room_id)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %self.room_id,
+                        user_id = %self.user_id,
+                        "Failed to validate guest token version during pre_join"
+                    );
+                    RealtimeJoinError::ServiceUnavailable(
+                        "Guest access validation temporarily unavailable".to_string(),
+                    )
+                })?;
+            if identity.room_guest_version < current_version {
+                return Ok(Some(
+                    "Guest access for this room has been revoked".to_string(),
+                ));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn guest_token_blacklist_denial_reason(
+        &self,
+        token_jti: &str,
+    ) -> Result<Option<String>, RealtimeJoinError> {
+        let user_service = self.room_service.user_service();
+        let key = user_service.key_builder().guest_token_blacklist(token_jti);
+        match user_service
+            .token_blacklist_store()
+            .is_blacklisted_checked(&key)
+            .await
+        {
+            Ok(true) => Ok(Some("Guest token has been revoked".to_string())),
+            Ok(false) => Ok(None),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id,
+                    user_id = %self.user_id,
+                    "Failed to validate guest token blacklist during realtime admission check"
+                );
+                Err(RealtimeJoinError::ServiceUnavailable(
+                    "Guest access validation temporarily unavailable".to_string(),
+                ))
+            }
+        }
     }
 
     async fn final_realtime_admission_denial_reason(
         &self,
     ) -> Result<Option<String>, RealtimeJoinError> {
+        if self.principal.is_guest() {
+            return self.guest_admission_denial_reason().await;
+        }
+
         let user = self
             .room_service
             .user_service()
@@ -908,7 +1229,11 @@ impl StreamMessageHandler {
     pub async fn pre_join(&self) -> Result<(), RealtimeJoinError> {
         if let Err(e) = self
             .connection_service
-            .register(self.connection_id.clone(), self.user_id)
+            .register_actor(
+                self.connection_id.clone(),
+                self.user_id,
+                self.public_actor_id(),
+            )
             .await
         {
             tracing::warn!("Failed to register connection: {}", e);
@@ -1045,41 +1370,44 @@ impl StreamMessageHandler {
         // must independently monitor admin events and disconnect when targeted.
         let mut admin_rx = self.event_service.subscribe_admin_events();
 
-        // H11: Subscribe to notification events for direct real-time push.
-        // This ensures notifications are delivered to WebSocket clients even when
-        // the gRPC notification-to-cluster bridge is not running.
+        // Subscribe to notification events directly so WebSocket clients receive
+        // notifications even when the gRPC notification bridge is not running.
         let mut notification_rx = self
             .notification_service
             .as_ref()
             .map(|svc| svc.subscribe_events());
 
-        // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_lookup =
-            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
-                .await;
-        if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
-            tracing::info!(
-                room_id = %self.room_id,
-                user_id = %self.user_id,
-                reason,
-                "Aborting real-time join because membership was revoked before initialization completed"
-            );
-            self.skip_cleanup_user_left
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.cleanup(&room_id_str).await;
-            return Ok(());
-        }
-        let member_data = match member_lookup {
-            Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
-            Ok(RealtimeMembershipAccess::Denied(_)) => None,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
+        // Fetch member data once and reuse it for the join payload and cluster event.
+        let member_data = if self.principal.is_guest() {
+            None
+        } else {
+            let member_lookup =
+                probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
+                    .await;
+            if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
+                tracing::info!(
                     room_id = %self.room_id,
                     user_id = %self.user_id,
-                    "Failed to fetch membership during initial real-time join; using fallback member payload"
+                    reason,
+                    "Aborting real-time join because membership was revoked before initialization completed"
                 );
-                None
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cleanup(&room_id_str).await;
+                return Ok(());
+            }
+            match member_lookup {
+                Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
+                Ok(RealtimeMembershipAccess::Denied(_)) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %self.room_id,
+                        user_id = %self.user_id,
+                        "Failed to fetch membership during initial real-time join; using fallback member payload"
+                    );
+                    None
+                }
             }
         };
 
@@ -1292,8 +1620,8 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id,
                                     "Received disconnect signal for this room"
                                 );
-                                // R-10/R-11: Room deletion already published
-                                // RoomDeleted event; skip redundant UserLeft.
+                                // Room deletion already published RoomDeleted;
+                                // skip redundant UserLeft.
                                 self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
@@ -1305,8 +1633,8 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id,
                                     "Received disconnect signal: kicked from room"
                                 );
-                                // R-10/R-11: The leave_room API already published
-                                // a UserLeft event; skip redundant broadcast in cleanup().
+                                // The leave_room API already published UserLeft;
+                                // skip redundant broadcast in cleanup().
                                 self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
@@ -1408,15 +1736,14 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id,
                                     "Received cross-replica UserLeft event, disconnecting"
                                 );
-                                // R-10/R-11: The UserLeft event was already published
-                                // by the leave_room/delete_room API call. Skip the
-                                // redundant broadcast in cleanup().
+                                // UserLeft was already published by the leave_room
+                                // or delete_room API call. Skip the redundant
+                                // broadcast in cleanup().
                                 self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
                         Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
-                            // RT-1: Push persistent notification to user's active WebSocket connection.
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if *user_id == self.user_id {
                                 let data = serde_json::json!({
@@ -1505,7 +1832,6 @@ impl StreamMessageHandler {
                     }
                 }
 
-                // H11: Direct notification push from UserNotificationService.
                 // When notification_service is configured, notifications are pushed
                 // directly without depending on the gRPC bridge task.
                 result = async {
@@ -1581,6 +1907,29 @@ impl StreamMessageHandler {
                         break;
                     }
 
+                    if self.principal.is_guest() {
+                        match self.guest_admission_denial_reason().await {
+                            Ok(Some(reason)) => {
+                                tracing::info!(
+                                    room_id = %self.room_id,
+                                    user_id = %self.user_id,
+                                    reason,
+                                    "Periodic check: guest access is no longer valid, disconnecting"
+                                );
+                                break;
+                            }
+                            Ok(None) => continue,
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    user_id = %self.user_id,
+                                    "Periodic guest access check failed (will retry)"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
                     // Check membership cache first to avoid unnecessary DB queries.
                     let cache_key = (self.room_id, self.user_id);
                     if let Some(cached) = self.membership_cache.get(&cache_key) {
@@ -1654,12 +2003,7 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    /// Create initial user joined message with actual role and permissions
-    /// fetched from the room membership data.
     /// Create the initial `UserJoined` server message.
-    ///
-    /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query
-    /// (the same data is also needed by `broadcast_user_joined`).
     fn create_user_joined_message(
         &self,
         room_id: &str,
@@ -1669,32 +2013,50 @@ impl StreamMessageHandler {
         use crate::proto::client::UserJoinedRoom;
         use synctv_proto::common::RoomMember as ProtoRoomMember;
 
-        let (role_proto, permissions, added, removed, admin_added, admin_removed) = match member {
-            Some(member) => {
-                let effective = member.effective_permissions(member.role.permissions());
-                let role = room_role_to_proto(member.role);
+        let (role_proto, permissions, added, removed, admin_added, admin_removed) =
+            if self.principal.is_guest() {
+                let permissions = self
+                    .principal
+                    .guest_identity()
+                    .map_or(PermissionBits::DEFAULT_GUEST, |identity| {
+                        identity.permissions.0
+                    });
                 (
-                    role,
-                    effective.0,
-                    member.added_permissions,
-                    member.removed_permissions,
-                    member.admin_added_permissions,
-                    member.admin_removed_permissions,
-                )
-            }
-            None => {
-                // Fallback: if we can't fetch membership, use Member defaults
-                (
-                    synctv_proto::common::RoomMemberRole::Member as i32,
-                    synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                    synctv_proto::common::RoomMemberRole::Guest as i32,
+                    permissions,
                     0,
                     0,
                     0,
                     0,
                 )
-            }
-        };
-        let user_id = self.public_user_id();
+            } else {
+                match member {
+                    Some(member) => {
+                        let effective = member.effective_permissions(member.role.permissions());
+                        let role = room_role_to_proto(member.role);
+                        (
+                            role,
+                            effective.0,
+                            member.added_permissions,
+                            member.removed_permissions,
+                            member.admin_added_permissions,
+                            member.admin_removed_permissions,
+                        )
+                    }
+                    None => {
+                        // Fallback: if we can't fetch membership, use Member defaults
+                        (
+                            synctv_proto::common::RoomMemberRole::Member as i32,
+                            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                            0,
+                            0,
+                            0,
+                            0,
+                        )
+                    }
+                }
+            };
+        let user_id = self.public_actor_id();
 
         ServerMessage {
             message: Some(Message::UserJoined(UserJoinedRoom {
@@ -1705,10 +2067,14 @@ impl StreamMessageHandler {
                     username: self.username.clone(),
                     role: role_proto,
                     permissions,
-                    status: member.map_or(
-                        synctv_proto::common::MemberStatus::Active as i32,
-                        |member| member_status_to_proto(member.status),
-                    ),
+                    status: if self.principal.is_guest() {
+                        synctv_proto::common::MemberStatus::Active as i32
+                    } else {
+                        member.map_or(
+                            synctv_proto::common::MemberStatus::Active as i32,
+                            |member| member_status_to_proto(member.status),
+                        )
+                    },
                     added_permissions: added,
                     removed_permissions: removed,
                     admin_added_permissions: admin_added,
@@ -1723,10 +2089,7 @@ impl StreamMessageHandler {
         }
     }
 
-    /// Broadcast `UserJoined` event to cluster replicas
     /// Broadcast `UserJoined` event to cluster replicas.
-    ///
-    /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query.
     async fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
         match self
             .connection_service
@@ -1758,36 +2121,56 @@ impl StreamMessageHandler {
             Ok(false) => {}
         }
 
-        let (role_proto, permissions) = match member {
-            Some(member) => {
-                let effective = member.effective_permissions(member.role.permissions());
-                let role = room_role_to_proto(member.role);
-                (role, effective)
-            }
-            None => {
-                // Fallback: if we can't fetch membership, use Member defaults
-                (
-                    synctv_proto::common::RoomMemberRole::Member as i32,
-                    synctv_core::models::PermissionBits(
-                        synctv_core::models::PermissionBits::DEFAULT_MEMBER,
-                    ),
-                )
+        let (role_proto, permissions) = if let Some(identity) = self.principal.guest_identity() {
+            (
+                synctv_proto::common::RoomMemberRole::Guest as i32,
+                identity.permissions,
+            )
+        } else {
+            match member {
+                Some(member) => {
+                    let effective = member.effective_permissions(member.role.permissions());
+                    let role = room_role_to_proto(member.role);
+                    (role, effective)
+                }
+                None => {
+                    // Fallback: if we can't fetch membership, use Member defaults
+                    (
+                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        synctv_core::models::PermissionBits(
+                            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                        ),
+                    )
+                }
             }
         };
 
-        let event = ClusterEvent::UserJoined {
-            event_id: synctv_common::snanoid!(16),
-            room_id: self.room_id,
-            user_id: self.user_id,
-            username: self.username.clone(),
-            permissions,
-            role: role_proto,
-            added_permissions: synctv_core::models::PermissionBits(0),
-            removed_permissions: synctv_core::models::PermissionBits(0),
-            admin_added_permissions: synctv_core::models::PermissionBits(0),
-            admin_removed_permissions: synctv_core::models::PermissionBits(0),
-            joined_at: chrono::Utc::now(),
-            timestamp: chrono::Utc::now(),
+        let event = if self.principal.is_guest() {
+            ClusterEvent::GuestJoined {
+                event_id: synctv_common::snanoid!(16),
+                room_id: self.room_id,
+                guest_id: self.public_actor_id(),
+                username: self.username.clone(),
+                permissions,
+                role: role_proto,
+                joined_at: chrono::Utc::now(),
+                timestamp: chrono::Utc::now(),
+            }
+        } else {
+            ClusterEvent::UserJoined {
+                event_id: synctv_common::snanoid!(16),
+                room_id: self.room_id,
+                user_id: self.user_id,
+                username: self.username.clone(),
+                permissions,
+                role: role_proto,
+                added_permissions: synctv_core::models::PermissionBits(0),
+                removed_permissions: synctv_core::models::PermissionBits(0),
+                admin_added_permissions: synctv_core::models::PermissionBits(0),
+                admin_removed_permissions: synctv_core::models::PermissionBits(0),
+                joined_at: chrono::Utc::now(),
+                timestamp: chrono::Utc::now(),
+            }
         };
         let outcome = self.event_service.broadcast_outcome(event);
         if outcome.distributed_delivery_missed() {
@@ -1803,8 +2186,8 @@ impl StreamMessageHandler {
     async fn cleanup(&self, room_id: &str) {
         self.resource_observer.clear_observations().await;
 
-        // RT-2: If this connection had an active WebRTC session, decrement the
-        // metric and broadcast WebRtcLeave so other peers can clean up.
+        // If this connection had an active WebRTC session, decrement the metric
+        // and broadcast WebRtcLeave so other peers can clean up.
         // Use Acquire ordering to synchronize with the Release store in handle_webrtc_join/leave.
         // IMPORTANT: We must check if the connection is STILL marked as RTC-joined
         // in the connection manager before decrementing the metric. This prevents
@@ -1845,7 +2228,7 @@ impl StreamMessageHandler {
                 let leave_event = ClusterEvent::WebRTCLeave {
                     event_id: synctv_common::snanoid!(16),
                     room_id: self.room_id,
-                    user_id: self.user_id,
+                    actor_id: self.public_actor_id(),
                     conn_id: self.connection_id.clone(),
                     timestamp: chrono::Utc::now(),
                 };
@@ -1869,9 +2252,9 @@ impl StreamMessageHandler {
             }
         }
 
-        // R-10/R-11: If the disconnect was triggered by a cluster event that
-        // already published UserLeft (e.g. leave_room or delete_room API), skip
-        // the redundant broadcast to avoid double UserLeft events.
+        // If the disconnect was triggered by a cluster event that already
+        // published UserLeft, skip the redundant broadcast to avoid duplicate
+        // UserLeft events.
         if self
             .skip_cleanup_user_left
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -1930,13 +2313,24 @@ impl StreamMessageHandler {
         // while this connection is still registered, they see a consistent view.
         // Previously, unregistering first could leave the hub with a stale subscriber
         // if the broadcast was delayed or had no receivers.
-        let event = ClusterEvent::UserLeft {
-            event_id: synctv_common::snanoid!(16),
-            room_id: self.room_id,
-            user_id: self.user_id,
-            username: self.username.clone(),
-            timestamp: chrono::Utc::now(),
+        let event = if self.principal.is_guest() {
+            ClusterEvent::GuestLeft {
+                event_id: synctv_common::snanoid!(16),
+                room_id: self.room_id,
+                guest_id: self.public_actor_id(),
+                username: self.username.clone(),
+                timestamp: chrono::Utc::now(),
+            }
+        } else {
+            ClusterEvent::UserLeft {
+                event_id: synctv_common::snanoid!(16),
+                room_id: self.room_id,
+                user_id: self.user_id,
+                username: self.username.clone(),
+                timestamp: chrono::Utc::now(),
+            }
         };
+        let retry_event_template = event.clone();
         let result = match user_left_delivery_plan {
             UserLeftDeliveryPlan::Skip => {
                 tracing::debug!(
@@ -1964,10 +2358,10 @@ impl StreamMessageHandler {
                 // spawn retry tasks simultaneously. Without this bound, we'd exhaust
                 // memory and CPU on unbounded task spawning.
                 let event_service = self.event_service.clone();
-                let room_id = self.room_id;
-                let user_id = self.user_id;
                 let username = self.username.clone();
                 let connection_id = self.connection_id.clone();
+                let room_label = room_id.to_string();
+                let retry_event_template = retry_event_template.clone();
 
                 let semaphore = Arc::clone(&USER_LEFT_RETRY_SEMAPHORE);
                 let permit = semaphore.try_acquire_owned();
@@ -1976,7 +2370,7 @@ impl StreamMessageHandler {
                     Ok(permit) => {
                         tracing::warn!(
                             user = %username,
-                            room = %room_id,
+                            room = %room_label,
                             connection = %connection_id,
                             "UserLeft distributed publish missed; starting retry task"
                         );
@@ -1990,13 +2384,8 @@ impl StreamMessageHandler {
                                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
                                     .await;
 
-                                let retry_event = ClusterEvent::UserLeft {
-                                    event_id: synctv_common::snanoid!(16),
-                                    room_id,
-                                    user_id,
-                                    username: username.clone(),
-                                    timestamp: chrono::Utc::now(),
-                                };
+                                let retry_event =
+                                    rebuild_leave_event_for_retry(&retry_event_template);
 
                                 let retry_outcome =
                                     event_service.retry_broadcast_outcome(retry_event);
@@ -2006,7 +2395,7 @@ impl StreamMessageHandler {
                                 ) {
                                     tracing::info!(
                                         user = %username,
-                                        room = %room_id,
+                                        room = %room_label,
                                         connection = %connection_id,
                                         attempt = attempt,
                                         local_delivered = retry_outcome.local_delivered(),
@@ -2018,7 +2407,7 @@ impl StreamMessageHandler {
 
                                 tracing::warn!(
                                     user = %username,
-                                    room = %room_id,
+                                    room = %room_label,
                                     connection = %connection_id,
                                     attempt = attempt,
                                     max_retries = USER_LEFT_RETRY_MAX_RETRIES,
@@ -2032,7 +2421,7 @@ impl StreamMessageHandler {
 
                             tracing::error!(
                                 user = %username,
-                                room = %room_id,
+                                room = %room_label,
                                 connection = %connection_id,
                                 "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
                                 USER_LEFT_RETRY_MAX_RETRIES
@@ -2042,7 +2431,7 @@ impl StreamMessageHandler {
                     Err(_) => {
                         tracing::warn!(
                             user = %username,
-                            room = %room_id,
+                            room = %room_label,
                             connection = %connection_id,
                             "UserLeft retry task limit reached (max 100 concurrent); event may be lost"
                         );
@@ -2087,7 +2476,11 @@ impl StreamMessageHandler {
     > {
         // Register connection with connection manager
         self.connection_service
-            .register(self.connection_id.clone(), self.user_id)
+            .register_actor(
+                self.connection_id.clone(),
+                self.user_id,
+                self.public_actor_id(),
+            )
             .await?;
 
         self.pre_join_after_registration()
@@ -2097,27 +2490,31 @@ impl StreamMessageHandler {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let room_id_str = self.public_room_id();
 
-        // E6 fix: Fetch member data ONCE and pass to both methods
-        let member_lookup =
-            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
-                .await;
-        if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
-            self.skip_cleanup_user_left
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.cleanup(&room_id_str).await;
-            return Err(reason.clone());
-        }
-        let member_data = match member_lookup {
-            Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
-            Ok(RealtimeMembershipAccess::Denied(_)) => None,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %self.room_id,
-                    user_id = %self.user_id,
-                    "Failed to fetch membership during start(); using fallback member payload"
-                );
-                None
+        // Fetch member data once and reuse it for the join payload and cluster event.
+        let member_data = if self.principal.is_guest() {
+            None
+        } else {
+            let member_lookup =
+                probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
+                    .await;
+            if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cleanup(&room_id_str).await;
+                return Err(reason.clone());
+            }
+            match member_lookup {
+                Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
+                Ok(RealtimeMembershipAccess::Denied(_)) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        room_id = %self.room_id,
+                        user_id = %self.user_id,
+                        "Failed to fetch membership during start(); using fallback member payload"
+                    );
+                    None
+                }
             }
         };
 
@@ -2145,7 +2542,7 @@ impl StreamMessageHandler {
             .encode_room_id(room_id)
             .expect("positive room ID must encode");
         let event_connection_id = self.connection_id.clone();
-        let event_user_id = self.user_id;
+        let event_actor_id = self.public_actor_id();
         let mut rx_events = match self.take_room_event_subscription().await {
             Ok(rx_events) => rx_events,
             Err(error) => {
@@ -2170,13 +2567,12 @@ impl StreamMessageHandler {
                                 // addresses, so broadcasting to all room members is both
                                 // a privacy leak and causes incorrect WebRTC behavior.
                                 if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
-                                        let is_target = if let Some((_user, conn)) = to.rsplit_once(':') {
-                                            conn == event_connection_id
-                                        } else {
-                                            public_id_codec
-                                                .encode_user_id(event_user_id)
-                                                .is_ok_and(|public_user_id| *to == public_user_id)
-                                        };
+                                    let is_target = to.rsplit_once(':').is_some_and(
+                                        |(actor_id, conn)| {
+                                            actor_id == event_actor_id
+                                                && conn == event_connection_id
+                                        },
+                                    );
                                     if !is_target {
                                         continue;
                                     }
@@ -2339,6 +2735,7 @@ impl StreamMessageHandler {
             let admin_sender = self.sender.clone();
             let admin_handler = self.clone();
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
+            let is_guest = self.principal.is_guest();
 
             spawn_monitored("messaging_disconnect_monitor", async move {
                 loop {
@@ -2371,16 +2768,17 @@ impl StreamMessageHandler {
                                 );
                                 disconnect_rx = connection_service.subscribe_disconnect();
                                 // Verify membership after lag
-                                let is_removed = match probe_realtime_membership_access(
-                                    &room_service,
-                                    &room_id,
-                                    &user_id,
-                                )
-                                .await
-                                {
-                                    Ok(RealtimeMembershipAccess::Denied(_)) => true,
-                                    Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
-                                };
+                                let is_removed = !is_guest
+                                    && match probe_realtime_membership_access(
+                                        &room_service,
+                                        &room_id,
+                                        &user_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(RealtimeMembershipAccess::Denied(_)) => true,
+                                        Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
+                                    };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     disconnect_token.cancel();
@@ -2402,7 +2800,6 @@ impl StreamMessageHandler {
                         }
 
                         admin_event = admin_rx.recv() => {
-                            // RT-1: Push UserNotification to this user's WebSocket.
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if let Ok(ClusterEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
                                 if *uid == user_id {
@@ -2475,16 +2872,17 @@ impl StreamMessageHandler {
                                 );
                                 admin_rx = event_service.subscribe_admin_events();
                                 // Verify membership after lag
-                                let is_removed = match probe_realtime_membership_access(
-                                    &room_service,
-                                    &room_id,
-                                    &user_id,
-                                )
-                                .await
-                                {
-                                    Ok(RealtimeMembershipAccess::Denied(_)) => true,
-                                    Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
-                                };
+                                let is_removed = !is_guest
+                                    && match probe_realtime_membership_access(
+                                        &room_service,
+                                        &room_id,
+                                        &user_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(RealtimeMembershipAccess::Denied(_)) => true,
+                                        Ok(RealtimeMembershipAccess::Allowed(_)) | Err(_) => false,
+                                    };
                                 if is_removed {
                                     skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                     disconnect_token.cancel();
@@ -2522,6 +2920,7 @@ impl StreamMessageHandler {
             let heartbeat_sender = Arc::clone(&self.sender);
             let heartbeat_schedule = self.heartbeat_schedule;
             let skip_cleanup_user_left = Arc::clone(&self.skip_cleanup_user_left);
+            let heartbeat_handler = self.clone();
             spawn_monitored("messaging_heartbeat", async move {
                 // Derive jitter from the user_id bytes so each connection gets a
                 // stable-but-different offset within the 25–35 s window.
@@ -2542,6 +2941,30 @@ impl StreamMessageHandler {
                                 tracing::info!("start() ping failed, connection dead: {}", e);
                                 heartbeat_token.cancel();
                                 break;
+                            }
+
+                            if heartbeat_handler.principal.is_guest() {
+                                match heartbeat_handler.guest_admission_denial_reason().await {
+                                    Ok(Some(reason)) => {
+                                        tracing::info!(
+                                            user_id = %heartbeat_user_id,
+                                            room_id = %heartbeat_room_id,
+                                            reason,
+                                            "start() periodic check: guest access is no longer valid, disconnecting"
+                                        );
+                                        heartbeat_token.cancel();
+                                        break;
+                                    }
+                                    Ok(None) => continue,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            user_id = %heartbeat_user_id,
+                                            "start() periodic guest access check failed (will retry)"
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
 
                             match probe_realtime_membership_access(
@@ -2606,13 +3029,17 @@ impl StreamMessageHandler {
 
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
+                if self.principal.is_guest() {
+                    self.ensure_guest_admission_for_action().await?;
+                    return Err("Guests cannot send chat or danmaku messages".to_string());
+                }
+
                 // Check if this is a danmaku message (has position)
                 let is_danmaku = chat_msg.position.is_some();
 
                 if is_danmaku {
                     // Danmaku: validate, check settings, rate limit, filter, then handle
-                    self.room_service
-                        .check_permission(&self.room_id, &self.user_id, PermissionBits::SEND_CHAT)
+                    self.check_realtime_permission(PermissionBits::SEND_CHAT)
                         .await
                         .map_err(|e| e.to_string())?;
 
@@ -2663,7 +3090,6 @@ impl StreamMessageHandler {
                 } else {
                     // Chat: delegate entirely to ChatService which handles permissions,
                     // room settings, rate limiting, content filtering, and persistence.
-                    // This eliminates the dual-path fallback (H10).
                     self.handle_chat_message_with_control(&chat_msg.content, control)
                         .await?;
                 }
@@ -2695,6 +3121,7 @@ impl StreamMessageHandler {
                 self.handle_playback_update(update).await?;
             }
             Some(Message::ObserveResource(observe)) => {
+                self.ensure_observe_resource_allowed(observe).await?;
                 self.resource_observer
                     .handle_observe_resource(observe)
                     .await?;
@@ -2720,6 +3147,11 @@ impl StreamMessageHandler {
         content: &str,
         control: Option<&ExecutionControl>,
     ) -> Result<(), String> {
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+            return Err("Guests cannot send chat messages".to_string());
+        }
+
         // Delegate to ChatService which handles permission checks, content filtering,
         // rate limiting, and persistence (no fallback path).
         let saved_msg = self
@@ -2762,6 +3194,14 @@ impl StreamMessageHandler {
         }
 
         Ok(())
+    }
+
+    async fn ensure_guest_admission_for_action(&self) -> Result<(), String> {
+        match self.guest_admission_denial_reason().await {
+            Ok(Some(reason)) => Err(reason),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// Handle danmaku (bullet comment) messages.
@@ -2807,9 +3247,12 @@ impl StreamMessageHandler {
             ));
         }
 
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+        }
+
         // Check permission
-        self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -2825,7 +3268,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Offer,
-            from: format!("{}|{}", self.public_user_id(), conn_id),
+            from: format!("{}|{}", self.public_actor_id(), conn_id),
             to: offer.to.clone(),
             data: offer.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -2862,9 +3305,12 @@ impl StreamMessageHandler {
             ));
         }
 
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+        }
+
         // Check permission
-        self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -2880,7 +3326,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Answer,
-            from: format!("{}|{}", self.public_user_id(), conn_id),
+            from: format!("{}|{}", self.public_actor_id(), conn_id),
             to: answer.to.clone(),
             data: answer.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -2922,9 +3368,12 @@ impl StreamMessageHandler {
             return Err("WebRTC ICE candidate contains a private or local address".to_string());
         }
 
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+        }
+
         // Check permission
-        self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -2940,7 +3389,7 @@ impl StreamMessageHandler {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::IceCandidate,
-            from: format!("{}|{}", self.public_user_id(), conn_id),
+            from: format!("{}|{}", self.public_actor_id(), conn_id),
             to: candidate.to.clone(),
             data: candidate.data.clone(),
             timestamp: chrono::Utc::now(),
@@ -2969,9 +3418,12 @@ impl StreamMessageHandler {
         &self,
         _join: &crate::proto::client::WebRtcJoin,
     ) -> Result<(), String> {
+        if self.principal.is_guest() {
+            self.ensure_guest_admission_for_action().await?;
+        }
+
         // Check permission
-        self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
+        self.check_realtime_permission(PermissionBits::USE_WEBRTC)
             .await
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
@@ -3011,7 +3463,7 @@ impl StreamMessageHandler {
         let event = ClusterEvent::WebRTCJoin {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
-            user_id: self.user_id,
+            actor_id: self.public_actor_id(),
             conn_id,
             username: self.username.clone(),
             timestamp: chrono::Utc::now(),
@@ -3072,7 +3524,7 @@ impl StreamMessageHandler {
         let event = ClusterEvent::WebRTCLeave {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
-            user_id: self.user_id,
+            actor_id: self.public_actor_id(),
             conn_id,
             timestamp: chrono::Utc::now(),
         };
@@ -3118,10 +3570,12 @@ impl StreamMessageHandler {
         // state via progress reports. Without this check any room member could
         // silently rewrite the server-side position by sending crafted progress
         // messages, effectively acting as an unauthorized seek.
-        self.room_service
-            .check_permission(&self.room_id, &self.user_id, PermissionBits::PLAY_CONTROL)
+        self.check_realtime_permission(PermissionBits::PLAY_CONTROL)
             .await
             .map_err(|e| e.to_string())?;
+        if self.principal.is_guest() {
+            return Err("Guests cannot update canonical playback progress".to_string());
+        }
 
         let playback_service = self.room_service.playback_service();
         let state = playback_service
@@ -3235,6 +3689,12 @@ impl StreamMessageHandler {
         &self,
         update: &crate::proto::client::UpdatePlayback,
     ) -> Result<(), String> {
+        self.check_realtime_permission(PermissionBits::PLAY_CONTROL)
+            .await
+            .map_err(|e| e.to_string())?;
+        if self.principal.is_guest() {
+            return Err("Guests cannot control playback".to_string());
+        }
         let command = crate::impls::client::build_update_playback(*update)
             .map_err(|error| error.to_string())?;
         let previous_state = self
@@ -3414,10 +3874,45 @@ fn cluster_event_to_server_messages(
                 }),
             })),
         }],
+        ClusterEvent::GuestJoined {
+            guest_id,
+            username,
+            permissions,
+            role,
+            joined_at,
+            ..
+        } => vec![ServerMessage {
+            message: Some(Message::UserJoined(UserJoinedRoom {
+                room_id: room_id.to_string(),
+                member: Some(RoomMember {
+                    room_id: room_id.to_string(),
+                    user_id: guest_id.clone(),
+                    username: username.clone(),
+                    role: *role,
+                    permissions: permissions.0,
+                    status: synctv_proto::common::MemberStatus::Active as i32,
+                    added_permissions: 0,
+                    removed_permissions: 0,
+                    admin_added_permissions: 0,
+                    admin_removed_permissions: 0,
+                    joined_at: joined_at.timestamp(),
+                    is_online: true,
+                    is_banned: false,
+                    banned_at: 0,
+                    banned_reason: String::new(),
+                }),
+            })),
+        }],
         ClusterEvent::UserLeft { user_id, .. } => vec![ServerMessage {
             message: Some(Message::UserLeft(UserLeftRoom {
                 room_id: room_id.to_string(),
                 user_id: encode_user(*user_id),
+            })),
+        }],
+        ClusterEvent::GuestLeft { guest_id, .. } => vec![ServerMessage {
+            message: Some(Message::UserLeft(UserLeftRoom {
+                room_id: room_id.to_string(),
+                user_id: guest_id.clone(),
             })),
         }],
         ClusterEvent::MediaAdded {
@@ -3586,22 +4081,22 @@ fn cluster_event_to_server_messages(
             vec![msg]
         }
         ClusterEvent::WebRTCJoin {
-            user_id,
+            actor_id,
             conn_id,
             username,
             ..
         } => vec![ServerMessage {
             message: Some(Message::WebrtcJoin(crate::proto::client::WebRtcJoin {
-                user_id: encode_user(*user_id),
+                user_id: actor_id.clone(),
                 conn_id: conn_id.clone(),
                 username: username.clone(),
             })),
         }],
         ClusterEvent::WebRTCLeave {
-            user_id, conn_id, ..
+            actor_id, conn_id, ..
         } => vec![ServerMessage {
             message: Some(Message::WebrtcLeave(crate::proto::client::WebRtcLeave {
-                user_id: encode_user(*user_id),
+                user_id: actor_id.clone(),
                 conn_id: conn_id.clone(),
             })),
         }],
@@ -3696,6 +4191,45 @@ const fn should_transition_webrtc_membership(
     match current_rtc_joined {
         Some(current) => Ok(current != target_joined),
         None => Err("Connection not found"),
+    }
+}
+
+fn guest_policy_error_to_denial_reason(
+    error: synctv_core::Error,
+) -> Result<Option<String>, synctv_core::Error> {
+    match error {
+        synctv_core::Error::Authorization(reason) => Ok(Some(reason)),
+        error => Err(error),
+    }
+}
+
+fn rebuild_leave_event_for_retry(event: &ClusterEvent) -> ClusterEvent {
+    match event {
+        ClusterEvent::UserLeft {
+            room_id,
+            user_id,
+            username,
+            ..
+        } => ClusterEvent::UserLeft {
+            event_id: synctv_common::snanoid!(16),
+            room_id: *room_id,
+            user_id: *user_id,
+            username: username.clone(),
+            timestamp: chrono::Utc::now(),
+        },
+        ClusterEvent::GuestLeft {
+            room_id,
+            guest_id,
+            username,
+            ..
+        } => ClusterEvent::GuestLeft {
+            event_id: synctv_common::snanoid!(16),
+            room_id: *room_id,
+            guest_id: guest_id.clone(),
+            username: username.clone(),
+            timestamp: chrono::Utc::now(),
+        },
+        _ => event.clone(),
     }
 }
 

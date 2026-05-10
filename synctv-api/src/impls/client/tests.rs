@@ -8,7 +8,8 @@ use crate::impls::ApiError;
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::{
-    MediaId, MemberStatus, PlaylistId, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
+    MediaId, MemberStatus, PermissionBits, PlaylistId, RoomId, RoomRole, RoomStatus, UserId,
+    UserRole, UserStatus,
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 use synctv_core::RedisConnectionRuntime;
@@ -19,6 +20,89 @@ const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
 fn test_public_id_codec() -> crate::PublicIdCodec {
     crate::PublicIdCodec::default_for_tests()
+}
+
+async fn test_client_api() -> (synctv_core_testing::TestContainer, super::ClientApiImpl) {
+    let (container, pool) = synctv_core_testing::create_test_pool().await;
+    let api = super::ClientApiImpl::new(
+        Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
+        Arc::new(synctv_core_testing::create_test_room_service(pool)),
+        Arc::new(synctv_cluster::sync::ConnectionManager::new(
+            synctv_cluster::sync::ConnectionLimits::default(),
+        )),
+        Arc::new(synctv_core::Config::default()),
+        None,
+        synctv_core_testing::create_test_jwt_service(),
+        None,
+        None,
+        None,
+        Arc::new(test_public_id_codec()),
+    );
+    (container, api)
+}
+
+fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
+    super::GuestRoomAccess {
+        room_id: RoomId::from(1),
+        guest_id: "gst_test".to_string(),
+        display_name: "Guest test".to_string(),
+        session_id: "guest-session".to_string(),
+        token_jti: "guest-jti".to_string(),
+        permissions,
+        room_guest_version: 0,
+    }
+}
+
+#[tokio::test]
+async fn test_shared_room_actor_playlist_items_rejects_guest_without_playlist_permission() {
+    let (_container, api) = test_client_api().await;
+    let err = api
+        .list_playlist_items_as_guest(
+            &guest_access(PermissionBits::empty()),
+            crate::proto::client::ListPlaylistItemsRequest::default(),
+        )
+        .await
+        .expect_err("guest playlist reads must be rejected before any repository lookup");
+
+    assert!(
+        matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),
+        "expected guest authorization error, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_playlist_permission_requested()
+{
+    let (_container, api) = test_client_api().await;
+    let requested = PermissionBits(PermissionBits::VIEW_PLAYLIST | PermissionBits::USE_WEBRTC);
+    let capped = PermissionBits(requested.0 & PermissionBits::GUEST_ASSIGNABLE);
+    assert!(!capped.has(PermissionBits::VIEW_PLAYLIST));
+
+    let err = api
+        .list_playlist_items_as_guest(
+            &guest_access(capped),
+            crate::proto::client::ListPlaylistItemsRequest::default(),
+        )
+        .await
+        .expect_err("guest playlist reads must stay rejected after guest permission capping");
+
+    assert!(
+        matches!(err, ApiError::Authorization(ref message) if message.contains("Guests do not have permission")),
+        "expected guest authorization error, got {err:?}"
+    );
+}
+
+#[test]
+fn test_guest_actor_cannot_satisfy_signed_in_room_operations() {
+    let actor = super::RoomActor::Guest(guest_access(PermissionBits(PermissionBits::USE_WEBRTC)));
+    let err = actor
+        .require_user_id()
+        .expect_err("playlist/media mutation endpoints require a signed-in user");
+
+    assert!(
+        matches!(err, ApiError::Authorization(ref message) if message.contains("signed-in user")),
+        "expected signed-in user requirement, got {err:?}"
+    );
 }
 
 #[tokio::test]

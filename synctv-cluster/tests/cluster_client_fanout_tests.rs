@@ -1,4 +1,4 @@
-//! CL6: `ClusterClient` fan-out
+//! `ClusterClient` fan-out
 //!
 //! Tests for `FanOutResult` construction, `merge_user_statuses` logic,
 //! and `ClusterClient` with no remote nodes.

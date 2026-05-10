@@ -261,9 +261,8 @@ impl StreamsHub {
         let event_sender_clone = event_sender.clone();
         let hub_sender_for_cleanup = self.hub_event_sender.clone();
 
-        // H-1: Run transceiver with event_sender so spawned loops can send synthetic UnPublish.
         // Wraps the task so that if the transceiver panics or errors out, an UnPublish
-        // event is sent to clean up the dead entry from the `streams` HashMap (LIVE-13).
+        // event is sent to clean up the dead entry from the `streams` HashMap.
         tokio::spawn({
             let hub_sender = hub_sender_for_cleanup;
             let identifier_for_cleanup = identifier_clone.clone();

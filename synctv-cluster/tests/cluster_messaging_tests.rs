@@ -624,7 +624,7 @@ async fn test_critical_event_classification() {
     assert!(!ClusterEvent::WebRTCJoin {
         event_id: synctv_common::snanoid!(16),
         room_id: rid("r1"),
-        user_id: uid("u1"),
+        actor_id: "usr_u1".to_string(),
         conn_id: "c1".to_string(),
         username: "test".to_string(),
         timestamp: chrono::Utc::now(),

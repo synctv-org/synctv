@@ -357,18 +357,16 @@ impl PlaylistService {
         if let Some(ref parent_id) = request.parent_id {
             let parent = self
                 .playlist_repo
-                .get_by_id(parent_id)
+                .get_by_room_and_id(&room_id, parent_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Parent playlist not found".to_string()))?;
-
-            if parent.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Parent playlist does not belong to this room".to_string(),
-                ));
-            }
+            debug_assert_eq!(parent.room_id, room_id);
 
             // Check nesting depth using recursive CTE (single query)
-            let path = self.playlist_repo.get_path(parent_id).await?;
+            let path = self
+                .playlist_repo
+                .get_path_in_room(&room_id, parent_id)
+                .await?;
             // path includes the parent itself; adding a child means depth = path.len() + 1
             if path.len() + 1 > 10 {
                 return Err(Error::InvalidInput(
@@ -472,6 +470,17 @@ impl PlaylistService {
         self.playlist_repo.get_by_id(playlist_id).await
     }
 
+    /// Get playlist by ID, scoped to a room.
+    pub async fn get_room_playlist(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<Option<Playlist>> {
+        self.playlist_repo
+            .get_by_room_and_id(room_id, playlist_id)
+            .await
+    }
+
     /// Get top-level playlists in a room.
     pub async fn get_top_level_playlists(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
         self.playlist_repo.get_top_level(room_id).await
@@ -502,6 +511,17 @@ impl PlaylistService {
     /// Get count of children playlists for a parent.
     pub async fn count_children(&self, parent_id: &PlaylistId) -> Result<i64> {
         self.playlist_repo.count_children(parent_id).await
+    }
+
+    /// Get count of children playlists for a parent, scoped to a room.
+    pub async fn count_room_children(
+        &self,
+        room_id: &RoomId,
+        parent_id: &PlaylistId,
+    ) -> Result<i64> {
+        self.playlist_repo
+            .count_children_in_room(room_id, parent_id)
+            .await
     }
 
     /// Get paginated children playlists for a parent.
@@ -596,8 +616,7 @@ impl PlaylistService {
         if !bypass_room_permissions {
             // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
             // not ADD_MEDIA. Users who can only add media should not be able to rename or
-            // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission
-            // (included in DEFAULT_ADMIN but not DEFAULT_MEMBER).
+            // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission.
             self.permission_service
                 .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
                 .await?;
@@ -607,16 +626,9 @@ impl PlaylistService {
             // Get existing playlist (re-fetch on each retry to get latest version)
             let mut playlist = self
                 .playlist_repo
-                .get_by_id(&request.playlist_id)
+                .get_by_room_and_id(&room_id, &request.playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            // Verify playlist belongs to room
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
 
             // Store original version for optimistic locking
             let expected_version = playlist.version;
@@ -761,18 +773,13 @@ impl PlaylistService {
         let moved = self
             .playlist_repo
             .move_with_tx(
+                &room_id,
                 &request.playlist_id,
                 request.before_playlist_id.as_ref(),
                 request.after_playlist_id.as_ref(),
                 &mut tx,
             )
             .await?;
-
-        if moved.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
 
         if let Some(event) = outbox_event_factory
             .as_ref()
@@ -830,21 +837,17 @@ impl PlaylistService {
             ));
         }
 
-        // Get playlist to verify ownership
         let playlist = self
             .playlist_repo
-            .get_by_id(&playlist_id)
+            .get_by_room_and_id(&room_id, &playlist_id)
             .await?
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization(
-                "Playlist does not belong to this room".to_string(),
-            ));
-        }
+        debug_assert_eq!(playlist.room_id, room_id);
 
         // Delete (will cascade to children and media)
-        self.playlist_repo.delete(&playlist_id).await?;
+        self.playlist_repo
+            .delete_in_room(&room_id, &playlist_id)
+            .await?;
 
         tracing::info!(
             room_id = %room_id,
@@ -869,6 +872,22 @@ impl PlaylistService {
     /// Get playlist path (breadcrumbs) using recursive CTE (single query)
     pub async fn get_playlist_path(&self, playlist_id: &PlaylistId) -> Result<Vec<Playlist>> {
         let path = self.playlist_repo.get_path(playlist_id).await?;
+        if path.is_empty() {
+            return Err(Error::NotFound("Playlist not found".to_string()));
+        }
+        Ok(path)
+    }
+
+    /// Get playlist path (breadcrumbs), scoped to a room.
+    pub async fn get_room_playlist_path(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<Vec<Playlist>> {
+        let path = self
+            .playlist_repo
+            .get_path_in_room(room_id, playlist_id)
+            .await?;
         if path.is_empty() {
             return Err(Error::NotFound("Playlist not found".to_string()));
         }

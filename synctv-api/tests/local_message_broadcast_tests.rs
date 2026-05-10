@@ -1,4 +1,4 @@
-//! Tests for local message broadcasting without ClusterManager (TDD)
+//! Tests for local message broadcasting without ClusterManager
 //!
 //! These tests verify that:
 //! 1. message_stream works without ClusterManager (no Redis)

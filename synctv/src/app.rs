@@ -1159,8 +1159,8 @@ impl Application {
         );
         info!("PlaybackService wired with cluster broadcaster");
 
-        // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
-        // D1 fix: When cluster is explicitly enabled, discovery failures are fatal.
+        // Cluster discovery (NodeRegistry, HealthMonitor) requires Redis.
+        // When cluster is explicitly enabled, discovery failures are fatal.
         let discovery = init_cluster_discovery(
             &infra.config,
             &cluster_backend.node_directory_factory(),

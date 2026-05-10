@@ -238,16 +238,22 @@ impl ChatService {
     /// Delete a chat message
     ///
     /// # Arguments
+    /// * `room_id` - Room that owns the message
     /// * `message_id` - Message ID to delete
     /// * `user_id` - User ID requesting deletion (must be sender or have `DELETE_CHAT` permission)
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn delete_message(&self, message_id: i64, user_id: &UserId) -> Result<bool> {
+    pub async fn delete_message(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        user_id: &UserId,
+    ) -> Result<bool> {
         // Get the message to check ownership
         let message = self
             .chat_repository
-            .get_by_id(message_id)
+            .get_by_room_and_id(room_id, message_id)
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
 
@@ -258,12 +264,12 @@ impl ChatService {
         if !is_sender {
             // Not the sender, check DELETE_CHAT permission via PermissionService
             self.permission_service
-                .check_permission(&message.room_id, user_id, PermissionBits::DELETE_CHAT)
+                .check_permission(room_id, user_id, PermissionBits::DELETE_CHAT)
                 .await?;
         }
 
         self.chat_repository
-            .delete(message_id, message.created_at)
+            .delete_in_room(room_id, message_id, message.created_at)
             .await
     }
 

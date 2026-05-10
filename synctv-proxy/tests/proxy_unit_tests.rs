@@ -1079,8 +1079,7 @@ fn test_m3u8_ssrf_encoded_traversal() {
 
 // M3U8 Double Encoding Bug Tests
 
-/// Test that already-encoded URLs are NOT double-encoded
-/// This is a regression test for the bug where %20 becomes %2520
+/// Test that already-encoded URLs are not double-encoded from %20 to %2520.
 #[test]
 fn test_m3u8_no_double_encode_space() {
     // URL with already-encoded space (%20)

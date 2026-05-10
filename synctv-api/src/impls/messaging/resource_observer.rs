@@ -12,6 +12,7 @@ use synctv_core::{
 
 use super::MessageSender;
 use crate::impls::client::convert::{playback_client_profile_from_proto, playback_state_to_proto};
+use crate::impls::client::RoomActor;
 use crate::impls::playback_snapshot::PlaybackSnapshotService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
@@ -383,6 +384,7 @@ impl ResourceObservation {
 pub(super) struct ResourceObserver {
     room_id: RoomId,
     user_id: UserId,
+    actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
     public_id_codec: Arc<crate::PublicIdCodec>,
@@ -397,21 +399,35 @@ pub(super) struct ResourceObserver {
     state: tokio::sync::Mutex<ResourceObserverState>,
 }
 
+pub(super) struct ResourceObserverParams {
+    pub(super) room_id: RoomId,
+    pub(super) user_id: UserId,
+    pub(super) actor: RoomActor,
+    pub(super) connection_id: String,
+    pub(super) room_service: Arc<RoomService>,
+    pub(super) public_id_codec: Arc<crate::PublicIdCodec>,
+    pub(super) sender: Arc<dyn MessageSender>,
+    pub(super) room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
+}
+
 impl ResourceObserver {
-    pub(super) fn new(
-        room_id: RoomId,
-        user_id: UserId,
-        connection_id: String,
-        room_service: Arc<RoomService>,
-        public_id_codec: Arc<crate::PublicIdCodec>,
-        sender: Arc<dyn MessageSender>,
-        room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
-    ) -> Self {
+    pub(super) fn new(params: ResourceObserverParams) -> Self {
+        let ResourceObserverParams {
+            room_id,
+            user_id,
+            actor,
+            connection_id,
+            room_service,
+            public_id_codec,
+            sender,
+            room_settings_snapshot_service,
+        } = params;
         let room_settings_snapshot_service_id = Arc::as_ptr(&room_service) as usize;
         let room_hub = room_resource_hub(room_id, &room_service);
         Self {
             room_id,
             user_id,
+            actor,
             connection_id,
             room_service,
             public_id_codec,
@@ -462,6 +478,21 @@ impl ResourceObserver {
         *self.room_settings_snapshot_service_id.write() =
             Arc::as_ptr(&service).cast::<()>() as usize;
         *self.room_settings_snapshot_service.write() = service;
+    }
+
+    async fn resource_actor(&self) -> Result<RoomActor, String> {
+        match &self.actor {
+            RoomActor::User { .. } => Ok(self.actor.clone()),
+            RoomActor::Guest(access) => {
+                let mut access = access.clone();
+                access.permissions = self
+                    .room_service
+                    .get_guest_permissions(&self.room_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(RoomActor::Guest(access))
+            }
+        }
     }
 
     #[cfg(test)]
@@ -736,6 +767,10 @@ impl RoomResourceHub {
                         })
                         .collect::<Vec<_>>()
                 };
+                if subscriptions.is_empty() {
+                    return ResourceRefreshOutcome::default();
+                }
+                self.bump_resource_generation().await;
                 self.refresh_subscription_batch(subscriptions).await
             })
             .await
@@ -1746,8 +1781,9 @@ impl ResourceObserver {
                     service.clone()
                 }
                 .ok_or_else(|| "Playlist items snapshot service is not available".to_string())?;
+                let actor = self.resource_actor().await?;
                 let snapshot = service
-                    .get_playlist_items_snapshot(&self.user_id, &self.room_id, request)
+                    .get_playlist_items_snapshot(&actor, request)
                     .await
                     .map_err(|error| error.to_string())?;
                 let payload = match delivery_mode {
@@ -1766,8 +1802,9 @@ impl ResourceObserver {
                     service.clone()
                 }
                 .ok_or_else(|| "Room members snapshot service is not available".to_string())?;
+                let actor = self.resource_actor().await?;
                 let snapshot = service
-                    .get_room_members_snapshot(&self.user_id, &self.room_id, request)
+                    .get_room_members_snapshot(&actor, request)
                     .await
                     .map_err(|error| error.to_string())?;
                 let payload = match delivery_mode {

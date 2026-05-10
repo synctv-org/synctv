@@ -278,6 +278,16 @@ impl RequestExecutor {
             .map_err(map_security_pipeline_error)
     }
 
+    pub async fn security_check_claims(
+        &self,
+        claims: &synctv_core::service::Claims,
+    ) -> Result<AuthenticatedToken, ApiError> {
+        self.security_pipeline
+            .check(claims)
+            .await
+            .map_err(map_security_pipeline_error)
+    }
+
     #[must_use]
     pub fn prepare_context(&self, metadata: &RequestMetadata) -> RequestContext {
         RequestContext::from_metadata_ref(metadata)

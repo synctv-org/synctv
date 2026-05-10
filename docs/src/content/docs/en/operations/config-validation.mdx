@@ -25,7 +25,7 @@ If the service starts but access, authentication, media playback, or Ingress beh
 
 Meaning: `security.opaque_server_setup_secret` is not configured.
 
-Fix:
+Set the secret:
 
 ```bash
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
@@ -77,7 +77,7 @@ CORS origins cannot include paths.
 
 `cluster.enabled=true` requires Redis.
 
-Fix:
+Set Redis:
 
 ```yaml
 redis:
@@ -86,7 +86,7 @@ redis:
 
 ### Cluster Enabled but Cluster Secret Missing
 
-Fix:
+Set the cluster secret:
 
 ```bash
 export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"

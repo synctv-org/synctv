@@ -10,7 +10,6 @@ use synctv_cluster::sync::{
 };
 use synctv_cluster::sync::{ClusterEvent, NotificationLevel, RoomMessageHub};
 use synctv_core::cache::UsernameCache;
-use synctv_core::config::PasswordComplexityConfig;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
     MediaId, PermissionBits, Playlist, PlaylistId, RoomId, RoomPlaybackState, UserId,
@@ -19,18 +18,15 @@ use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
     ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository,
 };
-use synctv_core::service::auth::JwtService;
 use synctv_core::service::user_notification::NotificationCreatedEvent;
 use synctv_core::service::{
     chat::{ChatDependencies, ChatRuntime},
     ChatService, ContentFilter, NotificationService, PermissionService, RateLimitConfig,
-    RateLimiter, RoomService, RoomSettingsService, UserService,
+    RateLimiter, RoomService, RoomSettingsService,
 };
 use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
 use synctv_core_testing::{
-    create_test_brute_force_protection_service, create_test_request_rate_limiter,
-    create_test_token_blacklist_store_service, start_dedicated_redis_url_with_label,
-    RedisContainer,
+    create_test_request_rate_limiter, start_dedicated_redis_url_with_label, RedisContainer,
 };
 
 fn room_id() -> RoomId {
@@ -45,7 +41,7 @@ fn media_id() -> MediaId {
 fn public_id_codec() -> crate::PublicIdCodec {
     crate::PublicIdCodec::default_for_tests()
 }
-fn public_user_id() -> String {
+fn public_actor_id() -> String {
     public_id_codec().encode_user_id(user_id()).unwrap()
 }
 fn public_media_id() -> String {
@@ -525,27 +521,8 @@ fn test_pool() -> sqlx::PgPool {
         .expect("lazy test pool")
 }
 
-fn test_user_service(pool: sqlx::PgPool) -> UserService {
-    let jwt_service =
-        JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
-    let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_complexity = PasswordComplexityConfig::default();
-
-    let mut service = UserService::new(
-        pool,
-        jwt_service,
-        username_cache,
-        password_complexity,
-        create_test_token_blacklist_store_service(),
-        synctv_core::cache::KeyBuilder::new("test"),
-        create_test_brute_force_protection_service(),
-    );
-    service.enable_password_registration_for_tests();
-    service
-}
-
 fn test_room_service(pool: sqlx::PgPool) -> Arc<RoomService> {
-    Arc::new(RoomService::new(pool.clone(), test_user_service(pool)))
+    Arc::new(synctv_core_testing::create_test_room_service(pool))
 }
 
 fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
@@ -888,8 +865,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         Ok(self.snapshot.clone())
@@ -929,8 +905,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -973,8 +948,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -1030,8 +1004,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -1078,8 +1051,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -1125,8 +1097,7 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService
 {
     async fn get_playlist_items_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -1146,8 +1117,7 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
 {
     async fn get_room_members_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         Ok(self.snapshot.clone())
@@ -1183,8 +1153,7 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
 {
     async fn get_room_members_snapshot(
         &self,
-        _user_id: &UserId,
-        _room_id: &RoomId,
+        _actor: &crate::impls::client::RoomActor,
         _req: &crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, crate::impls::ApiError> {
         self.probe.mark_called();
@@ -1216,6 +1185,47 @@ fn test_message_handler_for_user(
         event_service,
         connection_service,
         Arc::new(RateLimiter::local_only("test:handler:".to_string())),
+        Arc::new(RateLimitConfig::default()),
+        Arc::new(ContentFilter::new()),
+        Arc::new(crate::PublicIdCodec::default_for_tests()),
+        sender,
+    )
+    .with_heartbeat_schedule(HeartbeatSchedule::for_tests(
+        Duration::from_millis(10),
+        Duration::from_mins(1),
+    ))
+}
+
+fn test_guest_principal_with_permissions(permissions: PermissionBits) -> RealtimePrincipal {
+    let session_id = "guest-session-1";
+    RealtimePrincipal::guest(
+        room_id(),
+        GuestRealtimeIdentity {
+            guest_id: guest_public_id(session_id),
+            display_name: guest_display_name(session_id),
+            session_id: session_id.to_string(),
+            token_jti: "guest-token-jti".to_string(),
+            room_guest_version: 0,
+            permissions,
+        },
+    )
+}
+
+fn test_guest_message_handler(
+    sender: Arc<dyn MessageSender>,
+    event_service: Arc<ClusterManager>,
+    connection_service: Arc<ConnectionManager>,
+    permissions: PermissionBits,
+) -> StreamMessageHandler {
+    let pool = test_pool();
+    StreamMessageHandler::new_with_principal(
+        room_id(),
+        test_guest_principal_with_permissions(permissions),
+        &test_room_service(pool.clone()),
+        test_chat_service(pool),
+        event_service,
+        connection_service,
+        Arc::new(RateLimiter::local_only("test:guest-handler:".to_string())),
         Arc::new(RateLimitConfig::default()),
         Arc::new(ContentFilter::new()),
         Arc::new(crate::PublicIdCodec::default_for_tests()),
@@ -1272,6 +1282,95 @@ async fn create_start_handler_fixture(
         event_service.clone(),
         connection_service.clone(),
         Arc::new(RateLimiter::local_only(format!("test:fixture:{node_id}:"))),
+        Arc::new(RateLimitConfig::default()),
+        Arc::new(ContentFilter::new()),
+        Arc::new(crate::PublicIdCodec::default_for_tests()),
+        sender,
+    )
+    .with_heartbeat_schedule(HeartbeatSchedule::for_tests(
+        Duration::from_millis(10),
+        Duration::from_mins(1),
+    ));
+
+    StartTestFixture {
+        _container: container,
+        pool,
+        event_service,
+        connection_service,
+        handler,
+    }
+}
+
+async fn create_guest_start_handler_fixture(
+    node_id: &str,
+    sender: Arc<dyn MessageSender>,
+    permissions: PermissionBits,
+) -> StartTestFixture {
+    let (container, pool) = synctv_core_testing::create_test_pool().await;
+    let event_service = test_cluster_manager(node_id).await;
+    let connection_service = test_connection_manager();
+    let room_service = test_room_service(pool.clone());
+    let user_service = room_service.user_service().clone();
+
+    let owner = user_service
+        .register(
+            bounded_fixture_username(&format!("{node_id}_owner")),
+            Some(format!("fixture-{node_id}-owner@test.invalid")),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("fixture owner should register")
+        .0;
+
+    let (room, _) = room_service
+        .create_room(
+            format!("Guest Fixture Room {node_id}"),
+            "test".to_string(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .expect("fixture room should be created");
+
+    let mut settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .expect("room settings should load");
+    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+    room_service
+        .set_settings(room.id, owner.id, settings)
+        .await
+        .expect("guest access should be enabled");
+    let room_guest_version = room_service
+        .get_room_guest_version(&room.id)
+        .await
+        .expect("guest version should load");
+
+    let session_id = format!("{node_id}-guest-session");
+    let principal = RealtimePrincipal::guest(
+        room.id,
+        GuestRealtimeIdentity {
+            guest_id: guest_public_id(&session_id),
+            display_name: guest_display_name(&session_id),
+            session_id,
+            token_jti: format!("{node_id}-guest-jti"),
+            room_guest_version,
+            permissions,
+        },
+    );
+
+    let handler = StreamMessageHandler::new_with_principal(
+        room.id,
+        principal,
+        &room_service,
+        test_chat_service(pool.clone()),
+        event_service.clone(),
+        connection_service.clone(),
+        Arc::new(RateLimiter::local_only(format!(
+            "test:guest-fixture:{node_id}:"
+        ))),
         Arc::new(RateLimitConfig::default()),
         Arc::new(ContentFilter::new()),
         Arc::new(crate::PublicIdCodec::default_for_tests()),
@@ -1950,7 +2049,7 @@ async fn test_observe_playback_snapshot_with_current_version_and_matching_source
             default_mode: String::new(),
             metadata: std::collections::HashMap::new(),
             version: "snapshot-v1".to_string(),
-            expires_at: Some(12345),
+            expires_at: Some(chrono::Utc::now().timestamp() + 3600),
         });
     let handler = handler
         .clone()
@@ -1975,12 +2074,12 @@ async fn test_observe_playback_snapshot_with_current_version_and_matching_source
     wait_for_recorded_message_count(&stream_state, 1).await;
     snapshot_service.wait_for_calls(1).await;
 
+    let sent_messages = message_sender.sent_messages();
     assert!(
-        message_sender
-            .sent_messages()
+        sent_messages
             .iter()
             .all(|message| { resource_playback_snapshot(message).is_none() }),
-        "matching playback snapshot version should not trigger an immediate resend"
+        "matching playback snapshot version should not trigger an immediate resend: {sent_messages:?}"
     );
     let stream_messages = stream_state.sent_messages();
     assert!(
@@ -4876,7 +4975,7 @@ fn test_chat_message_event_conversion() {
     match &msg.message {
         Some(Message::Chat(chat)) => {
             assert_eq!(chat.room_id, "room_test");
-            assert_eq!(chat.user_id, public_user_id());
+            assert_eq!(chat.user_id, public_actor_id());
             assert_eq!(chat.username, "alice");
             assert_eq!(chat.content, "hello world");
             assert_eq!(chat.position, Some(42.5));
@@ -4947,7 +5046,7 @@ fn test_user_joined_event_conversion() {
         Some(Message::UserJoined(uj)) => {
             assert_eq!(uj.room_id, "room_test");
             let member = uj.member.as_ref().unwrap();
-            assert_eq!(member.user_id, public_user_id());
+            assert_eq!(member.user_id, public_actor_id());
             assert_eq!(member.username, "carol");
             assert_eq!(member.role, 3);
             assert!(member.is_online);
@@ -4971,7 +5070,7 @@ fn test_user_left_event_conversion() {
     match &msgs[0].message {
         Some(Message::UserLeft(ul)) => {
             assert_eq!(ul.room_id, "room_test");
-            assert_eq!(ul.user_id, public_user_id());
+            assert_eq!(ul.user_id, public_actor_id());
         }
         other => panic!("Expected UserLeft, got: {other:?}"),
     }
@@ -5053,7 +5152,7 @@ fn test_media_removed_batch_event_conversion() {
                 ]
             );
             assert_eq!(batch.removed_by, "frank");
-            assert_eq!(batch.removed_by_user_id, public_user_id());
+            assert_eq!(batch.removed_by_user_id, public_actor_id());
         }
         other => panic!("Expected MediaRemovedBatch, got: {other:?}"),
     }
@@ -5112,7 +5211,7 @@ fn test_playlist_reordered_event_conversion() {
                 ]
             );
             assert_eq!(reordered.reordered_by, "grace");
-            assert_eq!(reordered.reordered_by_user_id, public_user_id());
+            assert_eq!(reordered.reordered_by_user_id, public_actor_id());
         }
         other => panic!("Expected PlaylistReordered, got: {other:?}"),
     }
@@ -5987,6 +6086,207 @@ fn test_user_left_does_not_retry_when_no_subscribers_exist_and_distributed_backe
 }
 
 #[test]
+fn test_guest_policy_authorization_error_disconnects_guest() {
+    let reason = "Guest access is not allowed in this room";
+    let result = super::guest_policy_error_to_denial_reason(synctv_core::Error::Authorization(
+        reason.to_string(),
+    ))
+    .expect("authorization denials should be converted to disconnect reasons");
+
+    assert_eq!(result.as_deref(), Some(reason));
+}
+
+#[test]
+fn test_guest_policy_backend_error_remains_transient() {
+    let result = super::guest_policy_error_to_denial_reason(
+        synctv_core::Error::ServiceUnavailable("settings store unavailable".to_string()),
+    );
+
+    assert!(
+        result.is_err(),
+        "backend failures should remain transient so heartbeat can retry"
+    );
+}
+
+#[tokio::test]
+async fn test_guest_token_blacklist_disconnects_live_guest() {
+    let event_service = test_cluster_manager("guest_token_blacklist_disconnects_live_guest").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
+        FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
+        PermissionBits(PermissionBits::DEFAULT_GUEST),
+    );
+    let identity = handler
+        .principal
+        .guest_identity()
+        .expect("test handler should be a guest");
+    let key = handler
+        .room_service
+        .user_service()
+        .key_builder()
+        .guest_token_blacklist(&identity.token_jti);
+    handler
+        .room_service
+        .user_service()
+        .token_blacklist_store()
+        .blacklist(&key, 3600)
+        .await
+        .expect("blacklist guest token");
+
+    let reason = handler
+        .guest_token_blacklist_denial_reason(&identity.token_jti)
+        .await
+        .expect("blacklist check should succeed");
+
+    assert_eq!(reason.as_deref(), Some("Guest token has been revoked"));
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
+async fn test_guest_chat_is_rejected_even_if_permission_bits_include_send_chat() {
+    let fixture = create_guest_start_handler_fixture(
+        "guest_chat_rejected",
+        FailingMessageSender::fail_after(usize::MAX),
+        PermissionBits(PermissionBits::SEND_CHAT),
+    )
+    .await;
+
+    let err = fixture
+        .handler
+        .handle_client_message(&ClientMessage {
+            message: Some(crate::proto::client::client_message::Message::Chat(
+                crate::proto::client::ChatMessageSend {
+                    content: "guest message".to_string(),
+                    position: None,
+                    color: None,
+                },
+            )),
+        })
+        .await
+        .expect_err("guest chat must be rejected at the realtime boundary");
+
+    assert!(err.contains("Guests cannot send chat"));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_guest_danmaku_is_rejected_even_if_permission_bits_include_send_chat() {
+    let fixture = create_guest_start_handler_fixture(
+        "guest_danmaku_rejected",
+        FailingMessageSender::fail_after(usize::MAX),
+        PermissionBits(PermissionBits::SEND_CHAT),
+    )
+    .await;
+
+    let err = fixture
+        .handler
+        .handle_client_message(&ClientMessage {
+            message: Some(crate::proto::client::client_message::Message::Chat(
+                crate::proto::client::ChatMessageSend {
+                    content: "guest danmaku".to_string(),
+                    position: Some(1.0),
+                    color: Some("#ffffff".to_string()),
+                },
+            )),
+        })
+        .await
+        .expect_err("guest danmaku must be rejected at the realtime boundary");
+
+    assert!(err.contains("Guests cannot send chat"));
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_include_view_playlist()
+{
+    let fixture = create_guest_start_handler_fixture(
+        "guest_playlist_observe_rejected",
+        FailingMessageSender::fail_after(usize::MAX),
+        PermissionBits(PermissionBits::VIEW_PLAYLIST),
+    )
+    .await;
+
+    let err = fixture
+        .handler
+        .handle_client_message(&ClientMessage {
+            message: Some(observe_playlist_items_message(
+                "guest-playlist-items",
+                String::new(),
+                crate::proto::client::ListPlaylistItemsRequest::default(),
+            )),
+        })
+        .await
+        .expect_err("guest playlist observation must be rejected at the realtime boundary");
+
+    assert!(err.contains("Guests cannot observe playlist items"));
+    fixture.shutdown().await;
+}
+
+#[test]
+fn test_guest_left_retry_rebuilds_guest_left_event() {
+    let expected_room_id = room_id();
+    let original = ClusterEvent::GuestLeft {
+        event_id: "original-event".to_string(),
+        room_id: expected_room_id,
+        guest_id: "gst_session".to_string(),
+        username: "Guest sessio".to_string(),
+        timestamp: chrono::Utc::now() - chrono::Duration::seconds(10),
+    };
+
+    let retry = super::rebuild_leave_event_for_retry(&original);
+
+    match retry {
+        ClusterEvent::GuestLeft {
+            event_id,
+            room_id,
+            guest_id,
+            username,
+            ..
+        } => {
+            assert_ne!(event_id, "original-event");
+            assert_eq!(room_id, expected_room_id);
+            assert_eq!(guest_id, "gst_session");
+            assert_eq!(username, "Guest sessio");
+        }
+        other => panic!("guest leave retries must remain GuestLeft, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_user_left_retry_rebuilds_user_left_event() {
+    let expected_room_id = room_id();
+    let expected_user_id = user_id();
+    let original = ClusterEvent::UserLeft {
+        event_id: "original-event".to_string(),
+        room_id: expected_room_id,
+        user_id: expected_user_id,
+        username: "user".to_string(),
+        timestamp: chrono::Utc::now() - chrono::Duration::seconds(10),
+    };
+
+    let retry = super::rebuild_leave_event_for_retry(&original);
+
+    match retry {
+        ClusterEvent::UserLeft {
+            event_id,
+            room_id,
+            user_id,
+            username,
+            ..
+        } => {
+            assert_ne!(event_id, "original-event");
+            assert_eq!(room_id, expected_room_id);
+            assert_eq!(user_id, expected_user_id);
+            assert_eq!(username, "user");
+        }
+        other => panic!("user leave retries must remain UserLeft, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_webrtc_signal_requires_distributed_delivery_when_available() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
         &synctv_cluster::sync::BroadcastResult {
@@ -6103,6 +6403,107 @@ fn test_user_left_delivery_skips_when_distributed_check_fails() {
     assert_eq!(plan, super::UserLeftDeliveryPlan::Skip);
 }
 
+#[tokio::test]
+async fn test_guest_cleanup_broadcasts_guest_left() {
+    let event_service = test_cluster_manager("guest_cleanup_broadcasts_left").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
+        FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
+        PermissionBits(PermissionBits::DEFAULT_GUEST),
+    );
+    let connection_id = handler.connection_id().to_string();
+    let guest_user_id = handler.user_id;
+
+    connection_service
+        .register(connection_id.clone(), guest_user_id)
+        .await
+        .expect("register guest connection");
+    connection_service
+        .join_room(&connection_id, handler.room_id)
+        .await
+        .expect("join guest connection");
+    let (mut rx, _) = event_service
+        .subscribe_with_id(handler.room_id, guest_user_id, connection_id.clone())
+        .await
+        .expect("subscribe guest connection");
+
+    handler.cleanup(&handler.room_id.to_string()).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("guest left event should be delivered")
+        .expect("guest left receiver should remain open until event is read");
+    match event {
+        ClusterEvent::GuestLeft {
+            room_id,
+            guest_id,
+            username,
+            ..
+        } => {
+            assert_eq!(room_id, handler.room_id);
+            assert_eq!(guest_id, handler.public_actor_id());
+            assert_eq!(username, handler.username);
+        }
+        other => panic!("expected GuestLeft event, got {other:?}"),
+    }
+    assert_eq!(connection_service.connection_count(), 0);
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
+#[tokio::test]
+async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
+    let event_service = test_cluster_manager("guest_webrtc_recipient").await;
+    let connection_service = test_connection_manager();
+    let handler = test_guest_message_handler(
+        FailingMessageSender::fail_after(usize::MAX),
+        Arc::clone(&event_service),
+        connection_service.clone(),
+        PermissionBits(PermissionBits::DEFAULT_GUEST | PermissionBits::USE_WEBRTC),
+    );
+    let connection_id = handler.connection_id().to_string();
+
+    connection_service
+        .register_actor(
+            connection_id.clone(),
+            handler.user_id,
+            handler.public_actor_id(),
+        )
+        .await
+        .expect("register guest connection");
+    connection_service
+        .join_room(&connection_id, handler.room_id)
+        .await
+        .expect("join room");
+    connection_service.mark_rtc_joined(&handler.room_id, &handler.user_id, &connection_id, true);
+
+    let guest_target = format!("{}:{}", handler.public_actor_id(), connection_id);
+    assert!(
+        handler.current_connection_matches_webrtc_recipient(&guest_target),
+        "guest WebRTC targets must use the gst_* public actor id"
+    );
+    handler
+        .validate_webrtc_recipient(&guest_target)
+        .expect("gst_* recipient should match the active guest connection");
+
+    let internal_user_target = format!(
+        "{}:{}",
+        handler
+            .public_id_codec
+            .encode_user_id(handler.user_id)
+            .expect("encode internal synthetic user id"),
+        connection_id
+    );
+    assert!(
+        !handler.current_connection_matches_webrtc_recipient(&internal_user_target),
+        "guest WebRTC targets must not leak or accept the internal synthetic user id"
+    );
+
+    shutdown_test_runtime_resources(event_service, connection_service).await;
+}
+
 #[test]
 fn test_generate_connection_id_is_opaque() {
     let connection_id = super::StreamMessageHandler::generate_connection_id();
@@ -6121,7 +6522,7 @@ fn test_generate_connection_id_is_opaque() {
 }
 
 #[tokio::test]
-async fn test_current_connection_matches_webrtc_recipient_requires_public_user_id() {
+async fn test_current_connection_matches_webrtc_recipient_requires_public_actor_id() {
     let room_id = room_id();
     let user_id = user_id();
     let manager = test_connection_manager();
@@ -6155,7 +6556,13 @@ async fn test_current_connection_matches_webrtc_recipient_requires_public_user_i
     );
 
     manager
-        .register(connection_id.clone(), user_id)
+        .register_actor(
+            connection_id.clone(),
+            user_id,
+            public_id_codec
+                .encode_user_id(user_id)
+                .expect("encode user id"),
+        )
         .await
         .expect("register");
     manager

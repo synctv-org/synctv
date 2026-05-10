@@ -1,4 +1,4 @@
-//! CL9: `ClusterAuthInterceptor` tests
+//! `ClusterAuthInterceptor` tests
 //!
 //! - Correct secret passes
 //! - Missing header -> unauthenticated

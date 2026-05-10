@@ -598,7 +598,7 @@ async fn test_e2e_permission_inheritance() {
     assert!(admin.has(PermissionBits::SET_ROOM_SETTINGS));
 
     let guest = PermissionBits(PermissionBits::DEFAULT_GUEST);
-    assert!(guest.has(PermissionBits::VIEW_PLAYLIST));
+    assert!(!guest.has(PermissionBits::VIEW_PLAYLIST));
     assert!(!guest.has(PermissionBits::SEND_CHAT));
     assert!(!guest.has(PermissionBits::ADD_MEDIA));
 }

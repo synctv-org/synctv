@@ -1,4 +1,4 @@
-//! CL5: `ClusterServer` gRPC handlers
+//! `ClusterServer` gRPC handlers
 //!
 //! - `validate_node_id`: empty/long/invalid -> error
 //! - `get_user_online_status`: `MAX_USER_IDS+1` -> `invalid_argument`

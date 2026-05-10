@@ -2,7 +2,7 @@
 
 use synctv_core::models::{PermissionBits, RoomId, UserId};
 
-use super::ClientApiImpl;
+use super::{ClientApiImpl, RoomActor};
 use crate::impls::ApiError;
 
 fn validate_realtime_room_access_for_webrtc(
@@ -34,20 +34,29 @@ impl ClientApiImpl {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
-        use crate::proto::client::{GetIceServersResponse, IceServer};
-
-        // Check membership
         self.room_service
             .check_membership(room_id, user_id)
             .await
             .map_err(Self::map_room_access_error)?;
-        self.room_service
-            .check_permission(room_id, user_id, PermissionBits::USE_WEBRTC)
-            .await
-            .map_err(Self::map_room_access_error)?;
+        let actor = RoomActor::User {
+            room_id: *room_id,
+            user_id: *user_id,
+        };
+        self.get_ice_servers_for_actor(&actor).await
+    }
+
+    pub async fn get_ice_servers_for_actor(
+        &self,
+        actor: &RoomActor,
+    ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
+        use crate::proto::client::{GetIceServersResponse, IceServer};
+
+        self.require_room_permission(actor, PermissionBits::USE_WEBRTC)
+            .await?;
+        let room_id = actor.room_id();
         let room = self
             .room_service
-            .get_room(room_id)
+            .get_room(&room_id)
             .await
             .map_err(ApiError::from)?;
         validate_realtime_room_access_for_webrtc(&room)?;

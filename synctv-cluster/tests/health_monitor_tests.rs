@@ -1,8 +1,7 @@
 //! `HealthMonitor` integration tests
 //!
 //! Tests for `process_heartbeats` logic: stale nodes marked unhealthy,
-//! fresh nodes marked healthy (verifies the bug fix), and backoff
-//! multiplier capping.
+//! fresh nodes marked healthy, and backoff multiplier capping.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -34,8 +33,6 @@ async fn test_process_heartbeats_marks_stale_unhealthy() {
     );
 }
 
-// Test 2: fresh nodes with no existing status are marked healthy (bug fix)
-
 #[tokio::test]
 async fn test_process_heartbeats_marks_fresh_healthy() {
     let fresh_node = NodeInfo::new("fresh-node".to_string(), "localhost:8080".to_string());
@@ -49,7 +46,7 @@ async fn test_process_heartbeats_marks_fresh_healthy() {
     assert_eq!(
         status.get("fresh-node"),
         Some(&NodeHealth::Healthy),
-        "Fresh node with no prior status should be marked Healthy (bug fix verification)"
+        "Fresh node with no prior status should be marked Healthy"
     );
 }
 

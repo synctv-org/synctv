@@ -568,9 +568,6 @@ async fn test_unsubscribe_unknown_safe() {
     assert_eq!(hub.room_count(), 0);
 }
 
-// D2: Lifecycle events are emitted on subscribe/unsubscribe
-
-/// D2 fix verification: lifecycle_tx.send() results are checked (not silently dropped).
 /// This test verifies that lifecycle events are still delivered correctly when
 /// receivers are active.
 #[tokio::test]
@@ -605,7 +602,7 @@ async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
     }
 }
 
-/// D2: lifecycle events are not lost when multiple rooms are created quickly.
+/// Lifecycle events are not lost when multiple rooms are created quickly.
 #[tokio::test]
 async fn test_lifecycle_events_not_lost_under_room_churn() {
     use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
@@ -646,13 +643,8 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
     );
 }
 
-// L9: Atomic unsubscribe prevents missed RoomActivated events
-
 /// When the last subscriber unsubscribes and a new subscriber joins the same
 /// room concurrently, the new subscriber must see a RoomActivated event.
-/// Before the fix, a TOCTOU race between remove-subscriber and remove_if
-/// could cause the new subscribe to see the room entry as Occupied (with 0
-/// subscribers) and skip the RoomActivated event.
 #[tokio::test]
 async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
@@ -697,7 +689,7 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     assert_eq!(hub.room_count(), 1);
 }
 
-/// D2: remove_room emits a RoomDeactivated lifecycle event.
+/// remove_room emits a RoomDeactivated lifecycle event.
 #[tokio::test]
 async fn test_remove_room_emits_deactivated_event() {
     use synctv_cluster::sync::room_hub::RoomLifecycleEvent;

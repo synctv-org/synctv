@@ -253,7 +253,7 @@ async fn test_redis_ticket_checked_validation_is_still_one_time_use() {
     );
 }
 
-// Cluster mode Redis dependency tests (TDD)
+// Cluster mode Redis dependency tests.
 
 /// Test: cluster mode with Redis works correctly.
 /// This is the main fix - in cluster mode with Redis, tickets should work

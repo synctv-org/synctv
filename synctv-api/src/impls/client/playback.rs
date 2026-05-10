@@ -11,7 +11,7 @@ use super::convert::{
     playback_client_profile_from_proto, playback_snapshot_to_proto, playback_state_to_proto,
     provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
 };
-use super::ClientApiImpl;
+use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::playback_snapshot::{
     compose_playback_snapshot_version, dynamic_playback_snapshot_version,
     playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
@@ -236,7 +236,7 @@ impl ClientApiImpl {
             let media = self
                 .room_service
                 .media_service()
-                .get_media(media_id)
+                .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
@@ -245,7 +245,7 @@ impl ClientApiImpl {
             let playlist = self
                 .room_service
                 .playlist_service()
-                .get_playlist(playlist_id)
+                .get_room_playlist(room_id, playlist_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
@@ -401,7 +401,7 @@ impl ClientApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(playlist_id)
+            .get_room_playlist(room_id, playlist_id)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
@@ -510,7 +510,7 @@ impl ClientApiImpl {
             let media = self
                 .room_service
                 .media_service()
-                .get_media(media_id)
+                .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
@@ -567,7 +567,7 @@ impl ClientApiImpl {
             let media = self
                 .room_service
                 .media_service()
-                .get_media(media_id)
+                .get_room_media(room_id, media_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
@@ -605,7 +605,7 @@ impl ClientApiImpl {
             let playlist = self
                 .room_service
                 .playlist_service()
-                .get_playlist(playlist_id)
+                .get_room_playlist(room_id, playlist_id)
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Playlist not found".to_string()))?;
@@ -709,8 +709,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetPlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        self.get_playback_internal(user_id, room_id, req, None)
-            .await
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_playback_for_actor(&actor, req, None).await
     }
 
     pub async fn get_playback_with_context(
@@ -720,8 +720,49 @@ impl ClientApiImpl {
         req: crate::proto::client::GetPlaybackRequest,
         request_control: &ExecutionControl,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
-        self.get_playback_internal(user_id, room_id, req, Some(request_control))
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_playback_for_actor(&actor, req, Some(request_control))
             .await
+    }
+
+    pub async fn get_playback_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        let state = self
+            .room_service
+            .get_playback_state(&access.room_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(crate::proto::client::GetPlaybackResponse {
+            playback_state: Some(playback_state_to_proto(&state, &self.public_id_codec)),
+            playback_snapshot: None,
+        })
+    }
+
+    pub async fn get_playback_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::GetPlaybackRequest,
+        request_control: Option<&ExecutionControl>,
+    ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        match actor.user_id() {
+            Some(user_id) => {
+                let room_id = self
+                    .public_id_codec
+                    .encode_room_id(actor.room_id())
+                    .map_err(ApiError::InvalidInput)?;
+                self.get_playback_internal(&user_id, &room_id, req, request_control)
+                    .await
+            }
+            None => {
+                self.get_playback_as_guest(match actor {
+                    RoomActor::Guest(access) => access,
+                    RoomActor::User { .. } => unreachable!("user actor handled above"),
+                })
+                .await
+            }
+        }
     }
 
     async fn get_playback_internal(

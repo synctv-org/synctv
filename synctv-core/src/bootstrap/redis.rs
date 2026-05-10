@@ -437,7 +437,7 @@ mod concurrency_tests {
     use super::*;
     use synctv_core_testing::start_redis_with_client;
 
-    /// M15: Verify that the sentinel health check uses a read lock (clone) for PING,
+    /// Verify that the sentinel health check uses a read lock (clone) for PING,
     /// not a write lock. We test this by confirming that multiple concurrent readers
     /// are not blocked while the shared handle is held.
     #[tokio::test]

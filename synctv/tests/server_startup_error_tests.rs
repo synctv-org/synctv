@@ -252,7 +252,6 @@ async fn test_full_startup_sequence_pattern() {
 }
 
 /// Test that startup failure aborts the entire server.
-/// This verifies the critical P0/P1 fix requirement.
 #[tokio::test]
 async fn test_startup_failure_aborts_server() {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();

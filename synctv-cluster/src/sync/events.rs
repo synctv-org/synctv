@@ -82,11 +82,32 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Stateless guest joined a public room.
+    GuestJoined {
+        event_id: String,
+        room_id: RoomId,
+        guest_id: String,
+        username: String,
+        permissions: PermissionBits,
+        role: i32,
+        joined_at: DateTime<Utc>,
+        timestamp: DateTime<Utc>,
+    },
+
     /// User left a room
     UserLeft {
         event_id: String,
         room_id: RoomId,
         user_id: UserId,
+        username: String,
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Stateless guest left a public room.
+    GuestLeft {
+        event_id: String,
+        room_id: RoomId,
+        guest_id: String,
         username: String,
         timestamp: DateTime<Utc>,
     },
@@ -227,21 +248,24 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// User joined WebRTC call in room
+    /// Actor joined WebRTC call in room.
+    ///
+    /// `actor_id` is the public realtime actor identifier used by clients in
+    /// signaling targets. Signed-in users use `usr_*`; guests use `gst_*`.
     WebRTCJoin {
         event_id: String,
         room_id: RoomId,
-        user_id: UserId,
+        actor_id: String,
         conn_id: String,
         username: String,
         timestamp: DateTime<Utc>,
     },
 
-    /// User left WebRTC call in room
+    /// Actor left WebRTC call in room.
     WebRTCLeave {
         event_id: String,
         room_id: RoomId,
-        user_id: UserId,
+        actor_id: String,
         conn_id: String,
         timestamp: DateTime<Utc>,
     },
@@ -394,7 +418,9 @@ impl ClusterEvent {
             Self::ChatMessage { event_id, .. }
             | Self::PlaybackStateChanged { event_id, .. }
             | Self::UserJoined { event_id, .. }
+            | Self::GuestJoined { event_id, .. }
             | Self::UserLeft { event_id, .. }
+            | Self::GuestLeft { event_id, .. }
             | Self::MediaAdded { event_id, .. }
             | Self::MediaRemoved { event_id, .. }
             | Self::MediaUpdated { event_id, .. }
@@ -429,7 +455,9 @@ impl ClusterEvent {
             Self::ChatMessage { room_id, .. }
             | Self::PlaybackStateChanged { room_id, .. }
             | Self::UserJoined { room_id, .. }
+            | Self::GuestJoined { room_id, .. }
             | Self::UserLeft { room_id, .. }
+            | Self::GuestLeft { room_id, .. }
             | Self::MediaAdded { room_id, .. }
             | Self::MediaRemoved { room_id, .. }
             | Self::MediaUpdated { room_id, .. }
@@ -474,8 +502,6 @@ impl ClusterEvent {
             | Self::PlaylistUpdated { user_id, .. }
             | Self::PlaylistDeleted { user_id, .. }
             | Self::RoomSettingsChanged { user_id, .. }
-            | Self::WebRTCJoin { user_id, .. }
-            | Self::WebRTCLeave { user_id, .. }
             | Self::KickUser { user_id, .. }
             | Self::KickUserFromRoom { user_id, .. }
             | Self::UserNotification { user_id, .. }
@@ -486,6 +512,10 @@ impl ClusterEvent {
             Self::RoomOwnerInactive { triggered_by, .. } => Some(triggered_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
             Self::WebRTCSignaling { .. }
+            | Self::WebRTCJoin { .. }
+            | Self::WebRTCLeave { .. }
+            | Self::GuestJoined { .. }
+            | Self::GuestLeft { .. }
             | Self::SystemNotification { .. }
             | Self::KickPublisher { .. }
             | Self::CacheInvalidate { .. } => None,
@@ -499,7 +529,9 @@ impl ClusterEvent {
             Self::ChatMessage { timestamp, .. }
             | Self::PlaybackStateChanged { timestamp, .. }
             | Self::UserJoined { timestamp, .. }
+            | Self::GuestJoined { timestamp, .. }
             | Self::UserLeft { timestamp, .. }
+            | Self::GuestLeft { timestamp, .. }
             | Self::MediaAdded { timestamp, .. }
             | Self::MediaRemoved { timestamp, .. }
             | Self::MediaUpdated { timestamp, .. }
@@ -582,7 +614,9 @@ impl ClusterEvent {
             Self::ChatMessage { .. } => "chat_message",
             Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::UserJoined { .. } => "user_joined",
+            Self::GuestJoined { .. } => "guest_joined",
             Self::UserLeft { .. } => "user_left",
+            Self::GuestLeft { .. } => "guest_left",
             Self::MediaAdded { .. } => "media_added",
             Self::MediaRemoved { .. } => "media_removed",
             Self::MediaUpdated { .. } => "media_updated",

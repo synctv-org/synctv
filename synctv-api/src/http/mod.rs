@@ -228,7 +228,7 @@ pub struct SharedApiRuntime {
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
-    // H-2: Provider ApiImpls stored once in shared runtime (not created per-request)
+    // Provider API implementations are stored once in shared runtime.
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
@@ -276,7 +276,7 @@ pub struct AppState {
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
-    // H-2: Provider ApiImpls stored once in AppState (not created per-request)
+    // Provider API implementations are stored once in AppState.
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
@@ -523,7 +523,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         };
         Arc::new(admin_api)
     });
-    // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
+    // Create shared NotificationApiImpl for HTTP and gRPC.
     let notification_api = config.notification_service.as_ref().map(|notif_svc| {
         Arc::new(crate::impls::NotificationApiImpl::new(
             notif_svc.clone(),
@@ -550,13 +550,13 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
         .with_request_executor(request_executor.clone()),
     );
 
-    // H-3: Create shared RateLimitConfig from the config file (not hardcoded defaults)
+    // Create shared RateLimitConfig from the config file.
     let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
     // Create shared messaging rate limit config for WebSocket (chat/danmaku)
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
 
-    // H-2: Create shared provider ApiImpls once at startup (not per-request)
+    // Create shared provider API implementations once at startup.
     let bilibili_api = Arc::new(
         crate::impls::BilibiliApiImpl::new(
             config.providers.bilibili.clone(),
@@ -662,6 +662,7 @@ fn register_extracted_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/guest-token", post(auth::create_guest_token))
         .route(
             "/api/auth/passkeys/registration/start",
             post(auth::start_passkey_registration),

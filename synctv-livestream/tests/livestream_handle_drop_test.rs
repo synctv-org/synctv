@@ -1,11 +1,11 @@
 //! LivestreamHandle Drop tests - verify stop_all() is called during drop
 //!
-//! P1 fix: When LivestreamHandle is dropped without calling shutdown() or
-//! shutdown_graceful(), we must still call stop_all() on both PullStreamManager
+//! When LivestreamHandle is dropped without calling shutdown() or
+//! shutdown_graceful(), it must still call stop_all() on both PullStreamManager
 //! and ExternalPublishManager to prevent zombie streams.
 //!
-//! Since Drop::drop() is synchronous but stop_all() is async, the fix spawns
-//! a tokio task to call stop_all(). These tests verify that behavior.
+//! Since Drop::drop() is synchronous but stop_all() is async, Drop spawns a
+//! tokio task to call stop_all(). These tests verify that behavior.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -214,8 +214,8 @@ async fn test_external_publish_manager_stop_all_clears_pool() {
 /// We verify this by checking that the spawned task completes within a reasonable time.
 #[tokio::test]
 async fn test_livestream_handle_drop_spawns_stop_all_task() {
-    // This test verifies the P1 fix: Drop spawns a tokio task for stop_all().
-    // Since we can't directly observe the spawned task, we verify by:
+    // Since we can't directly observe the spawned task, verify by observing
+    // the behavior it should trigger.
 
     // The actual test is in the behavior: when LivestreamHandle is dropped,
     // tokio::spawn is called with stop_all(). Since tokio::spawn is fire-and-forget,

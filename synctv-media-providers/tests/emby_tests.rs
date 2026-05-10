@@ -298,8 +298,6 @@ async fn test_emby_client_respects_host_path_prefix() {
     assert_eq!(info.server_name, "Reverse Proxy Emby");
 }
 
-// MP5: Emby playback reporting wiremock tests
-
 #[tokio::test]
 async fn test_emby_report_playback_start_success() {
     let server = MockServer::start().await;

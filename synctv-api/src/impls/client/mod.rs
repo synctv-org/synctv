@@ -42,7 +42,8 @@ mod tests;
 
 use futures::future::BoxFuture;
 use std::sync::Arc;
-use synctv_core::models::RoomId;
+use synctv_core::models::{PermissionBits, RoomId, RoomStatus};
+use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
 use synctv_core::service::{RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
@@ -126,6 +127,50 @@ pub struct ClientApiConfig {
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GuestRoomAccess {
+    pub room_id: RoomId,
+    pub guest_id: String,
+    pub display_name: String,
+    pub session_id: String,
+    pub token_jti: String,
+    pub permissions: PermissionBits,
+    pub room_guest_version: i64,
+}
+
+#[derive(Debug, Clone)]
+pub enum RoomActor {
+    User {
+        room_id: RoomId,
+        user_id: synctv_core::models::UserId,
+    },
+    Guest(GuestRoomAccess),
+}
+
+impl RoomActor {
+    #[must_use]
+    pub const fn room_id(&self) -> RoomId {
+        match self {
+            Self::User { room_id, .. } => *room_id,
+            Self::Guest(access) => access.room_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn user_id(&self) -> Option<synctv_core::models::UserId> {
+        match self {
+            Self::User { user_id, .. } => Some(*user_id),
+            Self::Guest(_) => None,
+        }
+    }
+
+    pub fn require_user_id(&self) -> Result<synctv_core::models::UserId, ApiError> {
+        self.user_id().ok_or_else(|| {
+            ApiError::Authorization("This room operation requires a signed-in user".to_string())
+        })
+    }
+}
+
 /// Client API implementation
 #[derive(Clone)]
 pub struct ClientApiImpl {
@@ -193,6 +238,143 @@ impl ClientApiImpl {
                 ApiError::Authorization(format!("Forbidden: {msg}"))
             }
             other => ApiError::from(other),
+        }
+    }
+
+    pub async fn validate_guest_room_access(
+        &self,
+        guest_token: &str,
+        public_room_id: &str,
+    ) -> Result<GuestRoomAccess, ApiError> {
+        if guest_token.trim().is_empty() {
+            return Err(ApiError::Authentication("Missing guest token".to_string()));
+        }
+
+        let room_id = self.parse_room_id(public_room_id)?;
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        if room.is_banned {
+            return Err(ApiError::Authorization(
+                "This room has been banned".to_string(),
+            ));
+        }
+        if room.status == RoomStatus::Closed {
+            return Err(ApiError::Authorization(
+                "This room is closed and not accepting new connections".to_string(),
+            ));
+        }
+
+        self.room_service
+            .check_guest_allowed(&room_id, self.settings_registry.as_ref().map(AsRef::as_ref))
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let guest_version = self
+            .room_service
+            .get_room_guest_version(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        let validator = GuestTokenValidator::new(Arc::new(self.jwt_service.clone()))
+            .with_blacklist(
+                self.user_service.token_blacklist_store(),
+                self.user_service.key_builder().clone(),
+            );
+        let claims = validator
+            .validate_with_version_async(guest_token, guest_version)
+            .await
+            .map_err(ApiError::from)?;
+        if claims.room_id() != room_id {
+            return Err(ApiError::Authentication(
+                "Guest token is not valid for this room".to_string(),
+            ));
+        }
+
+        let permissions = self
+            .room_service
+            .get_guest_permissions(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(GuestRoomAccess {
+            room_id,
+            guest_id: crate::impls::messaging::guest_public_id(&claims.session_id),
+            display_name: crate::impls::messaging::guest_display_name(&claims.session_id),
+            session_id: claims.session_id.clone(),
+            token_jti: claims.jti.clone(),
+            permissions,
+            room_guest_version: claims.gv,
+        })
+    }
+
+    pub async fn room_actor_for_user(
+        &self,
+        user_id: &synctv_core::models::UserId,
+        public_room_id: &str,
+    ) -> Result<RoomActor, ApiError> {
+        let room_id = self.parse_room_id(public_room_id)?;
+        self.room_service
+            .check_membership(&room_id, user_id)
+            .await
+            .map_err(Self::map_room_access_error)?;
+        Ok(RoomActor::User {
+            room_id,
+            user_id: *user_id,
+        })
+    }
+
+    pub async fn room_actor_for_authorization(
+        &self,
+        authorization: &str,
+        public_room_id: &str,
+    ) -> Result<RoomActor, ApiError> {
+        let token = JwtValidator::extract_bearer_token(authorization).map_err(|_| {
+            ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
+        })?;
+        if synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest) {
+            return self
+                .validate_guest_room_access(&token, public_room_id)
+                .await
+                .map(RoomActor::Guest);
+        }
+
+        let claims = self.jwt_validator.validate_token(&token).map_err(|_| {
+            ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
+        })?;
+        let authenticated = self
+            .request_executor()?
+            .security_check_claims(&claims)
+            .await?;
+        self.room_actor_for_user(&authenticated.user_id, public_room_id)
+            .await
+    }
+
+    pub(crate) fn require_guest_permission(
+        access: &GuestRoomAccess,
+        permission: u64,
+    ) -> Result<(), ApiError> {
+        if access.permissions.has(permission) {
+            Ok(())
+        } else {
+            Err(ApiError::Authorization(
+                "Guests do not have permission to access this room resource".to_string(),
+            ))
+        }
+    }
+
+    pub(crate) async fn require_room_permission(
+        &self,
+        actor: &RoomActor,
+        permission: u64,
+    ) -> Result<(), ApiError> {
+        match actor {
+            RoomActor::User { room_id, user_id } => self
+                .room_service
+                .check_permission(room_id, user_id, permission)
+                .await
+                .map_err(Self::map_room_access_error),
+            RoomActor::Guest(access) => Self::require_guest_permission(access, permission),
         }
     }
 

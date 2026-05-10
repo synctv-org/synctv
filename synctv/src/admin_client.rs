@@ -1317,7 +1317,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_candidate_endpoints_uses_explicit_data_dir_for_default_unix_socket() {
+        let _env_lock = process_env_test_lock().blocking_lock();
         let dir = tempdir().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(dir.path());
+        let _env = EnvVarGuard::remove("SYNCTV_CONFIG_PATH");
         let data_dir = dir.path().join("state");
 
         let endpoints = resolve_candidate_endpoints(&AdminConnectionOptions {

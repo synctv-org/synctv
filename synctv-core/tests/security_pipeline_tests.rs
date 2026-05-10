@@ -1,7 +1,7 @@
 //! `SecurityPipeline` integration tests
 //!
 //! Tests the post-JWT security pipeline: password version checks, user status
-//! checks, cache fast-path, and the B3 bug fix (DB error propagation).
+//! checks, cache fast-path, and DB error propagation.
 //!
 //! Run with: cargo test --test `security_pipeline_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
@@ -151,8 +151,8 @@ async fn test_cache_miss_falls_through_to_db() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_db_error_propagates_not_swallowed() {
-    // B3 fix: When get_user returns a non-NotFound error, it should propagate
-    // instead of being swallowed as Authentication("User not found").
+    // When get_user returns a non-NotFound error, it should propagate instead
+    // of being swallowed as Authentication("User not found").
     let (_container, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool.clone()));
     let pipeline = SecurityPipeline::new(user_service)
@@ -186,8 +186,8 @@ async fn test_db_error_propagates_not_swallowed() {
     assert!(result2.is_err());
 
     let err2 = result2.unwrap_err();
-    // With B3 fix, a DB connection error should NOT become "User not found"
-    // It should be a Database error or Internal error
+    // A DB connection error should not become "User not found"; it should be a
+    // Database error or Internal error.
     assert!(
         !matches!(&err2, Error::Authentication(msg) if msg.contains("User not found")),
         "DB errors should NOT be swallowed as 'User not found', got: {err2}"

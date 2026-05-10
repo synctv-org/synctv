@@ -165,6 +165,7 @@ pub struct ConnectionInfo {
     pub connection_id: String,
     pub registration_token: String,
     pub user_id: UserId,
+    pub actor_id: String,
     pub room_id: Option<RoomId>,
     pub connected_at: Instant,
     pub last_activity: Instant,
@@ -180,6 +181,8 @@ struct ConnectionInfoPersistent {
     connection_id: String,
     registration_token: String,
     user_id: UserId,
+    #[serde(default)]
+    actor_id: String,
     room_id: Option<RoomId>,
     connected_at_unix: u64,
     last_activity_unix: u64,
@@ -237,6 +240,7 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
             connection_id: info.connection_id.clone(),
             registration_token: info.registration_token.clone(),
             user_id: info.user_id,
+            actor_id: info.actor_id.clone(),
             room_id: info.room_id,
             connected_at_unix,
             last_activity_unix,
@@ -250,11 +254,17 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
 impl ConnectionInfo {
     #[must_use]
     pub fn new(connection_id: String, user_id: UserId) -> Self {
+        Self::new_with_actor_id(connection_id, user_id, user_id.to_string())
+    }
+
+    #[must_use]
+    pub fn new_with_actor_id(connection_id: String, user_id: UserId, actor_id: String) -> Self {
         let now = Instant::now();
         Self {
             connection_id,
             registration_token: synctv_common::snanoid!(16),
             user_id,
+            actor_id,
             room_id: None,
             connected_at: now,
             last_activity: now,
@@ -1830,6 +1840,16 @@ impl ConnectionManager {
     /// limits. In cluster mode, allowing local-only admission would let replicas
     /// oversubscribe the same user concurrently.
     pub async fn register(&self, connection_id: String, user_id: UserId) -> Result<(), String> {
+        self.register_actor(connection_id, user_id, user_id.to_string())
+            .await
+    }
+
+    pub async fn register_actor(
+        &self,
+        connection_id: String,
+        user_id: UserId,
+        actor_id: String,
+    ) -> Result<(), String> {
         let claim = self.try_claim_connection_id(&connection_id)?;
         let lifecycle_lock = self.connection_lifecycle_lock(&connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
@@ -1945,7 +1965,7 @@ impl ConnectionManager {
         };
 
         // Create and register connection info
-        let conn_info = ConnectionInfo::new(connection_id.clone(), user_id);
+        let conn_info = ConnectionInfo::new_with_actor_id(connection_id.clone(), user_id, actor_id);
         self.connections
             .insert(connection_id.clone(), conn_info.clone());
         self.schedule_idle_timeout(&connection_id, conn_info.last_activity);
@@ -2637,7 +2657,6 @@ impl ConnectionManager {
                     self.redis_key_prefix,
                     entry.key()
                 ));
-                // R-P2-4: Also refresh user index metadata TTL
                 metadata_keys.insert(format!(
                     "{}conn_mgr:user:{}",
                     self.redis_key_prefix,
@@ -2653,7 +2672,6 @@ impl ConnectionManager {
                     self.redis_key_prefix,
                     entry.key()
                 ));
-                // R-P2-4: Also refresh room index metadata TTL
                 metadata_keys.insert(format!(
                     "{}conn_mgr:room:{}",
                     self.redis_key_prefix,
@@ -2670,7 +2688,7 @@ impl ConnectionManager {
             metadata_keys.insert(self.room_index_directory_key());
         }
 
-        // R-P2-4: Refresh per-connection metadata TTLs
+        // Refresh per-connection metadata TTLs alongside aggregate counters.
         for entry in self.connections.iter() {
             metadata_keys.insert(format!(
                 "{}conn_mgr:conn:{}",
@@ -4968,6 +4986,7 @@ mod tests {
             connection_id: "other_node_conn".to_string(),
             registration_token: "foreign-token".to_string(),
             user_id: UserId::from(20_000_201),
+            actor_id: "usr_foreign".to_string(),
             room_id: Some(RoomId::from(20_000_202)),
             connected_at_unix: 0,
             last_activity_unix: 0,
@@ -5156,6 +5175,7 @@ mod tests {
             connection_id: stale_mismatch.to_string(),
             registration_token: "mismatch-token".to_string(),
             user_id: UserId::from(10_000_131),
+            actor_id: "usr_mismatch".to_string(),
             room_id: Some(RoomId::from(10_000_121)),
             connected_at_unix: 0,
             last_activity_unix: 0,
@@ -5167,6 +5187,7 @@ mod tests {
             connection_id: valid.to_string(),
             registration_token: "valid-token".to_string(),
             user_id: user_a,
+            actor_id: "usr_valid".to_string(),
             room_id: Some(room_a),
             connected_at_unix: 0,
             last_activity_unix: 0,
@@ -5538,6 +5559,7 @@ mod tests {
             connection_id: "conn-recover".to_string(),
             registration_token: "token-recover".to_string(),
             user_id: UserId::from(20_000_301),
+            actor_id: "usr_recover".to_string(),
             room_id: Some(RoomId::from(20_000_302)),
             connected_at_unix: 0,
             last_activity_unix: 0,
@@ -5602,6 +5624,7 @@ mod tests {
             connection_id: "conn1".to_string(),
             registration_token: "token1".to_string(),
             user_id: UserId::from(20_000_401),
+            actor_id: "usr_20000401".to_string(),
             room_id: Some(RoomId::from(20_000_402)),
             connected_at_unix: 1000,
             last_activity_unix: 2000,

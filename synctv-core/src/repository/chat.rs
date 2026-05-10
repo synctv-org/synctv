@@ -152,6 +152,32 @@ impl ChatRepository {
         Ok(msg)
     }
 
+    /// Get a specific message by ID, scoped to a room.
+    pub async fn get_by_room_and_id(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+    ) -> Result<Option<ChatMessage>> {
+        let msg = sqlx::query_as::<_, ChatMessage>(
+            r"
+            SELECT id,
+                   room_id,
+                   user_id,
+                   content,
+                   message_type,
+                   created_at
+            FROM chat_messages
+            WHERE room_id = $1 AND id = $2
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(message_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(msg)
+    }
+
     /// Delete a message (physical delete)
     ///
     /// Requires `created_at` to enable partition pruning. Without it, `PostgreSQL`
@@ -166,6 +192,30 @@ impl ChatRepository {
             message_id,
             created_at,
         )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete a message scoped to a room.
+    pub async fn delete_in_room(
+        &self,
+        room_id: &RoomId,
+        message_id: i64,
+        created_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r"
+            DELETE FROM chat_messages
+            WHERE room_id = $1
+              AND id = $2
+              AND created_at = $3
+            ",
+        )
+        .bind(room_id.as_i64())
+        .bind(message_id)
+        .bind(created_at)
         .execute(&self.pool)
         .await?;
 

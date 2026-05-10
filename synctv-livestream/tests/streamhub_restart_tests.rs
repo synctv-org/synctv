@@ -505,8 +505,8 @@ async fn test_publication_rejected_during_restart() {
 /// transient failures (e.g., brief network issues) could exhaust the limit
 /// even though the hub eventually stabilizes.
 ///
-/// The fix: decrement restart_count on each successful exit (clean shutdown),
-/// allowing the hub to recover from transient failure bursts.
+/// Decrement restart_count on each successful exit (clean shutdown), allowing
+/// the hub to recover from transient failure bursts.
 #[tokio::test]
 async fn test_restart_count_decrements_on_successful_exit() {
     const HUB_MAX_RESTARTS: u32 = 10;

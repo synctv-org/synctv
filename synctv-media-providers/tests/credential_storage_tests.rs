@@ -1,6 +1,6 @@
 //! Credential Storage Tests
 //!
-//! Regression tests for the in-memory credential storage implementation.
+//! Tests for the in-memory credential storage implementation.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;

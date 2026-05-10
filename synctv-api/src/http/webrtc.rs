@@ -13,7 +13,6 @@ use crate::http::middleware::RequestMetadata;
 use crate::http::{error::map_api_error, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 
-// M-10: Use proto types directly instead of duplicating response structs.
 // Proto types already derive serde::Serialize/Deserialize.
 use crate::proto::client::GetIceServersResponse;
 
@@ -22,8 +21,8 @@ use crate::proto::client::GetIceServersResponse;
 /// Returns a list of ICE servers configured for this deployment.
 ///
 /// Path: `GET /api/rooms/{room_id}/webrtc/ice-servers`
-/// Auth: Required (JWT)
-/// Permissions: Room membership required
+/// Auth: Required (JWT or room-bound guest token)
+/// Permissions: `USE_WEBRTC`
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -34,10 +33,10 @@ use crate::proto::client::GetIceServersResponse;
             ("room_id" = String, Path, description = "Room ID")
         ),
         responses(
-            (status = 200, description = "ICE servers for the authenticated room member", body = GetIceServersResponse),
+            (status = 200, description = "ICE servers for the authenticated room actor", body = GetIceServersResponse),
             (status = 400, description = "Invalid room ID", body = crate::openapi::ErrorResponseDoc),
             (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
-            (status = 403, description = "Room membership required", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "WebRTC permission required", body = crate::openapi::ErrorResponseDoc),
             (status = 404, description = "Room not found", body = crate::openapi::ErrorResponseDoc)
         ),
         security(
@@ -51,24 +50,23 @@ pub async fn get_ice_servers(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
     crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
-    let room_id = crate::impls::proto_validated_room_id(path.room_id, &state.public_id_codec)
-        .map_err(map_api_error)?;
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let client_api = state.client_api.clone();
+    let public_room_id = path.room_id;
+    let room_id =
+        crate::impls::proto_validated_room_id(public_room_id.clone(), &state.public_id_codec)
+            .map_err(map_api_error)?;
+    let request_meta = RequestMetadata(request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT)));
 
-    let response: GetIceServersResponse = state
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |authenticated| async move {
-                client_api
-                    .get_ice_servers(&room_id, &authenticated.user_id)
-                    .await
-            },
-        )
-        .await
-        .map_err(map_api_error)?;
+    let response = super::room::execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        public_room_id,
+        EndpointRateLimitCategory::Read,
+        move |client_api, actor| async move {
+            debug_assert_eq!(actor.room_id(), room_id);
+            client_api.get_ice_servers_for_actor(&actor).await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }

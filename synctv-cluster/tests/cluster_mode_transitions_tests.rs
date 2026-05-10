@@ -1,4 +1,4 @@
-//! CL3: `NodeRegistry` `ClusterMode` transitions
+//! `NodeRegistry` `ClusterMode` transitions
 //!
 //! - Trip circuit breaker (3 failures) -> `ClusterMode::Degraded`
 //! - Degraded mode may fall back to local cache for broad discovery calls

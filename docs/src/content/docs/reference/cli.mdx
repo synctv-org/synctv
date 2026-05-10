@@ -463,6 +463,7 @@ synctv provider rtmp info --username alice --room-id <ROOM_ID> <MEDIA_ID>
 synctv settings list
 synctv settings get email
 synctv settings update email --set whitelist_enabled=true --set whitelist=example.com
+synctv settings update permissions --set guest_default='["view_member_list","use_webrtc"]'
 synctv settings test-email admin@example.com
 ```
 

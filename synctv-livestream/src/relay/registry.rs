@@ -620,8 +620,8 @@ impl StreamRegistry {
     /// Try to register as publisher with `user_id`
     /// Returns true if registered successfully, false if already exists
     ///
-    /// FIXED: P0.5 - Uses atomic Lua script to prevent epoch race condition
-    /// The script ensures INCR + HSETNX are atomic - if HSETNX fails, epoch is rolled back
+    /// Uses an atomic Lua script to prevent epoch races.
+    /// The script ensures INCR + HSETNX are atomic; if HSETNX fails, epoch is rolled back.
     ///
     /// # Errors
     ///

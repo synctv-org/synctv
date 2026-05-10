@@ -62,12 +62,18 @@ Semantics:
 | --- | --- | --- | --- |
 | `permissions.admin_default` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
 | `permissions.member_default` | Permission-name array | Built-in member permission set | Global default permissions for room member |
-| `permissions.guest_default` | Permission-name array | Built-in guest permission set | Global default permissions for room guest |
+| `permissions.guest_default` | Permission-name array | `[]` | Global default permissions for room guest; only `view_member_list`, `view_chat_history`, and `use_webrtc` are accepted |
 
 These settings are stored as JSON arrays of stable permission names, for example:
 
 ```json
 ["send_chat", "add_media", "view_playlist", "view_member_list"]
+```
+
+`permissions.guest_default` has a dedicated guest ceiling. It rejects `view_playlist`, `send_chat`, media, playback-control, and administration permissions. Valid example:
+
+```json
+["view_member_list", "view_chat_history", "use_webrtc"]
 ```
 
 See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/) for permission names, role defaults, and room override rules.

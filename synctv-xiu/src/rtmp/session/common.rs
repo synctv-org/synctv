@@ -82,7 +82,6 @@ pub struct Common {
     //only Server Subscriber or Client Publisher needs to send out trunck data.
     packetizer: Option<ChunkPacketizer>,
 
-    // L-6: Use Option to avoid allocating unused channels at construction.
     // Set when the session actually subscribes (receiver) or publishes (sender).
     data_receiver: Option<FrameDataReceiver>,
     data_sender: Option<FrameDataSender>,

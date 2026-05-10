@@ -1,7 +1,7 @@
 //! Tests for the exponential backoff with jitter utility.
 //!
-//! These tests verify the backoff calculation after the B10 fix
-//! (removing the off-by-one .`saturating_sub(1)`).
+//! These tests verify that the base delay grows from attempt 0 without an
+//! off-by-one adjustment.
 
 #![allow(clippy::unwrap_used)]
 use std::time::Instant;
@@ -11,7 +11,6 @@ fn elapsed_millis_u64(start: Instant) -> u64 {
 }
 
 /// Helper: compute the expected base delay for a given attempt.
-/// After the B10 fix: base = `initial_ms` * 2^attempt (capped at attempt=16)
 fn expected_base(attempt: u32, initial_ms: u64) -> u64 {
     initial_ms.saturating_mul(1u64 << attempt.min(16))
 }
@@ -35,9 +34,8 @@ async fn test_backoff_attempt_0() {
 
 #[tokio::test]
 async fn test_backoff_exponential_growth() {
-    // Verify that attempt 0 and attempt 1 produce different delays
-    // (the B10 bug caused both to be identical).
-    // After fix: attempt 0 = initial*1, attempt 1 = initial*2
+    // Verify that attempt 0 and attempt 1 produce different delays:
+    // attempt 0 = initial*1, attempt 1 = initial*2.
     let initial_ms = 100;
     let max_ms = 10_000;
 

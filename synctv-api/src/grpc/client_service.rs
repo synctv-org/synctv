@@ -4,11 +4,10 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
 use crate::impls::messaging::{
-    MessageSender, RealtimeJoinError, StreamMessage, StreamMessageHandler,
+    GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal, StreamMessage,
+    StreamMessageHandler,
 };
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
-#[cfg(test)]
-use synctv_core::models::UserId;
 use synctv_core::models::{Room, RoomId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
@@ -24,18 +23,18 @@ use crate::proto::client::{
     ApproveRoomJoinReviewResponse, BanMemberRequest, BanMemberResponse, CheckRoomRequest,
     CheckRoomResponse, ClearPlaylistRequest, ClearPlaylistResponse, ClientMessage,
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
-    CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest,
-    DeleteMediaResponse, DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest,
-    EditMediaResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
-    FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
-    FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest, FinishPasskeyLoginRequest,
-    FinishPasskeyRegistrationRequest, GetChatHistoryRequest, GetChatHistoryResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest, GetIceServersResponse,
-    GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest, GetPlaybackResponse,
-    GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest, GetProfileResponse,
-    GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
+    ConfirmPasswordResetResponse, CreateGuestTokenRequest, CreateGuestTokenResponse,
+    CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse,
+    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaRequest, DeleteMediaResponse,
+    DeletePasskeyRequest, DeletePasskeyResponse, DeletePlaylistRequest, DeletePlaylistResponse,
+    DeleteRoomRequest, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
+    FinishMfaPasskeyRequest, FinishOpaqueLoginRequest, FinishOpaquePasswordUpdateRequest,
+    FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
+    FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
+    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
+    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
     JoinRoomRequest, JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest,
@@ -314,6 +313,144 @@ impl ClientServiceImpl {
             self.extract_room_id_from_metadata(request)?,
         ))
     }
+
+    fn extract_guest_token_from_authorization(
+        authorization: Option<&str>,
+    ) -> Result<Option<String>, Status> {
+        let Some(authorization) = authorization else {
+            return Ok(None);
+        };
+        let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(authorization)
+            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?;
+        if synctv_core::service::JwtService::token_type_hint(&token)
+            == Some(synctv_core::service::TokenType::Guest)
+        {
+            Ok(Some(token))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn execute_room_actor_endpoint<T, F, Fut>(
+        &self,
+        metadata: crate::impls::RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> Result<T, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<crate::impls::ClientApiImpl>, crate::impls::client::RoomActor) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'static,
+    {
+        let token = metadata
+            .authorization
+            .as_deref()
+            .map(synctv_core::service::auth::JwtValidator::extract_bearer_token)
+            .transpose()
+            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+        let is_guest_token = synctv_core::service::JwtService::token_type_hint(&token)
+            == Some(synctv_core::service::TokenType::Guest);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        if is_guest_token {
+            executor
+                .execute_public_endpoint(&metadata, category, move || {
+                    let client_api = client_api.clone();
+                    async move {
+                        let access = client_api
+                            .validate_guest_room_access(&token, &public_room_id)
+                            .await?;
+                        operation(client_api, crate::impls::client::RoomActor::Guest(access)).await
+                    }
+                })
+                .await
+                .map_err(map_api_error)
+        } else {
+            executor
+                .execute_user_endpoint(&metadata, category, move |authenticated| {
+                    let client_api = client_api.clone();
+                    async move {
+                        let actor = client_api
+                            .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                            .await?;
+                        operation(client_api, actor).await
+                    }
+                })
+                .await
+                .map_err(map_api_error)
+        }
+    }
+
+    async fn execute_room_actor_endpoint_with_control<T, F, Fut>(
+        &self,
+        metadata: crate::impls::RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> Result<T, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                Arc<crate::impls::ClientApiImpl>,
+                synctv_core::provider::ExecutionControl,
+                crate::impls::client::RoomActor,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'static,
+    {
+        let token = metadata
+            .authorization
+            .as_deref()
+            .map(synctv_core::service::auth::JwtValidator::extract_bearer_token)
+            .transpose()
+            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+        let is_guest_token = synctv_core::service::JwtService::token_type_hint(&token)
+            == Some(synctv_core::service::TokenType::Guest);
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        if is_guest_token {
+            executor
+                .execute_public_endpoint_with_control(&metadata, category, move |request_control| {
+                    let client_api = client_api.clone();
+                    async move {
+                        let access = client_api
+                            .validate_guest_room_access(&token, &public_room_id)
+                            .await?;
+                        operation(
+                            client_api,
+                            request_control,
+                            crate::impls::client::RoomActor::Guest(access),
+                        )
+                        .await
+                    }
+                })
+                .await
+                .map_err(map_api_error)
+        } else {
+            executor
+                .execute_user_endpoint_with_control(
+                    &metadata,
+                    category,
+                    move |request_control, authenticated| {
+                        let client_api = client_api.clone();
+                        async move {
+                            let actor = client_api
+                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                                .await?;
+                            operation(client_api, request_control, actor).await
+                        }
+                    },
+                )
+                .await
+                .map_err(map_api_error)
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -456,6 +593,29 @@ impl AuthService for ClientServiceImpl {
                 "Email token login requires email only and cannot be combined with username or password.",
             ));
         };
+        Ok(Response::new(response))
+    }
+
+    async fn create_guest_token(
+        &self,
+        request: Request<CreateGuestTokenRequest>,
+    ) -> Result<Response<CreateGuestTokenResponse>, Status> {
+        let metadata = self.request_metadata(&request);
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .create_guest_token_with_control(req, Some(&request_control))
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1110,18 +1270,14 @@ impl UserService for ClientServiceImpl {
         let metadata = self.request_metadata(&request);
         let req = request.into_inner();
         let room_id = req.room_id.clone();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api.get_room(&authenticated.user_id, &room_id).await
-                },
+                move |client_api, actor| async move { client_api.get_room_for_actor(&actor).await },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1210,20 +1366,16 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_room_members(&authenticated.user_id, room_id.as_str(), req)
-                        .await
+                move |client_api, actor| async move {
+                    client_api.get_room_members_for_actor(&actor, req).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1439,20 +1591,16 @@ impl RoomService for ClientServiceImpl {
         request: Request<GetRoomSettingsRequest>,
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_room_settings(&authenticated.user_id, room_id.as_str())
-                        .await
+                move |client_api, actor| async move {
+                    client_api.get_room_settings_for_actor(&actor).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1582,32 +1730,83 @@ impl RoomService for ClientServiceImpl {
         // Request<Streaming<_>> is !Sync, so holding it across.await makes
         // the future !Send, violating the tonic trait requirement.
         let (metadata, room_id) = self.internal_room_request_context(&request)?;
+        let guest_token =
+            Self::extract_guest_token_from_authorization(metadata.authorization.as_deref())?;
         let client_stream = request.into_inner();
         let executor = self.client_api.clone();
-        let user_id = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Streaming,
-                move |authenticated| async move {
-                    Ok::<_, crate::impls::ApiError>(authenticated.user_id)
-                },
+        let guest_principal = if let Some(guest_token) = guest_token {
+            let public_room_id = self
+                .client_api
+                .public_id_codec
+                .encode_room_id(room_id)
+                .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))?;
+            let client_api = self.client_api.clone();
+            Some(
+                executor
+                    .execute_public_endpoint(
+                        &metadata,
+                        EndpointRateLimitCategory::Streaming,
+                        move || async move {
+                            let access = client_api
+                                .validate_guest_room_access(&guest_token, &public_room_id)
+                                .await?;
+                            let identity = GuestRealtimeIdentity {
+                                guest_id: access.guest_id,
+                                display_name: access.display_name,
+                                session_id: access.session_id,
+                                token_jti: access.token_jti,
+                                room_guest_version: access.room_guest_version,
+                                permissions: access.permissions,
+                            };
+                            Ok::<_, crate::impls::ApiError>(RealtimePrincipal::guest(
+                                room_id, identity,
+                            ))
+                        },
+                    )
+                    .await
+                    .map_err(map_api_error)?,
             )
-            .await
-            .map_err(map_api_error)?;
+        } else {
+            None
+        };
+        let (user_id, _username, principal) = if let Some(principal) = guest_principal {
+            (
+                principal.connection_user_id(),
+                principal.username().to_string(),
+                principal,
+            )
+        } else {
+            let user_id = executor
+                .execute_user_endpoint(
+                    &metadata,
+                    EndpointRateLimitCategory::Streaming,
+                    move |authenticated| async move {
+                        Ok::<_, crate::impls::ApiError>(authenticated.user_id)
+                    },
+                )
+                .await
+                .map_err(map_api_error)?;
 
-        // Get user details from service
-        let user = self
-            .user_service
-            .get_user(&user_id)
-            .await
-            .map_err(map_message_stream_user_lookup_error)?;
-        let username = user.username;
+            // Get user details from service
+            let user = self
+                .user_service
+                .get_user(&user_id)
+                .await
+                .map_err(map_message_stream_user_lookup_error)?;
+            let username = user.username;
 
-        // Check room membership before establishing stream
-        self.room_service
-            .check_membership(&room_id, &user_id)
-            .await
-            .map_err(map_message_stream_membership_error)?;
+            // Check room membership before establishing stream
+            self.room_service
+                .check_membership(&room_id, &user_id)
+                .await
+                .map_err(map_message_stream_membership_error)?;
+
+            (
+                user_id,
+                username.clone(),
+                RealtimePrincipal::user(user_id, username),
+            )
+        };
 
         let room = self
             .room_service
@@ -1640,10 +1839,9 @@ impl RoomService for ClientServiceImpl {
         let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
 
         // Create StreamMessageHandler with all configuration
-        let stream_handler = StreamMessageHandler::new(
+        let stream_handler = StreamMessageHandler::new_with_principal(
             room_id,
-            user_id,
-            username.clone(),
+            principal,
             &self.room_service,
             self.chat_service.clone(),
             event_service,
@@ -1734,20 +1932,16 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetChatHistoryResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_chat_history(&authenticated.user_id, room_id.as_str(), req)
-                        .await
+                move |client_api, actor| async move {
+                    client_api.get_chat_history_for_actor(&actor, req).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1755,21 +1949,17 @@ impl RoomService for ClientServiceImpl {
         &self,
         request: Request<GetIceServersRequest>,
     ) -> Result<Response<GetIceServersResponse>, Status> {
-        let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let (metadata, room_id) = self.room_request_context(&request)?;
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_ice_servers(&room_id, &authenticated.user_id)
-                        .await
+                move |client_api, actor| async move {
+                    client_api.get_ice_servers_for_actor(&actor).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1893,20 +2083,16 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<ListPlaylistItemsResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .list_playlist_items(&authenticated.user_id, room_id.as_str(), req)
-                        .await
+                move |client_api, actor| async move {
+                    client_api.list_playlist_items_for_actor(&actor, req).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2030,25 +2216,18 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetPlaybackResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint_with_control(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint_with_control(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |request_control, authenticated| async move {
+                move |client_api, request_control, actor| async move {
                     client_api
-                        .get_playback_with_context(
-                            &authenticated.user_id,
-                            room_id.as_str(),
-                            req,
-                            &request_control,
-                        )
+                        .get_playback_for_actor(&actor, req, Some(&request_control))
                         .await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2083,20 +2262,18 @@ impl RoomService for ClientServiceImpl {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
         let playlist_id = req.playlist_id;
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
+                move |client_api, actor| async move {
                     client_api
-                        .get_playlist(&authenticated.user_id, room_id.as_str(), &playlist_id)
+                        .get_playlist_for_actor(&actor, &playlist_id)
                         .await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2175,20 +2352,16 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<ListPlaylistsResponse>, Status> {
         let (metadata, room_id) = self.room_request_context(&request)?;
         let req = request.into_inner();
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
+        let response = self
+            .execute_room_actor_endpoint(
+                metadata,
+                room_id,
                 EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .list_playlists(&authenticated.user_id, room_id.as_str(), req)
-                        .await
+                move |client_api, actor| async move {
+                    client_api.list_playlists_for_actor(&actor, req).await
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 }
@@ -2450,6 +2623,7 @@ impl EmailService for ClientServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::models::UserId;
 
     #[test]
     fn test_map_api_error_not_found() {

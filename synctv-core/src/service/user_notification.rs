@@ -149,9 +149,8 @@ impl UserNotificationService {
     /// Get notification by ID
     pub async fn get(&self, user_id: &UserId, notification_id: i64) -> Result<Notification> {
         self.repository
-            .get_by_id(notification_id)
+            .get_by_user_and_id(user_id, notification_id)
             .await?
-            .filter(|n| n.user_id == *user_id)
             .ok_or_else(|| Error::NotFound("Notification not found".to_string()))
     }
 

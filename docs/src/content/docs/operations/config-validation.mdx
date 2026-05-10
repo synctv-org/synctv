@@ -25,7 +25,7 @@ cargo run -p synctv --bin synctv -- config --config synctv.yaml validate
 
 错误含义：`security.opaque_server_setup_secret` 没有设置。
 
-修复：
+设置 secret：
 
 ```bash
 export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="$(openssl rand -base64 48)"
@@ -77,7 +77,7 @@ origin 不能包含路径。
 
 `cluster.enabled=true` 时 Redis 必须配置。
 
-修复：
+配置 Redis：
 
 ```yaml
 redis:
@@ -86,7 +86,7 @@ redis:
 
 ### 集群开启但 cluster secret 为空
 
-修复：
+设置 cluster secret：
 
 ```bash
 export SYNCTV_SERVER_CLUSTER_SECRET="$(openssl rand -hex 32)"

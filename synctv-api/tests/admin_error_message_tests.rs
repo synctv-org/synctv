@@ -4,12 +4,12 @@
 //! about user existence or moderation state. All authentication failures should return
 //! the same error message to prevent user enumeration attacks.
 //!
-//! Issue: validate_admin_auth had inconsistent error messages:
+//! validate_admin_auth must not expose distinct failure causes:
 //! - "Failed to verify user" when user lookup fails (line 49)
 //! - "Authentication failed" when user is banned/deleted (line 54)
 //!
-//! Fix: All user existence/moderation authentication failures should return
-//! "Authentication failed" to prevent information disclosure.
+//! All user existence/moderation authentication failures should return
+//! "Authentication failed".
 //!
 //! Note: Password change errors ("Token invalidated due to password change...")
 //! are intentionally different because they don't leak user existence -

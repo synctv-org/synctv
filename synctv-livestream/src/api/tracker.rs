@@ -677,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_periodic_cleanup_cancellation() {
-        // L12: Verify that start_periodic_cleanup shuts down when CancellationToken is cancelled
+        // Verify that start_periodic_cleanup shuts down when CancellationToken is cancelled.
         let tracker = Arc::new(StreamTracker::new());
         let cancel = tokio_util::sync::CancellationToken::new();
 

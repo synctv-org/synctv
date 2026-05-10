@@ -3084,9 +3084,8 @@ mod tests {
 
     /// Test that room subscriptions activated during disconnection are recovered on reconnect.
     ///
-    /// This test verifies the fix for the P1 issue where RedisPubSub subscriber
-    /// could lose subscriptions to rooms that were activated while the subscriber
-    /// was disconnected.
+    /// RedisPubSub must recover subscriptions to rooms that were activated while
+    /// the subscriber was disconnected.
     ///
     /// Scenario:
     /// 1. Start a PubSub instance with one room already active

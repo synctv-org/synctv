@@ -1463,8 +1463,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    // P-06: Redirect header preservation list
-
     #[test]
     fn test_redirect_preserve_headers_includes_critical_headers() {
         // Verify that provider-critical and client-critical headers are preserved

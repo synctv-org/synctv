@@ -2867,11 +2867,11 @@ mod tests {
         // This test verifies the state contains the correct instance_name.
     }
 
-    // Cluster mode Redis dependency tests (TDD)
+    // Cluster mode Redis dependency tests.
 
     /// Test: cluster mode with a local-only state store returns a descriptive error.
-    /// This is the core issue - in cluster mode, `OAuth2` states created on replica A
-    /// cannot be validated on replica B without shared single-use state storage.
+    /// In cluster mode, `OAuth2` states created on replica A cannot be validated
+    /// on replica B without shared single-use state storage.
     #[tokio::test]
     async fn test_cluster_mode_without_redis_returns_error() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();

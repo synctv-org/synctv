@@ -1068,8 +1068,8 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         );
         tracing::info!("NotificationService gRPC registered");
 
-        // RT-1: Spawn a background task that bridges notification creation events
-        // to the cluster event system, enabling real-time WebSocket push for
+        // Spawn a background task that bridges notification creation events to
+        // the cluster event system, enabling real-time WebSocket push for
         // persistent user notifications. Without this, clients must poll.
         // The task listens for the server shutdown signal so it does not leak
         // when the gRPC server stops.

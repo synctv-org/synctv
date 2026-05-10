@@ -101,15 +101,17 @@ Authorization: Bearer <access_token>
 
 ## Token 使用
 
-业务接口使用 Bearer token：
+业务接口使用 Bearer token。登录用户传 access token；游客读取公共房间资源时传 guest token：
 
 ```http
-Authorization: Bearer <access_token>
+Authorization: Bearer <access_token_or_guest_token>
 ```
 
 客户端规则：
 
 - access token 只用于短期 API 调用。
+- guest token 只绑定一个公共房间；只能读取或参与该房间允许游客访问的资源，不能登录、刷新会话、退出登录或访问账号接口。
+- 房间授予游客 `use_webrtc` 时，游客使用同一个 guest token 获取 ICE servers、建立 Realtime 连接并发送 WebRTC 信令。
 - refresh token 只用于刷新会话，不要传给 WebSocket query、媒体 URL 或第三方服务。
 - refresh token 刷新后应按服务端返回结果更新本地保存的 token；不要继续使用旧 refresh token 做并发刷新。
 - 用户开启 2FA 后，本地登录必须完成 MFA 后才能拿到满足策略的 token。OAuth2 登录不参与本地 2FA，但 OAuth2 登录签发的 token 可用于该登录路径。
@@ -245,6 +247,21 @@ WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.Clien
 实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放快照、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
 
 完整协议、delivery mode、版本同步、每类资源示例、重连和错误处理见 [Realtime API](../realtime-api/)。
+
+## WebRTC 启动
+
+WebRTC 客户端先获取 ICE servers，再连接 Realtime 发送信令。登录成员和已授权游客都使用标准 Bearer token，不需要专用 header：
+
+```http
+GET /api/rooms/<room_id>/webrtc/ice-servers
+Authorization: Bearer <access_token_or_guest_token>
+```
+
+访问条件：
+
+- 登录成员必须属于该房间并拥有 `use_webrtc`。
+- 游客必须持有该房间的 guest token，且房间允许游客访问并授予 `use_webrtc`。
+- 房间关闭、封禁、要求密码或撤销游客访问后，游客不能继续获取新的 ICE 配置。
 
 ## 媒体 URL 与请求头
 

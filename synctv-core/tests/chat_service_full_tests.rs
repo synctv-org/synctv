@@ -428,7 +428,9 @@ async fn test_delete_message_owner_can_delete_own() {
         .unwrap();
 
     // Owner should be able to delete their own message
-    let result = chat_service.delete_message(msg.id, &creator.id).await;
+    let result = chat_service
+        .delete_message(&room.id, msg.id, &creator.id)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -481,7 +483,9 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
         .unwrap();
 
     // Member (non-owner without DELETE_CHAT) tries to delete -- should fail
-    let result = chat_service.delete_message(msg.id, &member.id).await;
+    let result = chat_service
+        .delete_message(&room.id, msg.id, &member.id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -545,7 +549,9 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .unwrap();
 
     // Admin (with DELETE_CHAT) can delete another user's message
-    let result = chat_service.delete_message(msg.id, &admin.id).await;
+    let result = chat_service
+        .delete_message(&room.id, msg.id, &admin.id)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -1396,7 +1402,9 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
 
     // Member (without DELETE_CHAT permission) tries to delete orphaned message
     // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT permission
-    let result = chat_service.delete_message(msg.id, &member.id).await;
+    let result = chat_service
+        .delete_message(&room.id, msg.id, &member.id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -1408,7 +1416,9 @@ async fn test_delete_message_with_deleted_user_requires_permission() {
     }
 
     // Room creator (has all permissions) should be able to delete
-    let result = chat_service.delete_message(msg.id, &creator.id).await;
+    let result = chat_service
+        .delete_message(&room.id, msg.id, &creator.id)
+        .await;
     assert!(
         result.is_ok(),
         "Room creator (with DELETE_CHAT) should be able to delete orphaned message"

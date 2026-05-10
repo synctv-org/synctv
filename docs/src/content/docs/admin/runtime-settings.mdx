@@ -13,6 +13,12 @@ synctv settings get user.enable_password_signup
 synctv settings update user --set enable_password_signup=true
 ```
 
+权限默认值也属于 runtime settings。guest 使用独立上限，不能写入播放列表、媒体、聊天写入或管理权限：
+
+```bash
+synctv settings update permissions --set guest_default='["view_member_list","use_webrtc"]'
+```
+
 ## 判断是否属于 runtime settings
 
 | 想修改 | 应该去哪里 |

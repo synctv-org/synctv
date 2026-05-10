@@ -93,16 +93,10 @@ pub async fn resolve_media_from_playlist(
 
     let media = room_service
         .media_service()
-        .get_media(media_id)
+        .get_room_media(room_id, media_id)
         .await
         .map_err(|e| ClientApiImpl::map_media_lookup_error(e, "Media not found in playlist"))?
         .ok_or_else(|| ApiError::NotFound("Media not found in playlist".to_string()))?;
-
-    if media.room_id != *room_id {
-        return Err(ApiError::NotFound(
-            "Media not found in playlist".to_string(),
-        ));
-    }
 
     Ok(media)
 }
@@ -177,11 +171,11 @@ impl ClientApiImpl {
         let media = self
             .room_service
             .media_service()
-            .get_media(media_id)
+            .get_room_media(room_id, media_id)
             .await
             .ok()??;
 
-        if media.room_id != *room_id || media.source_provider != "live_proxy" {
+        if media.source_provider != "live_proxy" {
             return None;
         }
 

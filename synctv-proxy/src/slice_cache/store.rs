@@ -1330,8 +1330,6 @@ impl SliceCache {
         self.meta.remove(&mk);
     }
 
-    // Lock cleanup (L3 fix)
-
     /// Periodically remove stale per-key locks that are not currently held
     /// by any task.  A lock is considered stale when the only remaining
     /// `Arc` reference is the one stored in the `DashMap` itself

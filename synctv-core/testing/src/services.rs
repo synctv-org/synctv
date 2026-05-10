@@ -2,14 +2,18 @@
 
 use crate::constants;
 use std::sync::Arc;
+use synctv_core::cache::{KeyBuilder, UsernameCache};
+use synctv_core::config::PasswordComplexityConfig;
+use synctv_core::repository::SettingsRepository;
 use synctv_core::service::{
     auth::{
         brute_force::InMemoryAttemptTracker, jwt::JwtService,
         token_blacklist::InMemoryTokenBlacklistStore,
     },
     rate_limit::RequestRateLimiterService,
-    BruteForceProtection, BruteForceProtectionService, RateLimiter, StreamingPublishKeyService,
-    TokenBlacklistStore, WebSocketTicketService, WsTicketService,
+    BruteForceProtection, BruteForceProtectionService, RateLimiter, RoomService, SettingsRegistry,
+    SettingsService, StreamingPublishKeyService, TokenBlacklistStore, UserService,
+    WebSocketTicketService, WsTicketService,
 };
 
 /// Creates a JWT service for testing
@@ -111,6 +115,34 @@ pub fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
 #[must_use]
 pub fn create_test_token_blacklist_store_service() -> Arc<dyn TokenBlacklistStore> {
     Arc::new(create_test_token_blacklist_store())
+}
+
+/// Creates a `UserService` with in-memory test dependencies.
+#[must_use]
+pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
+    let mut service = UserService::new(
+        pool,
+        create_test_jwt_service(),
+        UsernameCache::local_only("test:username:".to_string(), 128, 60),
+        PasswordComplexityConfig::default(),
+        create_test_token_blacklist_store_service(),
+        KeyBuilder::new("test"),
+        create_test_brute_force_protection_service(),
+    );
+    service.enable_password_registration_for_tests();
+    service
+}
+
+/// Creates a `RoomService` with in-memory test dependencies where possible.
+#[must_use]
+pub fn create_test_room_service(pool: sqlx::PgPool) -> RoomService {
+    let mut service = RoomService::new(pool.clone(), create_test_user_service(pool.clone()));
+    let settings_service = Arc::new(SettingsService::new(
+        SettingsRepository::new(pool.clone()),
+        pool,
+    ));
+    service.set_settings_registry(Arc::new(SettingsRegistry::new(settings_service)));
+    service
 }
 
 /// Creates a request rate limiter trait object for testing.

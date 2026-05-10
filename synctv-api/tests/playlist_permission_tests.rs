@@ -1,12 +1,9 @@
-//! Playlist Permission Tests (TDD)
+//! Playlist Permission Tests
 //!
 //! Tests that playlist operations (create, update, delete) properly check permissions.
 //!
-//! Security Issue: If playlist operations don't check permissions, any room member
-//! could modify playlists even without REORDER_PLAYLIST permission.
-//!
-//! Fix: All playlist mutation operations must check REORDER_PLAYLIST permission,
-//! and read operations must verify room membership.
+//! Playlist mutation operations must check REORDER_PLAYLIST permission, and read
+//! operations must verify room membership.
 
 #![allow(clippy::unwrap_used)]
 
@@ -59,17 +56,18 @@ fn test_permission_check_with_removed_permission() {
 }
 
 #[test]
-fn test_permission_check_with_added_permission() {
-    // Guest with REORDER_PLAYLIST added should pass check
+fn test_guest_cannot_receive_playlist_write_permission() {
     let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
     let added = PermissionBits::REORDER_PLAYLIST;
 
-    // Calculate effective: (default) | added
-    let effective = PermissionBits(guest_default.0 | added);
+    let effective = PermissionBits(
+        (guest_default.0 & PermissionBits::GUEST_ASSIGNABLE)
+            | (added & PermissionBits::GUEST_ASSIGNABLE),
+    );
 
     assert!(
-        effective.has(PermissionBits::REORDER_PLAYLIST),
-        "Guest with added REORDER_PLAYLIST should have the permission"
+        !effective.has(PermissionBits::REORDER_PLAYLIST),
+        "Guest should not receive REORDER_PLAYLIST even when requested"
     );
 }
 
@@ -81,16 +79,15 @@ const _: () = assert!(
 );
 
 #[test]
-fn test_all_roles_have_view_playlist_permission() {
-    // All roles should have VIEW_PLAYLIST by default (read access)
+fn test_signed_in_room_roles_have_view_playlist_permission() {
     let guest_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
     let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
     let admin_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
     let creator_perms = PermissionBits(PermissionBits::ALL);
 
     assert!(
-        guest_default.has(PermissionBits::VIEW_PLAYLIST),
-        "Guest should have VIEW_PLAYLIST permission"
+        !guest_default.has(PermissionBits::VIEW_PLAYLIST),
+        "Guest should not have VIEW_PLAYLIST permission"
     );
     assert!(
         member_default.has(PermissionBits::VIEW_PLAYLIST),

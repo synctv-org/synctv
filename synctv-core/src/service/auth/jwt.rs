@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
@@ -27,6 +28,18 @@ pub enum TokenType {
     Access,  // default: 1 hour (configurable)
     Refresh, // default: 30 days (configurable)
     Guest,   // default: 4 hours (configurable)
+}
+
+impl TokenType {
+    #[must_use]
+    pub fn from_claim_typ(value: &str) -> Option<Self> {
+        match value {
+            "access" => Some(Self::Access),
+            "refresh" => Some(Self::Refresh),
+            "guest" => Some(Self::Guest),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +221,26 @@ fn map_jwt_error(e: &jsonwebtoken::errors::Error, context: &str) -> Error {
 }
 
 impl JwtService {
+    /// Return the untrusted `typ` claim from a JWT payload.
+    ///
+    /// This is only suitable for routing a token to the correct verifier. It
+    /// does not validate the signature, issuer, audience, expiration, or token
+    /// revocation state.
+    #[must_use]
+    pub fn token_type_hint(token: &str) -> Option<TokenType> {
+        #[derive(Deserialize)]
+        struct TokenTypeHint {
+            typ: String,
+        }
+
+        let payload = token.split('.').nth(1)?;
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .ok()?;
+        let hint = serde_json::from_slice::<TokenTypeHint>(&decoded).ok()?;
+        TokenType::from_claim_typ(&hint.typ)
+    }
+
     /// Create a new JWT service with HS256 secret and configurable token durations
     ///
     /// # Arguments

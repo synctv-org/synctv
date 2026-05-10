@@ -304,8 +304,8 @@ impl ExternalStreamPuller {
                 Ok(sender) => sender,
                 Err(e) => {
                     let err_msg = format!("{e}");
-                    // M-8: If publish fails with "Exists" (stale entry from failed unpublish),
-                    // force-unpublish first and retry immediately
+                    // If publish fails with "Exists" from a stale entry, force-unpublish
+                    // first and retry immediately.
                     if err_msg.contains("Exists") || err_msg.contains("exists") {
                         warn!(
                             room_id = %self.room_id,
@@ -882,8 +882,8 @@ impl ExternalStreamPuller {
             .await
             .map_err(|_| anyhow::anyhow!("Publish result channel closed"))?
             .map_err(|e| {
-                // M-8: If the stream already exists (e.g., unpublish failed on previous retry),
-                // treat it as a non-fatal error so the caller can handle it
+                // If the stream already exists, treat it as non-fatal so the caller
+                // can handle it.
                 anyhow::anyhow!("Publish failed: {e}")
             })?;
 

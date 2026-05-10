@@ -1,4 +1,4 @@
-//! Cross-replica room synchronization integration tests (R-P2-2)
+//! Cross-replica room synchronization integration tests.
 //!
 //! Tests verify that the `RoomMessageHub` correctly synchronizes subscription
 //! state across replicas via Redis. Each test starts a Redis container and

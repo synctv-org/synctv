@@ -807,7 +807,9 @@ async fn test_settings_cas_exhaustion_returns_internal() {
             );
         }
         Err(Error::OptimisticLockConflict) => {
-            panic!("Bug B6: OptimisticLockConflict should NOT leak; should be wrapped in Internal error");
+            panic!(
+                "OptimisticLockConflict should not leak; it should be wrapped in Internal error"
+            );
         }
         Err(other) => {
             panic!("Unexpected error: {other:?}");
@@ -1022,8 +1024,8 @@ async fn test_room_description_over_500_rejected() {
     }
 }
 
-// to prevent a race condition where:
-// The fix ensures password is re-verified inside the lock with fresh data.
+// Password is re-verified inside the lock with fresh data to prevent a race
+// between the first password check and the locked room update.
 
 /// Helper to directly update room password in database, simulating an admin change
 async fn direct_update_room_password(
@@ -2962,7 +2964,7 @@ async fn test_remove_media_respects_admin_override_columns() {
         updated_at: now,
         version: 0,
     };
-    media_repo.create(&media).await.unwrap();
+    let media = media_repo.create(&media).await.unwrap();
 
     let result = room_service.remove_media(room.id, admin.id, media.id).await;
     assert!(
@@ -5777,7 +5779,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         updated_at: chrono::Utc::now(),
         version: 0,
     };
-    playlist_repo.create(&playlist).await.unwrap();
+    let playlist = playlist_repo.create(&playlist).await.unwrap();
 
     let now = chrono::Utc::now();
     let media = synctv_core::models::Media {

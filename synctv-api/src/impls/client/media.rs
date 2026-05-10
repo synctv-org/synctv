@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
     Media, MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
-    Playlist, PlaylistListQuery as CorePlaylistListQuery,
+    PermissionBits, Playlist, PlaylistListQuery as CorePlaylistListQuery,
     PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
     UserId,
 };
@@ -24,7 +24,7 @@ use super::convert::{
     media_to_proto_with_availability, playlist_list_to_proto, playlist_path_node_to_proto,
     playlist_to_proto_with_availability,
 };
-use super::ClientApiImpl;
+use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playlist_fanout::{PlaylistFanoutService, PreparedPlaylistDeletedFanout};
 
@@ -249,7 +249,7 @@ pub(crate) async fn build_move_media_fanout_plan(
     let original_media = if request.all_from_scope {
         match request.source_playlist_id.as_ref() {
             Some(playlist_id) => media_service
-                .get_playlist_media(playlist_id)
+                .get_room_playlist_media(room_id, playlist_id)
                 .await
                 .map_err(ApiError::from)?,
             None => media_service
@@ -259,7 +259,7 @@ pub(crate) async fn build_move_media_fanout_plan(
         }
     } else {
         media_service
-            .get_media_batch(&request.media_ids)
+            .get_room_media_batch(room_id, &request.media_ids)
             .await
             .map_err(ApiError::from)?
     };
@@ -624,7 +624,7 @@ impl ClientApiImpl {
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
-                .count_playlist_media(playlist_id)
+                .count_room_playlist_media(&rid, playlist_id)
                 .await
                 .map_err(ApiError::from)
                 .map(i64_to_usize_saturating)?
@@ -831,7 +831,7 @@ impl ClientApiImpl {
         let existing_count = if let Some(ref playlist_id) = playlist_id {
             self.room_service
                 .media_service()
-                .count_playlist_media(playlist_id)
+                .count_room_playlist_media(&rid, playlist_id)
                 .await
                 .map_err(ApiError::from)
                 .map(i64_to_usize_saturating)?
@@ -953,16 +953,29 @@ impl ClientApiImpl {
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.list_playlist_items_for_actor(&actor, req).await
+    }
 
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-
-        // Check membership
-        self.room_service
-            .check_membership(&rid, &uid)
+    pub async fn list_playlist_items_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        req: crate::proto::client::ListPlaylistItemsRequest,
+    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.list_playlist_items_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
-            .map_err(Self::map_room_access_error)?;
+    }
 
+    pub async fn list_playlist_items_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: crate::proto::client::ListPlaylistItemsRequest,
+    ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+            .await?;
+        let rid = actor.room_id();
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
             None
         } else {
@@ -1097,14 +1110,14 @@ impl ClientApiImpl {
         let playlist = self
             .room_service
             .playlist_service()
-            .get_playlist(&playlist_id)
+            .get_room_playlist(&rid, &playlist_id)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {} not found", req.playlist_id)))?;
         let static_path = self
             .room_service
             .playlist_service()
-            .get_playlist_path(&playlist_id)
+            .get_room_playlist_path(&rid, &playlist_id)
             .await
             .map_err(ApiError::from)?;
         let mut current_path: Vec<crate::proto::client::PlaylistBrowsePathNode> = static_path
@@ -1113,6 +1126,11 @@ impl ClientApiImpl {
             .collect();
 
         if playlist.is_dynamic() {
+            let Some(uid) = actor.user_id() else {
+                return Err(ApiError::Authorization(
+                    "Guests cannot browse dynamic provider playlists".to_string(),
+                ));
+            };
             self.room_service
                 .ensure_client_usable_playlist(&playlist)
                 .await
@@ -1359,25 +1377,34 @@ impl ClientApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::Media, ApiError> {
-        let uid = *user_id;
-        let rid = self.parse_room_id(room_id)?;
-        let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
+        let actor = self.room_actor_for_user(user_id, room_id).await?;
+        self.get_media_for_actor(&actor, media_id).await
+    }
 
-        // Check VIEW_PLAYLIST permission
-        self.room_service
-            .check_permission(
-                &rid,
-                &uid,
-                synctv_core::models::PermissionBits::VIEW_PLAYLIST,
-            )
+    pub async fn get_media_as_guest(
+        &self,
+        access: &GuestRoomAccess,
+        media_id: &str,
+    ) -> Result<crate::proto::client::Media, ApiError> {
+        self.get_media_for_actor(&RoomActor::Guest(access.clone()), media_id)
             .await
-            .map_err(ApiError::from)?;
+    }
 
-        // M-5: Direct lookup by ID instead of loading the entire playlist
+    pub async fn get_media_for_actor(
+        &self,
+        actor: &RoomActor,
+        media_id: &str,
+    ) -> Result<crate::proto::client::Media, ApiError> {
+        let rid = actor.room_id();
+        let mid = crate::impls::parse_media_id_param(media_id, "media_id", &self.public_id_codec)?;
+        self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
+            .await?;
+
+        // Direct lookup by ID instead of loading the entire playlist.
         let media = self
             .room_service
             .media_service()
-            .get_media(&mid)
+            .get_room_media(&rid, &mid)
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
@@ -1399,16 +1426,10 @@ impl ClientApiImpl {
 impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService for ClientApiImpl {
     async fn get_playlist_items_snapshot(
         &self,
-        user_id: &UserId,
-        room_id: &synctv_core::models::RoomId,
+        actor: &crate::impls::client::RoomActor,
         req: &crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, crate::impls::ApiError> {
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(*room_id)
-            .map_err(crate::impls::ApiError::InvalidInput)?;
-        self.list_playlist_items(user_id, &public_room_id, req.clone())
-            .await
+        self.list_playlist_items_for_actor(actor, req.clone()).await
     }
 }
 

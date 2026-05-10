@@ -3,8 +3,8 @@
 //! These tests verify that ClientSession properly handles handshake timeouts
 //! to prevent malicious servers from indefinitely hanging connections.
 //!
-//! Security: P0 - Without timeout, a malicious RTMP server could hold client
-//! connections indefinitely, leading to resource exhaustion.
+//! Without timeout, a malicious RTMP server could hold client connections
+//! indefinitely, leading to resource exhaustion.
 
 #![allow(clippy::unwrap_used)]
 

@@ -959,7 +959,7 @@ impl PlaybackService {
             let next_target = if let Some(ref playlist_id) = state.playing_playlist_id {
                 let playlist = self
                     .media_service
-                    .get_playlist(playlist_id)
+                    .get_room_playlist(room_id, playlist_id)
                     .await?
                     .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                 match self
@@ -990,7 +990,7 @@ impl PlaybackService {
                 let playlist = if let Some(ref current_id) = state.playing_media_id {
                     let current_media = self
                         .media_service
-                        .get_media(current_id)
+                        .get_room_media(room_id, current_id)
                         .await?
                         .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?;
 
@@ -1007,14 +1007,10 @@ impl PlaybackService {
                         Err(error) => return Err(error),
                     }
 
-                    if current_media.room_id != *room_id {
-                        return Err(Error::Authorization(
-                            "Current media does not belong to this room".to_string(),
-                        ));
-                    }
-
                     if let Some(ref playlist_id) = current_media.playlist_id {
-                        self.media_service.get_playlist_media(playlist_id).await?
+                        self.media_service
+                            .get_room_playlist_media(room_id, playlist_id)
+                            .await?
                     } else {
                         self.media_service.get_room_root_media(room_id).await?
                     }
@@ -1133,7 +1129,7 @@ impl PlaybackService {
                 } => {
                     let playlist = self
                         .media_service
-                        .get_playlist(playlist_id)
+                        .get_room_playlist(room_id, playlist_id)
                         .await?
                         .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
                     match self
@@ -1227,7 +1223,7 @@ impl PlaybackService {
         let playing_media = match playing_media_id {
             Some(ref id) => self
                 .media_service
-                .get_media(id)
+                .get_room_media(room_id, id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?,
             None => return Ok(None),
@@ -1481,15 +1477,9 @@ impl PlaybackService {
         if let Some(ref media_id) = target.media_id {
             let media = self
                 .media_service
-                .get_media(media_id)
+                .get_room_media(&room_id, media_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
 
             self.ensure_creator_is_active(media.creator_id.as_ref(), "Media")
                 .await?;
@@ -1498,15 +1488,9 @@ impl PlaybackService {
         if let Some(ref playlist_id) = target.playlist_id {
             let playlist = self
                 .media_service
-                .get_playlist(playlist_id)
+                .get_room_playlist(&room_id, playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
 
             if !playlist.is_dynamic() {
                 return Err(Error::InvalidInput(

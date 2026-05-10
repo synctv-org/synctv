@@ -1,4 +1,4 @@
-//! CL10: `MessageDeduplicator` TTL
+//! `MessageDeduplicator` TTL
 //!
 //! - `tokio::time::pause`, mark key, advance past dedup window, assert reprocessable
 //!

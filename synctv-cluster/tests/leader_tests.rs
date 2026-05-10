@@ -1,7 +1,7 @@
 //! Leader election tests
 //!
 //! Tests for leader guard cancellation via the `LeaderElect` trait,
-//! first-election timing (verifies the bug fix), and vacancy events.
+//! first-election timing, and vacancy events.
 //! These tests do not require a running Redis instance.
 
 #![allow(clippy::unwrap_used)]
@@ -86,12 +86,10 @@ async fn test_leader_guard_not_cancelled_on_gained() {
     );
 }
 
-// Test 4: First election not delayed (verifies the bug fix)
 // The old code used `tokio::time::sleep(interval)` which always waited
-// one full renew_interval before the first election attempt. The fix
-// uses `tokio::time::interval` which fires immediately on first tick.
-// This test verifies the fix by confirming that `tokio::time::interval`
-// with the default `Burst` tick behavior fires its first tick without delay.
+// one full renew_interval before the first election attempt. This test confirms
+// that `tokio::time::interval` with the default `Burst` tick behavior fires its
+// first tick without delay.
 
 #[tokio::test]
 async fn test_first_election_not_delayed() {
@@ -129,11 +127,10 @@ async fn test_leader_guard_cancelled_on_channel_close() {
 
 // Test 6: Redis time-based grace period prevents clock skew split-brain
 
-/// This test verifies that the clock skew fix works correctly by simulating
-/// the scenario where two nodes have different local clocks but both query
+/// This test simulates two nodes with different local clocks that both query
 /// Redis TIME for grace period calculations.
 ///
-/// The fix ensures that:
+/// The invariant:
 /// 1. Leadership loss timestamps are stored as Redis TIME (not local Instant)
 /// 2. Grace period checks query Redis TIME and compare against stored timestamp
 /// 3. Multiple nodes with clock skew cannot simultaneously exit grace period
@@ -197,13 +194,9 @@ fn test_redis_time_saturating_sub_handles_underflow() {
     );
 }
 
-// Test 7: leader_guard race condition fix
-// This test verifies that the race condition between subscribe() and the
-// spawned task starting to listen is fixed.
-// The bug: If Lost event is sent AFTER subscribe() returns but BEFORE the
-// spawned task starts listening, the guard would never be cancelled.
-// The fix: Use a oneshot channel to ensure the spawned task is listening
-// before returning the guard token.
+// This test covers the race between subscribe() and the spawned task starting
+// to listen. If Lost is sent after subscribe() returns but before the spawned
+// task starts listening, the guard still has to be cancelled.
 
 /// A mock elector that allows precise control over when events are sent
 /// relative to when subscribe() is called.
@@ -239,7 +232,7 @@ async fn test_leader_guard_no_race_condition_on_immediate_lost() {
     let guard = elector.leader_guard();
 
     // The Lost event was sent during subscribe(), before spawn.
-    // The fix ensures the spawned task receives it anyway.
+    // The spawned task should still receive it.
     // Give the task a bit of time to process (should be nearly instant).
     tokio::time::sleep(Duration::from_millis(100)).await;
 

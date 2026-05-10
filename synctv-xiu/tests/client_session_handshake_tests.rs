@@ -1,7 +1,7 @@
 //! ClientSession Handshake Timeout Tests
 //!
 //! This test suite covers:
-//! 1. Handshake timeout protection (P0 security fix)
+//! 1. Handshake timeout protection
 //! 2. Normal handshake flow
 //! 3. Invalid C0/C1 data handling
 

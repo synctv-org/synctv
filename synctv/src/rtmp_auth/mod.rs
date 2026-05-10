@@ -560,7 +560,7 @@ impl AuthCallback for SyncTvRtmpAuth {
         }
     }
 
-    /// A5: Rollback publisher registration when `StreamHub` publish fails after auth.
+    /// Roll back publisher registration when `StreamHub` publish fails after auth.
     ///
     /// Called when `on_publish` succeeded (registered in Redis, inserted tracker entry,
     /// wrote user_streams hash) but a later step (e.g., `StreamHub` publish) failed.

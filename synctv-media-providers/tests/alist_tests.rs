@@ -433,8 +433,6 @@ async fn test_alist_client_5xx_retries() {
     assert_eq!(result.unwrap().name, "video.mp4");
 }
 
-// MP4: AlistClient::fs_other wiremock test
-
 #[tokio::test]
 async fn test_alist_client_fs_other_success() {
     let server = MockServer::start().await;
@@ -554,8 +552,6 @@ async fn test_alist_client_get_video_transcode_uses_video_preview_method_and_acc
     assert!(preview.live_transcoding_task_list.is_empty());
     assert!(preview.live_transcoding_subtitle_task_list.is_empty());
 }
-
-// MP4: AlistClient::fs_search wiremock test
 
 #[tokio::test]
 async fn test_alist_client_fs_search_success() {
@@ -677,8 +673,6 @@ async fn test_alist_client_fs_search_traversal_rejected() {
     );
 }
 
-// MP6: AlistClient::me wiremock test
-
 #[tokio::test]
 async fn test_alist_client_me_success() {
     let server = MockServer::start().await;
@@ -771,8 +765,6 @@ async fn test_alist_client_me_unauthorized() {
         "Expected unauthorized error, got: {err_msg}"
     );
 }
-
-// MP7: AlistClient::login with hashed=true
 
 #[tokio::test]
 async fn test_alist_client_login_hashed_success() {

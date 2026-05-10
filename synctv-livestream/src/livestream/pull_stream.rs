@@ -184,7 +184,7 @@ impl PullStream {
             let max_rebuilds: u32 = 3;
             let rebuild_delay = std::time::Duration::from_secs(5);
             let epoch_revalidation_interval = std::time::Duration::from_secs(30);
-            // L-04: After this many Redis failures, terminate to avoid streaming with stale data.
+            // After this many Redis failures, terminate to avoid streaming with stale data.
             let max_consecutive_epoch_failures: u32 = 3;
 
             let mut rebuild_count: u32 = 0;
@@ -223,7 +223,7 @@ impl PullStream {
                                            epoch_interval.tick().await;
                                            match registry.validate_epoch(&room_id, &media_id, epoch).await {
                                                Ok(true) => {
-                // L-04: Reset failure counter on success
+                                                   // Reset failure counter on success.
                                                    consecutive_epoch_failures = 0;
                                                    debug!(
                                                        "Periodic epoch {} still valid for {}/{}",
@@ -238,7 +238,7 @@ impl PullStream {
                                                    return;
                                                }
                                                Err(e) => {
-                // L-04: Track consecutive failures instead of unconditional fail-open
+                                                   // Track consecutive failures instead of unconditional fail-open.
                                                    consecutive_epoch_failures += 1;
                                                    if consecutive_epoch_failures >= max_consecutive_epoch_failures {
                                                        error!(
@@ -317,12 +317,11 @@ impl PullStream {
                             }
                         }
 
-                        // LS-7: Re-validate epoch before reconnecting to detect
-                        // split-brain scenarios where the publisher has changed
-                        // during the network disruption.
+                        // Re-validate epoch before reconnecting to detect split-brain
+                        // scenarios where the publisher changed during the disruption.
                         match registry.validate_epoch(&room_id, &media_id, epoch).await {
                             Ok(true) => {
-                                // L-04: Reset failure counter on success
+                                // Reset failure counter on success.
                                 consecutive_epoch_failures = 0;
                                 debug!(
                                     "Epoch {} still valid on reconnect for {}/{}",
@@ -344,7 +343,7 @@ impl PullStream {
                                 ));
                             }
                             Err(e) => {
-                                // L-04: Track consecutive failures instead of unconditional fail-open
+                                // Track consecutive failures instead of unconditional fail-open.
                                 consecutive_epoch_failures += 1;
                                 if consecutive_epoch_failures >= max_consecutive_epoch_failures {
                                     error!(

@@ -66,7 +66,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -850,7 +850,7 @@ impl RoomService {
         let permission_service = PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
-            None,
+            options.settings_registry.clone(),
             PermissionService::DEFAULT_CACHE_SIZE,
             PermissionService::DEFAULT_CACHE_TTL_SECS,
             Some(RoomSettingsRepository::new(pool.clone())),
@@ -1027,6 +1027,8 @@ impl RoomService {
 
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
     pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
+        self.permission_service
+            .set_settings_registry(Arc::clone(&registry));
         self.settings_registry = Some(registry);
     }
 
@@ -1740,7 +1742,6 @@ impl RoomService {
             return Ok((room, pending_member, Vec::new()));
         }
 
-        // R-P2-1: Enforce room capacity limits by enabling max_members check.
         // AddMemberOptions::new() defaults to check_max_members=false; explicitly
         // enable it so the member_service reads max_members from RoomSettings and
         // rejects the join if the room is at capacity.
@@ -2555,6 +2556,17 @@ impl RoomService {
 
         tracing::debug!(room_id = %room_id, "Guest access allowed");
         Ok(())
+    }
+
+    /// Return the effective room permissions for guests.
+    ///
+    /// This is the single entry point for combining the global guest default
+    /// permission set with room-level guest added/removed permissions.
+    pub async fn get_guest_permissions(&self, room_id: &RoomId) -> Result<PermissionBits> {
+        let settings = self.get_room_settings(room_id).await?;
+        Ok(self
+            .permission_service
+            .calculate_role_default_permissions(&RoomRole::Guest, &settings))
     }
 
     /// Soft-delete a room.
@@ -4127,20 +4139,12 @@ impl RoomService {
 
         let playlists = self
             .playlist_repo
-            .get_by_ids_with_executor(&playlist_ids, &mut *tx)
+            .get_by_room_and_ids_with_executor(&room_id, &playlist_ids, &mut *tx)
             .await?;
         if playlists.len() != playlist_ids.len() {
             return Err(Error::NotFound(
                 "One or more playlists not found".to_string(),
             ));
-        }
-
-        for playlist in &playlists {
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
         }
 
         if !playlist_ids.is_empty()
@@ -4159,7 +4163,7 @@ impl RoomService {
 
         let media_items = self
             .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
             .await?;
         if media_items.len() != media_ids.len() {
             return Err(Error::NotFound(
@@ -4170,11 +4174,6 @@ impl RoomService {
         let mut has_owned_media = false;
         let mut has_foreign_media = false;
         for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
             if media.creator_id.as_ref() == Some(&user_id) {
                 has_owned_media = true;
             } else {
@@ -4347,7 +4346,7 @@ impl RoomService {
 
         let playlists = self
             .playlist_repo
-            .get_by_ids_with_executor(&playlist_ids, &mut *tx)
+            .get_by_room_and_ids_with_executor(&room_id, &playlist_ids, &mut *tx)
             .await?;
         if playlists.len() != playlist_ids.len() {
             return Err(Error::NotFound(
@@ -4355,30 +4354,14 @@ impl RoomService {
             ));
         }
 
-        for playlist in &playlists {
-            if playlist.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Playlist does not belong to this room".to_string(),
-                ));
-            }
-        }
-
         let media_items = self
             .media_repo
-            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
             .await?;
         if media_items.len() != media_ids.len() {
             return Err(Error::NotFound(
                 "One or more media items not found".to_string(),
             ));
-        }
-
-        for media in &media_items {
-            if media.room_id != room_id {
-                return Err(Error::Authorization(
-                    "Media does not belong to this room".to_string(),
-                ));
-            }
         }
 
         let impact =
@@ -4504,7 +4487,10 @@ impl RoomService {
     pub async fn get_playing_media(&self, room_id: &RoomId) -> Result<Option<Media>> {
         let state = self.playback_service.get_state(room_id).await?;
         if let Some(media_id) = state.playing_media_id {
-            Ok(self.media_service.get_media(&media_id).await?)
+            Ok(self
+                .media_service
+                .get_room_media(room_id, &media_id)
+                .await?)
         } else {
             Ok(None)
         }
@@ -5598,49 +5584,85 @@ async fn has_room_permission_in_tx(
     user_id: &UserId,
     permission: u64,
 ) -> Result<bool> {
-    let required_permission = permission.cast_signed();
-    let admin_default = PermissionBits::DEFAULT_ADMIN.cast_signed();
-    let member_default = PermissionBits::DEFAULT_MEMBER.cast_signed();
-    let guest_default = PermissionBits::DEFAULT_GUEST.cast_signed();
-    let has_permission = sqlx::query_scalar!(
-        r#"SELECT EXISTS (
-            SELECT 1
-            FROM room_members rm
-            LEFT JOIN room_settings rs
-              ON rs.room_id = rm.room_id
-             AND rs.key = '_settings'
-            WHERE rm.room_id = $1
-              AND rm.user_id = $2
-              AND rm.left_at IS NULL
-              AND (
-                  rm.role = 1
-                  OR (
-                      CASE rm.role
-                          WHEN 2 THEN
-                              (((($4 | COALESCE((rs.value::jsonb ->> 'admin_added_permissions')::bigint, 0::bigint) | rm.admin_added_permissions) &
-                               ~COALESCE((rs.value::jsonb ->> 'admin_removed_permissions')::bigint, 0::bigint) & ~rm.admin_removed_permissions) & $3) = $3)
-                          WHEN 3 THEN
-                              (((($5 | (COALESCE((rs.value::jsonb ->> 'member_added_permissions')::bigint, 0::bigint) & $4) | rm.added_permissions) &
-                               ~COALESCE((rs.value::jsonb ->> 'member_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)
-                          WHEN 4 THEN
-                              (((($6 | (COALESCE((rs.value::jsonb ->> 'guest_added_permissions')::bigint, 0::bigint) & $5) | rm.added_permissions) &
-                               ~COALESCE((rs.value::jsonb ->> 'guest_removed_permissions')::bigint, 0::bigint) & ~rm.removed_permissions) & $3) = $3)
-                          ELSE FALSE
-                      END
-                  )
-              )
-        ) AS "exists!""#,
-        room_id.as_i64(),
-        user_id.as_i64(),
-        required_permission,
-        admin_default,
-        member_default,
-        guest_default,
+    let row = sqlx::query(
+        r"
+        SELECT rm.role,
+               rm.added_permissions,
+               rm.removed_permissions,
+               rm.admin_added_permissions,
+               rm.admin_removed_permissions,
+               rs.value AS settings_value
+        FROM room_members rm
+        LEFT JOIN room_settings rs
+          ON rs.room_id = rm.room_id
+         AND rs.key = '_settings'
+        WHERE rm.room_id = $1
+          AND rm.user_id = $2
+          AND rm.left_at IS NULL
+        FOR UPDATE OF rm
+        ",
     )
-    .fetch_one(&mut **tx)
+    .bind(room_id.as_i64())
+    .bind(user_id.as_i64())
+    .fetch_optional(&mut **tx)
     .await?;
 
-    Ok(has_permission)
+    let Some(row) = row else {
+        return Ok(false);
+    };
+
+    let role = row.try_get::<RoomRole, _>("role")?;
+    if role == RoomRole::Creator {
+        return Ok(true);
+    }
+
+    let settings = match row.try_get::<Option<String>, _>("settings_value")? {
+        Some(value) => serde_json::from_str::<RoomSettings>(&value).map_err(|error| {
+            Error::Internal(format!("Failed to deserialize room settings: {error}"))
+        })?,
+        None => RoomSettings::default(),
+    };
+
+    let added = permission_bits_from_signed(row.try_get::<i64, _>("added_permissions")?);
+    let removed = permission_bits_from_signed(row.try_get::<i64, _>("removed_permissions")?);
+    let admin_added =
+        permission_bits_from_signed(row.try_get::<i64, _>("admin_added_permissions")?);
+    let admin_removed =
+        permission_bits_from_signed(row.try_get::<i64, _>("admin_removed_permissions")?);
+
+    let permissions = match role {
+        RoomRole::Creator => PermissionBits::ALL,
+        RoomRole::Admin => {
+            let mut bits = settings
+                .admin_permissions(PermissionBits(PermissionBits::DEFAULT_ADMIN))
+                .0;
+            bits |= admin_added;
+            bits &= !admin_removed;
+            bits
+        }
+        RoomRole::Member => {
+            let mut bits = settings
+                .member_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER))
+                .0;
+            bits |= added;
+            bits &= !removed;
+            bits
+        }
+        RoomRole::Guest => {
+            let mut bits = settings
+                .guest_permissions(PermissionBits(PermissionBits::DEFAULT_GUEST))
+                .0;
+            bits |= added & PermissionBits::GUEST_ASSIGNABLE;
+            bits &= !removed;
+            bits
+        }
+    };
+
+    Ok((permissions & permission) == permission)
+}
+
+fn permission_bits_from_signed(bits: i64) -> u64 {
+    bits.cast_unsigned()
 }
 
 async fn collect_target_playlist_nodes_in_tx(
@@ -6315,7 +6337,7 @@ mod tests {
     #[test]
     fn test_settings_validate_permissions_guest_escalation_is_rejected() {
         let mut settings = RoomSettings::default();
-        // Grant guests a permission that exceeds DEFAULT_MEMBER (e.g., KICK_MEMBER)
+        // Grant guests a permission that exceeds the guest-specific ceiling.
         settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::KICK_MEMBER);
         let result = settings.validate_permissions();
         assert!(result.is_err());
@@ -6348,8 +6370,8 @@ mod tests {
     #[test]
     fn test_settings_validate_permissions_within_limits_is_ok() {
         let mut settings = RoomSettings::default();
-        // Grant guests SEND_CHAT which is within DEFAULT_MEMBER
-        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::SEND_CHAT);
+        // Grant guests a guest-level permission.
+        settings.guest_added_permissions = GuestAddedPermissions(PermissionBits::USE_WEBRTC);
         assert!(settings.validate_permissions().is_ok());
     }
 
@@ -6372,7 +6394,7 @@ mod tests {
     }
 
     #[test]
-    fn test_guest_permissions_capped_at_member_ceiling() {
+    fn test_guest_permissions_capped_at_guest_ceiling() {
         let settings = RoomSettings::default();
         let base = PermissionBits(0);
         let result = settings.guest_permissions(base);
@@ -6522,7 +6544,7 @@ mod tests {
 
     /// Documents the A→B→A password change race condition.
     ///
-    /// SCENARIO: Fast path optimization doesn't detect intermediate password changes.
+    /// Scenario: fast path optimization doesn't detect intermediate password changes.
     ///
     /// 1. Initial check: password "abc123" verified against hash H1, `verified_hash` = H1
     /// 2. Password changes: H1 → H2 (different password)
@@ -6535,10 +6557,8 @@ mod tests {
     /// string is restored (e.g., via database update), not by re-setting the same
     /// password value.
     ///
-    /// FIX: Remove fast-path optimization, always re-verify password under lock.
-    /// This eliminates the race condition entirely.
-    ///
-    /// See: /Volumes/workspace/rust/synctv/synctv-core/src/service/room.rs:575-598
+    /// The room service must always re-verify the password under lock. That
+    /// removes the stale verified-hash fast path entirely.
     #[test]
     fn test_join_room_password_race_condition_documentation() {
         // This is a documentation test explaining the race condition.
@@ -6548,13 +6568,8 @@ mod tests {
         // 3. Password changes to "xyz789" (hash H2)
         // 4. Password changes back to "abc123" with hash H1 (same hash!)
         // 5. Under lock, fast path skips re-verification
-        // The fix: Remove the fast path at lines 578-579 and always re-verify.
-        // Before fix:
-        // if verified_hash.as_ref() == Some(hash) {
-        // // BUG: Skip re-verification
-        // }
-        // After fix:
-        // // Always re-verify, no fast path
+        // The implementation always re-verifies instead of using a verified-hash
+        // fast path.
         // let provided_password = password.ok_or_else(||...)?;
         // if !verify_password(&provided_password, hash).await? {
         // return Err(...);

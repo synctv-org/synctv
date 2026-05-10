@@ -590,9 +590,8 @@ async fn test_publisher_info_deserializes_api_address_field() {
 
 /// Test that dropping `LivestreamHandle` without calling `shutdown()` terminates the HLS cleanup task.
 ///
-/// This verifies the fix for HLS segment cleanup task leak.
-/// Before the fix, the cleanup task would run forever if `LivestreamHandle`
-/// was dropped without calling `shutdown()`.
+/// The cleanup task must terminate even when `LivestreamHandle` is dropped
+/// without calling `shutdown()`.
 #[tokio::test]
 async fn test_hls_cleanup_task_terminates_on_drop() {
     use std::sync::atomic::{AtomicBool, Ordering};

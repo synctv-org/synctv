@@ -1,11 +1,11 @@
 //! API Security Tests //!
-//! Tests for various security fixes:
-//! - B1: Guest-token validation must use GuestTokenValidator (blacklist check)
-//! - B8: WebSocket Bearer token case-sensitivity
-//! - B10: set_password must validate password strength at API layer
-//! - D13: Logout must require auth token
+//! Tests for API security behavior:
+//! - Guest-token validation must use GuestTokenValidator (blacklist check)
+//! - WebSocket Bearer token case-sensitivity
+//! - set_password must validate password strength at API layer
+//! - Logout must require auth token
 //! - Input validation: room description, page clamping, admin page_size cap
-//! - E7: sqlx::Error must not leak DB details in gRPC responses
+//! - sqlx::Error must not leak DB details in gRPC responses
 
 #![allow(clippy::unwrap_used)]
 
@@ -18,14 +18,12 @@ use synctv_core::service::auth::{
 };
 use synctv_core::Error;
 
-// B1: Guest-token validation must check blacklist
-
 /// A blacklisted guest token MUST be rejected by validate_async.
 /// This tests the core requirement that shared guest-token validation must use
 /// GuestTokenValidator::validate_async() (which checks blacklist) instead of
 /// just jwt_service.verify_guest_token() (which only checks JWT signature).
 #[tokio::test]
-async fn test_b1_blacklisted_guest_token_rejected_by_validator() {
+async fn test_blacklisted_guest_token_rejected_by_validator() {
     let jwt = create_test_jwt_service();
     let blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
@@ -44,10 +42,7 @@ async fn test_b1_blacklisted_guest_token_rejected_by_validator() {
 
     // Now validate_async must reject it
     let result = validator.validate_async(&token).await;
-    assert!(
-        result.is_err(),
-        "B1 SECURITY: Blacklisted guest token MUST be rejected"
-    );
+    assert!(result.is_err(), "Blacklisted guest token must be rejected");
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("revoked"),
@@ -59,7 +54,7 @@ async fn test_b1_blacklisted_guest_token_rejected_by_validator() {
 /// verify_guest_token). We verify this by checking that the
 /// GuestTokenValidator path catches blacklisted tokens.
 #[tokio::test]
-async fn test_b1_non_blacklisted_token_passes() {
+async fn test_non_blacklisted_guest_token_passes() {
     let jwt = create_test_jwt_service();
     let blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 7200));
@@ -75,7 +70,7 @@ async fn test_b1_non_blacklisted_token_passes() {
 }
 
 #[tokio::test]
-async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
+async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
     struct FailingBlacklistStore;
 
     #[async_trait::async_trait]
@@ -133,17 +128,15 @@ async fn test_b1_guest_blacklist_storage_error_surfaces_service_unavailable() {
     );
 }
 
-// B8: WebSocket Bearer token case-insensitive
-
 /// "bearer " (lowercase) should be accepted by extract_bearer_token.
 /// The shared Bearer parsing path uses JwtValidator::extract_bearer_token,
 /// which is case-insensitive. WebSocket's extract_user_id must match.
 #[test]
-fn test_b8_bearer_lowercase_accepted() {
+fn test_bearer_lowercase_accepted() {
     let result = JwtValidator::extract_bearer_token("bearer some_token_value");
     assert!(
         result.is_ok(),
-        "B8: lowercase 'bearer ' should be accepted, got: {:?}",
+        "lowercase 'bearer ' should be accepted, got: {:?}",
         result.err()
     );
     assert_eq!(result.unwrap(), "some_token_value");
@@ -151,96 +144,79 @@ fn test_b8_bearer_lowercase_accepted() {
 
 /// "BEARER " (uppercase) should be accepted
 #[test]
-fn test_b8_bearer_uppercase_accepted() {
+fn test_bearer_uppercase_accepted() {
     let result = JwtValidator::extract_bearer_token("BEARER some_token_value");
-    assert!(result.is_ok(), "B8: uppercase 'BEARER ' should be accepted");
+    assert!(result.is_ok(), "uppercase 'BEARER ' should be accepted");
     assert_eq!(result.unwrap(), "some_token_value");
 }
 
 /// Mixed case "BeArEr " should be accepted
 #[test]
-fn test_b8_bearer_mixed_case_accepted() {
+fn test_bearer_mixed_case_accepted() {
     let result = JwtValidator::extract_bearer_token("BeArEr my_jwt_token");
-    assert!(
-        result.is_ok(),
-        "B8: mixed case 'BeArEr ' should be accepted"
-    );
+    assert!(result.is_ok(), "mixed case 'BeArEr ' should be accepted");
     assert_eq!(result.unwrap(), "my_jwt_token");
 }
 
 /// Non-Bearer auth scheme should be rejected
 #[test]
-fn test_b8_non_bearer_rejected() {
+fn test_non_bearer_rejected() {
     let result = JwtValidator::extract_bearer_token("Basic dXNlcjpwYXNz");
-    assert!(
-        result.is_err(),
-        "B8: Non-Bearer auth scheme should be rejected"
-    );
+    assert!(result.is_err(), "Non-Bearer auth scheme should be rejected");
 }
 
 /// When Authorization header is present but invalid format, WebSocket should
 /// return an error rather than silently falling through to query params.
 #[test]
-fn test_b8_invalid_auth_header_should_error() {
+fn test_invalid_auth_header_should_error() {
     // "Bearer" without a space and token should fail
     let result = JwtValidator::extract_bearer_token("Bearer");
-    assert!(
-        result.is_err(),
-        "B8: 'Bearer' without token should be rejected"
-    );
+    assert!(result.is_err(), "'Bearer' without token should be rejected");
 }
-
-// B10: set_password must validate password strength
 
 /// Weak passwords (too short) should be rejected by the HTTP validation layer.
 /// The register endpoint calls validate_password(); set_password should too.
 #[test]
-fn test_b10_weak_password_rejected_by_http_validation() {
+fn test_weak_password_rejected_by_http_validation() {
     use synctv_api::http::validation::validate_password;
 
     // Too short
     let result = validate_password("short");
     assert!(
         result.is_err(),
-        "B10: Password 'short' (5 chars) should be rejected as too short"
+        "Password 'short' (5 chars) should be rejected as too short"
     );
 
     // Common password
     let result = validate_password("password");
     assert!(
         result.is_err(),
-        "B10: Common password 'password' should be rejected"
+        "Common password 'password' should be rejected"
     );
 
     // Valid password should pass
     let result = validate_password("MySecure123!");
-    assert!(result.is_ok(), "B10: Strong password should be accepted");
+    assert!(result.is_ok(), "Strong password should be accepted");
 }
 
 /// Verify that validate_password rejects passwords under minimum length.
 #[test]
-fn test_b10_password_min_length_enforced() {
+fn test_password_min_length_enforced() {
     use synctv_api::http::validation::validate_password;
 
     // Single character
     let result = validate_password("a");
-    assert!(
-        result.is_err(),
-        "B10: Single char password should be rejected"
-    );
+    assert!(result.is_err(), "Single char password should be rejected");
 
     // Empty
     let result = validate_password("");
-    assert!(result.is_err(), "B10: Empty password should be rejected");
+    assert!(result.is_err(), "Empty password should be rejected");
 }
 
-// D13: Logout must require auth token
-
 /// Logout without an Authorization header should return an error.
-/// Currently the handler returns success: true even without a token, which
 /// confuses clients and doesn't actually perform any blacklisting.
 #[test]
-fn test_d13_logout_without_token_should_fail() {
+fn test_logout_without_token_should_fail() {
     // Test the structural requirement: extract_bearer_token should fail
     // when given None (no header).
     // The logout handler should check this and return an error.
@@ -250,14 +226,13 @@ fn test_d13_logout_without_token_should_fail() {
     let token = no_auth.and_then(|v| JwtValidator::extract_bearer_token(v).ok());
     assert!(
         token.is_none(),
-        "D13: No Authorization header should produce no token"
+        "No Authorization header should produce no token"
     );
-    // The fix: when token is None, return error instead of success
 }
 
 /// Logout with a valid Bearer token format should proceed to blacklisting.
 #[test]
-fn test_d13_logout_with_valid_header_extracts_token() {
+fn test_logout_with_valid_header_extracts_token() {
     let token = JwtValidator::extract_bearer_token("Bearer valid.jwt.token").unwrap();
     assert_eq!(token, "valid.jwt.token");
 }
@@ -356,13 +331,11 @@ fn test_admin_negative_page_handled() {
     );
 }
 
-// E7: sqlx::Error must not leak DB details in gRPC
-
 /// Internal errors (including sqlx::Error) must be sanitized before
 /// returning to gRPC clients. The map_api_error function should return
 /// a generic "Internal error" message, not the raw error string.
 #[test]
-fn test_e7_api_error_internal_sanitized_for_grpc() {
+fn test_api_error_internal_sanitized_for_grpc() {
     use synctv_api::impls::ApiError;
 
     // Simulate a sqlx::Error being converted to ApiError::Internal
@@ -374,17 +347,17 @@ fn test_e7_api_error_internal_sanitized_for_grpc() {
     let proto_err = api_err.to_proto_error();
     assert_eq!(
         proto_err.message, "Internal error",
-        "E7: Internal errors must be sanitized, not expose DB details"
+        "Internal errors must be sanitized, not expose DB details"
     );
     assert!(
         !proto_err.message.contains("connection"),
-        "E7: DB connection details must not leak"
+        "DB connection details must not leak"
     );
 }
 
 /// Non-internal errors should preserve their message.
 #[test]
-fn test_e7_non_internal_errors_preserved() {
+fn test_non_internal_errors_preserved_for_grpc() {
     use synctv_api::impls::ApiError;
 
     let api_err = ApiError::NotFound("Room not found".to_string());
@@ -398,7 +371,7 @@ fn test_e7_non_internal_errors_preserved() {
 
 /// sqlx::Error conversion to ApiError should map to Internal variant.
 #[test]
-fn test_e7_sqlx_error_maps_to_internal() {
+fn test_sqlx_error_maps_to_internal() {
     use synctv_api::impls::ApiError;
 
     // ApiError implements From<sqlx::Error>
@@ -414,7 +387,7 @@ fn test_e7_sqlx_error_maps_to_internal() {
 /// We test this indirectly by verifying ApiError::Internal display
 /// goes through classify_error -> Internal -> sanitized message.
 #[test]
-fn test_e7_classify_error_database_errors() {
+fn test_classify_error_database_errors() {
     use synctv_api::impls::classify_error;
 
     // Database-specific errors should classify as Internal

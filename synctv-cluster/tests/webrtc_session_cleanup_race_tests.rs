@@ -87,8 +87,8 @@ async fn test_timeout_clears_rtc_state() {
         "Should have 0 RTC-joined connections after timeout"
     );
 
-    // Verify the connection info now shows rtc_joined=false
-    // This is the key fix: the messaging layer can check this to avoid double-decrement
+    // Verify the connection info now shows rtc_joined=false so the messaging
+    // layer can avoid double-decrementing WebRTC state.
     let conn = mgr.get_connection("conn1");
     assert!(conn.is_some(), "Connection should still exist");
     assert!(

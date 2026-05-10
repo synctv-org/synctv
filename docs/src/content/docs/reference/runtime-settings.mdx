@@ -62,12 +62,18 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | --- | --- | --- | --- |
 | `permissions.admin_default` | 权限名称数组 | 内置 admin 权限集合 | 房间 admin 全局默认权限 |
 | `permissions.member_default` | 权限名称数组 | 内置 member 权限集合 | 房间 member 全局默认权限 |
-| `permissions.guest_default` | 权限名称数组 | 内置 guest 权限集合 | 房间 guest 全局默认权限 |
+| `permissions.guest_default` | 权限名称数组 | `[]` | 房间 guest 全局默认权限；只允许 `view_member_list`、`view_chat_history`、`use_webrtc` |
 
 这些设置使用 JSON 数组保存稳定的权限名称，例如：
 
 ```json
 ["send_chat", "add_media", "view_playlist", "view_member_list"]
+```
+
+`permissions.guest_default` 使用独立 guest 上限，不能写入 `view_playlist`、`send_chat`、媒体、播放控制或管理权限。允许的示例：
+
+```json
+["view_member_list", "view_chat_history", "use_webrtc"]
 ```
 
 完整权限名称、角色默认集合和房间覆盖规则见 [房间、权限与用户偏好](../../use/rooms-permissions/)。

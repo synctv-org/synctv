@@ -200,12 +200,12 @@ message Room {
 message Media {
     string id = 1;
     string room_id = 2;
-    string provider = 4; // bilibili, alist, emby, direct (also known as source_provider)
-    string title = 5; // Also known as name
+    string source_provider = 4; // Source provider type, e.g. "direct_url", "bilibili", "alist"
+    string name = 5; // Media display name
     bytes metadata = 6; // JSON metadata
     double position = 7; // Order position in playlist
     int64 added_at = 8;
-    string added_by = 9; // Also known as creator_id
+    string creator_id = 9; // Public ID of the user who added the media
     string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
     bytes source_config = 11; // JSON source config (replaces url for flexibility)
     ResourceAvailability availability = 12; // Availability derived from creator state
@@ -1452,15 +1452,15 @@ message StopPlaybackResponse {
 message AddMediaRequest {
     option (buf.validate.message).cel = {
         id: "add_media.source_provider"
-        message: "provider is required"
-        expression: "this.provider != ''"
+        message: "source_provider is required"
+        expression: "this.source_provider != ''"
     };
     optional string playlist_id = 1 [(buf.validate.field).string = {
         min_len: 1,
         max_len: 64,
         pattern: "^pl_[A-Za-z0-9]+$"
     }]; // Target playlist ID. Omit for room-root media
-    string provider = 2 [
+    string source_provider = 2 [
         (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
         (buf.validate.field).string = {
             pattern: "^[a-z][a-z0-9_]*$",
@@ -1473,9 +1473,9 @@ message AddMediaRequest {
             pattern: "^[A-Za-z0-9_-]+$",
             max_len: 64
         }
-    ]; // Optional provider instance name; empty means use the default provider instance for provider
+    ]; // Optional provider instance name; empty means use the default provider instance for source_provider
     bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
-    string title = 5 [(buf.validate.field).string.max_len = 500]; // Optional media title. Validation: max 500 chars, no HTML tags
+    string name = 5 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
 }
 
 message AddMediaResponse {
@@ -1676,7 +1676,7 @@ message EditMediaRequest {
         max_len: 64,
         pattern: "^med_[A-Za-z0-9]+$"
     }];
-    string title = 2 [(buf.validate.field).string.max_len = 500];
+    string name = 2 [(buf.validate.field).string.max_len = 500];
 }
 message EditMediaResponse {
     Media media = 1;
@@ -2407,9 +2407,9 @@ message ConfirmPasswordResetResponse {
 message MediaAdded {
     string room_id = 1;
     string media_id = 2;
-    string title = 3;
-    string added_by = 4; // Username
-    string added_by_user_id = 5; // User ID
+    string name = 3;
+    string creator_username = 4; // Username
+    string creator_id = 5; // User ID
 }
 
 message MediaRemoved {
@@ -2429,7 +2429,7 @@ message MediaRemovedBatch {
 message MediaUpdated {
     string room_id = 1;
     string media_id = 2;
-    string title = 3;
+    string name = 3;
     string updated_by = 4; // Username
     string updated_by_user_id = 5; // User ID
 }

@@ -11,15 +11,3 @@ CREATE TABLE IF NOT EXISTS auth_email_tokens (
 CREATE INDEX IF NOT EXISTS idx_auth_email_tokens_user_id ON auth_email_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_email_tokens_type_expires ON auth_email_tokens(token_type, expires_at);
 CREATE INDEX IF NOT EXISTS idx_auth_email_tokens_expires_at ON auth_email_tokens(expires_at);
-
-CREATE OR REPLACE FUNCTION cleanup_expired_auth_email_tokens()
-RETURNS void AS $$
-BEGIN
-    DELETE FROM auth_email_tokens WHERE expires_at < CURRENT_TIMESTAMP;
-END;
-$$ LANGUAGE plpgsql;
-
-COMMENT ON TABLE auth_email_tokens IS 'Email token records';
-COMMENT ON COLUMN auth_email_tokens.expires_at IS 'Token expiration timestamp';
-COMMENT ON COLUMN auth_email_tokens.used_at IS 'Timestamp when the token was used';
-COMMENT ON FUNCTION cleanup_expired_auth_email_tokens() IS 'Delete expired email tokens';

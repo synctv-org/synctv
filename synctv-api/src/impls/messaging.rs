@@ -3925,9 +3925,9 @@ fn cluster_event_to_server_messages(
             message: Some(Message::MediaAdded(crate::proto::client::MediaAdded {
                 room_id: room_id.to_string(),
                 media_id: encode_media(*media_id),
-                title: media_title.clone(),
-                added_by: username.clone(),
-                added_by_user_id: encode_user(*user_id),
+                name: media_title.clone(),
+                creator_username: username.clone(),
+                creator_id: encode_user(*user_id),
             })),
         }],
         ClusterEvent::MediaRemoved {
@@ -3966,7 +3966,7 @@ fn cluster_event_to_server_messages(
             message: Some(Message::MediaUpdated(MediaUpdated {
                 room_id: room_id.to_string(),
                 media_id: encode_media(*media_id),
-                title: media_title.clone(),
+                name: media_title.clone(),
                 updated_by: username.clone(),
                 updated_by_user_id: encode_user(*user_id),
             })),

@@ -1,6 +1,7 @@
-// Emby Provider Client API
+// Emby-compatible Provider Client API
 //
-// This is the client-facing gRPC API for Emby provider
+// This is the client-facing gRPC API for provider type `emby`, which supports
+// Emby-compatible servers such as Emby and Jellyfin.
 //
 // SECURITY: Login transmits the Emby API key as plaintext. Deployments MUST use
 // TLS for all connections to this service.

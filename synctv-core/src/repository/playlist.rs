@@ -1322,8 +1322,32 @@ impl PlaylistRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ProviderInstance;
+    use crate::repository::ProviderInstanceRepository;
     use sqlx::Execute;
     use synctv_core_testing::create_test_pool;
+
+    async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
+        let now = chrono::Utc::now();
+        let instance = ProviderInstance {
+            name: name.to_string(),
+            endpoint: "http://localhost:50051".to_string(),
+            comment: Some("test provider instance".to_string()),
+            jwt_secret: None,
+            custom_ca: None,
+            timeout: "10s".to_string(),
+            tls: false,
+            insecure_tls: false,
+            providers: vec![provider.to_string()],
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        ProviderInstanceRepository::new(pool.clone())
+            .create(&instance)
+            .await
+            .unwrap();
+    }
 
     fn assert_position_eq(actual: f64, expected: f64) {
         assert!(
@@ -1588,6 +1612,7 @@ mod tests {
         explicit_provider_playlist.source_provider = Some("alist".to_string());
         explicit_provider_playlist.source_config = Some(serde_json::json!({ "path": "/explicit" }));
         explicit_provider_playlist.provider_instance_name = Some("alist_home".to_string());
+        insert_test_provider_instance(&pool, "alist_home", "alist").await;
         let _explicit_provider_playlist = playlist_repo
             .create(&explicit_provider_playlist)
             .await

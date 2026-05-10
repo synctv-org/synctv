@@ -31,9 +31,3 @@ CREATE TRIGGER update_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE users IS 'User accounts with soft delete support';
-COMMENT ON COLUMN users.id IS 'numeric identity ID';
-COMMENT ON COLUMN users.username IS 'Unique username among non-deleted users';
-COMMENT ON COLUMN users.version IS 'Monotonically increasing optimistic locking version';
-COMMENT ON COLUMN users.deleted_at IS 'Soft delete timestamp';

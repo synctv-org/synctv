@@ -35,8 +35,15 @@ data_dir: "/var/lib/synctv"
 
 proxy_slice_cache:
   enabled: true
+  slice_size_bytes: 2097152
+  max_cache_size_bytes: 536870912
+  segment_ttl_seconds: 300
+  stale_max_age_seconds: 60
+  stale_while_revalidate: true
   file_backend_enabled: true
   file_cache_dir: "cache/proxy-slice"
+  eviction_interval_seconds: 60
+  watermark_ratio: 0.875
 ```
 
 Effective file path:
@@ -50,15 +57,29 @@ Effective file path:
 | Field | Default | Change when | Risk |
 | --- | --- | --- | --- |
 | `proxy_slice_cache.enabled` | `true` | Media Range-slice caching must be disabled entirely | Proxying still works, but repeated playback returns to upstream more often |
+| `proxy_slice_cache.slice_size_bytes` | `2097152` | Individual Range slice size should change | Too small increases metadata and upstream requests; too large reduces reuse |
+| `proxy_slice_cache.max_cache_size_bytes` | `536870912` | Total memory or file backend capacity should be capped | Too small causes frequent eviction; too large needs more memory or disk |
+| `proxy_slice_cache.segment_ttl_seconds` | `300` | Freshness window should change | Too short increases upstream requests; too long can keep older content |
+| `proxy_slice_cache.stale_max_age_seconds` | `60` | Expired slices may be served briefly as fallback | Too long delays content refresh |
+| `proxy_slice_cache.stale_while_revalidate` | `true` | Expired hits should refresh in the background instead of blocking | Disabling it increases latency for expired hits |
 | `proxy_slice_cache.file_backend_enabled` | `false` | Cache should survive process restarts and a persistent directory is mounted | Startup or writes can fail if the container has no writable volume |
 | `proxy_slice_cache.file_cache_dir` | `""` | File backend should use a specific directory | Empty value uses `data_dir/cache/proxy-slice` when the file backend is enabled |
+| `proxy_slice_cache.eviction_interval_seconds` | `60` | Background capacity cleanup frequency should change | Too short adds background overhead; too long can exceed capacity temporarily |
+| `proxy_slice_cache.watermark_ratio` | `0.875` | Target usage after eviction should change | Too high evicts frequently; too low frees more cache at once |
 
 Environment variables:
 
 ```bash
 SYNCTV_PROXY_SLICE_CACHE_ENABLED=true
+SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES=2097152
+SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES=536870912
+SYNCTV_PROXY_SLICE_CACHE_SEGMENT_TTL_SECONDS=300
+SYNCTV_PROXY_SLICE_CACHE_STALE_MAX_AGE_SECONDS=60
+SYNCTV_PROXY_SLICE_CACHE_STALE_WHILE_REVALIDATE=true
 SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED=true
 SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR=cache/proxy-slice
+SYNCTV_PROXY_SLICE_CACHE_EVICTION_INTERVAL_SECONDS=60
+SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO=0.875
 ```
 
 ## Production

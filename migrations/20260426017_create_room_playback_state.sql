@@ -30,11 +30,3 @@ CREATE TRIGGER update_room_playback_state_updated_at
     BEFORE UPDATE ON room_playback_state
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';
-COMMENT ON COLUMN room_playback_state.playing_media_id IS 'Currently playing media item';
-COMMENT ON COLUMN room_playback_state.playing_playlist_id IS 'Currently playing playlist';
-COMMENT ON COLUMN room_playback_state.target IS 'Opaque provider-facing playback target payload; empty for static media or cleared state';
-COMMENT ON COLUMN room_playback_state."current_time" IS 'Playback position in seconds';
-COMMENT ON COLUMN room_playback_state.speed IS 'Playback speed';
-COMMENT ON COLUMN room_playback_state.version IS 'Optimistic locking version';

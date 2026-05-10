@@ -2159,7 +2159,7 @@ mod tests {
     #[test]
     fn test_members_query_params_deserialize_sorting_and_filters() {
         let json =
-            r#"{"page":2,"page_size":25,"search":"alice","role":3,"sort_by":2,"sort_direction":1}"#;
+            r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
         let query: GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);
@@ -2339,10 +2339,10 @@ mod tests {
             "items": [
                 {
                     "playlist_id": "playlist-1",
-                    "provider": "yt-dlp",
+                    "source_provider": "yt-dlp",
                     "provider_instance_name": "default",
                     "source_config": [1, 2, 3],
-                    "title": "Example"
+                    "name": "Example"
                 }
             ]
         }"#;

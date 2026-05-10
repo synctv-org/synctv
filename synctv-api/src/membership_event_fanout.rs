@@ -93,41 +93,52 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
         target_user_id: &UserId,
         changed_by: &UserId,
     ) -> Result<(), ApiError> {
-        let (target_username, new_permissions, role, added_permissions, removed_permissions) =
-            if let Some(member) = self
+        let (
+            target_username,
+            new_permissions,
+            role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+        ) = if let Some(member) = self
+            .room_service
+            .member_service()
+            .get_member(room_id, target_user_id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            let room_settings = self
                 .room_service
-                .member_service()
-                .get_member(room_id, target_user_id)
+                .get_room_settings(room_id)
                 .await
-                .map_err(ApiError::from)?
-            {
-                let room_settings = self
-                    .room_service
-                    .get_room_settings(room_id)
-                    .await
-                    .map_err(ApiError::from)?;
-                let username = self.username_for_actor(target_user_id).await?;
-                let role_default = self
-                    .room_service
-                    .permission_service()
-                    .calculate_role_default_permissions(&member.role, &room_settings);
-                (
-                    username,
-                    member.effective_permissions(role_default),
-                    Self::role_to_proto(member.role),
-                    member.added_permissions,
-                    member.removed_permissions,
-                )
-            } else {
-                let username = self.username_for_actor(target_user_id).await?;
-                (
-                    username,
-                    PermissionBits::empty(),
-                    synctv_proto::common::RoomMemberRole::Member as i32,
-                    0,
-                    0,
-                )
-            };
+                .map_err(ApiError::from)?;
+            let username = self.username_for_actor(target_user_id).await?;
+            let role_default = self
+                .room_service
+                .permission_service()
+                .calculate_role_default_permissions(&member.role, &room_settings);
+            (
+                username,
+                member.effective_permissions(role_default),
+                Self::role_to_proto(member.role),
+                member.added_permissions,
+                member.removed_permissions,
+                member.admin_added_permissions,
+                member.admin_removed_permissions,
+            )
+        } else {
+            let username = self.username_for_actor(target_user_id).await?;
+            (
+                username,
+                PermissionBits::empty(),
+                synctv_proto::common::RoomMemberRole::Member as i32,
+                0,
+                0,
+                0,
+                0,
+            )
+        };
 
         let changed_by_username = self.username_for_actor(changed_by).await?;
 
@@ -143,8 +154,8 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
                 role,
                 added_permissions: PermissionBits(added_permissions),
                 removed_permissions: PermissionBits(removed_permissions),
-                admin_added_permissions: PermissionBits(0),
-                admin_removed_permissions: PermissionBits(0),
+                admin_added_permissions: PermissionBits(admin_added_permissions),
+                admin_removed_permissions: PermissionBits(admin_removed_permissions),
                 timestamp: chrono::Utc::now(),
             },
         };

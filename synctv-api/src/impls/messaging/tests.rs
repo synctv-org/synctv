@@ -2295,7 +2295,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
             source_config: serde_json::json!({
                 "url": "https://example.com/observe-playback-media-update.mp4"
             }),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -3020,12 +3020,12 @@ async fn test_observe_playlist_items_without_version_sends_snapshot_immediately(
                 media: vec![crate::proto::client::Media {
                     id: "media_test_1".to_string(),
                     room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-                    provider: "direct_url".to_string(),
-                    title: "test media".to_string(),
+                    source_provider: "direct_url".to_string(),
+                    name: "test media".to_string(),
                     metadata: Vec::new(),
                     position: 1.0,
                     added_at: 1,
-                    added_by: handler.user_id.to_string(),
+                    creator_id: handler.user_id.to_string(),
                     provider_instance_name: String::new(),
                     source_config: Vec::new(),
                     availability: crate::proto::client::ResourceAvailability::Available as i32,
@@ -4285,12 +4285,12 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         media: vec![crate::proto::client::Media {
             id: "media_test_2".to_string(),
             room_id: public_id_codec().encode_room_id(handler.room_id).unwrap(),
-            provider: "direct_url".to_string(),
-            title: "next media".to_string(),
+            source_provider: "direct_url".to_string(),
+            name: "next media".to_string(),
             metadata: Vec::new(),
             position: 2.0,
             added_at: 2,
-            added_by: handler.user_id.to_string(),
+            creator_id: handler.user_id.to_string(),
             provider_instance_name: String::new(),
             source_config: Vec::new(),
             availability: crate::proto::client::ResourceAvailability::Available as i32,
@@ -5094,8 +5094,8 @@ fn test_media_added_event_conversion() {
         Some(Message::MediaAdded(ma)) => {
             assert_eq!(ma.room_id, "room_test");
             assert_eq!(ma.media_id, public_media_id());
-            assert_eq!(ma.title, "Test Video");
-            assert_eq!(ma.added_by, "eve");
+            assert_eq!(ma.name, "Test Video");
+            assert_eq!(ma.creator_username, "eve");
         }
         other => panic!("Expected MediaAdded, got: {other:?}"),
     }
@@ -5176,7 +5176,7 @@ fn test_media_updated_event_conversion() {
         Some(Message::MediaUpdated(mu)) => {
             assert_eq!(mu.room_id, "room_test");
             assert_eq!(mu.media_id, public_media_id());
-            assert_eq!(mu.title, "Renamed Video");
+            assert_eq!(mu.name, "Renamed Video");
             assert_eq!(mu.updated_by, "frank");
         }
         other => panic!("Expected MediaUpdated, got: {other:?}"),

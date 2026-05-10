@@ -1,6 +1,6 @@
 //! Playlist tree operation integration tests
 //!
-//! Tests playlist CRUD, tree structure, position sorting, cycle prevention, and subtree delete.
+//! Tests playlist CRUD, tree structure, position sorting, and subtree delete.
 //!
 //! Run with: cargo test --test `playlist_integration_tests`
 #![allow(clippy::unwrap_used)]
@@ -212,51 +212,6 @@ async fn test_duplicate_positions_are_allowed_in_same_parent() {
     let children = playlist_repo.get_children(&root.id).await.unwrap();
     assert_eq!(result.name, "Duplicate");
     assert_eq!(children.len(), 2);
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_cycle_prevention_trigger() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
-    let playlist_repo = PlaylistRepository::new(pool.clone());
-
-    let owner = user_repo.create(&make_user("pl_owner_5")).await.unwrap();
-    let room = room_repo
-        .create(&make_room("PL Room 5", &owner.id))
-        .await
-        .unwrap();
-
-    let root = playlist_repo
-        .create(&make_playlist(&room.id, "Root", None, 0))
-        .await
-        .unwrap();
-    let child = playlist_repo
-        .create(&make_playlist(&room.id, "Child", Some(&root.id), 0))
-        .await
-        .unwrap();
-    let grandchild = playlist_repo
-        .create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0))
-        .await
-        .unwrap();
-
-    // Try to set root's parent to grandchild, creating a cycle: root -> child -> grandchild -> root
-    let result = sqlx::query("UPDATE playlists SET parent_id = $1 WHERE id = $2")
-        .bind(grandchild.id)
-        .bind(root.id)
-        .execute(&pool)
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Circular reference should be prevented by trigger"
-    );
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("Circular reference detected") || err_msg.contains("cycle"),
-        "Error should mention circular reference, got: {err_msg}"
-    );
 }
 
 #[tokio::test]
@@ -522,8 +477,6 @@ async fn test_duplicate_names_are_allowed_within_same_parent() {
 #[ignore = "Requires Docker"]
 async fn test_cross_room_parent_id_rejected() {
     // from a different room. This is a data integrity and security requirement.
-    // BUG: Currently the FK only references playlists(id), not (room_id, id).
-    // This allows cross-room parent references, breaking room isolation.
 
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -554,8 +507,8 @@ async fn test_cross_room_parent_id_rejected() {
         .await
         .unwrap();
 
-    // SECURITY CHECK: Try to create a playlist in Room B with parent_id from Room A
-    // This should be rejected by the database trigger (trigger_validate_parent_same_room)
+    // Try to create a playlist in Room B with parent_id from Room A.
+    // The composite parent foreign key rejects this as a missing parent in the child's room.
     let cross_room_child = Playlist {
         id: PlaylistId::new(),
         room_id: room_b.id, // Child belongs to Room B
@@ -573,7 +526,6 @@ async fn test_cross_room_parent_id_rejected() {
 
     let result = playlist_repo.create(&cross_room_child).await;
 
-    // This should fail with a constraint violation from the database trigger
     assert!(
         result.is_err(),
         "Cross-room parent_id should be rejected. Child in room {} cannot have parent from room {}",
@@ -581,13 +533,9 @@ async fn test_cross_room_parent_id_rejected() {
         room_a.id
     );
 
-    // The error should be from the database trigger
-    let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
-        err_msg.contains("constraint")
-            || err_msg.contains("Constraint")
-            || err_msg.contains("violation"),
-        "Error should be a constraint violation, got: {err_msg}"
+        matches!(result.unwrap_err(), synctv_core::Error::NotFound(_)),
+        "Cross-room parent should be mapped from the foreign key violation to NotFound"
     );
 }
 

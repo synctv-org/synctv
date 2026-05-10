@@ -7,14 +7,10 @@ pub mod lifecycle;
 pub mod server;
 pub mod service;
 
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
-
-pub mod provider {
-    pub use synctv_proto::providers::{alist, bilibili, common, emby, rtmp};
-}
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 pub mod proto {
-    include!("synctv.management.rs");
+    include!(concat!(env!("OUT_DIR"), "/synctv.management.rs"));
 }
 
 #[cfg(test)]
@@ -97,6 +93,33 @@ mod tests {
         assert!(
             embedded_provider_service.is_none(),
             "management descriptor must reference provider messages without embedding provider service contracts: {embedded_provider_service:?}"
+        );
+    }
+
+    #[test]
+    fn management_src_does_not_keep_extern_generated_contracts() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let forbidden_generated_files = [
+            "src/synctv.admin.rs",
+            "src/synctv.client.rs",
+            "src/synctv.provider.alist.rs",
+            "src/synctv.provider.bilibili.rs",
+            "src/synctv.provider.emby.rs",
+            "src/synctv.provider.rtmp.rs",
+            "src/buf.validate.rs",
+            "src/synctv.management.rs",
+            "src/descriptor.bin",
+        ];
+
+        let stale_files = forbidden_generated_files
+            .iter()
+            .filter(|relative_path| manifest_dir.join(relative_path).exists())
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert!(
+            stale_files.is_empty(),
+            "management must use synctv-proto extern_path for shared contracts; remove stale generated file(s): {stale_files:?}"
         );
     }
 }

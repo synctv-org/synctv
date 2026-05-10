@@ -11980,7 +11980,7 @@ mod tests {
         assert_eq!(response.file_count, 1);
         assert!(response.playlists.is_empty());
         assert_eq!(response.media.len(), 1);
-        assert_eq!(response.media[0].title, "Alpha Media");
+        assert_eq!(response.media[0].name, "Alpha Media");
     }
 
     #[tokio::test]
@@ -12055,13 +12055,13 @@ mod tests {
                 &public_room_id(&admin_api, room.id),
                 crate::proto::client::AddMediaRequest {
                     playlist_id: None,
-                    provider: "direct_url".to_string(),
+                    source_provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
                     source_config: serde_json::to_vec(&serde_json::json!({
                         "url": "https://example.com/added.mp4"
                     }))
                     .expect("encode source config"),
-                    title: "added-media".to_string(),
+                    name: "added-media".to_string(),
                 },
                 &global_admin.id,
             )
@@ -12069,7 +12069,7 @@ mod tests {
             .expect("global admin should add media without room membership");
 
         let media = response.media.expect("media should be returned");
-        assert_eq!(media.title, "added-media");
+        assert_eq!(media.name, "added-media");
         assert_eq!(media.room_id, public_room_id(&admin_api, room.id));
 
         let event = recv_matching_cluster_event(
@@ -12165,7 +12165,7 @@ mod tests {
                 &public_room_id(&admin_api, room.id),
                 crate::proto::client::EditMediaRequest {
                     media_id: public_media_id(&admin_api, media.id),
-                    title: "media-edited".to_string(),
+                    name: "media-edited".to_string(),
                 },
                 &global_admin.id,
             )
@@ -12174,7 +12174,7 @@ mod tests {
 
         let updated = response.media.expect("media should be returned");
         assert_eq!(updated.id, public_media_id(&admin_api, media.id));
-        assert_eq!(updated.title, "media-edited");
+        assert_eq!(updated.name, "media-edited");
 
         let event = recv_matching_cluster_event(
             &mut redis_publish_rx,
@@ -12247,7 +12247,7 @@ mod tests {
                 &public_room_id(&admin_api, room.id),
                 crate::proto::client::EditMediaRequest {
                     media_id: public_media_id(&admin_api, media.id),
-                    title: "management-media-updated".to_string(),
+                    name: "management-media-updated".to_string(),
                 },
                 &management_actor,
             )

@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::service::global_settings::SettingsRegistry;
+use crate::service::partitioning::{current_database_date, quote_ident, size_mb, table_exists};
 use crate::{Error, Result};
 
 /// Default retention period in days for chat messages
@@ -60,30 +61,69 @@ impl ChatPartitionManager {
     }
 
     /// Ensure partitions exist for the next N days
-    pub async fn ensure_future_partitions(&self, days_ahead: i32) -> Result<serde_json::Value> {
+    pub async fn ensure_future_partitions(&self, days_ahead: i32) -> Result<i32> {
         info!(
             "Ensuring chat message partitions for next {} days",
             days_ahead
         );
 
+        if days_ahead < 0 {
+            return Err(Error::InvalidInput(
+                "days_ahead must be greater than or equal to 0".to_string(),
+            ));
+        }
+
+        let current_date = current_database_date(&self.pool).await?;
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
-        let result =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_chat_message_partitions($1)")
-                .bind(days_ahead)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to create chat partitions: {e}")))?;
 
-        let success_count = result["success_count"].as_i64().unwrap_or(0);
-        let total_requested = result["total_requested"].as_i64().unwrap_or(0);
+        for offset in 0..=days_ahead {
+            let start_date = current_date + chrono::Duration::days(i64::from(offset));
+            let end_date = start_date + chrono::Duration::days(1);
+            let partition_name = format!("chat_messages_{}", start_date.format("%Y_%m_%d"));
+            let partition_ident = quote_ident(&partition_name);
+
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF chat_messages \
+                 FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create chat partition: {e}")))?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, created_at DESC, user_id)",
+                quote_ident(&format!("{partition_name}_idx_room_pagination"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, created_at DESC)",
+                quote_ident(&format!("{partition_name}_idx_user_created"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(created_at DESC)",
+                quote_ident(&format!("{partition_name}_idx_created_at"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
+        }
+
+        let total_requested = days_ahead + 1;
         info!(
             "Chat partitions created: {}/{} successful",
-            success_count, total_requested
+            total_requested, total_requested
         );
 
-        Ok(result)
+        Ok(total_requested)
     }
 
     /// Drop partitions older than the configured retention period
@@ -96,15 +136,31 @@ impl ChatPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT drop_old_chat_message_partitions($1)",
+        let current_date = current_database_date(&self.pool).await?;
+        let cutoff_date = current_date - chrono::Duration::days(i64::from(keep_days));
+        let cutoff_name = format!("chat_messages_{}", cutoff_date.format("%Y_%m_%d"));
+        let partitions = sqlx::query_scalar::<_, String>(
+            "SELECT tablename
+             FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename LIKE 'chat_messages_%'
+               AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'
+               AND tablename < $1
+             ORDER BY tablename",
         )
-        .bind(keep_days)
-        .fetch_one(&mut *conn)
+        .bind(cutoff_name)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old chat partitions: {e}")))?;
 
-        let dropped_count = result["dropped_count"].as_i64().unwrap_or(0);
+        for partition in &partitions {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to drop old chat partition: {e}")))?;
+        }
+
+        let dropped_count = i64::try_from(partitions.len()).unwrap_or(i64::MAX);
         if dropped_count > 0 {
             info!("Dropped {} old chat message partitions", dropped_count);
         }
@@ -114,17 +170,47 @@ impl ChatPartitionManager {
 
     /// Check partition health status
     pub async fn check_health(&self, days_ahead: i32) -> Result<ChatPartitionHealth> {
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT check_chat_message_partitions($1)")
-                .bind(days_ahead)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to check chat partition health: {e}"))
-                })?;
+        if days_ahead < 0 {
+            return Err(Error::InvalidInput(
+                "days_ahead must be greater than or equal to 0".to_string(),
+            ));
+        }
 
-        let health: ChatPartitionHealth = serde_json::from_value(result_json)
-            .map_err(|e| Error::Internal(format!("Failed to parse chat partition health: {e}")))?;
+        let current_date = current_database_date(&self.pool).await?;
+        let mut missing_partitions = Vec::new();
+        for offset in 0..=days_ahead {
+            let date = current_date + chrono::Duration::days(i64::from(offset));
+            let partition_name = format!("chat_messages_{}", date.format("%Y_%m_%d"));
+            if !table_exists(&self.pool, &partition_name).await? {
+                missing_partitions.push(partition_name);
+            }
+        }
+
+        let rows = sqlx::query_as::<_, (i64,)>(
+            "SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT
+             FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename LIKE 'chat_messages_%'
+               AND tablename ~ '^chat_messages_[0-9]{4}_[0-9]{2}_[0-9]{2}$'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to check chat partition health: {e}")))?;
+
+        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
+        let total_size_bytes = rows.iter().map(|(size,)| *size).sum::<i64>();
+        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        let health = ChatPartitionHealth {
+            total_partitions,
+            total_size_mb: size_mb(total_size_bytes),
+            missing_partitions,
+            missing_count,
+            health_status: if missing_count == 0 {
+                "healthy".to_string()
+            } else {
+                "warning".to_string()
+            },
+        };
 
         match health.health_status.as_str() {
             "healthy" => {

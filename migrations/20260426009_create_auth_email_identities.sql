@@ -25,8 +25,3 @@ CREATE TRIGGER update_auth_email_identities_updated_at
     BEFORE UPDATE ON auth_email_identities
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE auth_email_identities IS 'Email identities used for email login, verification, and account email binding';
-COMMENT ON COLUMN auth_email_identities.user_id IS 'User that owns this email identity';
-COMMENT ON COLUMN auth_email_identities.email IS 'Email address, unique case-insensitively';
-COMMENT ON COLUMN auth_email_identities.email_verified IS 'Whether this email identity has been verified';

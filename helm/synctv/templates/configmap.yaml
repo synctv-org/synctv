@@ -138,10 +138,17 @@ data:
 
     proxy_slice_cache:
       enabled: {{ if hasKey $proxySliceCache "enabled" }}{{ $proxySliceCache.enabled }}{{ else }}true{{ end }}
+      slice_size_bytes: {{ printf "%d" (int64 ($proxySliceCache.sliceSizeBytes | default 2097152)) }}
+      max_cache_size_bytes: {{ printf "%d" (int64 ($proxySliceCache.maxCacheSizeBytes | default 536870912)) }}
+      segment_ttl_seconds: {{ $proxySliceCache.segmentTtlSeconds | default 300 }}
+      stale_max_age_seconds: {{ $proxySliceCache.staleMaxAgeSeconds | default 60 }}
+      stale_while_revalidate: {{ if hasKey $proxySliceCache "staleWhileRevalidate" }}{{ $proxySliceCache.staleWhileRevalidate }}{{ else }}true{{ end }}
       file_backend_enabled: {{ $proxySliceCache.fileBackendEnabled | default false }}
       {{- if $proxySliceCache.fileCacheDir }}
       file_cache_dir: {{ $proxySliceCache.fileCacheDir | quote }}
       {{- end }}
+      eviction_interval_seconds: {{ $proxySliceCache.evictionIntervalSeconds | default 60 }}
+      watermark_ratio: {{ $proxySliceCache.watermarkRatio | default 0.875 }}
 
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}

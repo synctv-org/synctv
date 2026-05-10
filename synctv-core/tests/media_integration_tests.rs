@@ -129,7 +129,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -146,7 +146,7 @@ fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -345,7 +345,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
     .bind(0.0)
     .bind("direct_url")
     .bind(json!({"url": "https://example.com/root.mp4"}))
-    .bind("direct_url")
+    .bind(Option::<String>::None)
     .execute(&pool)
     .await
     .unwrap();
@@ -873,7 +873,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
-                provider_instance_name: Some("direct_url".to_string()),
+                provider_instance_name: None,
                 added_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 0,
@@ -982,7 +982,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
-                provider_instance_name: Some("direct_url".to_string()),
+                provider_instance_name: None,
                 added_at: Utc::now(),
                 updated_at: Utc::now(),
                 version: 0,
@@ -1109,7 +1109,7 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: json!({"url": "https://example.com/cross-room.mp4"}),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,

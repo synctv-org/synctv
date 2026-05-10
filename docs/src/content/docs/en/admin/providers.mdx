@@ -1,9 +1,11 @@
 ---
 title: Provider Management
-description: Create, enable, disable, update, reconnect, and delete Provider instances while protecting upstream credentials.
+description: Create, enable, disable, update, reconnect, and delete remote Provider gRPC instances.
 ---
 
-A Provider instance is connection configuration for an external media source. It can include URL, token, cookie, user agent, authentication data, remote gRPC details, or backend-specific parameters.
+A Provider instance is SyncTV's connection configuration for a remote Provider gRPC service. It stores only the `endpoint`, TLS settings, JWT secret, custom CA, timeout, and the Provider types declared by that remote service. Upstream media-source accounts, tokens, cookies, user agents, and backend-specific settings belong to user Provider credentials or the remote Provider deployment, not this instance configuration.
+
+Remote Provider instances can currently declare `alist`, `bilibili`, and `emby`. Media sources also include local types such as `direct_url`, `rtmp`, and `live_proxy`; those are not valid `--provider` values for remote Provider instances.
 
 ## Common Commands
 
@@ -22,8 +24,8 @@ synctv provider delete <NAME>
 
 | Operation | Check first |
 | --- | --- |
-| Create | `security.credential_encryption_key` is configured and credentials will not enter logs or shell history |
-| Update | Endpoint, headers, user agent, proxy policy, and authentication method |
+| Create | Endpoint, TLS/JWT/CA settings, and declared `--provider` values match the remote service |
+| Update | Endpoint, TLS, JWT secret, CA, timeout, and supported Provider types |
 | Disable | Whether user defaults or room media still depend on it |
 | Delete | Whether playlists, user preferences, or remote instances still reference it |
 | Reconnect | Upstream reachability and credential expiry |

@@ -20,12 +20,3 @@ CREATE TRIGGER update_auth_oauth2_identities_updated_at
     BEFORE UPDATE ON auth_oauth2_identities
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE auth_oauth2_identities IS 'OAuth2/OIDC provider identity mappings';
-COMMENT ON COLUMN auth_oauth2_identities.id IS 'numeric identity ID';
-COMMENT ON COLUMN auth_oauth2_identities.provider IS 'OAuth2/OIDC provider name';
-COMMENT ON COLUMN auth_oauth2_identities.provider_user_id IS 'User ID from OAuth2 provider';
-COMMENT ON COLUMN auth_oauth2_identities.user_id IS 'Reference to local user';
-COMMENT ON COLUMN auth_oauth2_identities.username IS 'Username from OAuth2 provider';
-COMMENT ON COLUMN auth_oauth2_identities.email IS 'Email from OAuth2 provider (optional)';
-COMMENT ON COLUMN auth_oauth2_identities.avatar_url IS 'Avatar URL from OAuth2 provider (optional)';

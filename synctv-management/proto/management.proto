@@ -138,25 +138,6 @@ service ManagementService {
     rpc StopServer(StopServerRequest) returns (stream StopServerEvent);
 }
 
-enum UserRole {
-    USER_ROLE_UNSPECIFIED = 0;
-    USER_ROLE_USER = 1;
-    USER_ROLE_ADMIN = 2;
-    USER_ROLE_ROOT = 3;
-}
-
-enum UserStatus {
-    USER_STATUS_UNSPECIFIED = 0;
-    USER_STATUS_ACTIVE = 1;
-    USER_STATUS_BANNED = 2;
-}
-
-enum RoomStatus {
-    ROOM_STATUS_UNSPECIFIED = 0;
-    ROOM_STATUS_ACTIVE = 1;
-    ROOM_STATUS_CLOSED = 2;
-}
-
 enum ShutdownMode {
     SHUTDOWN_MODE_UNSPECIFIED = 0;
     SHUTDOWN_MODE_GRACEFUL = 1;
@@ -251,8 +232,8 @@ enum RoomStreamListSortBy {
 message ListUsersRequest {
     int32 page = 1;
     int32 page_size = 2;
-    UserStatus status = 3;
-    UserRole role = 4;
+    synctv.common.UserStatus status = 3;
+    synctv.common.UserRole role = 4;
     string search = 5;
     UserListSortBy sort_by = 6;
     SortDirection sort_direction = 7;
@@ -301,8 +282,8 @@ message CreateUserRequest {
     string username = 1;
     string email = 2;
     string password = 3;
-    UserRole role = 4;
-    UserStatus status = 5;
+    synctv.common.UserRole role = 4;
+    synctv.common.UserStatus status = 5;
 }
 
 message DeleteUserRequest {
@@ -320,7 +301,7 @@ message UnbanUserRequest {
 
 message UpdateUserRoleRequest {
     UserRef user = 1;
-    UserRole role = 2;
+    synctv.common.UserRole role = 2;
 }
 
 message UpdateUserPasswordRequest {
@@ -338,7 +319,7 @@ message GetUserRoomsRequest {
     UserRef user = 1;
     int32 page = 2;
     int32 page_size = 3;
-    RoomStatus status = 4;
+    synctv.common.RoomStatus status = 4;
     string search = 5;
     optional bool is_banned = 6;
     RoomListSortBy sort_by = 7;
@@ -424,7 +405,7 @@ message CreateRoomRequest {
 message ListRoomsRequest {
     int32 page = 1;
     int32 page_size = 2;
-    RoomStatus status = 3;
+    synctv.common.RoomStatus status = 3;
     string search = 4;
     UserRef creator = 5;
     optional bool is_banned = 6;
@@ -657,10 +638,10 @@ message AddMediaRequest {
     UserRef actor = 1;
     string room_id = 2;
     string playlist_id = 3;
-    string provider = 4;
+    string source_provider = 4;
     string provider_instance_name = 5;
     bytes source_config_json = 6;
-    string title = 7;
+    string name = 7;
 }
 
 message AddDirectUrlMediaRequest {
@@ -668,7 +649,7 @@ message AddDirectUrlMediaRequest {
     string room_id = 2;
     string url = 3;
     string playlist_id = 4;
-    string title = 5;
+    string name = 5;
 }
 
 message AddAlistMediaRequest {
@@ -679,7 +660,7 @@ message AddAlistMediaRequest {
     string path = 5;
     string password = 6;
     string provider_instance_name = 7;
-    string title = 8;
+    string name = 8;
 }
 
 message AddEmbyMediaRequest {
@@ -689,7 +670,7 @@ message AddEmbyMediaRequest {
     string server_id = 4;
     string item_id = 5;
     string provider_instance_name = 6;
-    string title = 7;
+    string name = 7;
 }
 
 message AddBilibiliVideoMediaRequest {
@@ -701,7 +682,7 @@ message AddBilibiliVideoMediaRequest {
     uint64 cid = 6;
     bool shared = 7;
     string provider_instance_name = 8;
-    string title = 9;
+    string name = 9;
 }
 
 message AddBilibiliPgcMediaRequest {
@@ -712,7 +693,7 @@ message AddBilibiliPgcMediaRequest {
     uint64 cid = 5;
     bool shared = 6;
     string provider_instance_name = 7;
-    string title = 8;
+    string name = 8;
 }
 
 message AddBilibiliLiveMediaRequest {
@@ -722,13 +703,13 @@ message AddBilibiliLiveMediaRequest {
     uint64 room_live_id = 4;
     bool shared = 5;
     string provider_instance_name = 6;
-    string title = 7;
+    string name = 7;
 }
 
 message EditMediaRequest {
     string room_id = 1;
     string media_id = 2;
-    string title = 3;
+    string name = 3;
 }
 
 message MoveMediaRequest {

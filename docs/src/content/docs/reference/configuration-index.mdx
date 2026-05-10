@@ -296,8 +296,15 @@ curl -fsS http://localhost:8080/health/ready
 | `cache.permission_cache_capacity` | 整数 | `1000` | 权限缓存容量 |
 | `cache.permission_cache_ttl_seconds` | 秒数 | `300` | 权限缓存 TTL |
 | `proxy_slice_cache.enabled` | 布尔值 | `true` | 是否启用代理 slice cache |
+| `proxy_slice_cache.slice_size_bytes` | 整数 | `2097152` | 单个 Range 分片大小 |
+| `proxy_slice_cache.max_cache_size_bytes` | 整数 | `536870912` | slice cache 最大总容量 |
+| `proxy_slice_cache.segment_ttl_seconds` | 秒数 | `300` | 分片新鲜期 |
+| `proxy_slice_cache.stale_max_age_seconds` | 秒数 | `60` | 过期分片可被短暂兜底使用的时间 |
+| `proxy_slice_cache.stale_while_revalidate` | 布尔值 | `true` | 过期命中时是否后台刷新 |
 | `proxy_slice_cache.file_backend_enabled` | 布尔值 | `false` | 是否启用文件后端 |
 | `proxy_slice_cache.file_cache_dir` | 路径 | `""` | slice cache 文件目录 |
+| `proxy_slice_cache.eviction_interval_seconds` | 秒数 | `60` | 后台驱逐检查间隔 |
+| `proxy_slice_cache.watermark_ratio` | 浮点数 | `0.875` | 驱逐后的目标水位比例 |
 
 ## `messaging_rate_limits`
 

@@ -11,8 +11,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        Media, PlayMode, Playlist, PlaylistId, RoomId, SignupMethod, User, UserId, UserRole,
-        UserStatus,
+        Media, PlayMode, Playlist, PlaylistId, ProviderInstance, RoomId, SignupMethod, User,
+        UserId, UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
@@ -309,6 +309,26 @@ async fn create_dynamic_playlist(
     owner_id: &UserId,
     provider_instance_name: &str,
 ) -> Playlist {
+    let now = Utc::now();
+    let instance = ProviderInstance {
+        name: provider_instance_name.to_string(),
+        endpoint: "http://localhost:50051".to_string(),
+        comment: Some("test provider instance".to_string()),
+        jwt_secret: None,
+        custom_ca: None,
+        timeout: "10s".to_string(),
+        tls: false,
+        insecure_tls: false,
+        providers: vec!["fake_dynamic".to_string()],
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    ProviderInstanceRepository::new(pool.clone())
+        .create(&instance)
+        .await
+        .unwrap();
+
     let playlist = Playlist {
         id: PlaylistId::new(),
         room_id: *room_id,
@@ -1161,7 +1181,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
 
     assert_eq!(response.playlists.len(), 0);
     assert_eq!(response.media.len(), 1);
-    assert_eq!(response.media[0].title, "Root Media");
+    assert_eq!(response.media[0].name, "Root Media");
     assert!(response.dynamic_items.is_empty());
     assert!(response.current_path.is_empty());
 }

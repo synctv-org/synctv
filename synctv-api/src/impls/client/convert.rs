@@ -400,12 +400,12 @@ pub fn media_to_proto_with_availability(
         room_id: public_id_codec
             .encode_room_id(media.room_id)
             .expect("positive room ID must encode"),
-        provider: media.source_provider.clone(),
-        title: media.name.clone(),
+        source_provider: media.source_provider.clone(),
+        name: media.name.clone(),
         metadata: metadata_bytes,
         position: media.position,
         added_at: media.added_at.timestamp(),
-        added_by: media.creator_id.as_ref().map_or_else(String::new, |id| {
+        creator_id: media.creator_id.as_ref().map_or_else(String::new, |id| {
             public_id_codec
                 .encode_user_id(*id)
                 .expect("positive user ID must encode")
@@ -1129,7 +1129,7 @@ mod tests {
                     "provider": "direct_url"
                 }
             }),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1228,7 +1228,7 @@ mod tests {
                 "type": "live",
                 "room_id": 12345_u64
             }),
-            provider_instance_name: Some("bilibili".to_string()),
+            provider_instance_name: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1284,7 +1284,7 @@ mod tests {
             position: 3.5,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 42,

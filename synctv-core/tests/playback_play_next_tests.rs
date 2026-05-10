@@ -19,13 +19,16 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode, Playlist,
-        PlaylistId, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
+        PlaylistId, ProviderInstance, RoomId, RoomSettings, User, UserId, UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem,
         PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
-    repository::{MediaRepository, UserProviderCredentialRepository, UserRepository},
+    repository::{
+        MediaRepository, ProviderInstanceRepository, UserProviderCredentialRepository,
+        UserRepository,
+    },
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         room::RoomServiceOptions,
@@ -161,7 +164,7 @@ async fn insert_media(
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -183,7 +186,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -422,6 +425,8 @@ async fn create_dynamic_playlist(
     owner_id: &UserId,
     provider_instance_name: &str,
 ) -> Playlist {
+    insert_test_provider_instance(pool, provider_instance_name, "fake_dynamic").await;
+
     let playlist = Playlist {
         id: PlaylistId::new(),
         room_id: *room_id,
@@ -448,6 +453,8 @@ async fn create_dynamic_sensitive_playlist(
     owner_id: &UserId,
     provider_instance_name: &str,
 ) -> Playlist {
+    insert_test_provider_instance(pool, provider_instance_name, "fake_dynamic_sensitive").await;
+
     let playlist = Playlist {
         id: PlaylistId::new(),
         room_id: *room_id,
@@ -466,6 +473,28 @@ async fn create_dynamic_sensitive_playlist(
         .create(&playlist)
         .await
         .expect("Dynamic sensitive playlist should be created")
+}
+
+async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
+    let now = Utc::now();
+    let instance = ProviderInstance {
+        name: name.to_string(),
+        endpoint: "http://localhost:50051".to_string(),
+        comment: Some("test provider instance".to_string()),
+        jwt_secret: None,
+        custom_ca: None,
+        timeout: "10s".to_string(),
+        tls: false,
+        insecure_tls: false,
+        providers: vec![provider.to_string()],
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    };
+    ProviderInstanceRepository::new(pool.clone())
+        .create(&instance)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -836,7 +865,7 @@ async fn test_no_current_media_plays_first() {
             position: 0.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/first_vid.mp4"}),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -853,7 +882,7 @@ async fn test_no_current_media_plays_first() {
             position: 1.0,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": "https://example.com/second_vid.mp4"}),
-            provider_instance_name: Some("direct_url".to_string()),
+            provider_instance_name: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -967,7 +996,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         position: 0.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/episode-1.mp4"}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -981,7 +1010,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         position: 1.0,
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/episode-2.mp4"}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

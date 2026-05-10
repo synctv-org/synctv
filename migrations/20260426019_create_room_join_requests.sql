@@ -23,5 +23,3 @@ CREATE INDEX IF NOT EXISTS idx_room_join_requests_user_status
 CREATE INDEX IF NOT EXISTS idx_room_join_requests_reviewed_by
     ON room_join_requests(reviewed_by)
     WHERE reviewed_by IS NOT NULL;
-
-COMMENT ON TABLE room_join_requests IS 'Room membership approval workflow records';

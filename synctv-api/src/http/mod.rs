@@ -1247,7 +1247,7 @@ mod tests {
     fn test_proto_http_injection_traits_cover_media_playlist_and_provider_name() {
         let edit_media = crate::proto::client::EditMediaRequest {
             media_id: String::new(),
-            title: "Episode 1".to_string(),
+            name: "Episode 1".to_string(),
         }
         .with_media_id("med_1".to_string());
 
@@ -1278,7 +1278,7 @@ mod tests {
         .with_provider_instance_name("alist_main".to_string());
 
         assert_eq!(edit_media.media_id, "med_1");
-        assert_eq!(edit_media.title, "Episode 1");
+        assert_eq!(edit_media.name, "Episode 1");
         assert_eq!(move_playlist.playlist_id, "pl_1");
         assert_eq!(update_provider.name, "alist_main");
         assert_eq!(
@@ -1295,9 +1295,9 @@ mod tests {
         assert_eq!(join_room.password, "secret");
 
         let edit_media: crate::proto::client::EditMediaRequest =
-            serde_json::from_str(r#"{"title":"Episode 1"}"#).expect("edit media body");
+            serde_json::from_str(r#"{"name":"Episode 1"}"#).expect("edit media body");
         assert!(edit_media.media_id.is_empty());
-        assert_eq!(edit_media.title, "Episode 1");
+        assert_eq!(edit_media.name, "Episode 1");
 
         let update_playlist: crate::proto::client::UpdatePlaylistRequest =
             serde_json::from_str(r#"{"name":"Season 1"}"#).expect("update playlist body");

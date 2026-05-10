@@ -4,7 +4,7 @@ package synctv.provider.emby;
 
 import "proto/providers/emby.proto";
 
-// Emby Provider Service
+// Emby-compatible Provider Service
 //
 // Client-facing API for Emby/Jellyfin media server access
 service EmbyProviderService {
@@ -17,7 +17,7 @@ service EmbyProviderService {
   // Get current user info (uses stored credential via server_id)
   rpc GetMe(GetMeRequest) returns (GetMeResponse);
 
-  // Logout from Emby (delete stored credential)
+  // Logout from an Emby-compatible server (delete stored credential)
   rpc Logout(LogoutRequest) returns (LogoutResponse);
 
   // Get saved credentials (binds)

@@ -31,7 +31,3 @@ CREATE TRIGGER update_user_preferences_updated_at
     BEFORE UPDATE ON user_preferences
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE user_preferences IS 'Per-user configurable preferences and security options';
-COMMENT ON COLUMN user_preferences.two_factor_enabled IS 'Whether user-level two-factor authentication is enabled';
-COMMENT ON COLUMN user_preferences.settings IS 'Low-priority extension payload; core preferences use typed columns';

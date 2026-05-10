@@ -21,6 +21,44 @@ fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+/// Operational snapshot of a node-local proxy slice cache.
+#[derive(Debug, Clone)]
+pub struct ClusterSliceCacheStats {
+    pub engine_enabled: bool,
+    pub backend: String,
+    pub file_cache_dir: Option<String>,
+    pub slice_size: u64,
+    pub max_cache_size: u64,
+    pub segment_ttl_secs: u64,
+    pub stale_max_age_secs: u64,
+    pub stale_while_revalidate: bool,
+    pub eviction_interval_secs: u64,
+    pub watermark_ratio: f64,
+    pub current_size_bytes: u64,
+    pub entry_count: u64,
+    pub metadata_entries: u64,
+    pub updating_entries: u64,
+    pub lock_count: u64,
+    pub usage_ratio: f64,
+}
+
+/// Result of purging every slice-cache entry on a node.
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterSliceCachePurgeResult {
+    pub removed_entries: u64,
+    pub freed_bytes: u64,
+}
+
+/// Runtime boundary for node-local proxy slice-cache management.
+#[async_trait::async_trait]
+pub trait SliceCacheRuntime: Send + Sync {
+    fn stats(&self) -> ClusterSliceCacheStats;
+
+    async fn purge_all(&self) -> ClusterSliceCachePurgeResult;
+
+    async fn evict_expired_entries(&self) -> u64;
+}
+
 /// Cluster gRPC service
 ///
 /// Handles cluster discovery and state synchronization.
@@ -43,7 +81,7 @@ fn u64_to_i64(value: u64) -> i64 {
 pub struct ClusterServer {
     node_registry: Arc<dyn ClusterNodeDirectory>,
     connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
-    proxy_slice_cache: Option<Arc<synctv_proxy::slice_cache::SliceCache>>,
+    slice_cache_runtime: Option<Arc<dyn SliceCacheRuntime>>,
     node_id: String,
     auth: Option<ClusterAuthInterceptor>,
 }
@@ -64,7 +102,7 @@ impl ClusterServer {
         Self {
             node_registry,
             connection_runtime: None,
-            proxy_slice_cache: None,
+            slice_cache_runtime: None,
             node_id,
             auth: None,
         }
@@ -84,9 +122,9 @@ impl ClusterServer {
     #[must_use]
     pub fn with_slice_cache_runtime(
         mut self,
-        proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+        slice_cache_runtime: Arc<dyn SliceCacheRuntime>,
     ) -> Self {
-        self.proxy_slice_cache = Some(proxy_slice_cache);
+        self.slice_cache_runtime = Some(slice_cache_runtime);
         self
     }
 
@@ -128,9 +166,10 @@ impl ClusterServer {
     }
 
     fn slice_cache_stats_response(&self) -> std::result::Result<SliceCacheStatsResponse, Status> {
-        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
-            Status::failed_precondition("Proxy slice cache runtime is unavailable")
-        })?;
+        let cache = self
+            .slice_cache_runtime
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
         let stats = cache.stats();
         Ok(SliceCacheStatsResponse {
             node_id: self.node_id.clone(),
@@ -321,9 +360,10 @@ impl ClusterService for ClusterServer {
         request: Request<PurgeSliceCacheRequest>,
     ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
         self.authorize(&request)?;
-        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
-            Status::failed_precondition("Proxy slice cache runtime is unavailable")
-        })?;
+        let cache = self
+            .slice_cache_runtime
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
         let result = cache.purge_all().await;
         Ok(Response::new(PurgeSliceCacheResponse {
             node_id: self.node_id.clone(),
@@ -340,9 +380,10 @@ impl ClusterService for ClusterServer {
     ) -> std::result::Result<Response<super::synctv::cluster::EvictExpiredSliceCacheResponse>, Status>
     {
         self.authorize(&request)?;
-        let cache = self.proxy_slice_cache.as_ref().ok_or_else(|| {
-            Status::failed_precondition("Proxy slice cache runtime is unavailable")
-        })?;
+        let cache = self
+            .slice_cache_runtime
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
         let removed_expired_entries = cache.evict_expired_entries().await;
         Ok(Response::new(
             super::synctv::cluster::EvictExpiredSliceCacheResponse {

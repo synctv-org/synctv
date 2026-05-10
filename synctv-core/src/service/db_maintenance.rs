@@ -8,9 +8,6 @@
 //! - `AuditPartitionManager` for `audit_logs`
 //! - `ChatPartitionManager` for chat partitions
 //!
-//! Uses the existing SQL functions defined in migrations but previously uncalled
-//! by application code.
-
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -80,31 +77,70 @@ impl DatabaseMaintenanceService {
         u32_to_i32(self.config.notification_max_retention_days)
     }
 
+    fn expired_token_retention_days(&self) -> i32 {
+        u32_to_i32(self.config.expired_token_retention_days)
+    }
+
     fn expired_credential_buffer_hours(&self) -> i32 {
         u32_to_i32(self.config.expired_credential_buffer_hours)
     }
 
     /// Delete expired email tokens.
     pub async fn run_cleanup_email_tokens(&self) -> Result<(), sqlx::Error> {
-        sqlx::query!("SELECT cleanup_expired_auth_email_tokens()")
-            .execute(&self.pool)
-            .await?;
-        info!("Expired email token cleanup completed");
+        if self.config.expired_token_retention_days == 0 {
+            return Ok(());
+        }
+
+        let result = sqlx::query(
+            r"
+            DELETE FROM auth_email_tokens
+            WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+            ",
+        )
+        .bind(self.expired_token_retention_days())
+        .execute(&self.pool)
+        .await?;
+
+        let deleted = result.rows_affected();
+        if deleted > 0 {
+            info!(deleted, "Expired email token cleanup completed");
+        }
         Ok(())
     }
 
     /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar!(
-            r#"SELECT cleanup_old_notifications($1, $2) as "result!: serde_json::Value""#,
-            self.notification_retention_days(),
-            self.notification_max_retention_days(),
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let read_deleted = if self.config.notification_retention_days > 0 {
+            sqlx::query(
+                r"
+                DELETE FROM notifications
+                WHERE is_read = TRUE
+                  AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+                ",
+            )
+            .bind(self.notification_retention_days())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
 
-        let read_deleted = result["read_deleted"].as_i64().unwrap_or(0);
-        let expired_deleted = result["expired_deleted"].as_i64().unwrap_or(0);
+        let expired_deleted = if self.config.notification_max_retention_days > 0 {
+            sqlx::query(
+                r"
+                DELETE FROM notifications
+                WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+                ",
+            )
+            .bind(self.notification_max_retention_days())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
+
         if read_deleted > 0 || expired_deleted > 0 {
             info!(
                 read_deleted,
@@ -145,14 +181,22 @@ impl DatabaseMaintenanceService {
 
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar!(
-            r#"SELECT cleanup_expired_credentials($1) as "result!: serde_json::Value""#,
-            self.expired_credential_buffer_hours(),
+        if self.config.expired_credential_buffer_hours == 0 {
+            return Ok(());
+        }
+
+        let result = sqlx::query(
+            r"
+            DELETE FROM user_media_provider_credentials
+            WHERE expires_at IS NOT NULL
+              AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
+            ",
         )
-        .fetch_one(&self.pool)
+        .bind(self.expired_credential_buffer_hours())
+        .execute(&self.pool)
         .await?;
 
-        let deleted = result["deleted_count"].as_i64().unwrap_or(0);
+        let deleted = result.rows_affected();
         if deleted > 0 {
             info!(deleted, "Expired credential cleanup completed");
         }

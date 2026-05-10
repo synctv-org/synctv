@@ -2065,11 +2065,11 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             &room_id,
             "--username",
             "admin",
-            "--provider",
+            "--source-provider",
             "direct_url",
             "--source-config-json",
             "{\"url\":\"https://cdn.example.com/cli-e2e.mp4\"}",
-            "--title",
+            "--name",
             "CLI E2E Media",
         ],
     )
@@ -2097,7 +2097,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             &room_id,
             "--username",
             "admin",
-            "--title",
+            "--name",
             "CLI E2E Media Second",
         ],
     )
@@ -2201,12 +2201,12 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     let second_media = &items.media[1];
     assert_eq!(first_media.room_id, room_id);
     assert_eq!(first_media.id, media_two_id);
-    assert_eq!(first_media.title, "CLI E2E Media Second");
-    assert_eq!(first_media.provider, "direct_url");
+    assert_eq!(first_media.name, "CLI E2E Media Second");
+    assert_eq!(first_media.source_provider, "direct_url");
     assert_eq!(first_media.provider_instance_name, "");
     assert_eq!(second_media.id, media_one_id);
-    assert_eq!(second_media.title, "CLI E2E Media");
-    assert_eq!(second_media.provider, "direct_url");
+    assert_eq!(second_media.name, "CLI E2E Media");
+    assert_eq!(second_media.source_provider, "direct_url");
     assert_eq!(second_media.provider_instance_name, "");
 }
 
@@ -3797,7 +3797,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             &member_username,
             "--playlist-id",
             &playlist_alpha_id,
-            "--title",
+            "--name",
             "CLI Room Media One",
         ],
         "add first media",
@@ -3818,7 +3818,7 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             &room_id,
             "--username",
             &member_username,
-            "--title",
+            "--name",
             "CLI Room Media Two",
         ],
         "add second media",
@@ -3852,16 +3852,13 @@ async fn full_stack_cli_room_resource_and_member_commands_cover_status_permissio
             "--room-id",
             &room_id,
             &media_two_id,
-            "--title",
+            "--name",
             "CLI Room Media Two Renamed",
         ],
         "rename media",
     )
     .await;
-    assert_eq!(
-        renamed_media["media"]["title"],
-        "CLI Room Media Two Renamed"
-    );
+    assert_eq!(renamed_media["media"]["name"], "CLI Room Media Two Renamed");
 
     let moved_media = run_synctv_remote_cli_json(
         &server,
@@ -4139,7 +4136,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "CLI Stream Source",
         ],
         "create stream media",
@@ -4430,7 +4427,7 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "CLI Actor Constraint Media",
         ],
         "create media for actor publish-key coverage",
@@ -4549,7 +4546,7 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
             &room_id,
             "--username",
             &outsider_username,
-            "--title",
+            "--name",
             "Outsider Media",
         ],
         "outsider media add before joining room",
@@ -4600,13 +4597,13 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
             &outsider_username,
             "--playlist-id",
             &playlist_id,
-            "--title",
+            "--name",
             "Joined Outsider Media",
         ],
         "joined outsider media add",
     )
     .await;
-    assert_eq!(outsider_media["media"]["title"], "Joined Outsider Media");
+    assert_eq!(outsider_media["media"]["name"], "Joined Outsider Media");
 }
 
 #[tokio::test]
@@ -6893,7 +6890,7 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "gRPC Watch Playback One",
         ],
         "add first room media for grpc playback watch",
@@ -6914,7 +6911,7 @@ async fn full_stack_grpc_message_stream_watch_playback_snapshot_receives_initial
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "gRPC Watch Playback Two",
         ],
         "add second room media for grpc playback watch",
@@ -7233,7 +7230,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "gRPC Watch Playlist Items One",
         ],
         "add first room media for grpc playlist items watch",
@@ -7601,7 +7598,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "WS Room Media One",
         ],
         "add first room media for websocket test",
@@ -7619,8 +7616,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 &message.message,
                 Some(server_message::Message::MediaAdded(media))
                     if media.media_id == media_one_id
-                        && media.title == "WS Room Media One"
-                        && media.added_by == owner_username
+                        && media.name == "WS Room Media One"
+                        && media.creator_username == owner_username
             )
         },
         "first media added broadcast",
@@ -7637,7 +7634,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "WS Room Media Two",
         ],
         "add second room media for websocket test",
@@ -7655,8 +7652,8 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 &message.message,
                 Some(server_message::Message::MediaAdded(media))
                     if media.media_id == media_two_id
-                        && media.title == "WS Room Media Two"
-                        && media.added_by == owner_username
+                        && media.name == "WS Room Media Two"
+                        && media.creator_username == owner_username
             )
         },
         "second media added broadcast",
@@ -7671,7 +7668,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             "--room-id",
             &room_id,
             &media_two_id,
-            "--title",
+            "--name",
             "WS Room Media Two Renamed",
         ],
         "rename room media for websocket test",
@@ -7685,7 +7682,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 &message.message,
                 Some(server_message::Message::MediaUpdated(media))
                     if media.media_id == media_two_id
-                        && media.title == "WS Room Media Two Renamed"
+                        && media.name == "WS Room Media Two Renamed"
                         && media.updated_by == management_actor_username
             )
         },
@@ -8138,7 +8135,7 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "WS Watch Playback One",
         ],
         "add first room media for websocket playback watch",
@@ -8172,7 +8169,7 @@ async fn full_stack_websocket_watch_playback_snapshot_receives_initial_and_futur
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "WS Watch Playback Two",
         ],
         "add second room media for websocket playback watch",
@@ -8500,7 +8497,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
             &room_id,
             "--username",
             &owner_username,
-            "--title",
+            "--name",
             "WS Watch Playlist Items One",
         ],
         "add first room media for websocket playlist items watch",

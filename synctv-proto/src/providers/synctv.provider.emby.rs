@@ -254,7 +254,7 @@ pub mod emby_provider_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// Emby Provider Service
+    /// Emby-compatible Provider Service
     ///
     /// Client-facing API for Emby/Jellyfin media server access
     #[derive(Debug, Clone)]
@@ -409,7 +409,7 @@ pub mod emby_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Logout from Emby (delete stored credential)
+        /// Logout from an Emby-compatible server (delete stored credential)
         pub async fn logout(
             &mut self,
             request: impl tonic::IntoRequest<super::LogoutRequest>,
@@ -493,7 +493,7 @@ pub mod emby_provider_service_server {
             &self,
             request: tonic::Request<super::GetMeRequest>,
         ) -> std::result::Result<tonic::Response<super::GetMeResponse>, tonic::Status>;
-        /// Logout from Emby (delete stored credential)
+        /// Logout from an Emby-compatible server (delete stored credential)
         async fn logout(
             &self,
             request: tonic::Request<super::LogoutRequest>,
@@ -507,7 +507,7 @@ pub mod emby_provider_service_server {
             tonic::Status,
         >;
     }
-    /// Emby Provider Service
+    /// Emby-compatible Provider Service
     ///
     /// Client-facing API for Emby/Jellyfin media server access
     #[derive(Debug)]

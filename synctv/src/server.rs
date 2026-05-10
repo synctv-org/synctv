@@ -138,10 +138,7 @@ impl SharedProviderPlaybackRuntime {
     }
 }
 
-fn build_proxy_slice_cache_config(
-    config: &Config,
-    _settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
-) -> synctv_proxy::slice_cache::SliceCacheConfig {
+fn build_proxy_slice_cache_config(config: &Config) -> synctv_proxy::slice_cache::SliceCacheConfig {
     let backend = if config.proxy_slice_cache.file_backend_enabled {
         synctv_proxy::slice_cache::CacheBackendConfig::File {
             cache_dir: std::path::PathBuf::from(&config.proxy_slice_cache.file_cache_dir),
@@ -153,17 +150,22 @@ fn build_proxy_slice_cache_config(
 
     synctv_proxy::slice_cache::SliceCacheConfig {
         enabled: config.proxy_slice_cache.enabled,
+        slice_size: config.proxy_slice_cache.slice_size_bytes,
+        max_cache_size: config.proxy_slice_cache.max_cache_size_bytes,
+        segment_ttl: Duration::from_secs(config.proxy_slice_cache.segment_ttl_seconds),
+        stale_max_age: Duration::from_secs(config.proxy_slice_cache.stale_max_age_seconds),
+        stale_while_revalidate: config.proxy_slice_cache.stale_while_revalidate,
         backend,
-        ..synctv_proxy::slice_cache::SliceCacheConfig::default()
+        eviction_interval: Duration::from_secs(config.proxy_slice_cache.eviction_interval_seconds),
+        watermark_ratio: config.proxy_slice_cache.watermark_ratio,
     }
 }
 
 async fn build_proxy_slice_cache(
     config: &Config,
-    settings_registry: &Arc<synctv_core::service::SettingsRegistry>,
     proxy_http_client: Client,
 ) -> anyhow::Result<Arc<synctv_proxy::slice_cache::SliceCache>> {
-    let slice_cache_config = build_proxy_slice_cache_config(config, settings_registry);
+    let slice_cache_config = build_proxy_slice_cache_config(config);
     let cache = synctv_proxy::slice_cache::SliceCache::try_new_with_client(
         slice_cache_config,
         proxy_http_client,
@@ -171,6 +173,53 @@ async fn build_proxy_slice_cache(
     .await
     .context("failed to initialize proxy slice cache backend")?;
     Ok(Arc::new(cache))
+}
+
+struct ManagementProxySliceCacheRuntime {
+    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+}
+
+impl ManagementProxySliceCacheRuntime {
+    fn new(cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> Self {
+        Self { cache }
+    }
+}
+
+#[async_trait]
+impl synctv_management::service::ManagementSliceCacheRuntime for ManagementProxySliceCacheRuntime {
+    fn stats(&self) -> synctv_management::service::ManagementSliceCacheStats {
+        let stats = self.cache.stats();
+        synctv_management::service::ManagementSliceCacheStats {
+            engine_enabled: stats.engine_enabled,
+            backend: stats.backend,
+            file_cache_dir: stats.file_cache_dir,
+            slice_size: stats.slice_size,
+            max_cache_size: stats.max_cache_size,
+            segment_ttl_secs: stats.segment_ttl_secs,
+            stale_max_age_secs: stats.stale_max_age_secs,
+            stale_while_revalidate: stats.stale_while_revalidate,
+            eviction_interval_secs: stats.eviction_interval_secs,
+            watermark_ratio: stats.watermark_ratio,
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
+        }
+    }
+
+    async fn purge_all(&self) -> synctv_management::service::ManagementSliceCachePurgeResult {
+        let result = self.cache.purge_all().await;
+        synctv_management::service::ManagementSliceCachePurgeResult {
+            removed_entries: result.removed_entries,
+            freed_bytes: result.freed_bytes,
+        }
+    }
+
+    async fn evict_expired_entries(&self) -> u64 {
+        self.cache.evict_expired_entries().await
+    }
 }
 
 struct ManagementApiHandles {
@@ -1370,12 +1419,8 @@ impl SyncTvServer {
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<(axum::Router, Arc<synctv_api::http::AppState>)> {
         let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
-        let proxy_slice_cache = build_proxy_slice_cache(
-            &self.config,
-            &self.services.settings_registry,
-            proxy_http_client.clone(),
-        )
-        .await?;
+        let proxy_slice_cache =
+            build_proxy_slice_cache(&self.config, proxy_http_client.clone()).await?;
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
             synctv_api::http::RouterConfig {
@@ -1624,7 +1669,9 @@ impl SyncTvServer {
             alist_api: management_apis.alist,
             bilibili_api: management_apis.bilibili,
             emby_api: management_apis.emby,
-            proxy_slice_cache: shared_http_app_state.proxy_slice_cache.clone(),
+            slice_cache_runtime: Arc::new(ManagementProxySliceCacheRuntime::new(
+                shared_http_app_state.proxy_slice_cache.clone(),
+            )),
             cluster_client,
             node_id,
             lifecycle_controller: self.lifecycle_controller.clone(),
@@ -1727,19 +1774,6 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
-
-    fn test_settings_registry() -> Arc<synctv_core::service::SettingsRegistry> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
-            .expect("lazy pool");
-        let settings_service = Arc::new(synctv_core::service::SettingsService::new(
-            synctv_core::repository::SettingsRepository::new(pool.clone()),
-            pool,
-        ));
-        Arc::new(synctv_core::service::SettingsRegistry::new(
-            settings_service,
-        ))
-    }
 
     fn test_user_service(pool: sqlx::PgPool) -> UserService {
         let jwt_service =
@@ -2022,17 +2056,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_slice_cache_config_controls_startup_enablement() {
-        let registry = test_settings_registry();
         let mut app_config = Config::default();
 
-        let enabled_config = build_proxy_slice_cache_config(&app_config, &registry);
+        let enabled_config = build_proxy_slice_cache_config(&app_config);
         assert!(
             enabled_config.enabled,
             "proxy slice cache should be enabled by default at startup"
         );
 
         app_config.proxy_slice_cache.enabled = false;
-        let disabled_config = build_proxy_slice_cache_config(&app_config, &registry);
+        let disabled_config = build_proxy_slice_cache_config(&app_config);
         assert!(
             !disabled_config.enabled,
             "startup config must be able to disable proxy slice cache"
@@ -2041,12 +2074,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_slice_cache_config_uses_file_backend_when_enabled() {
-        let registry = test_settings_registry();
         let mut config = Config::default();
         config.proxy_slice_cache.file_backend_enabled = true;
         config.proxy_slice_cache.file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
 
-        let slice_cache_config = build_proxy_slice_cache_config(&config, &registry);
+        let slice_cache_config = build_proxy_slice_cache_config(&config);
 
         match slice_cache_config.backend {
             synctv_proxy::slice_cache::CacheBackendConfig::File {
@@ -2063,6 +2095,31 @@ mod tests {
                 panic!("expected file backend")
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_slice_cache_config_maps_runtime_tuning_fields() {
+        let mut config = Config::default();
+        config.proxy_slice_cache.slice_size_bytes = 4 * 1024 * 1024;
+        config.proxy_slice_cache.max_cache_size_bytes = 1024 * 1024 * 1024;
+        config.proxy_slice_cache.segment_ttl_seconds = 600;
+        config.proxy_slice_cache.stale_max_age_seconds = 120;
+        config.proxy_slice_cache.stale_while_revalidate = false;
+        config.proxy_slice_cache.eviction_interval_seconds = 30;
+        config.proxy_slice_cache.watermark_ratio = 0.75;
+
+        let slice_cache_config = build_proxy_slice_cache_config(&config);
+
+        assert_eq!(slice_cache_config.slice_size, 4 * 1024 * 1024);
+        assert_eq!(slice_cache_config.max_cache_size, 1024 * 1024 * 1024);
+        assert_eq!(slice_cache_config.segment_ttl, Duration::from_secs(600));
+        assert_eq!(slice_cache_config.stale_max_age, Duration::from_secs(120));
+        assert!(!slice_cache_config.stale_while_revalidate);
+        assert_eq!(
+            slice_cache_config.eviction_interval,
+            Duration::from_secs(30)
+        );
+        assert_eq!(slice_cache_config.watermark_ratio, 0.75);
     }
 
     #[tokio::test]

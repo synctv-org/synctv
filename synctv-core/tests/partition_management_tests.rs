@@ -1,16 +1,20 @@
 //! Partition management integration tests
 //!
 //! Verifies that `chat_messages` DEFAULT partition routes messages correctly,
-//! and that `create_chat_message_partitions()` creates future partitions.
+//! and that the chat partition manager creates future partitions.
 //! Also verifies `audit_logs` DEFAULT partition.
 //!
 //! Run with: cargo test --test `partition_management_tests`
 #![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
+use std::sync::Arc;
 use synctv_core::{
     models::{ChatMessage, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
-    repository::{ChatRepository, RoomRepository, UserRepository},
+    repository::{ChatRepository, RoomRepository, SettingsRepository, UserRepository},
+    service::{
+        global_settings::SettingsRegistry, AlwaysLeader, ChatPartitionManager, SettingsService,
+    },
 };
 use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
@@ -36,6 +40,12 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
+}
+
+fn make_settings_registry(pool: sqlx::PgPool) -> Arc<SettingsRegistry> {
+    let repo = SettingsRepository::new(pool.clone());
+    let service = Arc::new(SettingsService::new(repo, pool));
+    Arc::new(SettingsRegistry::new(service))
 }
 
 #[tokio::test]
@@ -102,17 +112,13 @@ async fn test_chat_message_default_partition_routing() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_create_chat_message_partitions_function() {
+async fn test_chat_partition_manager_creates_future_partitions() {
     let (_container, pool) = create_test_pool().await;
+    let settings = make_settings_registry(pool.clone());
+    let manager = ChatPartitionManager::new(pool.clone(), settings, Arc::new(AlwaysLeader));
 
-    // Call the partition creation function for 5 days ahead
-    let result: String = sqlx::query_scalar("SELECT create_chat_message_partitions(5)::TEXT")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
-    assert_eq!(parsed["status"], "completed");
+    let created_count = manager.ensure_future_partitions(5).await.unwrap();
+    assert_eq!(created_count, 6);
 
     // Verify partitions exist
     let partition_count: i64 = sqlx::query_scalar(
@@ -155,16 +161,10 @@ async fn test_audit_logs_default_partition_routing() {
 #[ignore = "Requires Docker"]
 async fn test_check_chat_message_partitions_health() {
     let (_container, pool) = create_test_pool().await;
+    let settings = make_settings_registry(pool.clone());
+    let manager = ChatPartitionManager::new(pool, settings, Arc::new(AlwaysLeader));
 
-    // Call the health check function
-    let result: String = sqlx::query_scalar("SELECT check_chat_message_partitions(7)::TEXT")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(parsed["status"], "checked");
-    // After migrations, all partitions for the next 30 days should be present
-    // so missing_count for 7 days ahead should be 0
-    assert_eq!(parsed["health_status"], "healthy");
+    manager.ensure_future_partitions(7).await.unwrap();
+    let health = manager.check_health(7).await.unwrap();
+    assert_eq!(health.health_status, "healthy");
 }

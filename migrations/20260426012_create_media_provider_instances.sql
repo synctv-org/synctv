@@ -35,17 +35,3 @@ CREATE TRIGGER update_media_provider_instances_updated_at
     BEFORE UPDATE ON media_provider_instances
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE media_provider_instances IS 'Media provider gRPC instance configurations';
-COMMENT ON COLUMN media_provider_instances.name IS 'Instance name';
-COMMENT ON COLUMN media_provider_instances.endpoint IS 'gRPC service endpoint';
-COMMENT ON COLUMN media_provider_instances.jwt_secret IS 'JWT secret for provider authentication';
-COMMENT ON COLUMN media_provider_instances.custom_ca IS 'Custom CA certificate';
-COMMENT ON COLUMN media_provider_instances.timeout IS 'Request timeout';
-COMMENT ON COLUMN media_provider_instances.tls IS 'Enable TLS';
-COMMENT ON COLUMN media_provider_instances.insecure_tls IS 'Skip TLS certificate verification';
-COMMENT ON COLUMN media_provider_instances.providers IS 'Supported media provider types';
-COMMENT ON CONSTRAINT media_provider_instances_name_not_empty ON media_provider_instances IS
-    'Name must not be empty or whitespace';
-COMMENT ON CONSTRAINT media_provider_instances_endpoint_not_empty ON media_provider_instances IS
-    'Endpoint must not be empty or whitespace';

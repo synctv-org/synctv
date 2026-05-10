@@ -28,6 +28,15 @@ impl std::fmt::Debug for ProviderInstanceRepository {
 }
 
 impl ProviderInstanceRepository {
+    fn is_provider_instance_reference_violation(db_err: &dyn sqlx::error::DatabaseError) -> bool {
+        db_err.code().as_deref() == Some("23503")
+            || db_err
+                .constraint()
+                .is_some_and(|constraint| constraint.contains("provider_instance"))
+            || db_err.message().contains("foreign key constraint")
+                && db_err.message().contains("media_provider_instances")
+    }
+
     fn build_order_by(query: &ProviderInstanceListQuery) -> String {
         let direction = query.sort_direction.as_sql();
         match query.sort_by {
@@ -331,7 +340,19 @@ impl ProviderInstanceRepository {
     pub async fn delete(&self, name: &str) -> Result<()> {
         let result = sqlx::query!("DELETE FROM media_provider_instances WHERE name = $1", name,)
             .execute(&self.pool)
-            .await?;
+            .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(sqlx::Error::Database(db_err))
+                if Self::is_provider_instance_reference_violation(db_err.as_ref()) =>
+            {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Provider instance '{name}' is still referenced by media or playlists"
+                )));
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         if result.rows_affected() == 0 {
             return Err(crate::Error::NotFound(format!(

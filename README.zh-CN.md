@@ -24,7 +24,7 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 ## 核心能力
 
 - 房间内同步播放，实时同步播放状态。
-- 媒体 Provider 支持 Bilibili、Alist、Emby、Jellyfin 和直链。
+- 媒体 Provider 支持 Bilibili、Alist、Emby 兼容服务（Emby/Jellyfin）和直链。
 - 支持 RTMP 推/拉流、HLS 和 HTTP-FLV 直播。
 - 提供 HTTP REST、公开 gRPC、WebSocket、management gRPC、metrics、RTMP 和 STUN 等运行时入口。
 - PostgreSQL 持久化业务数据，可选 Redis 作为共享状态、缓存、限流和集群协调层。
@@ -94,21 +94,21 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 
 重要入口：
 
-- [快速开始](./docs/src/content/docs/guides/quick-start.mdx)
-- [文档导览](./docs/src/content/docs/guides/documentation-map.mdx)
-- [架构总览](./docs/src/content/docs/guides/architecture.mdx)
-- [认证与安全模型](./docs/src/content/docs/guides/security-model.mdx)
-- [管理员操作手册](./docs/src/content/docs/guides/administration.mdx)
-- [房间、权限与用户偏好](./docs/src/content/docs/guides/rooms-permissions.mdx)
-- [客户端集成指南](./docs/src/content/docs/guides/client-integration.mdx)
+- [快速开始](./docs/src/content/docs/install/quick-start.mdx)
+- [文档导览](./docs/src/content/docs/overview/documentation-map.mdx)
+- [架构总览](./docs/src/content/docs/overview/architecture.mdx)
+- [认证与安全模型](./docs/src/content/docs/admin/authentication-security.mdx)
+- [管理员操作手册](./docs/src/content/docs/admin/index.mdx)
+- [房间、权限与用户偏好](./docs/src/content/docs/use/rooms-permissions.mdx)
+- [客户端集成指南](./docs/src/content/docs/develop/client-integration.mdx)
 - [配置文件如何工作](./docs/src/content/docs/configuration/how-configuration-works.mdx)
 - [完整配置示例](./docs/src/content/docs/configuration/full-example.mdx)
 - [配置总索引](./docs/src/content/docs/reference/configuration-index.mdx)
 - [环境变量](./docs/src/content/docs/reference/environment-variables.mdx)
 - [Runtime settings 参考](./docs/src/content/docs/reference/runtime-settings.mdx)
-- [Docker Compose 部署](./docs/src/content/docs/deployment/docker-compose.mdx)
-- [Helm 部署](./docs/src/content/docs/deployment/helm.mdx)
-- [生产部署清单](./docs/src/content/docs/deployment/production-checklist.mdx)
+- [Docker Compose 部署](./docs/src/content/docs/install/docker-compose.mdx)
+- [Helm 部署](./docs/src/content/docs/install/helm.mdx)
+- [生产部署清单](./docs/src/content/docs/install/production-checklist.mdx)
 - [备份与恢复](./docs/src/content/docs/operations/backup-restore.mdx)
 - [升级与迁移](./docs/src/content/docs/operations/upgrades.mdx)
 - [数据、隐私与保留策略](./docs/src/content/docs/operations/data-retention.mdx)
@@ -117,7 +117,7 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 - [CLI 参考](./docs/src/content/docs/reference/cli.mdx)
 - [OpenAPI 文档入口](./docs/src/content/docs/reference/openapi.mdx)
 - [gRPC 调试](./docs/src/content/docs/reference/grpc.mdx)
-- [开发指南](./docs/src/content/docs/guides/development.mdx)
+- [开发指南](./docs/src/content/docs/develop/local-development.mdx)
 
 仓库流程文档：
 

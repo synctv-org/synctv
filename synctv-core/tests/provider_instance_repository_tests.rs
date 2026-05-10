@@ -7,7 +7,8 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::ProviderInstance, repository::ProviderInstanceRepository, service::CredentialEncryption,
+    models::ProviderInstance, repository::ProviderInstanceRepository,
+    service::CredentialEncryption, Error,
 };
 use synctv_core_testing::create_test_pool;
 fn test_key() -> Vec<u8> {
@@ -163,6 +164,52 @@ async fn test_enc_prefixed_secrets_allowed_by_check_constraint() {
         result.is_ok(),
         "enc: prefixed secrets should be allowed, got error: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_referenced_provider_instance_is_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let repo = ProviderInstanceRepository::new(pool.clone());
+    let instance = make_instance("referenced_instance", None, None);
+    repo.create(&instance).await.unwrap();
+
+    let user_id: i64 =
+        sqlx::query_scalar("INSERT INTO users (username, role) VALUES ($1, 3) RETURNING id")
+            .bind("provider_ref_owner")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let room_id: i64 =
+        sqlx::query_scalar("INSERT INTO rooms (name, created_by) VALUES ($1, $2) RETURNING id")
+            .bind("Provider Ref Room")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO playlists (room_id, creator_id, name, position, source_provider, source_config, provider_instance_name) \
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+    )
+    .bind(room_id)
+    .bind(user_id)
+    .bind("Remote Folder")
+    .bind(1.0_f64)
+    .bind("bilibili")
+    .bind("{}")
+    .bind("referenced_instance")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let error = repo
+        .delete("referenced_instance")
+        .await
+        .expect_err("referenced provider instances must not be deleted");
+    assert!(
+        matches!(&error, Error::InvalidInput(message) if message.contains("still referenced")),
+        "expected referenced instance delete to be rejected clearly, got: {error}"
     );
 }
 

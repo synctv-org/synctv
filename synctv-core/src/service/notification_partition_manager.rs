@@ -11,6 +11,9 @@ use tracing::{error, info};
 
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
+use crate::service::partitioning::{
+    add_months, current_database_date, quote_ident, size_mb, start_of_month, table_exists,
+};
 use crate::{Error, Result};
 
 /// Default retention period in months for notifications
@@ -49,32 +52,77 @@ impl NotificationPartitionManager {
     }
 
     /// Ensure partitions exist for the next N months
-    pub async fn ensure_future_partitions(&self, months_ahead: i32) -> Result<serde_json::Value> {
+    pub async fn ensure_future_partitions(&self, months_ahead: i32) -> Result<i32> {
         info!(
             "Ensuring notification partitions for next {} months",
             months_ahead
         );
 
+        if months_ahead < 0 {
+            return Err(Error::InvalidInput(
+                "months_ahead must be greater than or equal to 0".to_string(),
+            ));
+        }
+
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
-        let result =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_notification_partitions($1)")
-                .bind(months_ahead)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to create notification partitions: {e}"))
-                })?;
 
-        let success_count = result["success_count"].as_i64().unwrap_or(0);
-        let total_requested = result["total_requested"].as_i64().unwrap_or(0);
+        for offset in 0..=months_ahead {
+            let start_date = add_months(current_month, offset);
+            let end_date = add_months(start_date, 1);
+            let partition_name = format!("notifications_{}", start_date.format("%Y_%m"));
+            let partition_ident = quote_ident(&partition_name);
+
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF notifications \
+                 FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to create notification partition: {e}"))
+            })?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, is_read, created_at DESC)",
+                quote_ident(&format!("{partition_name}_idx_user_read_created"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to create notification partition index: {e}"))
+            })?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, created_at DESC) WHERE is_read = FALSE",
+                quote_ident(&format!("{partition_name}_idx_user_unread"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to create notification partition index: {e}"))
+            })?;
+
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, type, created_at DESC) WHERE is_read = FALSE",
+                quote_ident(&format!("{partition_name}_idx_user_type_created"))
+            ))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                Error::Internal(format!("Failed to create notification partition index: {e}"))
+            })?;
+        }
+
+        let total_requested = months_ahead + 1;
         info!(
             "Notification partitions created: {}/{} successful",
-            success_count, total_requested
+            total_requested, total_requested
         );
 
-        Ok(result)
+        Ok(total_requested)
     }
 
     /// Drop partitions older than the configured retention period
@@ -87,20 +135,89 @@ impl NotificationPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .map_err(|e| Error::Internal(format!("Failed to acquire DDL connection: {e}")))?;
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT drop_old_notification_partitions($1)",
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let cutoff_name = format!(
+            "notifications_{}",
+            add_months(current_month, -retain_months).format("%Y_%m")
+        );
+        let partitions = sqlx::query_scalar::<_, String>(
+            "SELECT tablename
+             FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename LIKE 'notifications_%'
+               AND tablename != 'notifications_default'
+               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
+               AND tablename < $1
+             ORDER BY tablename",
         )
-        .bind(retain_months)
-        .fetch_one(&mut *conn)
+        .bind(cutoff_name)
+        .fetch_all(&mut *conn)
         .await
         .map_err(|e| Error::Internal(format!("Failed to drop old notification partitions: {e}")))?;
 
-        let dropped_count = result["dropped_count"].as_i64().unwrap_or(0);
+        for partition in &partitions {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to drop old notification partition: {e}"))
+                })?;
+        }
+
+        let dropped_count = i64::try_from(partitions.len()).unwrap_or(i64::MAX);
         if dropped_count > 0 {
             info!("Dropped {} old notification partitions", dropped_count);
         }
 
         Ok(dropped_count)
+    }
+
+    /// Check partition health status.
+    pub async fn check_health(&self, months_ahead: i32) -> Result<NotificationPartitionHealth> {
+        if months_ahead < 0 {
+            return Err(Error::InvalidInput(
+                "months_ahead must be greater than or equal to 0".to_string(),
+            ));
+        }
+
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let mut missing_partitions = Vec::new();
+        for offset in 0..=months_ahead {
+            let partition_name = format!(
+                "notifications_{}",
+                add_months(current_month, offset).format("%Y_%m")
+            );
+            if !table_exists(&self.pool, &partition_name).await? {
+                missing_partitions.push(partition_name);
+            }
+        }
+
+        let rows = sqlx::query_as::<_, (i64,)>(
+            "SELECT pg_total_relation_size(format('%I.%I', schemaname, tablename))::BIGINT
+             FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename LIKE 'notifications_%'
+               AND tablename != 'notifications_default'
+               AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to check notification partitions: {e}")))?;
+
+        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
+        let total_size_bytes = rows.iter().map(|(size,)| *size).sum::<i64>();
+        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        Ok(NotificationPartitionHealth {
+            total_partitions,
+            total_size_mb: size_mb(total_size_bytes),
+            missing_partitions,
+            missing_count,
+            health_status: if missing_count == 0 {
+                "healthy".to_string()
+            } else {
+                "warning".to_string()
+            },
+        })
     }
 
     /// Start background task for automatic partition management and retention cleanup.

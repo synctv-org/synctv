@@ -107,12 +107,12 @@ pub struct Media {
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub room_id: ::prost::alloc::string::String,
-    /// bilibili, alist, emby, direct (also known as source_provider)
+    /// Source provider type, e.g. "direct_url", "bilibili", "alist"
     #[prost(string, tag = "4")]
-    pub provider: ::prost::alloc::string::String,
-    /// Also known as name
+    pub source_provider: ::prost::alloc::string::String,
+    /// Media display name
     #[prost(string, tag = "5")]
-    pub title: ::prost::alloc::string::String,
+    pub name: ::prost::alloc::string::String,
     /// JSON metadata
     #[prost(bytes = "vec", tag = "6")]
     #[serde(with = "crate::http_serde::json_bytes")]
@@ -122,9 +122,9 @@ pub struct Media {
     pub position: f64,
     #[prost(int64, tag = "8")]
     pub added_at: i64,
-    /// Also known as creator_id
+    /// Public ID of the user who added the media
     #[prost(string, tag = "9")]
-    pub added_by: ::prost::alloc::string::String,
+    pub creator_id: ::prost::alloc::string::String,
     /// e.g., "bilibili_main", "alist_company"
     #[prost(string, tag = "10")]
     pub provider_instance_name: ::prost::alloc::string::String,
@@ -2189,8 +2189,8 @@ pub struct AddMediaRequest {
     /// Required source provider type, e.g. "direct_url", "bilibili", "alist"
     #[prost(string, tag = "2")]
     #[serde(default)]
-    pub provider: ::prost::alloc::string::String,
-    /// Optional provider instance name; empty means use the default provider instance for provider
+    pub source_provider: ::prost::alloc::string::String,
+    /// Optional provider instance name; empty means use the default provider instance for source_provider
     #[prost(string, tag = "3")]
     #[serde(default)]
     pub provider_instance_name: ::prost::alloc::string::String,
@@ -2198,10 +2198,10 @@ pub struct AddMediaRequest {
     #[prost(bytes = "vec", tag = "4")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
-    /// Optional media title. Validation: max 500 chars, no HTML tags
+    /// Optional media display name. Validation: max 500 chars, no HTML tags
     #[prost(string, tag = "5")]
     #[serde(default)]
-    pub title: ::prost::alloc::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.AddMediaResponse")]
@@ -2478,7 +2478,7 @@ pub struct EditMediaRequest {
     #[serde(default)]
     pub media_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub title: ::prost::alloc::string::String,
+    pub name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.EditMediaResponse")]
@@ -3945,13 +3945,13 @@ pub struct MediaAdded {
     #[prost(string, tag = "2")]
     pub media_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
-    pub title: ::prost::alloc::string::String,
+    pub name: ::prost::alloc::string::String,
     /// Username
     #[prost(string, tag = "4")]
-    pub added_by: ::prost::alloc::string::String,
+    pub creator_username: ::prost::alloc::string::String,
     /// User ID
     #[prost(string, tag = "5")]
-    pub added_by_user_id: ::prost::alloc::string::String,
+    pub creator_id: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.MediaRemoved")]
@@ -4007,7 +4007,7 @@ pub struct MediaUpdated {
     #[prost(string, tag = "2")]
     pub media_id: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
-    pub title: ::prost::alloc::string::String,
+    pub name: ::prost::alloc::string::String,
     /// Username
     #[prost(string, tag = "4")]
     pub updated_by: ::prost::alloc::string::String,

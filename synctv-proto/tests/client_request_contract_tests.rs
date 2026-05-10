@@ -21,10 +21,10 @@ use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoReques
 fn test_add_media_request_allows_room_root_without_playlist_id() {
     let request = AddMediaRequest {
         playlist_id: None,
-        provider: "direct_url".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-        title: "Example".to_string(),
+        name: "Example".to_string(),
     };
 
     assert!(request.playlist_id.is_none());
@@ -34,25 +34,25 @@ fn test_add_media_request_allows_room_root_without_playlist_id() {
 fn test_add_media_request_requires_non_empty_provider() {
     let request = AddMediaRequest {
         playlist_id: None,
-        provider: String::new(),
+        source_provider: String::new(),
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-        title: "Example".to_string(),
+        name: "Example".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("provider"), "{message}");
+    assert!(message.contains("source_provider"), "{message}");
 }
 
 #[test]
 fn test_add_media_request_rejects_invalid_playlist_id() {
     let request = AddMediaRequest {
         playlist_id: Some("bad-playlist".to_string()),
-        provider: "direct_url".to_string(),
+        source_provider: "direct_url".to_string(),
         provider_instance_name: String::new(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-        title: "Example".to_string(),
+        name: "Example".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -594,16 +594,16 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
 fn test_add_media_request_rejects_invalid_provider_identifiers() {
     let request = AddMediaRequest {
         playlist_id: None,
-        provider: "Bad Provider".to_string(),
+        source_provider: "Bad Provider".to_string(),
         provider_instance_name: "bad name".to_string(),
         source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-        title: "Example".to_string(),
+        name: "Example".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(
-        message.contains("provider") || message.contains("provider_instance_name"),
+        message.contains("source_provider") || message.contains("provider_instance_name"),
         "{message}"
     );
 }
@@ -741,7 +741,7 @@ fn test_get_chat_history_request_rejects_invalid_limit() {
 fn test_edit_media_request_rejects_invalid_media_id() {
     let request = EditMediaRequest {
         media_id: "bad-media".to_string(),
-        title: "Episode 1".to_string(),
+        name: "Episode 1".to_string(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");

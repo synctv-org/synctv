@@ -243,10 +243,10 @@ impl MemberService {
 
     const fn room_role_to_proto_i32(role: RoomRole) -> i32 {
         match role {
-            RoomRole::Guest => 1,
-            RoomRole::Member => 2,
-            RoomRole::Admin => 3,
-            RoomRole::Creator => 4,
+            RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
+            RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
+            RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
+            RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
         }
     }
 
@@ -1526,5 +1526,30 @@ impl MemberService {
 
         // Get all members regardless of left_at status
         self.member_repo.list_by_room_all(room_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_role_to_proto_i32_matches_common_wire_values() {
+        assert_eq!(
+            MemberService::room_role_to_proto_i32(RoomRole::Creator),
+            synctv_proto::common::RoomMemberRole::Creator as i32
+        );
+        assert_eq!(
+            MemberService::room_role_to_proto_i32(RoomRole::Admin),
+            synctv_proto::common::RoomMemberRole::Admin as i32
+        );
+        assert_eq!(
+            MemberService::room_role_to_proto_i32(RoomRole::Member),
+            synctv_proto::common::RoomMemberRole::Member as i32
+        );
+        assert_eq!(
+            MemberService::room_role_to_proto_i32(RoomRole::Guest),
+            synctv_proto::common::RoomMemberRole::Guest as i32
+        );
     }
 }

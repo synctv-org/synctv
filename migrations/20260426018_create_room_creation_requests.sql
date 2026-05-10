@@ -21,5 +21,3 @@ CREATE INDEX IF NOT EXISTS idx_room_creation_requests_status_requested
 CREATE INDEX IF NOT EXISTS idx_room_creation_requests_reviewed_by
     ON room_creation_requests(reviewed_by)
     WHERE reviewed_by IS NOT NULL;
-
-COMMENT ON TABLE room_creation_requests IS 'Room creation approval workflow records';

@@ -651,13 +651,13 @@ mod tests {
 
     #[test]
     fn http_json_edit_media_request_allows_path_supplied_media_id() {
-        let json = r#"{"title":"Updated title"}"#;
+        let json = r#"{"name":"Updated title"}"#;
 
         let decoded: crate::client::EditMediaRequest =
             serde_json::from_str(json).expect("media_id should be allowed to come from the path");
 
         assert_eq!(decoded.media_id, "");
-        assert_eq!(decoded.title, "Updated title");
+        assert_eq!(decoded.name, "Updated title");
     }
 
     #[test]
@@ -1718,10 +1718,10 @@ mod tests {
     fn validate_add_media_request_allows_missing_provider_instance_for_default_provider() {
         crate::validate(&crate::client::AddMediaRequest {
             playlist_id: None,
-            provider: "alist".into(),
+            source_provider: "alist".into(),
             provider_instance_name: String::new(),
             source_config: br#"{"path":"/tv"}"#.to_vec(),
-            title: String::new(),
+            name: String::new(),
         })
         .expect("provider-backed media add should allow default provider instance");
     }
@@ -1731,25 +1731,25 @@ mod tests {
         let error = validation_error_text(
             &crate::validate(&crate::client::AddMediaRequest {
                 playlist_id: None,
-                provider: String::new(),
+                source_provider: String::new(),
                 provider_instance_name: String::new(),
                 source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-                title: "a".repeat(501),
+                name: "a".repeat(501),
             })
             .unwrap_err(),
         );
 
-        assert!(error.contains("title"), "{error}");
+        assert!(error.contains("name"), "{error}");
     }
 
     #[test]
     fn validate_add_media_batch_request_rejects_too_many_items() {
         let template = crate::client::AddMediaRequest {
             playlist_id: None,
-            provider: String::new(),
+            source_provider: String::new(),
             provider_instance_name: String::new(),
             source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-            title: String::new(),
+            name: String::new(),
         };
         let error = validation_error_text(
             &crate::validate(&crate::client::AddMediaBatchRequest {

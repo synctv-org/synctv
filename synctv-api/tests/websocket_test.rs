@@ -2574,8 +2574,8 @@ mod websocket_e2e {
                     &message.message,
                     Some(server_message::Message::MediaAdded(media))
                         if media.media_id == public_media_one
-                            && media.title == "Matrix Media One"
-                            && media.added_by_user_id == public_owner_id
+                            && media.name == "Matrix Media One"
+                            && media.creator_id == public_owner_id
                 )
             },
             "cross-replica media added",
@@ -2608,7 +2608,7 @@ mod websocket_e2e {
                     &message.message,
                     Some(server_message::Message::MediaUpdated(media))
                         if media.media_id == public_media_one
-                            && media.title == "Matrix Media One Renamed"
+                            && media.name == "Matrix Media One Renamed"
                             && media.updated_by_user_id == public_owner_id
                 )
             },

@@ -45,6 +45,10 @@ fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
     })
 }
 
+fn validate_media_name(name: &str) -> Result<()> {
+    crate::validation::validate_media_name(name).map_err(|e| Error::InvalidInput(e.to_string()))
+}
+
 fn provider_requires_credential_repo(provider_name: &str) -> bool {
     matches!(
         provider_name,
@@ -297,6 +301,8 @@ impl MediaService {
         user_id: UserId,
         request: AddMediaRequest,
     ) -> Result<Media> {
+        validate_media_name(&request.name)?;
+
         // Check permission
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::ADD_MEDIA)
@@ -423,6 +429,8 @@ impl MediaService {
         actor_username: &str,
         request: AddMediaRequest,
     ) -> Result<Media> {
+        validate_media_name(&request.name)?;
+
         if let Some(ref playlist_id) = request.playlist_id {
             let playlist = self
                 .playlist_repo
@@ -553,6 +561,8 @@ impl MediaService {
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
         for item in items {
+            validate_media_name(&item.name)?;
+
             let bound_provider_instance =
                 normalize_provider_instance_name(item.provider_instance_name.as_deref())
                     .map(str::to_string);
@@ -711,6 +721,7 @@ impl MediaService {
 
             // Update fields
             if let Some(ref name) = request.name {
+                validate_media_name(name)?;
                 media.name = name.clone();
             }
             // Conditional update: only succeed if no other edit changed the row
@@ -790,6 +801,7 @@ impl MediaService {
             let expected_version = media.version;
 
             if let Some(ref name) = request.name {
+                validate_media_name(name)?;
                 media.name = name.clone();
             }
             match self

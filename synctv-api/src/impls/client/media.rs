@@ -478,10 +478,10 @@ pub(crate) fn build_add_media_request(
     crate::impls::validate_proto_request(&req)?;
     let crate::proto::client::AddMediaRequest {
         playlist_id,
-        provider,
+        source_provider,
         provider_instance_name,
         source_config,
-        title,
+        name,
     } = req;
 
     let playlist_id = playlist_id
@@ -495,19 +495,19 @@ pub(crate) fn build_add_media_request(
             .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
     };
 
-    let title = if title.is_empty() {
+    let name = if name.is_empty() {
         DEFAULT_MEDIA_TITLE.to_string()
     } else {
-        crate::http::validation::validate_media_title(&title)
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
+        crate::http::validation::validate_media_name(&name)
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media name: {e}")))?
     };
 
     let provider_instance_name = normalize_non_empty_filter(&provider_instance_name);
 
     Ok(CoreAddMediaRequest {
         playlist_id,
-        name: title,
-        source_provider: provider,
+        name,
+        source_provider,
         provider_instance_name,
         source_config,
     })
@@ -593,18 +593,18 @@ pub(crate) fn build_edit_media_request(
 ) -> Result<synctv_core::service::media::EditMediaRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
-    let title = if req.title.is_empty() {
+    let name = if req.name.is_empty() {
         None
     } else {
         Some(
-            crate::http::validation::validate_media_title(&req.title)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?,
+            crate::http::validation::validate_media_name(&req.name)
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media name: {e}")))?,
         )
     };
 
     Ok(synctv_core::service::media::EditMediaRequest {
         media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
-        name: title,
+        name,
     })
 }
 
@@ -1505,16 +1505,16 @@ mod tests {
         let err = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
-                provider: String::new(),
+                source_provider: String::new(),
                 provider_instance_name: String::new(),
                 source_config: br#"{"path":"/tv"}"#.to_vec(),
-                title: String::new(),
+                name: String::new(),
             },
             &codec,
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("provider"));
+        assert!(err.to_string().contains("source_provider"));
     }
 
     #[test]
@@ -1524,10 +1524,10 @@ mod tests {
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: Some(codec.encode_playlist_id(playlist_id).unwrap()),
-                provider: "alist".into(),
+                source_provider: "alist".into(),
                 provider_instance_name: "alist-main".into(),
                 source_config: br#"{"path":"/tv"}"#.to_vec(),
-                title: "Episode 1".into(),
+                name: "Episode 1".into(),
             },
             &codec,
         )
@@ -1549,10 +1549,10 @@ mod tests {
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
-                provider: "direct_url".into(),
+                source_provider: "direct_url".into(),
                 provider_instance_name: String::new(),
                 source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
-                title: "Example".into(),
+                name: "Example".into(),
             },
             &codec,
         )
@@ -1568,10 +1568,10 @@ mod tests {
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: None,
-                provider: "alist".into(),
+                source_provider: "alist".into(),
                 provider_instance_name: "alist-main".into(),
                 source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#.to_vec(),
-                title: String::new(),
+                name: String::new(),
             },
             &codec,
         )
@@ -1587,10 +1587,10 @@ mod tests {
             crate::proto::client::AddMediaBatchRequest {
                 items: vec![crate::proto::client::AddMediaRequest {
                     playlist_id: Some("bad-playlist".into()),
-                    provider: "alist".into(),
+                    source_provider: "alist".into(),
                     provider_instance_name: "alist-main".into(),
                     source_config: br#"{"path":"/tv"}"#.to_vec(),
-                    title: "Episode 1".into(),
+                    name: "Episode 1".into(),
                 }],
             },
             &codec,
@@ -1608,11 +1608,11 @@ mod tests {
             crate::proto::client::AddMediaBatchRequest {
                 items: vec![crate::proto::client::AddMediaRequest {
                     playlist_id: Some(codec.encode_playlist_id(playlist_id).unwrap()),
-                    provider: "alist".into(),
+                    source_provider: "alist".into(),
                     provider_instance_name: "alist-main".into(),
                     source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#
                         .to_vec(),
-                    title: String::new(),
+                    name: String::new(),
                 }],
             },
             &codec,
@@ -1703,7 +1703,7 @@ mod tests {
         let err = build_edit_media_request(
             crate::proto::client::EditMediaRequest {
                 media_id: "bad-media".to_string(),
-                title: "Episode 1".to_string(),
+                name: "Episode 1".to_string(),
             },
             &codec,
         )
@@ -1719,7 +1719,7 @@ mod tests {
         let request = build_edit_media_request(
             crate::proto::client::EditMediaRequest {
                 media_id: codec.encode_media_id(media_id).unwrap(),
-                title: "Episode 1".to_string(),
+                name: "Episode 1".to_string(),
             },
             &codec,
         )

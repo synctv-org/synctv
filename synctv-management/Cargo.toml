@@ -12,7 +12,6 @@ tls-aws-lc = [
     "synctv-cluster/tls-aws-lc",
     "synctv-core/tls-aws-lc",
     "synctv-proto/tls-aws-lc",
-    "synctv-proxy/tls-aws-lc",
     "tonic/tls-aws-lc",
 ]
 tls-ring = [
@@ -20,7 +19,6 @@ tls-ring = [
     "synctv-cluster/tls-ring",
     "synctv-core/tls-ring",
     "synctv-proto/tls-ring",
-    "synctv-proxy/tls-ring",
     "tonic/tls-ring",
 ]
 tls-webpki-roots = [
@@ -28,7 +26,6 @@ tls-webpki-roots = [
     "synctv-cluster/tls-webpki-roots",
     "synctv-core/tls-webpki-roots",
     "synctv-proto/tls-webpki-roots",
-    "synctv-proxy/tls-webpki-roots",
     "tonic/tls-webpki-roots",
 ]
 tls-native-roots = [
@@ -36,7 +33,6 @@ tls-native-roots = [
     "synctv-cluster/tls-native-roots",
     "synctv-core/tls-native-roots",
     "synctv-proto/tls-native-roots",
-    "synctv-proxy/tls-native-roots",
     "tonic/tls-native-roots",
 ]
 
@@ -63,7 +59,6 @@ synctv-api = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false }
-synctv-proxy = { workspace = true, default-features = false }
 
 [build-dependencies]
 tonic-prost-build.workspace = true

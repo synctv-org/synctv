@@ -24,5 +24,3 @@ CREATE INDEX IF NOT EXISTS idx_room_member_bans_user
 CREATE INDEX IF NOT EXISTS idx_room_member_bans_banned_by
     ON room_member_bans(banned_by, starts_at DESC)
     WHERE banned_by IS NOT NULL;
-
-COMMENT ON TABLE room_member_bans IS 'Room-scoped member ban records';

@@ -21,7 +21,8 @@ pub use discovery::{
 pub use error::{Error, Result};
 pub use grpc::{
     ClusterAuthInterceptor, ClusterClient, ClusterClientConfig, ClusterServer,
-    ClusterServiceServer, FanOutResult,
+    ClusterServiceServer, ClusterSliceCachePurgeResult, ClusterSliceCacheStats, FanOutResult,
+    SliceCacheRuntime,
 };
 #[cfg(feature = "k8s")]
 pub use leader::{K8sLeaderElector, K8sLeaderElectorConfig};

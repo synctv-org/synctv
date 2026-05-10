@@ -9,7 +9,9 @@ use std::sync::Arc;
 use tonic::Request;
 
 use synctv_cluster::discovery::node_registry::NodeRegistry;
-use synctv_cluster::grpc::server::ClusterServer;
+use synctv_cluster::grpc::server::{
+    ClusterServer, ClusterSliceCachePurgeResult, ClusterSliceCacheStats, SliceCacheRuntime,
+};
 
 // Import the ClusterService trait to call the gRPC methods
 use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
@@ -38,11 +40,45 @@ fn make_authenticated_server() -> ClusterServer {
     make_server().with_cluster_secret("cluster-test-secret".to_string())
 }
 
+struct FakeSliceCacheRuntime;
+
+#[async_trait::async_trait]
+impl SliceCacheRuntime for FakeSliceCacheRuntime {
+    fn stats(&self) -> ClusterSliceCacheStats {
+        ClusterSliceCacheStats {
+            engine_enabled: true,
+            backend: "memory".to_string(),
+            file_cache_dir: None,
+            slice_size: 1_048_576,
+            max_cache_size: 0,
+            segment_ttl_secs: 0,
+            stale_max_age_secs: 0,
+            stale_while_revalidate: false,
+            eviction_interval_secs: 0,
+            watermark_ratio: 0.0,
+            current_size_bytes: 0,
+            entry_count: 0,
+            metadata_entries: 0,
+            updating_entries: 0,
+            lock_count: 0,
+            usage_ratio: 0.0,
+        }
+    }
+
+    async fn purge_all(&self) -> ClusterSliceCachePurgeResult {
+        ClusterSliceCachePurgeResult {
+            removed_entries: 0,
+            freed_bytes: 0,
+        }
+    }
+
+    async fn evict_expired_entries(&self) -> u64 {
+        0
+    }
+}
+
 fn make_authenticated_slice_cache_server() -> ClusterServer {
-    let cache = Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-        synctv_proxy::slice_cache::SliceCacheConfig::default(),
-    ));
-    make_authenticated_server().with_slice_cache_runtime(cache)
+    make_authenticated_server().with_slice_cache_runtime(Arc::new(FakeSliceCacheRuntime))
 }
 
 fn with_cluster_secret<T>(mut request: Request<T>, secret: &str) -> Request<T> {

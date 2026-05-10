@@ -21,13 +21,12 @@ use std::sync::LazyLock;
 pub mod limits {
     // Core limits imported from the single source of truth in synctv-core
     pub use synctv_core::validation::{
-        PASSWORD_MAX, PASSWORD_MIN, ROOM_NAME_MAX, ROOM_NAME_MIN, USERNAME_MAX, USERNAME_MIN,
+        MEDIA_NAME_MAX, PASSWORD_MAX, PASSWORD_MIN, ROOM_NAME_MAX, ROOM_NAME_MIN, USERNAME_MAX,
+        USERNAME_MIN,
     };
 
     /// Maximum room description length
     pub const ROOM_DESCRIPTION_MAX: usize = 500;
-    /// Maximum media title length
-    pub const MEDIA_TITLE_MAX: usize = 500;
     /// Maximum chat message length
     pub const CHAT_MESSAGE_MAX: usize = 5000;
     /// Maximum URL length
@@ -507,15 +506,15 @@ fn validate_public_id_with_prefix(
     Ok(sanitized)
 }
 
-/// Validate media title
-pub fn validate_media_title(title: &str) -> ValidationResult<String> {
-    let sanitized = sanitize_string(title);
+/// Validate media display name
+pub fn validate_media_name(name: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(name);
 
-    let len = sanitized.len();
-    if len > limits::MEDIA_TITLE_MAX {
+    let len = sanitized.chars().count();
+    if len > limits::MEDIA_NAME_MAX {
         return Err(ValidationError::TooLong {
-            field: "media_title",
-            max: limits::MEDIA_TITLE_MAX,
+            field: "media_name",
+            max: limits::MEDIA_NAME_MAX,
             actual: len,
         });
     }
@@ -1665,34 +1664,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_media_title() {
-        // Valid titles
-        assert!(validate_media_title("My Video").is_ok());
-        assert!(validate_media_title("Movie 2024").is_ok());
-        assert!(validate_media_title("Café Video").is_ok()); // Unicode characters
+    fn test_validate_media_name() {
+        // Valid names
+        assert!(validate_media_name("My Video").is_ok());
+        assert!(validate_media_name("Movie 2024").is_ok());
+        assert!(validate_media_name("Café Video").is_ok()); // Unicode characters
 
-        // Empty title is allowed (defaults will be used)
-        assert!(validate_media_title("").is_ok());
+        // Empty name is allowed (defaults will be used)
+        assert!(validate_media_name("").is_ok());
 
         // Exactly at max length (500) should succeed
-        let exact_title = "a".repeat(limits::MEDIA_TITLE_MAX);
-        assert!(validate_media_title(&exact_title).is_ok());
+        let exact_name = "a".repeat(limits::MEDIA_NAME_MAX);
+        assert!(validate_media_name(&exact_name).is_ok());
+
+        let exact_unicode_name = "\u{4e00}".repeat(limits::MEDIA_NAME_MAX);
+        assert!(validate_media_name(&exact_unicode_name).is_ok());
 
         // Over max length (501) should fail
-        let long_title = "a".repeat(limits::MEDIA_TITLE_MAX + 1);
-        let result = validate_media_title(&long_title);
+        let long_name = "a".repeat(limits::MEDIA_NAME_MAX + 1);
+        let result = validate_media_name(&long_name);
         assert!(result.is_err());
         match result {
             Err(ValidationError::TooLong { field, max, actual }) => {
-                assert_eq!(field, "media_title");
-                assert_eq!(max, limits::MEDIA_TITLE_MAX);
-                assert_eq!(actual, limits::MEDIA_TITLE_MAX + 1);
+                assert_eq!(field, "media_name");
+                assert_eq!(max, limits::MEDIA_NAME_MAX);
+                assert_eq!(actual, limits::MEDIA_NAME_MAX + 1);
             }
             _ => panic!("Expected TooLong error"),
         }
 
         // XSS attempt should fail
-        let xss_result = validate_media_title("<script>alert('xss')</script>");
+        let xss_result = validate_media_name("<script>alert('xss')</script>");
         assert!(xss_result.is_err());
         match xss_result {
             Err(ValidationError::SecurityRisk) => {}
@@ -1700,7 +1702,7 @@ mod tests {
         }
 
         // Control characters should be stripped
-        let sanitized = validate_media_title("hello\x00world").unwrap();
+        let sanitized = validate_media_name("hello\x00world").unwrap();
         assert_eq!(sanitized, "helloworld");
     }
 }

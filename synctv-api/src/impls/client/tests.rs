@@ -983,11 +983,11 @@ fn test_media_to_proto_basic() {
         proto.room_id,
         public_id_codec.encode_room_id(media.room_id).unwrap()
     );
-    assert_eq!(proto.provider, "bilibili");
-    assert_eq!(proto.title, "Test Video");
+    assert_eq!(proto.source_provider, "bilibili");
+    assert_eq!(proto.name, "Test Video");
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(
-        proto.added_by,
+        proto.creator_id,
         public_id_codec
             .encode_user_id(media.creator_id.unwrap())
             .unwrap()
@@ -1011,7 +1011,7 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() {
         1.0,
     );
     let proto = media_to_proto(&media, &public_id_codec);
-    assert_eq!(proto.provider, "direct_url");
+    assert_eq!(proto.source_provider, "direct_url");
     assert!(proto.provider_instance_name.is_empty());
 }
 
@@ -1306,7 +1306,7 @@ fn test_add_media_batch_uses_provider_instance_name() {
     // This test documents that the batch path uses item.provider_instance_name
     // directly (not the provider type name), serving as a regression guard.
     // Single-item add_media is stricter now: non-direct providers must send an
-    // explicit provider_instance_name instead of falling back to req.provider.
+    // explicit provider_instance_name instead of falling back to req.source_provider.
     // The batch path already used item.provider_instance_name directly.
     let instance_name = "bilibili_main";
     let type_name = "bilibili";

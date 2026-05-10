@@ -12,9 +12,3 @@ CREATE TRIGGER update_room_settings_updated_at
     BEFORE UPDATE ON room_settings
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE room_settings IS 'Room configuration settings stored as key-value pairs';
-COMMENT ON COLUMN room_settings.room_id IS 'Room ID';
-COMMENT ON COLUMN room_settings.key IS 'Settings key';
-COMMENT ON COLUMN room_settings.value IS 'Setting value (stored as text, parsed based on key)';
-COMMENT ON COLUMN room_settings.version IS 'Optimistic locking version';

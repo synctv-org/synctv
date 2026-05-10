@@ -12,11 +12,15 @@ use synctv_core_testing::create_test_pool;
 async fn audit_partition_manager_get_stats_returns_partition_stats() {
     let (_postgres, pool) = create_test_pool().await;
     let manager = AuditPartitionManager::new(pool, Arc::new(AlwaysLeader));
+    manager
+        .ensure_future_partitions(1)
+        .await
+        .expect("audit partitions should be created before stats are read");
 
     let stats = manager
         .get_stats()
         .await
-        .expect("audit partition stats function should exist and return JSON");
+        .expect("audit partition stats should be returned from catalog data");
 
     assert!(stats.total_partitions >= 1);
     assert!(stats.total_records >= 0);

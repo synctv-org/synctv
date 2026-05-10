@@ -40,14 +40,3 @@ CREATE TRIGGER update_auth_password_credentials_updated_at
     BEFORE UPDATE ON auth_password_credentials
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE auth_password_credentials IS 'Password-based authentication credentials; supported methods are inferred from non-null credential columns';
-COMMENT ON COLUMN auth_password_credentials.user_id IS 'User that owns this password credential set';
-COMMENT ON COLUMN auth_password_credentials.legacy_password_hash IS 'Legacy password hash in PHC format when password login is enabled';
-COMMENT ON COLUMN auth_password_credentials.legacy_password_algorithm IS 'Algorithm identifier for legacy_password_hash, for example argon2id';
-COMMENT ON COLUMN auth_password_credentials.opaque_record IS 'OPAQUE password registration record when OPAQUE login is enabled';
-COMMENT ON COLUMN auth_password_credentials.opaque_credential_identifier IS 'Stable OPAQUE credential identifier used to derive per-user OPRF key material';
-COMMENT ON COLUMN auth_password_credentials.opaque_ciphersuite IS 'OPAQUE ciphersuite identifier used to create opaque_record';
-COMMENT ON COLUMN auth_password_credentials.opaque_server_setup_version IS 'Version of the OPAQUE server setup used to create opaque_record';
-COMMENT ON COLUMN auth_password_credentials.password_changed_at IS 'Timestamp of last password credential change';
-COMMENT ON COLUMN auth_password_credentials.password_version IS 'Monotonically increasing password credential version used to invalidate tokens';

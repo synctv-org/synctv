@@ -44,6 +44,3 @@ AFTER INSERT ON cluster_outbox
 FOR EACH ROW
 WHEN (NEW.status = 'pending')
 EXECUTE FUNCTION notify_cluster_outbox_new();
-
-COMMENT ON TABLE cluster_outbox IS 'Transactional outbox for durable cross-replica cluster events';
-COMMENT ON TABLE processed_cluster_events IS 'Cluster event ids processed by local consumers for idempotency';

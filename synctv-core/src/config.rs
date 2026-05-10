@@ -2637,6 +2637,26 @@ impl Config {
             "SYNCTV_PROXY_SLICE_CACHE_ENABLED",
             &mut self.proxy_slice_cache.enabled,
         )?;
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES",
+            &mut self.proxy_slice_cache.slice_size_bytes,
+        )?;
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES",
+            &mut self.proxy_slice_cache.max_cache_size_bytes,
+        )?;
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_SEGMENT_TTL_SECONDS",
+            &mut self.proxy_slice_cache.segment_ttl_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_STALE_MAX_AGE_SECONDS",
+            &mut self.proxy_slice_cache.stale_max_age_seconds,
+        )?;
+        env_override_bool(
+            "SYNCTV_PROXY_SLICE_CACHE_STALE_WHILE_REVALIDATE",
+            &mut self.proxy_slice_cache.stale_while_revalidate,
+        )?;
         env_override_bool(
             "SYNCTV_PROXY_SLICE_CACHE_FILE_BACKEND_ENABLED",
             &mut self.proxy_slice_cache.file_backend_enabled,
@@ -2645,6 +2665,14 @@ impl Config {
             "SYNCTV_PROXY_SLICE_CACHE_FILE_CACHE_DIR",
             &mut self.proxy_slice_cache.file_cache_dir,
         );
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_EVICTION_INTERVAL_SECONDS",
+            &mut self.proxy_slice_cache.eviction_interval_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO",
+            &mut self.proxy_slice_cache.watermark_ratio,
+        )?;
 
         env_override_parse(
             "SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS",
@@ -3612,6 +3640,38 @@ impl Config {
                     .push("proxy_slice_cache.file_cache_dir must be an absolute path".to_string());
             }
         }
+        if self.proxy_slice_cache.slice_size_bytes == 0 {
+            errors.push("proxy_slice_cache.slice_size_bytes must be greater than 0".to_string());
+        }
+        if self.proxy_slice_cache.max_cache_size_bytes == 0 {
+            errors
+                .push("proxy_slice_cache.max_cache_size_bytes must be greater than 0".to_string());
+        }
+        if self.proxy_slice_cache.segment_ttl_seconds == 0 {
+            errors.push("proxy_slice_cache.segment_ttl_seconds must be greater than 0".to_string());
+        }
+        if self.proxy_slice_cache.eviction_interval_seconds == 0 {
+            errors.push(
+                "proxy_slice_cache.eviction_interval_seconds must be greater than 0".to_string(),
+            );
+        }
+        if !self.proxy_slice_cache.watermark_ratio.is_finite()
+            || self.proxy_slice_cache.watermark_ratio <= 0.0
+            || self.proxy_slice_cache.watermark_ratio > 1.0
+        {
+            errors.push(
+                "proxy_slice_cache.watermark_ratio must be greater than 0 and at most 1"
+                    .to_string(),
+            );
+        }
+        if self.proxy_slice_cache.max_cache_size_bytes
+            < self.proxy_slice_cache.slice_size_bytes as u64
+        {
+            errors.push(
+                "proxy_slice_cache.max_cache_size_bytes must be at least proxy_slice_cache.slice_size_bytes"
+                    .to_string(),
+            );
+        }
 
         // Validate: cluster mode requires a Redis backend to be configured.
         // Redis is essential for cross-replica pub/sub, leader election, node registry,
@@ -4212,20 +4272,41 @@ impl Default for CacheConfig {
 pub struct ProxySliceCacheConfig {
     /// Whether proxy slice caching is enabled at process startup.
     pub enabled: bool,
+    /// Size of each cached byte-range slice.
+    pub slice_size_bytes: usize,
+    /// Maximum total cache size across all entries.
+    pub max_cache_size_bytes: u64,
+    /// TTL for fresh cached media slices.
+    pub segment_ttl_seconds: u64,
+    /// Maximum time an expired entry can be served as stale.
+    pub stale_max_age_seconds: u64,
+    /// Serve stale entries while a background revalidation is in progress.
+    pub stale_while_revalidate: bool,
     /// Whether the proxy slice cache should persist entries to disk.
     pub file_backend_enabled: bool,
     /// Root directory for persisted proxy slice cache entries.
     ///
     /// Relative paths are resolved against the effective `data_dir`.
     pub file_cache_dir: String,
+    /// Background eviction interval.
+    pub eviction_interval_seconds: u64,
+    /// Eviction target watermark as a fraction of max cache size.
+    pub watermark_ratio: f64,
 }
 
 impl Default for ProxySliceCacheConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            slice_size_bytes: 2 * 1024 * 1024,
+            max_cache_size_bytes: 512 * 1024 * 1024,
+            segment_ttl_seconds: 300,
+            stale_max_age_seconds: 60,
+            stale_while_revalidate: true,
             file_backend_enabled: false,
             file_cache_dir: String::new(),
+            eviction_interval_seconds: 60,
+            watermark_ratio: 0.875,
         }
     }
 }
@@ -5254,8 +5335,15 @@ metrics:
     key_path: "tls/metrics.key"
 proxy_slice_cache:
   enabled: false
+  slice_size_bytes: 4194304
+  max_cache_size_bytes: 1073741824
+  segment_ttl_seconds: 600
+  stale_max_age_seconds: 120
+  stale_while_revalidate: false
   file_backend_enabled: true
   file_cache_dir: "proxy-cache"
+  eviction_interval_seconds: 30
+  watermark_ratio: 0.75
 logging:
   file_path: "logs/server.log"
 livestream:
@@ -5286,11 +5374,21 @@ livestream:
             config_dir.join("tls").join("metrics.key")
         );
         assert!(!config.proxy_slice_cache.enabled);
+        assert_eq!(config.proxy_slice_cache.slice_size_bytes, 4 * 1024 * 1024);
+        assert_eq!(
+            config.proxy_slice_cache.max_cache_size_bytes,
+            1024 * 1024 * 1024
+        );
+        assert_eq!(config.proxy_slice_cache.segment_ttl_seconds, 600);
+        assert_eq!(config.proxy_slice_cache.stale_max_age_seconds, 120);
+        assert!(!config.proxy_slice_cache.stale_while_revalidate);
         assert!(config.proxy_slice_cache.file_backend_enabled);
         assert_eq!(
             Path::new(&config.proxy_slice_cache.file_cache_dir),
             expected_data_dir.join("proxy-cache")
         );
+        assert_eq!(config.proxy_slice_cache.eviction_interval_seconds, 30);
+        assert_eq!(config.proxy_slice_cache.watermark_ratio, 0.75);
         assert_eq!(
             Path::new(&config.livestream.hls_storage_path),
             expected_data_dir.join("hls")
@@ -5387,17 +5485,55 @@ management:
                 "SYNCTV_PROXY_SLICE_CACHE_ENABLED".to_string(),
                 "false".to_string(),
             ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES".to_string(),
+                "4194304".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES".to_string(),
+                "1073741824".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_SEGMENT_TTL_SECONDS".to_string(),
+                "600".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_STALE_MAX_AGE_SECONDS".to_string(),
+                "120".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_STALE_WHILE_REVALIDATE".to_string(),
+                "false".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_EVICTION_INTERVAL_SECONDS".to_string(),
+                "30".to_string(),
+            ),
+            (
+                "SYNCTV_PROXY_SLICE_CACHE_WATERMARK_RATIO".to_string(),
+                "0.75".to_string(),
+            ),
         ]);
 
         let config = Config::from_env_map(&env).expect("env-backed config should load");
         let expected_data_dir = cwd.join("var").join("synctv");
 
         assert!(!config.proxy_slice_cache.enabled);
+        assert_eq!(config.proxy_slice_cache.slice_size_bytes, 4 * 1024 * 1024);
+        assert_eq!(
+            config.proxy_slice_cache.max_cache_size_bytes,
+            1024 * 1024 * 1024
+        );
+        assert_eq!(config.proxy_slice_cache.segment_ttl_seconds, 600);
+        assert_eq!(config.proxy_slice_cache.stale_max_age_seconds, 120);
+        assert!(!config.proxy_slice_cache.stale_while_revalidate);
         assert!(config.proxy_slice_cache.file_backend_enabled);
         assert_eq!(
             Path::new(&config.proxy_slice_cache.file_cache_dir),
             expected_data_dir.join("cache").join("proxy-slice")
         );
+        assert_eq!(config.proxy_slice_cache.eviction_interval_seconds, 30);
+        assert_eq!(config.proxy_slice_cache.watermark_ratio, 0.75);
     }
 
     #[test]

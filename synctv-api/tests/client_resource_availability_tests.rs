@@ -96,7 +96,7 @@ fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) 
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: json!({ "url": format!("https://example.com/{name}.mp4") }),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: now,
         updated_at: now,
         version: 0,

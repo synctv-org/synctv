@@ -44,7 +44,3 @@ CREATE INDEX IF NOT EXISTS idx_user_registration_requests_status_requested
 CREATE INDEX IF NOT EXISTS idx_user_registration_requests_reviewed_by
     ON user_registration_requests(reviewed_by)
     WHERE reviewed_by IS NOT NULL;
-
-COMMENT ON TABLE user_registration_requests IS 'User registration approval workflow records';
-COMMENT ON CONSTRAINT user_registration_requests_email_not_empty ON user_registration_requests IS
-    'Email is either NULL or non-empty after trimming whitespace';

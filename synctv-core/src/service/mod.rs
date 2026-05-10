@@ -18,6 +18,7 @@ pub mod notification;
 pub mod notification_partition_manager;
 pub mod oauth2;
 pub mod optimistic_retry;
+mod partitioning;
 pub mod passkey;
 pub mod permission;
 pub mod playback;

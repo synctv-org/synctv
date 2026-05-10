@@ -364,9 +364,9 @@ Media:
 
 ```bash
 synctv media list <ROOM_ID>
-synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --title "Video"
-synctv media add --room-id <ROOM_ID> --username alice --source-config-json '{"url":"https://example.com/video.mp4"}' --title "Video"
-synctv media update --room-id <ROOM_ID> <MEDIA_ID> --title "New Title"
+synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --name "Video"
+synctv media add --room-id <ROOM_ID> --username alice --source-provider direct_url --source-config-json '{"url":"https://example.com/video.mp4"}' --name "Video"
+synctv media update --room-id <ROOM_ID> <MEDIA_ID> --name "New Name"
 synctv media move --room-id <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>
 ```

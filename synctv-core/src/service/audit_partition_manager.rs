@@ -10,6 +10,9 @@ use tracing::{info, warn};
 
 use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
+use crate::service::partitioning::{
+    add_months, current_database_date, quote_ident, size_gb, size_mb, start_of_month, table_exists,
+};
 use crate::{Error, InternalExt, Result};
 
 /// Maximum retry attempts for partition operations
@@ -50,7 +53,6 @@ pub struct PartitionInfo {
 /// Result of partition creation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionCreationResult {
-    pub status: String,
     pub total_requested: i32,
     pub success_count: i32,
     pub partitions: Vec<PartitionCreationDetail>,
@@ -63,7 +65,6 @@ pub struct PartitionCreationDetail {
     pub start_date: String,
     pub end_date: String,
     pub indexes_created: i32,
-    pub status: String,
 }
 
 /// Audit log partition manager
@@ -93,18 +94,27 @@ impl AuditPartitionManager {
             months_ahead
         );
 
-        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
-            .await
-            .internal_with_err("Failed to acquire DDL connection for partition creation")?;
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partitions($1)")
-                .bind(months_ahead)
-                .fetch_one(&mut *conn)
-                .await
-                .internal_with_err("Failed to create partitions")?;
+        if months_ahead < 0 {
+            return Err(Error::InvalidInput(
+                "months_ahead must be greater than or equal to 0".to_string(),
+            ));
+        }
 
-        let result: PartitionCreationResult = serde_json::from_value(result_json)
-            .internal_with_err("Failed to parse partition result")?;
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let mut partitions = Vec::new();
+        for offset in 0..=months_ahead {
+            partitions.push(
+                self.create_partition_detail(add_months(current_month, offset))
+                    .await?,
+            );
+        }
+
+        let success_count = i32::try_from(partitions.len()).unwrap_or(i32::MAX);
+        let result = PartitionCreationResult {
+            total_requested: months_ahead + 1,
+            success_count,
+            partitions,
+        };
 
         info!(
             "Partitions created: {}/{} successful",
@@ -118,24 +128,72 @@ impl AuditPartitionManager {
     pub async fn create_partition(&self, date: chrono::NaiveDate) -> Result<PartitionInfo> {
         info!("Creating audit log partition for date: {}", date);
 
+        let partition_name = self.create_partition_detail(date).await?.partition_name;
+
+        Ok(PartitionInfo {
+            partition: partition_name,
+            row_count: 0,
+            size_mb: 0.0,
+        })
+    }
+
+    async fn create_partition_detail(
+        &self,
+        date: chrono::NaiveDate,
+    ) -> Result<PartitionCreationDetail> {
+        let start_date = start_of_month(date);
+        let end_date = add_months(start_date, 1);
+        let partition_name = format!("audit_logs_{}", start_date.format("%Y_%m"));
+        let partition_ident = quote_ident(&partition_name);
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partition($1)")
-                .bind(date)
-                .fetch_one(&mut *conn)
-                .await
-                .internal_with_err("Failed to create partition")?;
 
-        let partition_name = result_json["partition_name"]
-            .as_str()
-            .ok_or_else(|| Error::Internal("Invalid partition result".to_string()))?;
+        sqlx::query(&format!(
+            "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF audit_logs \
+             FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
+        ))
+        .execute(&mut *conn)
+        .await
+        .internal_with_err("Failed to create audit partition")?;
 
-        Ok(PartitionInfo {
-            partition: partition_name.to_string(),
-            row_count: 0,
-            size_mb: 0.0,
+        sqlx::query(&format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(actor_id, created_at DESC) WHERE actor_id IS NOT NULL",
+            quote_ident(&format!("{partition_name}_idx_actor_created"))
+        ))
+        .execute(&mut *conn)
+        .await
+        .internal_with_err("Failed to create audit partition index")?;
+
+        sqlx::query(&format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(action, created_at DESC)",
+            quote_ident(&format!("{partition_name}_idx_action_created"))
+        ))
+        .execute(&mut *conn)
+        .await
+        .internal_with_err("Failed to create audit partition index")?;
+
+        sqlx::query(&format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(target_type, target_id, created_at DESC) WHERE target_type IS NOT NULL",
+            quote_ident(&format!("{partition_name}_idx_target_created"))
+        ))
+        .execute(&mut *conn)
+        .await
+        .internal_with_err("Failed to create audit partition index")?;
+
+        sqlx::query(&format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(ip_address) WHERE ip_address IS NOT NULL",
+            quote_ident(&format!("{partition_name}_idx_ip_address"))
+        ))
+        .execute(&mut *conn)
+        .await
+        .internal_with_err("Failed to create audit partition index")?;
+
+        Ok(PartitionCreationDetail {
+            partition_name,
+            start_date: start_date.to_string(),
+            end_date: end_date.to_string(),
+            indexes_created: 4,
         })
     }
 
@@ -151,27 +209,34 @@ impl AuditPartitionManager {
         let mut conn = acquire_unbounded_ddl_connection(&self.pool)
             .await
             .internal_with_err("Failed to acquire DDL connection for dropping partitions")?;
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT drop_old_audit_logs_partitions($1)")
-                .bind(keep_months)
-                .fetch_one(&mut *conn)
-                .await
-                .internal_with_err("Failed to drop partitions")?;
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let cutoff_name = format!(
+            "audit_logs_{}",
+            add_months(current_month, -keep_months).format("%Y_%m")
+        );
+        let dropped_partitions = sqlx::query_scalar::<_, String>(
+            "SELECT tablename
+             FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
+               AND tablename < $1
+             ORDER BY tablename",
+        )
+        .bind(cutoff_name)
+        .fetch_all(&mut *conn)
+        .await
+        .internal_with_err("Failed to list old audit partitions")?;
 
-        let dropped_count =
-            i32::try_from(result_json["dropped_count"].as_i64().unwrap_or(0)).unwrap_or(i32::MAX);
+        for partition in &dropped_partitions {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {}", quote_ident(partition)))
+                .execute(&mut *conn)
+                .await
+                .internal_with_err("Failed to drop audit partition")?;
+        }
+
+        let dropped_count = i32::try_from(dropped_partitions.len()).unwrap_or(i32::MAX);
 
         info!("Successfully dropped {} old partitions", dropped_count);
-
-        let dropped_partitions = result_json["dropped_partitions"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v["partition"].as_str())
-                    .map(std::string::ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
 
         Ok(dropped_partitions)
     }
@@ -180,14 +245,45 @@ impl AuditPartitionManager {
     ///
     /// Returns missing partitions and overall health status
     pub async fn check_health(&self) -> Result<PartitionHealth> {
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT check_audit_logs_partitions()")
-                .fetch_one(&self.pool)
-                .await
-                .internal_with_err("Failed to check partition health")?;
+        let current_month = start_of_month(current_database_date(&self.pool).await?);
+        let mut missing_partitions = Vec::new();
+        for offset in 0..=6 {
+            let partition_name = format!(
+                "audit_logs_{}",
+                add_months(current_month, offset).format("%Y_%m")
+            );
+            if !table_exists(&self.pool, &partition_name).await? {
+                missing_partitions.push(partition_name);
+            }
+        }
 
-        let health: PartitionHealth = serde_json::from_value(result_json)
-            .internal_with_err("Failed to parse health result")?;
+        let rows = sqlx::query_as::<_, (i64,)>(
+            "SELECT pg_total_relation_size(c.oid)::BIGINT
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public'
+               AND c.relkind = 'r'
+               AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .internal_with_err("Failed to check partition health")?;
+
+        let total_partitions = i32::try_from(rows.len()).unwrap_or(i32::MAX);
+        let total_size = rows.iter().map(|(size,)| *size).sum::<i64>();
+        let missing_count = i32::try_from(missing_partitions.len()).unwrap_or(i32::MAX);
+        let health = PartitionHealth {
+            total_partitions,
+            total_size_mb: size_mb(total_size),
+            total_size_gb: size_gb(total_size),
+            missing_partitions,
+            missing_count,
+            health_status: if missing_count == 0 {
+                "healthy".to_string()
+            } else {
+                "warning".to_string()
+            },
+        };
 
         match health.health_status.as_str() {
             "healthy" => {
@@ -214,14 +310,36 @@ impl AuditPartitionManager {
     ///
     /// Returns detailed statistics for all partitions
     pub async fn get_stats(&self) -> Result<PartitionStats> {
-        let result_json =
-            sqlx::query_scalar::<_, serde_json::Value>("SELECT get_audit_logs_stats()")
-                .fetch_one(&self.pool)
-                .await
-                .internal_with_err("Failed to get partition stats")?;
+        let rows = sqlx::query_as::<_, (String, i64, i64)>(
+            "SELECT
+                c.relname AS tablename,
+                GREATEST(c.reltuples, 0)::BIGINT AS row_count,
+                pg_total_relation_size(c.oid)::BIGINT AS size_bytes
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public'
+               AND c.relkind = 'r'
+               AND c.relname ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
+             ORDER BY c.relname DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .internal_with_err("Failed to get partition stats")?;
 
-        let stats: PartitionStats = serde_json::from_value(result_json)
-            .internal_with_err("Failed to parse stats result")?;
+        let total_records = rows.iter().map(|(_, row_count, _)| *row_count).sum();
+        let partitions = rows
+            .into_iter()
+            .map(|(partition, row_count, size_bytes)| PartitionInfo {
+                partition,
+                row_count,
+                size_mb: size_mb(size_bytes),
+            })
+            .collect::<Vec<_>>();
+        let stats = PartitionStats {
+            total_partitions: partitions.len(),
+            total_records,
+            partitions,
+        };
 
         info!(
             "Audit log stats: {} partitions, {} total records",
@@ -502,7 +620,6 @@ mod tests {
     #[test]
     fn test_partition_creation_result_deserialization() {
         let json = r#"{
-            "status": "completed",
             "total_requested": 7,
             "success_count": 7,
             "partitions": [
@@ -510,8 +627,7 @@ mod tests {
                     "partition_name": "audit_logs_2026_05",
                     "start_date": "2026-05-01",
                     "end_date": "2026-06-01",
-                    "indexes_created": 4,
-                    "status": "success"
+                    "indexes_created": 4
                 }
             ]
         }"#;
@@ -546,7 +662,6 @@ mod tests {
             start_date: "2024-01-01".to_string(),
             end_date: "2024-02-01".to_string(),
             indexes_created: 4,
-            status: "success".to_string(),
         };
 
         let json = serde_json::to_string(&detail).unwrap();
@@ -554,7 +669,6 @@ mod tests {
 
         assert_eq!(deserialized.partition_name, detail.partition_name);
         assert_eq!(deserialized.indexes_created, detail.indexes_created);
-        assert_eq!(deserialized.status, detail.status);
     }
 
     #[test]

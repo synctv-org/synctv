@@ -1742,7 +1742,7 @@ mod tests {
     #[test]
     fn test_room_members_query_deserialization() {
         let json =
-            r#"{"page":2,"page_size":25,"search":"alice","role":3,"sort_by":2,"sort_direction":1}"#;
+            r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
         let query: admin::GetRoomMembersRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);

@@ -27,12 +27,3 @@ CREATE TRIGGER update_auth_webauthn_credentials_updated_at
     BEFORE UPDATE ON auth_webauthn_credentials
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE auth_webauthn_credentials IS 'WebAuthn credentials used for passkeys and security keys';
-COMMENT ON COLUMN auth_webauthn_credentials.user_id IS 'User that owns this WebAuthn credential';
-COMMENT ON COLUMN auth_webauthn_credentials.credential_id IS 'WebAuthn credential ID returned by the authenticator';
-COMMENT ON COLUMN auth_webauthn_credentials.passkey IS 'Serialized webauthn-rs Passkey used as the credential source of truth';
-COMMENT ON COLUMN auth_webauthn_credentials.public_key IS 'Serialized COSE WebAuthn credential public key metadata';
-COMMENT ON COLUMN auth_webauthn_credentials.sign_count IS 'Authenticator signature counter for cloned credential detection';
-COMMENT ON COLUMN auth_webauthn_credentials.name IS 'User-visible credential label';
-COMMENT ON COLUMN auth_webauthn_credentials.last_used_at IS 'Last successful authentication time for this credential';

@@ -33,14 +33,14 @@ use crate::proto::{
     ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
     PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
     RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
-    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest, RoomStatus,
+    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
     SendTestEmailRequest, ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo,
     SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest,
     StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanMemberRequest,
     UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackRequest,
     UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
     UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef, UserRole, UserStatus,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
@@ -66,6 +66,41 @@ struct ValidatedManagementUser {
 struct BatchUserResolution {
     user_ids: Vec<String>,
     failures: Vec<admin_proto::BatchResultItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagementSliceCacheStats {
+    pub engine_enabled: bool,
+    pub backend: String,
+    pub file_cache_dir: Option<String>,
+    pub slice_size: u64,
+    pub max_cache_size: u64,
+    pub segment_ttl_secs: u64,
+    pub stale_max_age_secs: u64,
+    pub stale_while_revalidate: bool,
+    pub eviction_interval_secs: u64,
+    pub watermark_ratio: f64,
+    pub current_size_bytes: u64,
+    pub entry_count: u64,
+    pub metadata_entries: u64,
+    pub updating_entries: u64,
+    pub lock_count: u64,
+    pub usage_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ManagementSliceCachePurgeResult {
+    pub removed_entries: u64,
+    pub freed_bytes: u64,
+}
+
+#[tonic::async_trait]
+pub trait ManagementSliceCacheRuntime: Send + Sync {
+    fn stats(&self) -> ManagementSliceCacheStats;
+
+    async fn purge_all(&self) -> ManagementSliceCachePurgeResult;
+
+    async fn evict_expired_entries(&self) -> u64;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -124,7 +159,7 @@ pub struct ManagementServiceImpl {
     alist_api: Arc<AlistApiImpl>,
     bilibili_api: Arc<BilibiliApiImpl>,
     emby_api: Arc<EmbyApiImpl>,
-    proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
     cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     node_id: String,
     lifecycle_controller: Arc<ManagementLifecycleController>,
@@ -141,7 +176,7 @@ pub struct ManagementServiceDependencies {
     pub alist_api: Arc<AlistApiImpl>,
     pub bilibili_api: Arc<BilibiliApiImpl>,
     pub emby_api: Arc<EmbyApiImpl>,
-    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    pub slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
     pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     pub node_id: String,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
@@ -160,7 +195,7 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
-            proxy_slice_cache,
+            slice_cache_runtime,
             cluster_client,
             node_id,
             lifecycle_controller,
@@ -178,7 +213,7 @@ impl ManagementServiceImpl {
             alist_api,
             bilibili_api,
             emby_api,
-            proxy_slice_cache,
+            slice_cache_runtime,
             cluster_client,
             node_id,
             lifecycle_controller,
@@ -624,7 +659,7 @@ impl ManagementServiceImpl {
     }
 
     fn slice_cache_stats_response(&self) -> SliceCacheStatsResponse {
-        let stats = self.proxy_slice_cache.stats();
+        let stats = self.slice_cache_runtime.stats();
         SliceCacheStatsResponse {
             config: Some(SliceCacheConfigInfo {
                 engine_enabled: stats.engine_enabled,
@@ -757,7 +792,7 @@ impl ManagementServiceImpl {
     }
 
     async fn purge_local_slice_cache(&self) -> Result<PurgeSliceCacheNodeResult, Status> {
-        let result = self.proxy_slice_cache.purge_all().await;
+        let result = self.slice_cache_runtime.purge_all().await;
         Ok(PurgeSliceCacheNodeResult {
             node_id: self.node_id.clone(),
             success: true,
@@ -844,7 +879,7 @@ impl ManagementServiceImpl {
     async fn evict_expired_local_slice_cache(
         &self,
     ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
-        let removed_expired_entries = self.proxy_slice_cache.evict_expired_entries().await;
+        let removed_expired_entries = self.slice_cache_runtime.evict_expired_entries().await;
         Ok(EvictExpiredSliceCacheNodeResult {
             node_id: self.node_id.clone(),
             success: true,
@@ -2480,10 +2515,10 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: req.provider,
+                    source_provider: req.source_provider,
                     provider_instance_name: req.provider_instance_name,
                     source_config: req.source_config_json,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2505,14 +2540,14 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "direct_url".to_string(),
+                    source_provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
                     source_config: serde_json::to_vec(&serde_json::json!({ "url": req.url }))
                         .map_err(|error| {
                             tracing::error!(error = %error, "failed to encode media source config");
                             Status::internal("failed to encode media source config")
                         })?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2534,14 +2569,14 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "alist".to_string(),
+                    source_provider: "alist".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::alist_source_config(
                         &req.server_id,
                         &req.path,
                         &req.password,
                     )?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2563,10 +2598,10 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "emby".to_string(),
+                    source_provider: "emby".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2588,12 +2623,12 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "bilibili".to_string(),
+                    source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_video_source_config(
                         &req.bvid, req.aid, req.cid, req.shared,
                     )?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2615,10 +2650,10 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "bilibili".to_string(),
+                    source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2640,10 +2675,10 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
-                    provider: "bilibili".to_string(),
+                    source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
                     source_config: Self::bilibili_live_source_config(req.room_live_id, req.shared)?,
-                    title: req.title,
+                    name: req.name,
                 },
             )
             .await
@@ -2663,7 +2698,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::EditMediaRequest {
                     media_id: req.media_id,
-                    title: req.title,
+                    name: req.name,
                 },
                 &validated.user_id,
             )
@@ -3475,27 +3510,31 @@ fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
 }
 
 fn map_user_role(role: i32) -> i32 {
-    match UserRole::try_from(role).unwrap_or(UserRole::Unspecified) {
-        UserRole::User => common_proto::UserRole::User as i32,
-        UserRole::Admin => common_proto::UserRole::Admin as i32,
-        UserRole::Root => common_proto::UserRole::Root as i32,
-        UserRole::Unspecified => common_proto::UserRole::Unspecified as i32,
+    match common_proto::UserRole::try_from(role).unwrap_or(common_proto::UserRole::Unspecified) {
+        common_proto::UserRole::User => common_proto::UserRole::User as i32,
+        common_proto::UserRole::Admin => common_proto::UserRole::Admin as i32,
+        common_proto::UserRole::Root => common_proto::UserRole::Root as i32,
+        common_proto::UserRole::Unspecified => common_proto::UserRole::Unspecified as i32,
     }
 }
 
 fn map_user_status(status: i32) -> i32 {
-    match UserStatus::try_from(status).unwrap_or(UserStatus::Unspecified) {
-        UserStatus::Active => common_proto::UserStatus::Active as i32,
-        UserStatus::Banned => common_proto::UserStatus::Banned as i32,
-        UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
+    match common_proto::UserStatus::try_from(status)
+        .unwrap_or(common_proto::UserStatus::Unspecified)
+    {
+        common_proto::UserStatus::Active => common_proto::UserStatus::Active as i32,
+        common_proto::UserStatus::Banned => common_proto::UserStatus::Banned as i32,
+        common_proto::UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
     }
 }
 
 fn map_room_status(status: i32) -> i32 {
-    match RoomStatus::try_from(status).unwrap_or(RoomStatus::Unspecified) {
-        RoomStatus::Active => common_proto::RoomStatus::Active as i32,
-        RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
-        RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
+    match common_proto::RoomStatus::try_from(status)
+        .unwrap_or(common_proto::RoomStatus::Unspecified)
+    {
+        common_proto::RoomStatus::Active => common_proto::RoomStatus::Active as i32,
+        common_proto::RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
+        common_proto::RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
     }
 }
 

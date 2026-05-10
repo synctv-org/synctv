@@ -32,6 +32,9 @@ pub const ROOM_NAME_MAX: usize = 100;
 /// Maximum room description length (must match DB constraint `rooms_description_length_check`)
 pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
+/// Maximum media display name length (must match protobuf validation and the DB schema)
+pub const MEDIA_NAME_MAX: usize = 500;
+
 // Reserved usernames — prevent phishing/impersonation attacks
 
 /// Reserved usernames that cannot be used to prevent phishing/impersonation.
@@ -73,6 +76,18 @@ pub enum ValidationError {
 
 /// Validation result
 pub type ValidationResult<T> = Result<T, ValidationError>;
+
+pub fn validate_media_name(name: &str) -> ValidationResult<()> {
+    let char_count = name.chars().count();
+    if char_count > MEDIA_NAME_MAX {
+        return Err(ValidationError::Field {
+            field: "media_name".to_string(),
+            message: format!("must be at most {MEDIA_NAME_MAX} characters"),
+        });
+    }
+
+    Ok(())
+}
 
 /// Username validator
 pub struct UsernameValidator {
@@ -538,6 +553,18 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_media_name_validation_uses_character_count() {
+        assert!(validate_media_name(&"a".repeat(MEDIA_NAME_MAX)).is_ok());
+        assert!(validate_media_name(&"\u{4e00}".repeat(MEDIA_NAME_MAX)).is_ok());
+
+        let result = validate_media_name(&"a".repeat(MEDIA_NAME_MAX + 1));
+        assert!(matches!(
+            result,
+            Err(ValidationError::Field { ref field, .. }) if field == "media_name"
+        ));
+    }
 
     #[test]
     fn test_username_validation() {

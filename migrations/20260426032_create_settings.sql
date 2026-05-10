@@ -31,9 +31,3 @@ CREATE TRIGGER settings_change_trigger
     AFTER INSERT OR UPDATE OR DELETE ON settings
     FOR EACH ROW
     EXECUTE FUNCTION notify_settings_change();
-
-COMMENT ON TABLE settings IS 'Runtime system settings';
-COMMENT ON COLUMN settings.key IS 'Unique settings key';
-COMMENT ON COLUMN settings.group_name IS 'Settings group name';
-COMMENT ON FUNCTION notify_settings_change() IS 'Emit a PostgreSQL notification when settings change';
-COMMENT ON TRIGGER settings_change_trigger ON settings IS 'Emit settings_changed notifications after settings mutations';

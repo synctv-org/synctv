@@ -1837,8 +1837,32 @@ impl MediaRepository {
 mod tests {
     use super::*;
     use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
+    use crate::models::ProviderInstance;
+    use crate::repository::ProviderInstanceRepository;
     use sqlx::Execute;
     use synctv_core_testing::create_test_pool;
+
+    async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
+        let now = chrono::Utc::now();
+        let instance = ProviderInstance {
+            name: name.to_string(),
+            endpoint: "http://localhost:50051".to_string(),
+            comment: Some("test provider instance".to_string()),
+            jwt_secret: None,
+            custom_ca: None,
+            timeout: "10s".to_string(),
+            tls: false,
+            insecure_tls: false,
+            providers: vec![provider.to_string()],
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        ProviderInstanceRepository::new(pool.clone())
+            .create(&instance)
+            .await
+            .unwrap();
+    }
 
     /// Unit test: Media builder pattern
     #[test]
@@ -1854,7 +1878,7 @@ mod tests {
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             0.0,
         );
 
@@ -2001,7 +2025,7 @@ mod tests {
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             0.0,
         );
 
@@ -2058,7 +2082,7 @@ mod tests {
             "Original Name".to_string(),
             serde_json::json!({}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
@@ -2115,7 +2139,7 @@ mod tests {
             "To Delete".to_string(),
             serde_json::json!({}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             0.0,
         );
         let created = media_repo.create(&media).await.unwrap();
@@ -2197,6 +2221,7 @@ mod tests {
             1.0,
         );
 
+        insert_test_provider_instance(&pool, "direct_url_remote", "direct_url").await;
         let created_default = media_repo.create(&default_media).await.unwrap();
         media_repo.create(&explicit_media).await.unwrap();
 
@@ -2264,7 +2289,7 @@ mod tests {
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
-                    Some("default".to_string()),
+                    None,
                     f64::from(i),
                 )
             })
@@ -2295,7 +2320,7 @@ mod tests {
                     format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
-                    Some("default".to_string()),
+                    None,
                     f64::from(i),
                 )
             })
@@ -2361,7 +2386,7 @@ mod tests {
             "Video 1".to_string(),
             serde_json::json!({}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             1024.0,
         );
         let media2 = Media::from_provider(
@@ -2371,7 +2396,7 @@ mod tests {
             "Video 2".to_string(),
             serde_json::json!({}),
             "direct_url",
-            Some("default".to_string()),
+            None,
             2048.0,
         );
 
@@ -2441,7 +2466,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                Some("default".to_string()),
+                None,
                 f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
@@ -2493,7 +2518,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                Some("default".to_string()),
+                None,
                 f64::from(i),
             );
             media_repo.create(&media).await.unwrap();
@@ -2563,7 +2588,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                Some("default".to_string()),
+                None,
                 f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();
@@ -2622,7 +2647,7 @@ mod tests {
                 format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
-                Some("default".to_string()),
+                None,
                 f64::from(i),
             );
             let created = media_repo.create(&media).await.unwrap();

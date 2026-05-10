@@ -20,5 +20,3 @@ CREATE INDEX IF NOT EXISTS idx_user_bans_user
 CREATE INDEX IF NOT EXISTS idx_user_bans_banned_by
     ON user_bans(banned_by, starts_at DESC)
     WHERE banned_by IS NOT NULL;
-
-COMMENT ON TABLE user_bans IS 'Global user ban records';

@@ -336,8 +336,15 @@ cache:
 
 proxy_slice_cache:
   enabled: true
+  slice_size_bytes: 2097152
+  max_cache_size_bytes: 536870912
+  segment_ttl_seconds: 300
+  stale_max_age_seconds: 60
+  stale_while_revalidate: true
   file_backend_enabled: false
   file_cache_dir: ""
+  eviction_interval_seconds: 60
+  watermark_ratio: 0.875
 
 messaging_rate_limits:
   chat_per_second: 10

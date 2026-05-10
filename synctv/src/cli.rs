@@ -1111,9 +1111,9 @@ pub enum CliUserRole {
 impl CliUserRole {
     const fn to_proto(self) -> i32 {
         match self {
-            Self::User => management_proto::UserRole::User as i32,
-            Self::Admin => management_proto::UserRole::Admin as i32,
-            Self::Root => management_proto::UserRole::Root as i32,
+            Self::User => synctv_proto::common::UserRole::User as i32,
+            Self::Admin => synctv_proto::common::UserRole::Admin as i32,
+            Self::Root => synctv_proto::common::UserRole::Root as i32,
         }
     }
 }
@@ -1127,8 +1127,8 @@ pub enum CliUserStatus {
 impl CliUserStatus {
     const fn to_proto(self) -> i32 {
         match self {
-            Self::Active => management_proto::UserStatus::Active as i32,
-            Self::Banned => management_proto::UserStatus::Banned as i32,
+            Self::Active => synctv_proto::common::UserStatus::Active as i32,
+            Self::Banned => synctv_proto::common::UserStatus::Banned as i32,
         }
     }
 }
@@ -1180,8 +1180,8 @@ pub enum CliRoomStatus {
 impl CliRoomStatus {
     const fn to_proto(self) -> i32 {
         match self {
-            Self::Active => management_proto::RoomStatus::Active as i32,
-            Self::Closed => management_proto::RoomStatus::Closed as i32,
+            Self::Active => synctv_proto::common::RoomStatus::Active as i32,
+            Self::Closed => synctv_proto::common::RoomStatus::Closed as i32,
         }
     }
 }
@@ -2394,7 +2394,7 @@ pub enum MediaSubcommand {
     Add(MediaAddArgs),
     /// Add a direct HTTP(S) media URL
     AddUrl(MediaAddUrlArgs),
-    /// Update media title
+    /// Update media name
     Update(MediaEditArgs),
     /// Delete a media item
     Delete(MediaDeleteArgs),
@@ -2455,7 +2455,7 @@ pub struct MediaAddUrlArgs {
     pub playlist_id: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2470,7 +2470,7 @@ pub struct MediaAddArgs {
     pub playlist_id: Option<String>,
 
     #[arg(long)]
-    pub provider: Option<String>,
+    pub source_provider: Option<String>,
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
@@ -2479,7 +2479,7 @@ pub struct MediaAddArgs {
     pub source_config_json: String,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2491,7 +2491,7 @@ pub struct MediaEditArgs {
     pub media_id: String,
 
     #[arg(long)]
-    pub title: String,
+    pub name: String,
 }
 
 #[derive(Debug, Args)]
@@ -2851,13 +2851,13 @@ pub struct ProviderEmbyCommand {
 pub enum ProviderEmbySubcommand {
     /// Log a user into Emby/Jellyfin and persist the credential bind
     Login(ProviderEmbyLoginArgs),
-    /// List Emby library items using a saved bind
+    /// List Emby-compatible library items using a saved bind
     List(ProviderEmbyListArgs),
-    /// Show the current Emby account info for a saved bind
+    /// Show the current Emby-compatible account info for a saved bind
     Me(ProviderEmbyGetMeArgs),
-    /// Remove a saved Emby bind
+    /// Remove a saved Emby-compatible bind
     Logout(ProviderEmbyLogoutArgs),
-    /// List saved Emby binds for a user
+    /// List saved Emby-compatible binds for a user
     Binds(ProviderEmbyBindsArgs),
 }
 
@@ -3337,7 +3337,7 @@ pub struct PlaylistProviderCommand {
 pub enum PlaylistProviderSubcommand {
     /// Create an Alist-backed dynamic playlist
     Alist(PlaylistProviderAlistArgs),
-    /// Create an Emby-backed dynamic playlist
+    /// Create an Emby-compatible dynamic playlist
     Emby(PlaylistProviderEmbyArgs),
 }
 
@@ -3351,7 +3351,7 @@ pub struct MediaProviderCommand {
 pub enum MediaProviderSubcommand {
     /// Add an Alist-backed media item
     Alist(MediaProviderAlistArgs),
-    /// Add an Emby-backed media item
+    /// Add an Emby-compatible media item
     Emby(MediaProviderEmbyArgs),
     /// Add a Bilibili-backed media item
     Bilibili(MediaProviderBilibiliCommand),
@@ -3413,14 +3413,14 @@ pub struct PlaylistProviderEmbyArgs {
 
     pub name: String,
 
-    /// Root Emby item identifier used as the dynamic playlist source
+    /// Root Emby-compatible item identifier used as the dynamic playlist source
     #[arg(long)]
     pub item_id: String,
 
     #[arg(long)]
     pub parent_id: Option<String>,
 
-    /// Saved Emby credential server identifier
+    /// Saved Emby-compatible credential server identifier
     #[arg(long)]
     pub server_id: String,
 
@@ -3457,7 +3457,7 @@ pub struct MediaProviderAlistArgs {
     pub provider_instance_name: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3468,14 +3468,14 @@ pub struct MediaProviderEmbyArgs {
     #[command(flatten)]
     pub actor: ActorUserArgs,
 
-    /// Emby media item identifier
+    /// Emby-compatible media item identifier
     #[arg(long)]
     pub item_id: String,
 
     #[arg(long)]
     pub playlist_id: Option<String>,
 
-    /// Saved Emby credential server identifier
+    /// Saved Emby-compatible credential server identifier
     #[arg(long)]
     pub server_id: String,
 
@@ -3484,7 +3484,7 @@ pub struct MediaProviderEmbyArgs {
     pub provider_instance_name: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -3529,7 +3529,7 @@ pub struct MediaProviderBilibiliVideoArgs {
     pub provider_instance_name: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3560,7 +3560,7 @@ pub struct MediaProviderBilibiliPgcArgs {
     pub provider_instance_name: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3587,7 +3587,7 @@ pub struct MediaProviderBilibiliLiveArgs {
     pub provider_instance_name: Option<String>,
 
     #[arg(long)]
-    pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -4435,11 +4435,11 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     status: args.status.map_or(
-                        management_proto::UserStatus::Unspecified as i32,
+                        synctv_proto::common::UserStatus::Unspecified as i32,
                         CliUserStatus::to_proto,
                     ),
                     role: args.role.map_or(
-                        management_proto::UserRole::Unspecified as i32,
+                        synctv_proto::common::UserRole::Unspecified as i32,
                         CliUserRole::to_proto,
                     ),
                     search: args.search.unwrap_or_default(),
@@ -4625,7 +4625,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     status: args.status.map_or(
-                        management_proto::RoomStatus::Unspecified as i32,
+                        synctv_proto::common::RoomStatus::Unspecified as i32,
                         CliRoomStatus::to_proto,
                     ),
                     search: args.search.unwrap_or_default(),
@@ -4743,7 +4743,7 @@ async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     status: args.status.map_or(
-                        management_proto::RoomStatus::Unspecified as i32,
+                        synctv_proto::common::RoomStatus::Unspecified as i32,
                         CliRoomStatus::to_proto,
                     ),
                     search: args.search.unwrap_or_default(),
@@ -5304,12 +5304,12 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
-                    provider: args.provider.unwrap_or_default(),
+                    source_provider: args.source_provider.unwrap_or_default(),
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref()
                     ),
                     source_config_json: args.source_config_json.into_bytes(),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5326,7 +5326,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     url: args.url,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5340,7 +5340,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 management_proto::EditMediaRequest {
                     room_id: args.room.room_id,
                     media_id: args.media_id,
-                    title: args.title,
+                    name: args.name,
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5629,7 +5629,7 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5650,7 +5650,7 @@ async fn execute_media_provider(command: MediaProviderCommand) -> Result<()> {
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5681,7 +5681,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5703,7 +5703,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5724,7 +5724,7 @@ async fn execute_media_provider_bilibili(command: MediaProviderBilibiliCommand) 
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
-                    title: args.title.unwrap_or_default(),
+                    name: args.name.unwrap_or_default(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -6995,12 +6995,12 @@ struct HumanPlaylist {
 struct HumanMedia {
     id: String,
     room_id: String,
-    provider: String,
-    title: String,
+    source_provider: String,
+    name: String,
     metadata: Value,
     position: f64,
     added_at: String,
-    added_by: String,
+    creator_id: String,
     provider_instance_name: String,
     source_config: Value,
     availability: String,
@@ -7848,12 +7848,12 @@ impl ToHuman for synctv_proto::client::Media {
         HumanMedia {
             id: self.id.clone(),
             room_id: self.room_id.clone(),
-            provider: self.provider.clone(),
-            title: self.title.clone(),
+            source_provider: self.source_provider.clone(),
+            name: self.name.clone(),
             metadata: parse_json_bytes(&self.metadata),
             position: self.position,
             added_at: humanize_timestamp(self.added_at),
-            added_by: self.added_by.clone(),
+            creator_id: self.creator_id.clone(),
             provider_instance_name: self.provider_instance_name.clone(),
             source_config: parse_json_bytes(&self.source_config),
             availability: humanize_resource_availability(i64::from(self.availability))
@@ -10558,7 +10558,7 @@ mod tests {
             "alice",
             "--playlist-id",
             "playlist-1",
-            "--title",
+            "--name",
             "Demo Video",
         ]);
         match cli.command {
@@ -10571,7 +10571,7 @@ mod tests {
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.url, "https://cdn.example.com/video.mp4");
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-                assert_eq!(args.title.as_deref(), Some("Demo Video"));
+                assert_eq!(args.name.as_deref(), Some("Demo Video"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10589,13 +10589,13 @@ mod tests {
             "alice",
             "--playlist-id",
             "playlist-1",
-            "--provider",
+            "--source-provider",
             "alist",
             "--provider-instance-name",
             "alist-main",
             "--source-config-json",
             "{\"path\":\"/movies/demo.mp4\"}",
-            "--title",
+            "--name",
             "Demo Video",
         ]);
         match cli.command {
@@ -10607,10 +10607,10 @@ mod tests {
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-                assert_eq!(args.provider.as_deref(), Some("alist"));
+                assert_eq!(args.source_provider.as_deref(), Some("alist"));
                 assert_eq!(args.provider_instance_name.as_deref(), Some("alist-main"));
                 assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
-                assert_eq!(args.title.as_deref(), Some("Demo Video"));
+                assert_eq!(args.name.as_deref(), Some("Demo Video"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10625,7 +10625,7 @@ mod tests {
             "--room-id",
             "room-123",
             "media-1",
-            "--title",
+            "--name",
             "Renamed",
         ]);
         match cli.command {
@@ -10635,7 +10635,7 @@ mod tests {
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
                 assert_eq!(args.media_id, "media-1");
-                assert_eq!(args.title, "Renamed");
+                assert_eq!(args.name, "Renamed");
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10697,13 +10697,13 @@ mod tests {
             "alice",
             "--playlist-id",
             "playlist-456",
-            "--provider",
+            "--source-provider",
             "alist",
             "--provider-instance-name",
             "alist_main",
             "--source-config-json",
             "{\"path\":\"/movies/demo.mp4\"}",
-            "--title",
+            "--name",
             "Demo Media",
         ]);
         match cli.command {
@@ -10715,10 +10715,10 @@ mod tests {
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-456"));
-                assert_eq!(args.provider.as_deref(), Some("alist"));
+                assert_eq!(args.source_provider.as_deref(), Some("alist"));
                 assert_eq!(args.provider_instance_name.as_deref(), Some("alist_main"));
                 assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
-                assert_eq!(args.title.as_deref(), Some("Demo Media"));
+                assert_eq!(args.name.as_deref(), Some("Demo Media"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -11996,7 +11996,7 @@ mod tests {
             "playlist-1",
             "--provider-instance-name",
             "alist-edge",
-            "--title",
+            "--name",
             "Demo",
         ]);
         match cli.command {
@@ -12012,7 +12012,7 @@ mod tests {
                 assert_eq!(args.server_id, "alist-srv");
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
                 assert_eq!(args.provider_instance_name.as_deref(), Some("alist-edge"));
-                assert_eq!(args.title.as_deref(), Some("Demo"));
+                assert_eq!(args.name.as_deref(), Some("Demo"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12035,7 +12035,7 @@ mod tests {
             "srv-2",
             "--playlist-id",
             "playlist-1",
-            "--title",
+            "--name",
             "Pilot",
         ]);
         match cli.command {
@@ -12050,7 +12050,7 @@ mod tests {
                 assert_eq!(args.item_id, "item-123");
                 assert_eq!(args.server_id, "srv-2");
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-                assert_eq!(args.title.as_deref(), Some("Pilot"));
+                assert_eq!(args.name.as_deref(), Some("Pilot"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12074,7 +12074,7 @@ mod tests {
             "2002",
             "--playlist-id",
             "playlist-1",
-            "--title",
+            "--name",
             "Episode 1",
         ]);
         match cli.command {
@@ -12092,7 +12092,7 @@ mod tests {
                 assert_eq!(args.epid, 1001);
                 assert_eq!(args.cid, 2002);
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-                assert_eq!(args.title.as_deref(), Some("Episode 1"));
+                assert_eq!(args.name.as_deref(), Some("Episode 1"));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -12603,11 +12603,11 @@ mod tests {
                 assert_eq!(args.email, None);
                 assert_eq!(
                     args.role.to_proto(),
-                    management_proto::UserRole::Admin as i32
+                    synctv_proto::common::UserRole::Admin as i32
                 );
                 assert_eq!(
                     args.status.to_proto(),
-                    management_proto::UserStatus::Active as i32
+                    synctv_proto::common::UserStatus::Active as i32
                 );
             }
             other => panic!("unexpected command parsed: {other:?}"),
@@ -13163,12 +13163,12 @@ mod tests {
         let rendered_media = render_human_output(&synctv_proto::client::Media {
             id: "media-1".into(),
             room_id: "room-1".into(),
-            provider: "direct".into(),
-            title: "Example".into(),
+            source_provider: "direct".into(),
+            name: "Example".into(),
             metadata: br#"{"duration":1}"#.to_vec(),
             position: 1.0,
             added_at: 1_775_291_657_i64,
-            added_by: "user-1".into(),
+            creator_id: "user-1".into(),
             provider_instance_name: "default".into(),
             source_config: br#"{"url":"https://example.com"}"#.to_vec(),
             availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
@@ -13215,12 +13215,12 @@ mod tests {
             media: vec![synctv_proto::client::Media {
                 id: "media-1".into(),
                 room_id: "room-1".into(),
-                provider: "direct_url".into(),
-                title: "Example".into(),
+                source_provider: "direct_url".into(),
+                name: "Example".into(),
                 metadata: br#"{"duration":1}"#.to_vec(),
                 position: 1.0,
                 added_at: 3,
-                added_by: "user-1".into(),
+                creator_id: "user-1".into(),
                 provider_instance_name: "default".into(),
                 source_config: br#"{"url":"https://example.com"}"#.to_vec(),
                 availability: synctv_proto::client::ResourceAvailability::Available as i32,

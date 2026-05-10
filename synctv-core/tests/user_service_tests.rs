@@ -201,7 +201,7 @@ fn make_media(
         position: f64::from(position),
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_instance_name: Some("direct_url".to_string()),
+        provider_instance_name: None,
         added_at: now,
         updated_at: now,
         version: 0,

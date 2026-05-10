@@ -30,7 +30,3 @@ CREATE TRIGGER update_room_invites_updated_at
     BEFORE UPDATE ON room_invites
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
-COMMENT ON TABLE room_invites IS 'Revocable room invitation links/codes';
-COMMENT ON COLUMN room_invites.code IS 'Secret invite code used to join a room';
-COMMENT ON COLUMN room_invites.max_uses IS 'Optional maximum number of successful joins';

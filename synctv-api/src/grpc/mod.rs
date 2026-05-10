@@ -639,6 +639,53 @@ use synctv_core::service::{
 };
 use synctv_core::Config;
 
+struct ProxySliceCacheRuntime {
+    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+}
+
+impl ProxySliceCacheRuntime {
+    fn new(cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> Self {
+        Self { cache }
+    }
+}
+
+#[async_trait::async_trait]
+impl synctv_cluster::grpc::SliceCacheRuntime for ProxySliceCacheRuntime {
+    fn stats(&self) -> synctv_cluster::grpc::ClusterSliceCacheStats {
+        let stats = self.cache.stats();
+        synctv_cluster::grpc::ClusterSliceCacheStats {
+            engine_enabled: stats.engine_enabled,
+            backend: stats.backend,
+            file_cache_dir: stats.file_cache_dir,
+            slice_size: stats.slice_size,
+            max_cache_size: stats.max_cache_size,
+            segment_ttl_secs: stats.segment_ttl_secs,
+            stale_max_age_secs: stats.stale_max_age_secs,
+            stale_while_revalidate: stats.stale_while_revalidate,
+            eviction_interval_secs: stats.eviction_interval_secs,
+            watermark_ratio: stats.watermark_ratio,
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
+        }
+    }
+
+    async fn purge_all(&self) -> synctv_cluster::grpc::ClusterSliceCachePurgeResult {
+        let result = self.cache.purge_all().await;
+        synctv_cluster::grpc::ClusterSliceCachePurgeResult {
+            removed_entries: result.removed_entries,
+            freed_bytes: result.freed_bytes,
+        }
+    }
+
+    async fn evict_expired_entries(&self) -> u64 {
+        self.cache.evict_expired_entries().await
+    }
+}
+
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
     pub config: &'a Config,
@@ -1254,7 +1301,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone(), cluster_node_id.clone())
                 .with_cluster_secret(config.server.cluster_secret.clone())
                 .with_connection_runtime(connection_service.clone())
-                .with_slice_cache_runtime(shared_http_app_state.proxy_slice_cache.clone());
+                .with_slice_cache_runtime(Arc::new(ProxySliceCacheRuntime::new(
+                    shared_http_app_state.proxy_slice_cache.clone(),
+                )));
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),

@@ -1,9 +1,11 @@
 ---
 title: Provider 管理
-description: 创建、启停、更新、重连和删除 Provider instance，并保护外部媒体源凭据。
+description: 创建、启停、更新、重连和删除远程 Provider gRPC instance。
 ---
 
-Provider instance 是外部媒体源的连接配置。实例配置通常包含 URL、token、cookie、UA、认证信息、远程 gRPC 信息或特定后端参数。
+Provider instance 是 SyncTV 连接远程 Provider gRPC 服务的实例配置，只保存 `endpoint`、TLS、JWT secret、custom CA、timeout 和该远程服务声明支持的 Provider type。上游媒体源账号、token、cookie、UA 或特定后端参数属于用户 Provider 凭据或远程 Provider 服务自己的部署配置，不属于这里的 instance 配置。
+
+远程 Provider instance 当前可声明的 Provider type 是 `alist`、`bilibili`、`emby`。媒体源自身还包含本地类型 `direct_url`、`rtmp`、`live_proxy`，这些不是远程 Provider instance 的 `--provider` 值。
 
 ## 常见操作
 
@@ -22,8 +24,8 @@ synctv provider delete <NAME>
 
 | 操作 | 先确认 |
 | --- | --- |
-| 创建 | `security.credential_encryption_key` 已配置，凭据不会进入日志或 shell history |
-| 更新 | 新旧 endpoint、header、UA、代理策略和认证方式 |
+| 创建 | endpoint、TLS/JWT/CA 配置正确，声明的 `--provider` 在远程服务支持范围内 |
+| 更新 | 新旧 endpoint、TLS、JWT secret、CA、timeout 和支持的 Provider type |
 | 禁用 | 当前是否仍有用户默认 Provider 或房间媒体依赖 |
 | 删除 | 是否仍被播放列表、用户偏好或远程实例引用 |
 | 重连 | 上游是否可达，凭据是否过期 |

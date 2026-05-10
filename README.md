@@ -24,7 +24,7 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 ## Highlights
 
 - Synchronized room playback with real-time state updates.
-- Media providers including Bilibili, Alist, Emby, Jellyfin, and direct URLs.
+- Media providers including Bilibili, Alist, Emby-compatible servers (Emby/Jellyfin), and direct URLs.
 - RTMP push/pull, HLS, and HTTP-FLV livestream support.
 - HTTP REST, public gRPC, WebSocket, management gRPC, metrics, RTMP, and STUN runtime surfaces.
 - PostgreSQL-backed durable storage with optional Redis shared state, cache, rate limiting, and cluster coordination.
@@ -94,21 +94,21 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 
 Important entry points:
 
-- [Quick Start](./docs/src/content/docs/en/guides/quick-start.mdx)
-- [Documentation Map](./docs/src/content/docs/en/guides/documentation-map.mdx)
-- [Architecture Overview](./docs/src/content/docs/en/guides/architecture.mdx)
-- [Authentication and Security Model](./docs/src/content/docs/en/guides/security-model.mdx)
-- [Administration Runbook](./docs/src/content/docs/en/guides/administration.mdx)
-- [Rooms, Permissions, and Preferences](./docs/src/content/docs/en/guides/rooms-permissions.mdx)
-- [Client Integration Guide](./docs/src/content/docs/en/guides/client-integration.mdx)
+- [Quick Start](./docs/src/content/docs/en/install/quick-start.mdx)
+- [Documentation Map](./docs/src/content/docs/en/overview/documentation-map.mdx)
+- [Architecture Overview](./docs/src/content/docs/en/overview/architecture.mdx)
+- [Authentication and Security Model](./docs/src/content/docs/en/admin/authentication-security.mdx)
+- [Administration Runbook](./docs/src/content/docs/en/admin/index.mdx)
+- [Rooms, Permissions, and Preferences](./docs/src/content/docs/en/use/rooms-permissions.mdx)
+- [Client Integration Guide](./docs/src/content/docs/en/develop/client-integration.mdx)
 - [How Configuration Works](./docs/src/content/docs/en/configuration/how-configuration-works.mdx)
 - [Full Configuration Example](./docs/src/content/docs/en/configuration/full-example.mdx)
 - [Configuration Index](./docs/src/content/docs/en/reference/configuration-index.mdx)
 - [Environment Variables](./docs/src/content/docs/en/reference/environment-variables.mdx)
 - [Runtime Settings Reference](./docs/src/content/docs/en/reference/runtime-settings.mdx)
-- [Docker Compose Deployment](./docs/src/content/docs/en/deployment/docker-compose.mdx)
-- [Helm Deployment](./docs/src/content/docs/en/deployment/helm.mdx)
-- [Production Checklist](./docs/src/content/docs/en/deployment/production-checklist.mdx)
+- [Docker Compose Deployment](./docs/src/content/docs/en/install/docker-compose.mdx)
+- [Helm Deployment](./docs/src/content/docs/en/install/helm.mdx)
+- [Production Checklist](./docs/src/content/docs/en/install/production-checklist.mdx)
 - [Backup and Restore](./docs/src/content/docs/en/operations/backup-restore.mdx)
 - [Upgrades and Migrations](./docs/src/content/docs/en/operations/upgrades.mdx)
 - [Data, Privacy, and Retention](./docs/src/content/docs/en/operations/data-retention.mdx)
@@ -117,7 +117,7 @@ Important entry points:
 - [CLI Reference](./docs/src/content/docs/en/reference/cli.mdx)
 - [OpenAPI Access](./docs/src/content/docs/en/reference/openapi.mdx)
 - [gRPC Debugging](./docs/src/content/docs/en/reference/grpc.mdx)
-- [Development Guide](./docs/src/content/docs/en/guides/development.mdx)
+- [Development Guide](./docs/src/content/docs/en/develop/local-development.mdx)
 
 Repository process documents:
 

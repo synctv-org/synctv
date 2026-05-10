@@ -381,6 +381,42 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_delete_provider_instance_cascades_instance_credentials() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let provider_repo =
+        ProviderInstanceRepository::new_with_encryption(pool.clone(), test_encryption());
+    let cred_repo =
+        UserProviderCredentialRepository::new_with_encryption(pool.clone(), test_encryption());
+
+    let user = user_repo
+        .create(&make_user("instance_delete_user"))
+        .await
+        .unwrap();
+    provider_repo
+        .create(&make_provider_instance("alist-delete-me", &["alist"]))
+        .await
+        .unwrap();
+
+    let server_id = UserProviderCredential::generate_server_id_for_instance(
+        "https://alist-delete.example.com",
+        Some("alist-delete-me"),
+    );
+    let credential =
+        make_credential_with_instance(user.id, "alist", &server_id, Some("alist-delete-me"));
+    let credential = cred_repo.create(&credential).await.unwrap();
+
+    provider_repo.delete("alist-delete-me").await.unwrap();
+
+    let found = cred_repo.get_by_id(credential.id).await.unwrap();
+    assert!(
+        found.is_none(),
+        "deleting a provider instance must remove credentials bound to that instance"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_blank_provider_instance_name_is_normalized_to_null() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

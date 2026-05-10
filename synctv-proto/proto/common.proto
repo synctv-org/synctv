@@ -7,9 +7,9 @@ package synctv.common;
 // Global user role for RBAC
 enum UserRole {
     USER_ROLE_UNSPECIFIED = 0;
-    USER_ROLE_USER = 1;
+    USER_ROLE_ROOT = 1;
     USER_ROLE_ADMIN = 2;
-    USER_ROLE_ROOT = 3;
+    USER_ROLE_USER = 3;
 }
 
 // Effective account availability. Registration review is represented by ReviewStatus on request APIs.
@@ -22,10 +22,10 @@ enum UserStatus {
 // Room member role
 enum RoomMemberRole {
     ROOM_MEMBER_ROLE_UNSPECIFIED = 0;
-    ROOM_MEMBER_ROLE_GUEST = 1;
-    ROOM_MEMBER_ROLE_MEMBER = 2;
-    ROOM_MEMBER_ROLE_ADMIN = 3;
-    ROOM_MEMBER_ROLE_CREATOR = 4;
+    ROOM_MEMBER_ROLE_CREATOR = 1;
+    ROOM_MEMBER_ROLE_ADMIN = 2;
+    ROOM_MEMBER_ROLE_MEMBER = 3;
+    ROOM_MEMBER_ROLE_GUEST = 4;
 }
 
 enum MemberStatus {

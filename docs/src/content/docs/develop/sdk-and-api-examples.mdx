@@ -179,7 +179,7 @@ curl -sS "$BASE_URL/api/providers/alist/list" \
   -d '{"path":"/","provider_instance_name":"alist-main"}'
 ```
 
-添加媒体时，`provider`、`provider_instance_name` 和 `source_config` 的组合由 Provider 定义。Provider 凭据不应该直接塞进 `source_config`；凭据由用户、实例或服务端 Provider 管理层解析。
+添加媒体时，`source_provider`、`provider_instance_name` 和 `source_config` 的组合由 Provider 定义。Provider 凭据不应该直接塞进 `source_config`；凭据由用户、实例或服务端 Provider 管理层解析。
 
 ## 错误处理模板
 

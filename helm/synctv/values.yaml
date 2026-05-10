@@ -143,40 +143,17 @@ grpcService:
 
 ## Ingress Configuration (for HTTP API access)
 ingress:
-  enabled: true
-  className: "nginx"
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
-    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
-  hosts:
-    - host: synctv.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: synctv-tls
-      hosts:
-        - synctv.example.com
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
   ## gRPC Ingress (separate Ingress with GRPC backend-protocol annotation)
   grpc:
     enabled: false
     className: "" # defaults to ingress.className
-    annotations:
-      nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    hosts:
-      - host: grpc.synctv.example.com
-        paths:
-          - path: /
-            pathType: Prefix
+    annotations: {}
+    hosts: []
     tls: [] # defaults to ingress.tls when empty
 
 ## Resource Limits
@@ -295,8 +272,7 @@ config:
     ## Allow public and cluster gRPC peers to negotiate gzip compression.
     grpcCompressionEnabled: true
     # trustedProxies: ["10.0.0.0/8", "172.16.0.0/12"]
-    corsAllowedOrigins:
-      - "https://synctv.example.com"
+    corsAllowedOrigins: []
 
   ## PublicIdsConfig
   publicIds:
@@ -372,8 +348,15 @@ config:
   ## ProxySliceCacheConfig: media proxy Range-slice cache.
   proxySliceCache:
     enabled: true
+    sliceSizeBytes: 2097152
+    maxCacheSizeBytes: 536870912
+    segmentTtlSeconds: 300
+    staleMaxAgeSeconds: 60
+    staleWhileRevalidate: true
     fileBackendEnabled: false
     fileCacheDir: ""
+    evictionIntervalSeconds: 60
+    watermarkRatio: 0.875
 
   ## LivestreamConfig
   livestream:

@@ -374,12 +374,10 @@ mod tests {
         UpdateUserRoleRequest, UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
-    use synctv_management::provider::common as provider_common_proto;
-    #[cfg(unix)]
     use synctv_proto::{
         admin as admin_proto, client as client_proto,
         providers::{
-            alist as alist_proto, bilibili as bilibili_proto, common as provider_common_types,
+            alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
             emby as emby_proto, rtmp as rtmp_proto,
         },
     };
@@ -1071,14 +1069,14 @@ mod tests {
         async fn list_available_provider_instances(
             &self,
             _: Request<provider_common_proto::ListAvailableProviderInstancesRequest>,
-        ) -> std::result::Result<Response<provider_common_types::ProviderInstancesResponse>, Status>
+        ) -> std::result::Result<Response<provider_common_proto::ProviderInstancesResponse>, Status>
         {
             Err(Status::unimplemented("test stub"))
         }
         async fn list_provider_backends(
             &self,
             _: Request<provider_common_proto::ListProviderBackendsRequest>,
-        ) -> std::result::Result<Response<provider_common_types::ProviderBackendsResponse>, Status>
+        ) -> std::result::Result<Response<provider_common_proto::ProviderBackendsResponse>, Status>
         {
             Err(Status::unimplemented("test stub"))
         }
@@ -1086,7 +1084,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::ListProviderInstancesRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::ListProviderInstancesResponse>,
+            Response<provider_common_proto::ListProviderInstancesResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))
@@ -1094,7 +1092,7 @@ mod tests {
         async fn add_provider_instance(
             &self,
             _: Request<provider_common_proto::AddProviderInstanceRequest>,
-        ) -> std::result::Result<Response<provider_common_types::AddProviderInstanceResponse>, Status>
+        ) -> std::result::Result<Response<provider_common_proto::AddProviderInstanceResponse>, Status>
         {
             Err(Status::unimplemented("test stub"))
         }
@@ -1102,7 +1100,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::UpdateProviderInstanceRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::UpdateProviderInstanceResponse>,
+            Response<provider_common_proto::UpdateProviderInstanceResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))
@@ -1111,7 +1109,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::DeleteProviderInstanceRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::DeleteProviderInstanceResponse>,
+            Response<provider_common_proto::DeleteProviderInstanceResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))
@@ -1120,7 +1118,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::ReconnectProviderInstanceRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::ReconnectProviderInstanceResponse>,
+            Response<provider_common_proto::ReconnectProviderInstanceResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))
@@ -1129,7 +1127,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::EnableProviderInstanceRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::EnableProviderInstanceResponse>,
+            Response<provider_common_proto::EnableProviderInstanceResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))
@@ -1138,7 +1136,7 @@ mod tests {
             &self,
             _: Request<provider_common_proto::DisableProviderInstanceRequest>,
         ) -> std::result::Result<
-            Response<provider_common_types::DisableProviderInstanceResponse>,
+            Response<provider_common_proto::DisableProviderInstanceResponse>,
             Status,
         > {
             Err(Status::unimplemented("test stub"))

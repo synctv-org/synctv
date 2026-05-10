@@ -52,9 +52,9 @@ pub struct RoomMember {
 #[repr(i32)]
 pub enum UserRole {
     Unspecified = 0,
-    User = 1,
+    Root = 1,
     Admin = 2,
-    Root = 3,
+    User = 3,
 }
 impl UserRole {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -64,18 +64,18 @@ impl UserRole {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "USER_ROLE_UNSPECIFIED",
-            Self::User => "USER_ROLE_USER",
-            Self::Admin => "USER_ROLE_ADMIN",
             Self::Root => "USER_ROLE_ROOT",
+            Self::Admin => "USER_ROLE_ADMIN",
+            Self::User => "USER_ROLE_USER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "USER_ROLE_UNSPECIFIED" => Some(Self::Unspecified),
-            "USER_ROLE_USER" => Some(Self::User),
-            "USER_ROLE_ADMIN" => Some(Self::Admin),
             "USER_ROLE_ROOT" => Some(Self::Root),
+            "USER_ROLE_ADMIN" => Some(Self::Admin),
+            "USER_ROLE_USER" => Some(Self::User),
             _ => None,
         }
     }
@@ -121,10 +121,10 @@ impl UserStatus {
 #[repr(i32)]
 pub enum RoomMemberRole {
     Unspecified = 0,
-    Guest = 1,
-    Member = 2,
-    Admin = 3,
-    Creator = 4,
+    Creator = 1,
+    Admin = 2,
+    Member = 3,
+    Guest = 4,
 }
 impl RoomMemberRole {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -134,20 +134,20 @@ impl RoomMemberRole {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ROOM_MEMBER_ROLE_UNSPECIFIED",
-            Self::Guest => "ROOM_MEMBER_ROLE_GUEST",
-            Self::Member => "ROOM_MEMBER_ROLE_MEMBER",
-            Self::Admin => "ROOM_MEMBER_ROLE_ADMIN",
             Self::Creator => "ROOM_MEMBER_ROLE_CREATOR",
+            Self::Admin => "ROOM_MEMBER_ROLE_ADMIN",
+            Self::Member => "ROOM_MEMBER_ROLE_MEMBER",
+            Self::Guest => "ROOM_MEMBER_ROLE_GUEST",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "ROOM_MEMBER_ROLE_UNSPECIFIED" => Some(Self::Unspecified),
-            "ROOM_MEMBER_ROLE_GUEST" => Some(Self::Guest),
-            "ROOM_MEMBER_ROLE_MEMBER" => Some(Self::Member),
-            "ROOM_MEMBER_ROLE_ADMIN" => Some(Self::Admin),
             "ROOM_MEMBER_ROLE_CREATOR" => Some(Self::Creator),
+            "ROOM_MEMBER_ROLE_ADMIN" => Some(Self::Admin),
+            "ROOM_MEMBER_ROLE_MEMBER" => Some(Self::Member),
+            "ROOM_MEMBER_ROLE_GUEST" => Some(Self::Guest),
             _ => None,
         }
     }

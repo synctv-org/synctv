@@ -44,11 +44,11 @@ impl MemberStatus {
 impl FromStr for MemberStatus {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "active" => Ok(Self::Active),
             "left" => Ok(Self::Left),
-            _ => Err(format!("Unknown member status: {s}")),
+            other => Err(format!("Unknown member status: {other}")),
         }
     }
 }
@@ -56,6 +56,45 @@ impl FromStr for MemberStatus {
 impl std::fmt::Display for MemberStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<MemberStatus> for synctv_proto::common::MemberStatus {
+    fn from(value: MemberStatus) -> Self {
+        match value {
+            MemberStatus::Active => Self::Active,
+            MemberStatus::Left => Self::Left,
+        }
+    }
+}
+
+impl From<MemberStatus> for i32 {
+    fn from(value: MemberStatus) -> Self {
+        synctv_proto::common::MemberStatus::from(value) as Self
+    }
+}
+
+impl TryFrom<synctv_proto::common::MemberStatus> for MemberStatus {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::MemberStatus) -> Result<Self, Self::Error> {
+        match value {
+            synctv_proto::common::MemberStatus::Active => Ok(Self::Active),
+            synctv_proto::common::MemberStatus::Left => Ok(Self::Left),
+            synctv_proto::common::MemberStatus::Unspecified => {
+                Err(format!("Unknown member status: {}", value as i32))
+            }
+        }
+    }
+}
+
+impl TryFrom<i32> for MemberStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::MemberStatus::try_from(value)
+            .map_err(|_| format!("Unknown member status: {value}"))?;
+        Self::try_from(proto)
     }
 }
 
@@ -501,6 +540,28 @@ mod tests {
     fn test_member_status() {
         assert!(MemberStatus::Active.is_active());
         assert!(MemberStatus::Left.is_left());
+        assert_eq!(
+            " active ".parse::<MemberStatus>().unwrap(),
+            MemberStatus::Active
+        );
+        assert_eq!(
+            " LEFT ".parse::<MemberStatus>().unwrap(),
+            MemberStatus::Left
+        );
+    }
+
+    #[test]
+    fn member_status_proto_conversions_reject_unspecified_input() {
+        assert_eq!(
+            i32::from(MemberStatus::Active),
+            synctv_proto::common::MemberStatus::Active as i32
+        );
+        assert_eq!(
+            MemberStatus::try_from(synctv_proto::common::MemberStatus::Left).unwrap(),
+            MemberStatus::Left
+        );
+        assert!(MemberStatus::try_from(synctv_proto::common::MemberStatus::Unspecified).is_err());
+        assert!(MemberStatus::try_from(0).is_err());
     }
 
     #[test]

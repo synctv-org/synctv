@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS media_provider_instances (
 
     jwt_secret VARCHAR(256),
     custom_ca TEXT,
-    timeout VARCHAR(32) NOT NULL DEFAULT '10s',
+    timeout VARCHAR(32) NOT NULL,
     tls BOOLEAN NOT NULL DEFAULT false,
     insecure_tls BOOLEAN NOT NULL DEFAULT false,
 

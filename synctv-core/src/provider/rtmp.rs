@@ -6,7 +6,7 @@
 use super::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::VersionedPlayback,
-    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::{MediaId, RoomId};
 use async_trait::async_trait;
@@ -176,8 +176,9 @@ impl MediaProvider for RtmpProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
+        let source_config = source_config.value();
         Self::validate_config_fields(source_config)?;
         Self::validate_config_shape(source_config)?;
         Ok(())
@@ -269,7 +270,9 @@ mod tests {
         ];
 
         for config in configs_with_urls {
-            let result = provider.validate_source_config(&ctx, &config).await;
+            let result = provider
+                .validate_source_config(&ctx, SourceConfig::media(&config))
+                .await;
             assert!(
                 result.is_err(),
                 "validate_source_config should reject URL fields: {config}"
@@ -282,7 +285,9 @@ mod tests {
         let provider = RtmpProvider::new();
         let ctx = create_context();
 
-        let result = provider.validate_source_config(&ctx, &json!({})).await;
+        let result = provider
+            .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+            .await;
         assert!(
             result.is_ok(),
             "validate_source_config should accept empty config: {:?}",
@@ -296,7 +301,7 @@ mod tests {
         let ctx = create_context();
 
         let result = provider
-            .validate_source_config(&ctx, &json!({"room_id": "room123"}))
+            .validate_source_config(&ctx, SourceConfig::media(&json!({"room_id": "room123"})))
             .await;
         assert!(
             matches!(result, Err(ProviderError::InvalidConfig(_))),
@@ -309,7 +314,9 @@ mod tests {
         let provider = RtmpProvider::new();
         let ctx = ProviderContext::new("synctv");
 
-        let result = provider.validate_source_config(&ctx, &json!({})).await;
+        let result = provider
+            .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+            .await;
         assert!(
             result.is_ok(),
             "creation-time validation should allow deferred room/media binding: {:?}",

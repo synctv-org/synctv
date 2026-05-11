@@ -407,7 +407,7 @@ mod tests {
         providers_manager
             .create_builtin_defaults()
             .await
-            .expect("builtin provider defaults should initialize");
+            .expect("built-in providers should initialize");
 
         let now = Utc::now();
         repo.create(&ProviderInstance {

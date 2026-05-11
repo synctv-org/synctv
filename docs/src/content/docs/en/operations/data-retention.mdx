@@ -35,10 +35,10 @@ User preferences are stored in `user_preferences`:
 
 - `two_factor_enabled`: user-level 2FA.
 - Notification fields: in-app and email notification preferences.
-- Provider default fields: default Alist, Emby, and Bilibili instance names.
 - `settings` JSONB: low-priority extension payload. Core preferences should use explicit database columns instead of being placed in JSON.
 
 `settings` JSONB must not store secrets, tokens, passwords, cookies, or provider credentials.
+Provider instance bindings live on user provider credentials created during provider login.
 
 ## Provider Credential Encryption
 

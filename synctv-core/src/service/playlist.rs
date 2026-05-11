@@ -12,13 +12,16 @@ use std::sync::Arc;
 use crate::{
     models::{
         normalize_provider_instance_name_owned, PermissionBits, Playlist, PlaylistId, RoomId,
-        UserId, UserProviderDefaults,
+        UserId,
     },
-    provider::{provider_requires_credential_repo, ProviderContext},
+    provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
     repository::PlaylistRepository,
-    repository::{UserPreferencesRepository, UserProviderCredentialRepository, UserRepository},
-    service::{permission::PermissionService, ProvidersManager},
+    repository::{UserProviderCredentialRepository, UserRepository},
+    service::{
+        permission::PermissionService,
+        provider_binding::resolve_credential_provider_instance_binding, ProvidersManager,
+    },
     Error, Result,
 };
 use serde_json::Value as JsonValue;
@@ -135,7 +138,6 @@ pub struct PlaylistService {
     providers_manager: Arc<ProvidersManager>,
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-    user_preferences_repo: UserPreferencesRepository,
     cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
@@ -168,21 +170,6 @@ impl PlaylistService {
         Ok(())
     }
 
-    fn provider_instance_binding_from_defaults(
-        provider_defaults: &UserProviderDefaults,
-        source_provider: &str,
-        provider_instance_name: Option<String>,
-    ) -> Option<String> {
-        if let Some(instance_name) = normalize_provider_instance_name_owned(provider_instance_name)
-        {
-            return Some(instance_name);
-        }
-
-        provider_defaults
-            .get_instance_name(source_provider)
-            .map(str::to_string)
-    }
-
     /// Create a new playlist service
     #[must_use]
     pub fn new(
@@ -190,14 +177,12 @@ impl PlaylistService {
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
     ) -> Self {
-        let user_preferences_repo = UserPreferencesRepository::new(playlist_repo.pool().clone());
         Self {
             playlist_repo,
             permission_service,
             providers_manager,
             credential_encryption: None,
             credential_repo: None,
-            user_preferences_repo,
             cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
@@ -212,14 +197,12 @@ impl PlaylistService {
         credential_encryption: Option<crate::service::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
-        let user_preferences_repo = UserPreferencesRepository::new(playlist_repo.pool().clone());
         Self {
             playlist_repo,
             permission_service,
             providers_manager,
             credential_encryption,
             credential_repo,
-            user_preferences_repo,
             cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
@@ -283,7 +266,49 @@ impl PlaylistService {
         }
 
         provider
-            .validate_source_config(&ctx, &source_config)
+            .validate_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))
+            .await
+            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+
+        let bound_instance = resolve_credential_provider_instance_binding(
+            provider.as_ref(),
+            self.credential_repo.as_ref(),
+            &ctx,
+            &source_config,
+            trimmed_instance.as_deref(),
+        )
+        .await?;
+        let provider = if bound_instance != trimmed_instance {
+            let provider = self
+                .providers_manager
+                .resolve_provider(&trimmed_provider, bound_instance.as_deref())
+                .await?;
+            if provider.as_dynamic_folder().is_none() {
+                return Err(Error::InvalidInput(format!(
+                    "Provider {trimmed_provider} does not support dynamic folders"
+                )));
+            }
+            provider
+        } else {
+            provider
+        };
+
+        let mut ctx = ProviderContext::new("synctv")
+            .with_user_id(*user_id)
+            .with_room_id(*room_id)
+            .with_credential_owner_id(*user_id);
+        if let Some(provider_instance_name) = bound_instance.as_deref() {
+            ctx = ctx.with_provider_instance_name(provider_instance_name);
+        }
+        if let Some(ref repo) = self.credential_repo {
+            ctx = ctx.with_credential_repo(repo);
+        }
+        if let Some(ref enc) = self.credential_encryption {
+            ctx = ctx.with_credential_encryption(enc);
+        }
+
+        provider
+            .validate_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
@@ -292,7 +317,7 @@ impl PlaylistService {
             .await
             .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
 
-        Ok((trimmed_provider, prepared_source_config, trimmed_instance))
+        Ok((trimmed_provider, prepared_source_config, bound_instance))
     }
 
     /// Create a new playlist/folder
@@ -372,17 +397,6 @@ impl PlaylistService {
         ) =
             (source_provider, source_config)
         {
-            let provider_defaults = self
-                .user_preferences_repo
-                .get_or_default(&user_id)
-                .await?
-                .provider_defaults;
-            let provider_instance_name = Self::provider_instance_binding_from_defaults(
-                &provider_defaults,
-                &source_provider,
-                provider_instance_name,
-            );
-
             let (source_provider, source_config, provider_instance_name) = self
                 .validate_dynamic_playlist_source(
                     &room_id,
@@ -932,8 +946,13 @@ mod tests {
         async fn validate_source_config(
             &self,
             ctx: &ProviderContext<'_>,
-            _source_config: &Value,
+            source_config: SourceConfig<'_>,
         ) -> std::result::Result<(), ProviderError> {
+            if !source_config.is_dynamic_playlist() {
+                return Err(ProviderError::Internal(
+                    "credential_check validates dynamic playlist sources only".to_string(),
+                ));
+            }
             let user_id = ctx
                 .user_id
                 .as_ref()
@@ -1228,26 +1247,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_folder_uses_user_default_provider_instance_when_request_omits_binding() {
-        let defaults = UserProviderDefaults::try_from_iter([(" alist ", " alist_home ")]).unwrap();
-
-        assert_eq!(
-            PlaylistService::provider_instance_binding_from_defaults(&defaults, "alist", None)
-                .as_deref(),
-            Some("alist_home")
-        );
-        assert_eq!(
-            PlaylistService::provider_instance_binding_from_defaults(
-                &defaults,
-                "alist",
-                Some(" explicit_alist ".to_string()),
-            )
-            .as_deref(),
-            Some("explicit_alist")
-        );
-    }
-
-    #[test]
     fn test_static_folder_rejects_dynamic_fields_without_provider() {
         let err = normalize_dynamic_playlist_fields(
             None,
@@ -1345,7 +1344,7 @@ mod tests {
         providers_manager
             .create_builtin_defaults()
             .await
-            .expect("provider defaults should initialize");
+            .expect("built-in providers should initialize");
 
         PlaylistService::new(
             PlaylistRepository::new(pool.clone()),

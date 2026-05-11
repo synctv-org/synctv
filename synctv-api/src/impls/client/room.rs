@@ -100,15 +100,7 @@ fn build_my_room_list_query(
     Ok(synctv_core::models::MyRoomListQuery {
         pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
         search: (!req.search.is_empty()).then_some(req.search),
-        status: match synctv_proto::common::RoomStatus::try_from(req.status) {
-            Ok(synctv_proto::common::RoomStatus::Active) => {
-                Some(synctv_core::models::RoomStatus::Active)
-            }
-            Ok(synctv_proto::common::RoomStatus::Closed) => {
-                Some(synctv_core::models::RoomStatus::Closed)
-            }
-            _ => None,
-        },
+        status: synctv_core::models::RoomStatus::try_from(req.status).ok(),
         is_banned: req.is_banned,
         relation: match crate::proto::client::MyRoomRelation::try_from(req.relation) {
             Ok(crate::proto::client::MyRoomRelation::Created) => {

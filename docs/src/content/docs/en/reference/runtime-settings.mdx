@@ -138,7 +138,7 @@ All registration modes are disabled by default. Production deployments should en
 
 A missing provider instance means that login entry point is unavailable. Missing or false `enable_signup` blocks first-time OAuth2 account creation while existing linked OAuth2 logins continue to work. `signup_need_review=true` stores first-time OAuth2 signup in the user registration review queue; approval creates the local account and OAuth2 binding.
 
-User-level 2FA, notification preferences, and provider defaults are user preferences, not runtime settings. See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/).
+User-level 2FA and notification preferences are user preferences, not runtime settings. Provider instance bindings are stored on provider credentials created during provider login. See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/).
 
 ### Proxy
 

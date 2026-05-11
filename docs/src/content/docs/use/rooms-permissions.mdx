@@ -163,11 +163,8 @@ synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}
 | `notifications.room_invitation_email` | `false` | 房间邀请邮件通知 |
 | `notifications.room_event_email` | `false` | 房间事件邮件通知 |
 | `notifications.system_announcement_email` | `true` | 系统公告邮件通知 |
-| `provider_defaults.alist_instance_name` | `null` | 默认 Alist 实例 |
-| `provider_defaults.emby_instance_name` | `null` | 默认 Emby 实例 |
-| `provider_defaults.bilibili_instance_name` | `null` | 默认 Bilibili 实例 |
 
-数据库表还有一个 `settings` JSONB 扩展载荷，只用于低优先级实验性偏好。稳定的产品偏好应该优先设计成明确字段，不能把 secret、token、Cookie、密码或 Provider 凭据放进去。
+Provider instance 绑定不是用户偏好；用户通过某个 instance 登录 provider 时，绑定会存储在对应 provider credential 上。数据库表还有一个 `settings` JSONB 扩展载荷，只用于低优先级实验性偏好。稳定的产品偏好应该优先设计成明确字段，不能把 secret、token、Cookie、密码或 Provider 凭据放进去。
 
 2FA 约束：
 

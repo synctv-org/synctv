@@ -72,15 +72,15 @@ pub enum ProviderType {
 impl FromStr for ProviderType {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "direct_url" | "directurl" => Ok(Self::DirectUrl),
             "bilibili" => Ok(Self::Bilibili),
             "alist" => Ok(Self::Alist),
             "emby" => Ok(Self::Emby),
             "rtmp" => Ok(Self::Rtmp),
             "live_proxy" | "liveproxy" => Ok(Self::LiveProxy),
-            _ => Err(format!("Unknown provider type: {s}")),
+            other => Err(format!("Unknown provider type: {other}")),
         }
     }
 }
@@ -721,6 +721,22 @@ impl PlaybackUrlMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_provider_type_parse_trimmed_case_insensitive_names() {
+        assert_eq!(
+            " alist ".parse::<ProviderType>().unwrap(),
+            ProviderType::Alist
+        );
+        assert_eq!(
+            " DIRECTURL ".parse::<ProviderType>().unwrap(),
+            ProviderType::DirectUrl
+        );
+        assert_eq!(
+            " live_proxy ".parse::<ProviderType>().unwrap(),
+            ProviderType::LiveProxy
+        );
+    }
 
     #[test]
     fn test_playback_result_builder_deterministic_default_mode() {

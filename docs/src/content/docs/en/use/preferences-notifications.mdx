@@ -1,6 +1,6 @@
 ---
 title: Notifications and Preferences
-description: Manage notification preferences, default Provider, linked login methods, and security preferences.
+description: Manage notification preferences, linked login methods, and security preferences.
 ---
 
 Personal settings affect only the current user. Administrators configure platform capabilities such as SMTP, OAuth2 providers, Provider instances, and registration policy. User preferences decide how you use those capabilities.
@@ -10,10 +10,11 @@ Personal settings affect only the current user. Administrators configure platfor
 | Setting | Affects |
 | --- | --- |
 | Notification preferences | Room invitations, room events, system announcements, in-app and email delivery |
-| Default Provider | Provider instance selected by default when adding media |
 | Linked methods | Password, passkey/WebAuthn, email, OAuth2 bindings |
 | 2FA | Whether local sign-in requires a second factor |
 | Email status | Verification, recovery, and MFA email availability |
+
+Provider instance bindings are stored on provider credentials created during provider login, not in user preferences.
 
 ## Missing Notifications
 

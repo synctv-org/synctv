@@ -110,6 +110,67 @@ impl ProviderCredentialDependency {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceConfigKind {
+    Media,
+    DynamicPlaylist,
+}
+
+impl std::fmt::Display for SourceConfigKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Media => f.write_str("media"),
+            Self::DynamicPlaylist => f.write_str("dynamic_playlist"),
+        }
+    }
+}
+
+/// Provider source-config plus the domain object it belongs to.
+///
+/// Media and dynamic playlists can share the same provider and JSON shape, but
+/// they are different domain objects with different lifecycle constraints. This
+/// wrapper keeps the JSON value and its usage together at the provider boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceConfig<'a>(SourceConfigKind, &'a Value);
+
+impl<'a> SourceConfig<'a> {
+    #[must_use]
+    pub const fn media(value: &'a Value) -> Self {
+        Self(SourceConfigKind::Media, value)
+    }
+
+    #[must_use]
+    pub const fn dynamic_playlist(value: &'a Value) -> Self {
+        Self(SourceConfigKind::DynamicPlaylist, value)
+    }
+
+    #[must_use]
+    pub const fn kind(self) -> SourceConfigKind {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn value(self) -> &'a Value {
+        self.1
+    }
+
+    #[must_use]
+    pub const fn is_media(self) -> bool {
+        matches!(self.0, SourceConfigKind::Media)
+    }
+
+    #[must_use]
+    pub const fn is_dynamic_playlist(self) -> bool {
+        matches!(self.0, SourceConfigKind::DynamicPlaylist)
+    }
+}
+
+impl AsRef<Value> for SourceConfig<'_> {
+    fn as_ref(&self) -> &Value {
+        self.1
+    }
+}
+
 /// Item type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -229,20 +290,20 @@ pub trait MediaProvider: Send + Sync {
         None
     }
 
-    /// Validate `source_config` before saving to database
+    /// Validate `source_config` before saving to database.
     ///
-    /// Called when user adds media via `add_media` API.
+    /// Called when user adds media or creates/updates a dynamic playlist.
+    /// `source_config.kind()` identifies which domain object is being validated.
     ///
     /// # Flow
-    /// 1. User calls parse endpoint → gets `ParseResult`
-    /// 2. Client constructs `source_config` from `ParseResult`
-    /// 3. Client calls `add_media` API with `source_config`
-    /// 4. Server calls `validate_source_config()`
-    /// 5. If valid, save to database
+    /// 1. Client constructs `source_config` from a provider parse/browse result
+    /// 2. Client calls the media or playlist API with `source_config`
+    /// 3. Server calls `validate_source_config()`
+    /// 4. If valid, save to database
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        _source_config: &Value,
+        _source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
         Ok(()) // Default: no validation
     }

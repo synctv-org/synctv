@@ -11,7 +11,10 @@ use crate::proto::providers::bilibili::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use synctv_core::models::{ProviderCredential, UserId, UserProviderCredential};
+use synctv_core::models::{
+    normalize_provider_instance_name, resolve_provider_instance_binding, ProviderCredential,
+    UserId, UserProviderCredential,
+};
 use synctv_core::provider::{BilibiliProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 
@@ -27,6 +30,11 @@ pub struct BilibiliApiImpl {
     credential_repo: Arc<UserProviderCredentialRepository>,
     access_service: Option<Arc<dyn ProviderAccessService>>,
     event_service: Option<Arc<dyn crate::runtime::RealtimeEventService>>,
+}
+
+struct ResolvedBilibiliCredential {
+    cookies: HashMap<String, String>,
+    provider_instance_name: Option<String>,
 }
 
 impl BilibiliApiImpl {
@@ -58,18 +66,19 @@ impl BilibiliApiImpl {
         self
     }
 
+    fn resolve_effective_instance_name(
+        requested_instance_name: Option<&str>,
+        credential_instance_name: Option<Option<&str>>,
+    ) -> Result<Option<String>, synctv_core::provider::ProviderError> {
+        resolve_provider_instance_binding(requested_instance_name, credential_instance_name)
+            .map_err(|error| synctv_core::provider::ProviderError::InvalidConfig(error.to_string()))
+    }
+
     /// Resolve the user's single global Bilibili credential.
-    async fn resolve_cookies(
+    async fn resolve_credential(
         &self,
         caller_user_id: &UserId,
-    ) -> Result<Option<HashMap<String, String>>, synctv_core::provider::ProviderError> {
-        if let Some(access_service) = &self.access_service {
-            let access = access_service
-                .bilibili_access(*caller_user_id, None)
-                .await?;
-            return Ok(access.authenticated.then_some(access.cookies));
-        }
-
+    ) -> Result<Option<ResolvedBilibiliCredential>, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let cred = self
             .credential_repo
@@ -93,8 +102,25 @@ impl BilibiliApiImpl {
             return Ok(None);
         }
 
+        let provider_instance_name =
+            normalize_provider_instance_name(cred.provider_instance_name.as_deref())
+                .map(str::to_string);
+
+        if let Some(access_service) = &self.access_service {
+            let access = access_service
+                .bilibili_access(*caller_user_id, None)
+                .await?;
+            return Ok(access.authenticated.then_some(ResolvedBilibiliCredential {
+                cookies: access.cookies,
+                provider_instance_name,
+            }));
+        }
+
         match cred.get_credential() {
-            Ok(ProviderCredential::Bilibili { cookies }) => Ok(Some(cookies)),
+            Ok(ProviderCredential::Bilibili { cookies }) => Ok(Some(ResolvedBilibiliCredential {
+                cookies,
+                provider_instance_name,
+            })),
             Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
             Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
                 "Failed to parse bilibili credential: {e}"
@@ -107,6 +133,7 @@ impl BilibiliApiImpl {
         &self,
         caller_user_id: &UserId,
         cookies: &HashMap<String, String>,
+        instance_name: Option<&str>,
     ) -> Result<String, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let credential_data = ProviderCredential::bilibili(cookies.clone());
@@ -116,7 +143,7 @@ impl BilibiliApiImpl {
             user_id: *caller_user_id,
             provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),
-            provider_instance_name: None,
+            provider_instance_name: instance_name.map(ToString::to_string),
             credential_data: serde_json::to_value(&credential_data).map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
                     "Failed to serialize credential: {e}"
@@ -173,15 +200,26 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
-        let cookies = self
-            .resolve_cookies(caller_user_id)
-            .await?
+        let credential = self.resolve_credential(caller_user_id).await?;
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            credential
+                .as_ref()
+                .map(|credential| credential.provider_instance_name.as_deref()),
+        )?;
+        let cookies = credential
+            .as_ref()
+            .map(|credential| credential.cookies.clone())
             .unwrap_or_default();
 
         // Step 1: Match URL
         let match_resp = self
             .provider
-            .r#match_with_context(req.url.clone(), requested_instance_name, request_context)
+            .r#match_with_context(
+                req.url.clone(),
+                effective_instance_name.as_deref(),
+                request_context,
+            )
             .await?;
 
         // Step 2: Parse based on type
@@ -205,7 +243,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_video_page_with_context(
                         parse_req,
-                        requested_instance_name,
+                        effective_instance_name.as_deref(),
                         request_context,
                     )
                     .await?
@@ -228,7 +266,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_pgc_page_with_context(
                         parse_req,
-                        requested_instance_name,
+                        effective_instance_name.as_deref(),
                         request_context,
                     )
                     .await?
@@ -242,7 +280,7 @@ impl BilibiliApiImpl {
                 self.provider
                     .parse_live_page_with_context(
                         parse_req,
-                        requested_instance_name,
+                        effective_instance_name.as_deref(),
                         request_context,
                     )
                     .await?
@@ -353,7 +391,8 @@ impl BilibiliApiImpl {
 
         // If login succeeded (status = 4 = SUCCESS), persist cookies
         if resp.status == 4 && !resp.cookies.is_empty() {
-            self.persist_cookies(caller_user_id, &resp.cookies).await?;
+            self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
+                .await?;
         }
 
         Ok(QrStatusResponse {
@@ -451,7 +490,8 @@ impl BilibiliApiImpl {
             .await?;
 
         // Persist cookies server-side
-        self.persist_cookies(caller_user_id, &resp.cookies).await?;
+        self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
+            .await?;
 
         Ok(LoginSmsResponse {})
     }
@@ -474,7 +514,7 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
-        let Some(cookies) = self.resolve_cookies(caller_user_id).await? else {
+        let Some(credential) = self.resolve_credential(caller_user_id).await? else {
             return Ok(UserInfoResponse {
                 is_login: false,
                 username: String::new(),
@@ -482,12 +522,22 @@ impl BilibiliApiImpl {
                 is_vip: false,
             });
         };
+        let effective_instance_name = Self::resolve_effective_instance_name(
+            requested_instance_name,
+            Some(credential.provider_instance_name.as_deref()),
+        )?;
 
-        let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq { cookies };
+        let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq {
+            cookies: credential.cookies,
+        };
 
         let resp = self
             .provider
-            .user_info_with_context(info_req, requested_instance_name, request_context)
+            .user_info_with_context(
+                info_req,
+                effective_instance_name.as_deref(),
+                request_context,
+            )
             .await?;
 
         Ok(UserInfoResponse {
@@ -552,14 +602,14 @@ impl BilibiliApiImpl {
     pub async fn get_binds(
         &self,
         caller_user_id: &UserId,
-        _instance_name: Option<&str>,
+        instance_name: Option<&str>,
     ) -> Result<GetBindsResponse, crate::impls::ApiError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let binds = get_provider_credentials(
             &self.credential_repo,
             caller_user_id,
             synctv_core::provider::BilibiliProvider::NAME,
-            None,
+            instance_name,
         )
         .await?
         .into_iter()
@@ -578,10 +628,14 @@ impl BilibiliApiImpl {
 #[cfg(test)]
 mod tests {
     use super::BilibiliApiImpl;
+    use std::collections::HashMap;
     use std::sync::Arc;
+    use synctv_core::models::{NewProviderInstance, SignupMethod, User};
     use synctv_core::provider::BilibiliProvider;
-    use synctv_core::repository::{ProviderInstanceRepository, UserProviderCredentialRepository};
-    use synctv_core::service::RemoteProviderManager;
+    use synctv_core::repository::{
+        ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository,
+    };
+    use synctv_core::service::{CredentialEncryption, RemoteProviderManager};
     use synctv_core_testing::create_test_pool;
 
     fn provider() -> Arc<BilibiliProvider> {
@@ -590,6 +644,73 @@ mod tests {
         Arc::new(BilibiliProvider::new(Arc::new(RemoteProviderManager::new(
             repo,
         ))))
+    }
+
+    fn test_encryption() -> CredentialEncryption {
+        CredentialEncryption::new(&[0x42; 32]).expect("test encryption should initialize")
+    }
+
+    fn test_user(username: &str) -> User {
+        User::new(
+            username.to_string(),
+            Some(format!("{username}@example.test")),
+            "hash".to_string(),
+            SignupMethod::Email,
+        )
+    }
+
+    async fn create_bilibili_provider_instance(pool: &sqlx::PgPool, name: &str) {
+        ProviderInstanceRepository::new(pool.clone())
+            .create(&synctv_core::models::ProviderInstance::new_remote(
+                NewProviderInstance {
+                    name: name.to_string(),
+                    endpoint: format!("http://{name}.example.test:50051"),
+                    comment: None,
+                    jwt_secret: None,
+                    custom_ca: None,
+                    timeout_seconds: 10,
+                    tls: false,
+                    insecure_tls: false,
+                    providers: vec![synctv_core::provider::BilibiliProvider::NAME.to_string()],
+                },
+            ))
+            .await
+            .expect("provider instance should be created");
+    }
+
+    #[test]
+    fn effective_instance_uses_credential_binding_when_request_omits_instance() {
+        let resolved =
+            BilibiliApiImpl::resolve_effective_instance_name(None, Some(Some(" bilibili_remote ")))
+                .expect("credential binding should be authoritative");
+
+        assert_eq!(resolved.as_deref(), Some("bilibili_remote"));
+    }
+
+    #[test]
+    fn effective_instance_rejects_explicit_request_conflicting_with_credential_binding() {
+        let err = BilibiliApiImpl::resolve_effective_instance_name(
+            Some("bilibili_other"),
+            Some(Some("bilibili_remote")),
+        )
+        .expect_err("explicit conflicting instance should be rejected");
+
+        assert!(matches!(
+            err,
+            synctv_core::provider::ProviderError::InvalidConfig(_)
+        ));
+    }
+
+    #[test]
+    fn effective_instance_rejects_explicit_instance_for_unbound_credential() {
+        let err =
+            BilibiliApiImpl::resolve_effective_instance_name(Some("bilibili_remote"), Some(None))
+                .expect_err("unbound credential cannot satisfy an explicit instance request");
+
+        assert!(matches!(
+            err,
+            synctv_core::provider::ProviderError::InvalidConfig(_)
+        ));
     }
 
     #[tokio::test]
@@ -636,5 +757,75 @@ mod tests {
             .expect("logout without a Bilibili binding should be idempotent");
 
         assert_eq!(response.message, "Logout successful");
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn persist_cookies_stores_login_provider_instance_binding() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+            pool.clone(),
+            test_encryption(),
+        ));
+        let api = BilibiliApiImpl::new(provider(), credential_repo.clone());
+        let user = user_repo
+            .create(&test_user("bilibili_instance_login"))
+            .await
+            .expect("test user should be created");
+        create_bilibili_provider_instance(&pool, "bilibili_remote").await;
+        let cookies = HashMap::from([("SESSDATA".to_string(), "session".to_string())]);
+
+        api.persist_cookies(&user.id, &cookies, Some(" bilibili_remote "))
+            .await
+            .expect("cookies should persist");
+
+        let credential = credential_repo
+            .get_by_provider_and_server(
+                user.id,
+                synctv_core::provider::BilibiliProvider::NAME,
+                &synctv_core::models::UserProviderCredential::bilibili_server_id(),
+            )
+            .await
+            .expect("credential query should succeed")
+            .expect("credential should exist");
+        assert_eq!(
+            credential.provider_instance_name.as_deref(),
+            Some("bilibili_remote")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn get_binds_filters_by_provider_instance_binding() {
+        let (_postgres, pool) = create_test_pool().await;
+        let user_repo = UserRepository::new(pool.clone());
+        let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+            pool.clone(),
+            test_encryption(),
+        ));
+        let api = BilibiliApiImpl::new(provider(), credential_repo);
+        let user = user_repo
+            .create(&test_user("bilibili_bind_filter"))
+            .await
+            .expect("test user should be created");
+        create_bilibili_provider_instance(&pool, "bilibili_remote").await;
+        let cookies = HashMap::from([("SESSDATA".to_string(), "session".to_string())]);
+
+        api.persist_cookies(&user.id, &cookies, Some("bilibili_remote"))
+            .await
+            .expect("cookies should persist");
+
+        let matching = api
+            .get_binds(&user.id, Some("bilibili_remote"))
+            .await
+            .expect("matching bind query should succeed");
+        let non_matching = api
+            .get_binds(&user.id, Some("bilibili_other"))
+            .await
+            .expect("non-matching bind query should succeed");
+
+        assert_eq!(matching.binds.len(), 1);
+        assert!(non_matching.binds.is_empty());
     }
 }

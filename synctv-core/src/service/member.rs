@@ -241,15 +241,6 @@ impl MemberService {
         self.event_broadcaster.read().is_some()
     }
 
-    const fn room_role_to_proto_i32(role: RoomRole) -> i32 {
-        match role {
-            RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-            RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-            RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-            RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-        }
-    }
-
     async fn notify_permission_changed(
         &self,
         room_id: &RoomId,
@@ -276,7 +267,7 @@ impl MemberService {
             room_id,
             PermissionChangedNotification {
                 user_id: &member.user_id,
-                role: Self::room_role_to_proto_i32(member.role),
+                role: i32::from(member.role),
                 effective_permissions,
                 added_permissions: member.added_permissions,
                 removed_permissions: member.removed_permissions,
@@ -1536,19 +1527,19 @@ mod tests {
     #[test]
     fn room_role_to_proto_i32_matches_common_wire_values() {
         assert_eq!(
-            MemberService::room_role_to_proto_i32(RoomRole::Creator),
+            i32::from(RoomRole::Creator),
             synctv_proto::common::RoomMemberRole::Creator as i32
         );
         assert_eq!(
-            MemberService::room_role_to_proto_i32(RoomRole::Admin),
+            i32::from(RoomRole::Admin),
             synctv_proto::common::RoomMemberRole::Admin as i32
         );
         assert_eq!(
-            MemberService::room_role_to_proto_i32(RoomRole::Member),
+            i32::from(RoomRole::Member),
             synctv_proto::common::RoomMemberRole::Member as i32
         );
         assert_eq!(
-            MemberService::room_role_to_proto_i32(RoomRole::Guest),
+            i32::from(RoomRole::Guest),
             synctv_proto::common::RoomMemberRole::Guest as i32
         );
     }

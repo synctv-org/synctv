@@ -491,7 +491,7 @@ pub struct GetUserPreferencesRequest {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_GetUserPreferencesResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetUserPreferencesResponse {
     #[prost(message, optional, tag = "1")]
     pub user: ::core::option::Option<AdminUser>,
@@ -507,7 +507,7 @@ pub struct GetUserPreferencesResponse {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateUserPreferencesRequest))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPreferencesRequest {
     #[prost(string, tag = "1")]
     #[serde(default)]
@@ -519,8 +519,6 @@ pub struct UpdateUserPreferencesRequest {
     pub notifications: ::core::option::Option<
         super::client::UserNotificationPreferences,
     >,
-    #[prost(message, optional, tag = "6")]
-    pub provider_defaults: ::core::option::Option<super::client::UserProviderDefaults>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.admin.UpdateUserPreferencesResponse")]
@@ -529,7 +527,7 @@ pub struct UpdateUserPreferencesRequest {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_admin_UpdateUserPreferencesResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPreferencesResponse {
     #[prost(message, optional, tag = "1")]
     pub user: ::core::option::Option<AdminUser>,

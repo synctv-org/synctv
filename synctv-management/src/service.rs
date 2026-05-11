@@ -1054,7 +1054,6 @@ impl ManagementService for ManagementServiceImpl {
                     user_id,
                     two_factor_enabled: req.two_factor_enabled,
                     notifications: req.notifications,
-                    provider_defaults: req.provider_defaults,
                 },
                 &validated.user_id,
                 &ctx,

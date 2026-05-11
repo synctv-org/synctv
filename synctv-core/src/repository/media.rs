@@ -1703,6 +1703,19 @@ impl MediaRepository {
         Ok(count)
     }
 
+    /// Count all media items.
+    pub async fn count_all(&self) -> Result<i64> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*) FROM media
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
     /// Count media items in a playlist, scoped to a room.
     pub async fn count_by_room_and_playlist(
         &self,

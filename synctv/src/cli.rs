@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -1546,10 +1545,6 @@ pub struct UserPreferencesSetArgs {
     /// Replace notification preferences with a full JSON object
     #[arg(long)]
     pub notifications_json: Option<String>,
-
-    /// Replace provider defaults with a full JSON object
-    #[arg(long)]
-    pub provider_defaults_json: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -4485,15 +4480,7 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                     "notification preferences",
                     args.notifications_json.as_deref(),
                 )?;
-                let provider_defaults = parse_cli_optional_json(
-                    "provider defaults",
-                    args.provider_defaults_json.as_deref(),
-                )?;
-
-                if args.two_factor_enabled.is_none()
-                    && notifications.is_none()
-                    && provider_defaults.is_none()
-                {
+                if args.two_factor_enabled.is_none() && notifications.is_none() {
                     bail!("No user preference fields provided");
                 }
 
@@ -4506,7 +4493,6 @@ async fn execute_user(user_command: UserCommand) -> Result<()> {
                         user: Some(args.user.to_management_proto()),
                         two_factor_enabled: args.two_factor_enabled,
                         notifications,
-                        provider_defaults,
                     }
                 )?;
                 print_humanized_structured_output(args.remote.output, &response)
@@ -7136,7 +7122,6 @@ struct HumanUserAuthFactors {
 struct HumanUserPreferences {
     two_factor_enabled: bool,
     notifications: Option<HumanUserNotificationPreferences>,
-    provider_defaults: Option<BTreeMap<String, String>>,
     settings: Value,
 }
 
@@ -7947,13 +7932,6 @@ impl ToHuman for synctv_proto::client::UserPreferences {
                     room_event_email: notifications.room_event_email,
                     system_announcement_email: notifications.system_announcement_email,
                 }
-            }),
-            provider_defaults: self.provider_defaults.as_ref().map(|provider_defaults| {
-                provider_defaults
-                    .defaults
-                    .iter()
-                    .map(|default| (default.provider.clone(), default.instance_name.clone()))
-                    .collect()
             }),
             settings: parse_json_bytes(&self.settings),
         }

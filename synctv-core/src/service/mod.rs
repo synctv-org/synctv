@@ -23,6 +23,7 @@ pub mod passkey;
 pub mod permission;
 pub mod playback;
 pub mod playlist;
+mod provider_binding;
 pub mod providers_manager;
 pub mod proxy_signature;
 pub mod publish_key;

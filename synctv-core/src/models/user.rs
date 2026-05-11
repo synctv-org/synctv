@@ -56,12 +56,12 @@ impl UserRole {
 impl FromStr for UserRole {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "root" => Ok(Self::Root),
             "admin" => Ok(Self::Admin),
             "user" => Ok(Self::User),
-            _ => Err(format!("Unknown user role: {s}")),
+            other => Err(format!("Unknown user role: {other}")),
         }
     }
 }
@@ -69,6 +69,47 @@ impl FromStr for UserRole {
 impl std::fmt::Display for UserRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<UserRole> for synctv_proto::common::UserRole {
+    fn from(value: UserRole) -> Self {
+        match value {
+            UserRole::Root => Self::Root,
+            UserRole::Admin => Self::Admin,
+            UserRole::User => Self::User,
+        }
+    }
+}
+
+impl From<UserRole> for i32 {
+    fn from(value: UserRole) -> Self {
+        synctv_proto::common::UserRole::from(value) as Self
+    }
+}
+
+impl TryFrom<synctv_proto::common::UserRole> for UserRole {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::UserRole) -> Result<Self, Self::Error> {
+        match value {
+            synctv_proto::common::UserRole::Root => Ok(Self::Root),
+            synctv_proto::common::UserRole::Admin => Ok(Self::Admin),
+            synctv_proto::common::UserRole::User => Ok(Self::User),
+            synctv_proto::common::UserRole::Unspecified => {
+                Err(format!("Unknown user role: {}", value as i32))
+            }
+        }
+    }
+}
+
+impl TryFrom<i32> for UserRole {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::UserRole::try_from(value)
+            .map_err(|_| format!("Unknown user role: {value}"))?;
+        Self::try_from(proto).map_err(|_| format!("Unknown user role: {value}"))
     }
 }
 
@@ -124,11 +165,11 @@ impl UserStatus {
 impl FromStr for UserStatus {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "active" => Ok(Self::Active),
             "banned" => Ok(Self::Banned),
-            _ => Err(format!("Unknown user status: {s}")),
+            other => Err(format!("Unknown user status: {other}")),
         }
     }
 }
@@ -136,6 +177,45 @@ impl FromStr for UserStatus {
 impl std::fmt::Display for UserStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl From<UserStatus> for synctv_proto::common::UserStatus {
+    fn from(value: UserStatus) -> Self {
+        match value {
+            UserStatus::Active => Self::Active,
+            UserStatus::Banned => Self::Banned,
+        }
+    }
+}
+
+impl From<UserStatus> for i32 {
+    fn from(value: UserStatus) -> Self {
+        synctv_proto::common::UserStatus::from(value) as Self
+    }
+}
+
+impl TryFrom<synctv_proto::common::UserStatus> for UserStatus {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::UserStatus) -> Result<Self, Self::Error> {
+        match value {
+            synctv_proto::common::UserStatus::Active => Ok(Self::Active),
+            synctv_proto::common::UserStatus::Banned => Ok(Self::Banned),
+            synctv_proto::common::UserStatus::Unspecified => {
+                Err(format!("Unknown user status: {}", value as i32))
+            }
+        }
+    }
+}
+
+impl TryFrom<i32> for UserStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::UserStatus::try_from(value)
+            .map_err(|_| format!("Unknown user status: {value}"))?;
+        Self::try_from(proto).map_err(|_| format!("Unknown user status: {value}"))
     }
 }
 
@@ -579,5 +659,19 @@ mod tests {
         );
         assert_eq!(SignupMethod::WebAuthn.to_string(), "webauthn");
         assert!("ldap".parse::<SignupMethod>().is_err());
+    }
+
+    #[test]
+    fn test_user_role_and_status_parse_trimmed_case_insensitive_names() {
+        assert_eq!(" admin ".parse::<UserRole>().unwrap(), UserRole::Admin);
+        assert_eq!(" ROOT ".parse::<UserRole>().unwrap(), UserRole::Root);
+        assert_eq!(
+            " banned ".parse::<UserStatus>().unwrap(),
+            UserStatus::Banned
+        );
+        assert_eq!(
+            " ACTIVE ".parse::<UserStatus>().unwrap(),
+            UserStatus::Active
+        );
     }
 }

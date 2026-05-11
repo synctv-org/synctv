@@ -10,7 +10,7 @@
 use super::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::VersionedPlayback,
-    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::{MediaId, RoomId};
 use async_trait::async_trait;
@@ -221,8 +221,9 @@ impl MediaProvider for LiveProxyProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
+        let source_config = source_config.value();
         Self::validate_config_shape(source_config)?;
 
         // Validate required fields
@@ -383,7 +384,7 @@ mod tests {
             }),
         ] {
             provider
-                .validate_source_config(&ctx, &config)
+                .validate_source_config(&ctx, SourceConfig::media(&config))
                 .await
                 .expect("default SSRF policy should allow blocked live source URLs");
         }
@@ -397,7 +398,9 @@ mod tests {
         let err = provider
             .validate_source_config(
                 &ctx,
-                &json!({"url": "rtmp://example.com/live/stream", "room_id": "room-123"}),
+                SourceConfig::media(
+                    &json!({"url": "rtmp://example.com/live/stream", "room_id": "room-123"}),
+                ),
             )
             .await
             .expect_err("live_proxy source_config must not persist internal identity");
@@ -415,10 +418,10 @@ mod tests {
         let err = provider
             .validate_source_config(
                 &ctx,
-                &json!({
+                SourceConfig::media(&json!({
                     "url": "rtmp://example.com/live/stream",
                     "provider_instance_name": "remote-live"
-                }),
+                })),
             )
             .await
             .expect_err("live_proxy source_config must not contain provider_instance_name");

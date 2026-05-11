@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId};
 use synctv_core::repository::{ReviewRepository, RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
-use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
+use super::convert::{
+    members_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role, room_member_to_proto,
+};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 pub(crate) fn compute_room_members_response_version(
@@ -36,14 +38,7 @@ pub(crate) fn compute_room_members_response_version(
 }
 
 fn review_status_i32_to_core(value: i32) -> ReviewStatus {
-    if value == synctv_proto::common::ReviewStatus::Unspecified as i32 {
-        ReviewStatus::Pending
-    } else {
-        i16::try_from(value)
-            .ok()
-            .and_then(|value| ReviewStatus::try_from(value).ok())
-            .unwrap_or(ReviewStatus::Pending)
-    }
+    ReviewStatus::try_from(value).unwrap_or_default()
 }
 
 fn page_i32_to_usize(value: i32) -> usize {
@@ -219,36 +214,10 @@ impl ClientApiImpl {
             RoomActor::Guest(access) => access.permissions,
         };
 
-        let role = match req
-            .role
-            .and_then(|value| synctv_proto::common::RoomMemberRole::try_from(value).ok())
-        {
-            Some(synctv_proto::common::RoomMemberRole::Guest) => {
-                Some(synctv_core::models::RoomRole::Guest)
-            }
-            Some(synctv_proto::common::RoomMemberRole::Member) => {
-                Some(synctv_core::models::RoomRole::Member)
-            }
-            Some(synctv_proto::common::RoomMemberRole::Admin) => {
-                Some(synctv_core::models::RoomRole::Admin)
-            }
-            Some(synctv_proto::common::RoomMemberRole::Creator) => {
-                Some(synctv_core::models::RoomRole::Creator)
-            }
-            _ => None,
-        };
-        let requested_status = match req
+        let role = req.role.and_then(proto_role_filter_to_room_role);
+        let requested_status = req
             .status
-            .and_then(|value| synctv_proto::common::MemberStatus::try_from(value).ok())
-        {
-            Some(synctv_proto::common::MemberStatus::Active) => {
-                Some(synctv_core::models::MemberStatus::Active)
-            }
-            Some(synctv_proto::common::MemberStatus::Left) => {
-                Some(synctv_core::models::MemberStatus::Left)
-            }
-            _ => None,
-        };
+            .and_then(|value| synctv_core::models::MemberStatus::try_from(value).ok());
         let can_view_non_active_members = permissions.has_any(
             PermissionBits::APPROVE_MEMBER
                 | PermissionBits::KICK_MEMBER

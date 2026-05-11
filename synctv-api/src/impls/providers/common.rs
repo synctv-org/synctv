@@ -1,6 +1,7 @@
 use std::sync::Arc;
-use synctv_core::models::normalize_provider_instance_name;
-use synctv_core::models::UserProviderCredential;
+use synctv_core::models::{
+    normalize_provider_instance_name, NewProviderInstance, ProviderInstance, UserProviderCredential,
+};
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::provider::ProviderError;
@@ -424,27 +425,17 @@ impl ProviderCommonApiImpl {
         control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::providers::common::AddProviderInstanceResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let jwt_secret = req.jwt_secret.as_deref().and_then(trim_to_optional);
-        let custom_ca = req.custom_ca.as_deref().and_then(trim_to_optional);
-
-        let instance = synctv_core::models::ProviderInstance {
+        let instance = ProviderInstance::new_remote(NewProviderInstance {
             name: req.name,
             endpoint: req.endpoint,
-            comment: trim_to_optional(&req.comment),
-            jwt_secret,
-            custom_ca,
-            timeout: seconds_to_timeout_string(if req.timeout_seconds > 0 {
-                req.timeout_seconds
-            } else {
-                10
-            }),
+            comment: Some(req.comment),
+            jwt_secret: req.jwt_secret,
+            custom_ca: req.custom_ca,
+            timeout_seconds: req.timeout_seconds,
             tls: req.tls,
             insecure_tls: req.insecure_tls,
             providers: req.providers,
-            enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
+        });
 
         self.provider_instance_manager
             .add_with_control(instance.clone(), control)
@@ -532,7 +523,7 @@ impl ProviderCommonApiImpl {
             instance.comment = trim_to_optional(comment);
         }
         if let Some(timeout_seconds) = req.timeout_seconds {
-            instance.timeout = seconds_to_timeout_string(timeout_seconds);
+            instance.timeout = ProviderInstance::timeout_string_from_seconds(timeout_seconds);
         }
         if !req.providers.is_empty() {
             instance.providers = req.providers;
@@ -762,11 +753,13 @@ fn provider_instance_to_proto(
     instance: synctv_core::models::ProviderInstance,
     status: i32,
 ) -> crate::proto::providers::common::ProviderInstance {
+    let timeout_seconds = instance.timeout_seconds();
+
     crate::proto::providers::common::ProviderInstance {
         name: instance.name,
         endpoint: instance.endpoint,
         comment: instance.comment.unwrap_or_default(),
-        timeout_seconds: parse_timeout_to_seconds(&instance.timeout),
+        timeout_seconds,
         tls: instance.tls,
         insecure_tls: instance.insecure_tls,
         providers: instance.providers,
@@ -792,14 +785,6 @@ fn provider_instance_status(
         Some(false) => ProviderInstanceStatus::Error.into(),
         None => ProviderInstanceStatus::Unspecified.into(),
     }
-}
-
-fn parse_timeout_to_seconds(timeout: &str) -> u32 {
-    timeout.trim_end_matches('s').parse::<u32>().unwrap_or(10)
-}
-
-fn seconds_to_timeout_string(seconds: u32) -> String {
-    format!("{seconds}s")
 }
 
 fn trim_to_optional(raw: &str) -> Option<String> {

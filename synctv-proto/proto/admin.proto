@@ -359,7 +359,6 @@ message UpdateUserPreferencesRequest {
     }];
     optional bool two_factor_enabled = 2;
     synctv.client.UserNotificationPreferences notifications = 4;
-    synctv.client.UserProviderDefaults provider_defaults = 6;
 }
 
 message UpdateUserPreferencesResponse {

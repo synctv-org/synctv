@@ -9,14 +9,10 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     notify_room_event_email BOOLEAN NOT NULL DEFAULT FALSE,
     notify_system_announcement_email BOOLEAN NOT NULL DEFAULT TRUE,
 
-    provider_default_instance_names JSONB NOT NULL DEFAULT '{}'::jsonb,
-
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT user_preferences_provider_defaults_object
-        CHECK (jsonb_typeof(provider_default_instance_names) = 'object'),
     CONSTRAINT user_preferences_settings_object
         CHECK (jsonb_typeof(settings) = 'object')
 );

@@ -15,12 +15,12 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     models::{
         MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserAuthFactors, UserId,
-        UserPreferences, UserProviderDefaults, UserStatus,
+        UserPreferences, UserStatus,
     },
     repository::{
         cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
-        PasswordCredentialMaterial, ProviderInstanceRepository, RoomMemberRepository,
-        UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
+        PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
+        UserPreferencesRepository, UserRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
@@ -864,7 +864,6 @@ struct UserOwnedRoomEntries {
 pub struct UserService {
     pub(crate) repository: UserRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
-    provider_instance_repository: ProviderInstanceRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
@@ -1904,7 +1903,6 @@ impl UserService {
         Self {
             repository: UserRepository::new(pool.clone()),
             user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
-            provider_instance_repository: ProviderInstanceRepository::new(pool),
             jwt_service,
             username_cache,
             cache_invalidation: runtime.cache_invalidation,
@@ -3606,44 +3604,12 @@ impl UserService {
             ));
         }
 
-        if let Some(provider_defaults) = update.provider_defaults.as_ref() {
-            self.validate_provider_defaults(provider_defaults).await?;
-        }
-
         let preferences = self
             .user_preferences_repository
             .update_with_executor(user_id, &update, &mut *tx)
             .await?;
         tx.commit().await?;
         Ok((preferences, auth_factors))
-    }
-
-    async fn validate_provider_defaults(&self, defaults: &UserProviderDefaults) -> Result<()> {
-        for (provider, instance_name) in defaults {
-            let instance = self
-                .provider_instance_repository
-                .get_by_name(instance_name)
-                .await?
-                .ok_or_else(|| {
-                    Error::InvalidInput(format!(
-                        "Default provider instance '{instance_name}' for provider '{provider}' does not exist"
-                    ))
-                })?;
-
-            if !instance.enabled {
-                return Err(Error::InvalidInput(format!(
-                    "Default provider instance '{instance_name}' for provider '{provider}' is disabled"
-                )));
-            }
-
-            if !instance.supports_provider(provider) {
-                return Err(Error::InvalidInput(format!(
-                    "Default provider instance '{instance_name}' does not support provider '{provider}'"
-                )));
-            }
-        }
-
-        Ok(())
     }
 
     /// Get multiple users by IDs.

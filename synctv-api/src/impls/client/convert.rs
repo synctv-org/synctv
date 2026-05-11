@@ -72,28 +72,16 @@ fn serialize_sanitized_source_config(source_config: &serde_json::Value) -> Vec<u
     serde_json::to_vec(&SanitizedSourceConfig(source_config)).unwrap_or_default()
 }
 
-pub(super) const fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
-    match role {
-        synctv_core::models::UserRole::Root => synctv_proto::common::UserRole::Root as i32,
-        synctv_core::models::UserRole::Admin => synctv_proto::common::UserRole::Admin as i32,
-        synctv_core::models::UserRole::User => synctv_proto::common::UserRole::User as i32,
-    }
+pub(super) fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
+    i32::from(role)
 }
 
-pub(crate) const fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
-    match status {
-        synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
-        synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
-    }
+pub(crate) fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
+    i32::from(status)
 }
 
-pub(crate) const fn member_status_to_proto(status: synctv_core::models::MemberStatus) -> i32 {
-    match status {
-        synctv_core::models::MemberStatus::Active => {
-            synctv_proto::common::MemberStatus::Active as i32
-        }
-        synctv_core::models::MemberStatus::Left => synctv_proto::common::MemberStatus::Left as i32,
-    }
+pub(crate) fn member_status_to_proto(status: synctv_core::models::MemberStatus) -> i32 {
+    i32::from(status)
 }
 
 pub(crate) const fn resource_availability_to_proto(is_available: bool) -> i32 {
@@ -238,46 +226,23 @@ pub(crate) fn playback_client_profile_from_proto(
 pub fn proto_role_to_room_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
-    match synctv_proto::common::RoomMemberRole::try_from(role_i32) {
-        Ok(synctv_proto::common::RoomMemberRole::Creator) => {
-            Ok(synctv_core::models::RoomRole::Creator)
-        }
-        Ok(synctv_proto::common::RoomMemberRole::Admin) => Ok(synctv_core::models::RoomRole::Admin),
-        Ok(synctv_proto::common::RoomMemberRole::Member) => {
-            Ok(synctv_core::models::RoomRole::Member)
-        }
-        Ok(synctv_proto::common::RoomMemberRole::Guest) => Ok(synctv_core::models::RoomRole::Guest),
-        _ => Err(crate::impls::ApiError::InvalidInput(format!(
-            "Unknown room member role: {role_i32}"
-        ))),
-    }
+    synctv_core::models::RoomRole::try_from(role_i32).map_err(crate::impls::ApiError::InvalidInput)
+}
+
+#[must_use]
+pub fn proto_role_filter_to_room_role(role_i32: i32) -> Option<synctv_core::models::RoomRole> {
+    synctv_core::models::RoomRole::try_from(role_i32).ok()
 }
 
 pub fn proto_role_to_user_role(
     role_i32: i32,
 ) -> Result<synctv_core::models::UserRole, crate::impls::ApiError> {
-    match synctv_proto::common::UserRole::try_from(role_i32) {
-        Ok(synctv_proto::common::UserRole::Root) => Ok(synctv_core::models::UserRole::Root),
-        Ok(synctv_proto::common::UserRole::Admin) => Ok(synctv_core::models::UserRole::Admin),
-        Ok(synctv_proto::common::UserRole::User) => Ok(synctv_core::models::UserRole::User),
-        _ => Err(crate::impls::ApiError::InvalidInput(format!(
-            "Unknown user role: {role_i32}"
-        ))),
-    }
+    synctv_core::models::UserRole::try_from(role_i32).map_err(crate::impls::ApiError::InvalidInput)
 }
 
 #[must_use]
-pub const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
-    match role {
-        synctv_core::models::RoomRole::Creator => {
-            synctv_proto::common::RoomMemberRole::Creator as i32
-        }
-        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-        synctv_core::models::RoomRole::Member => {
-            synctv_proto::common::RoomMemberRole::Member as i32
-        }
-        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-    }
+pub fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
+    i32::from(role)
 }
 
 pub(crate) fn user_to_proto(

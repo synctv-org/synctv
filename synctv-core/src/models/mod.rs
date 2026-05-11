@@ -151,8 +151,9 @@ pub use playlist::{
     UpdatePlaylistRequest,
 };
 pub use provider_instance::{
-    normalize_provider_instance_name, normalize_provider_instance_name_owned, ProviderCredential,
-    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned,
+    resolve_provider_instance_binding, NewProviderInstance, ProviderCredential, ProviderInstance,
+    ProviderInstanceBindingMismatch, ProviderInstanceListQuery, ProviderInstanceListSortBy,
     UserProviderCredential,
 };
 pub use query::SortDirection;
@@ -176,7 +177,6 @@ pub use user::{
 };
 pub use user_preferences::{
     UserAuthFactors, UserNotificationPreferences, UserPreferences, UserPreferencesUpdate,
-    UserProviderDefaults,
 };
 
 #[cfg(test)]

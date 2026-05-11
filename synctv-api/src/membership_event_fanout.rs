@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-use synctv_core::models::{PermissionBits, RoomId, RoomRole, UserId};
+use synctv_core::models::{PermissionBits, RoomId, UserId};
 use synctv_core::service::{RoomService, UserService};
 
 use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
@@ -41,15 +41,6 @@ impl DefaultMembershipEventFanoutService {
             room_service,
             user_service,
             event_service,
-        }
-    }
-
-    fn role_to_proto(role: RoomRole) -> i32 {
-        match role {
-            RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-            RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-            RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-            RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
         }
     }
 
@@ -121,7 +112,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
             (
                 username,
                 member.effective_permissions(role_default),
-                Self::role_to_proto(member.role),
+                i32::from(member.role),
                 member.added_permissions,
                 member.removed_permissions,
                 member.admin_added_permissions,

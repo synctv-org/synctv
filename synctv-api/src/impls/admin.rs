@@ -38,17 +38,14 @@ use super::client::convert::{
     playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
     sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
-use super::client::{
-    user_notification_preferences_to_proto, user_preferences_update_from_proto,
-    user_provider_defaults_to_proto,
-};
+use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
 use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout, publish_move_media_fanout,
 };
-use crate::impls::client::proto_role_to_room_role;
+use crate::impls::client::{proto_role_filter_to_room_role, proto_role_to_room_role};
 use crate::impls::playback_snapshot::{
     compose_playback_snapshot_version, dynamic_playback_snapshot_version,
     playback_snapshot_expires_at, provider_credential_dependency_fingerprint,
@@ -188,9 +185,6 @@ fn user_preferences_to_proto(
         two_factor_enabled: preferences.two_factor_enabled,
         notifications: Some(user_notification_preferences_to_proto(
             &preferences.notifications,
-        )),
-        provider_defaults: Some(user_provider_defaults_to_proto(
-            &preferences.provider_defaults,
         )),
         settings: serde_json::to_vec(&preferences.settings).map_err(|error| {
             ApiError::Internal(format!("Failed to serialize settings: {error}"))
@@ -374,7 +368,7 @@ fn user_registration_review_row_to_proto(
         username: row.username.clone(),
         email: row.email.clone(),
         signup_method: i32::from(i16::from(row.signup_method)),
-        status: i32::from(i16::from(row.status)),
+        status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
@@ -401,7 +395,7 @@ fn room_creation_review_row_to_proto(
         requested_by_username: row.requested_by_username.clone(),
         name: row.name.clone(),
         description: row.description.clone(),
-        status: i32::from(i16::from(row.status)),
+        status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
@@ -426,7 +420,7 @@ fn room_join_review_row_to_proto(
             .map_err(ApiError::InvalidInput)?,
         username: row.username.clone(),
         requested_role: row.requested_role,
-        status: i32::from(i16::from(row.status)),
+        status: i32::from(row.status),
         requested_at: row.requested_at.timestamp(),
         reviewed_at: optional_timestamp(row.reviewed_at),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
@@ -1565,22 +1559,7 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::ListRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        // Parse status filter (0/Unspecified = show all statuses for admin)
-        let status = if req.status == 0 {
-            None
-        } else {
-            Some(
-                match synctv_proto::common::RoomStatus::try_from(req.status) {
-                    Ok(synctv_proto::common::RoomStatus::Active) => {
-                        synctv_core::models::RoomStatus::Active
-                    }
-                    Ok(synctv_proto::common::RoomStatus::Closed) => {
-                        synctv_core::models::RoomStatus::Closed
-                    }
-                    _ => synctv_core::models::RoomStatus::Active,
-                },
-            )
-        };
+        let status = synctv_core::models::RoomStatus::try_from(req.status).ok();
 
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
@@ -1806,30 +1785,8 @@ impl AdminApiImpl {
 
         let rid =
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
-        let role = match synctv_proto::common::RoomMemberRole::try_from(req.role) {
-            Ok(synctv_proto::common::RoomMemberRole::Guest) => {
-                Some(synctv_core::models::RoomRole::Guest)
-            }
-            Ok(synctv_proto::common::RoomMemberRole::Member) => {
-                Some(synctv_core::models::RoomRole::Member)
-            }
-            Ok(synctv_proto::common::RoomMemberRole::Admin) => {
-                Some(synctv_core::models::RoomRole::Admin)
-            }
-            Ok(synctv_proto::common::RoomMemberRole::Creator) => {
-                Some(synctv_core::models::RoomRole::Creator)
-            }
-            _ => None,
-        };
-        let status = match synctv_proto::common::MemberStatus::try_from(req.status) {
-            Ok(synctv_proto::common::MemberStatus::Active) => {
-                Some(synctv_core::models::MemberStatus::Active)
-            }
-            Ok(synctv_proto::common::MemberStatus::Left) => {
-                Some(synctv_core::models::MemberStatus::Left)
-            }
-            _ => None,
-        };
+        let role = proto_role_filter_to_room_role(req.role);
+        let status = synctv_core::models::MemberStatus::try_from(req.status).ok();
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: (!req.search.is_empty()).then_some(req.search),
@@ -2388,21 +2345,8 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
 
         // Convert proto enum i32 values to typed enums for UserListQuery
-        let status = match synctv_proto::common::UserStatus::try_from(req.status) {
-            Ok(synctv_proto::common::UserStatus::Active) => {
-                Some(synctv_core::models::UserStatus::Active)
-            }
-            Ok(synctv_proto::common::UserStatus::Banned) => {
-                Some(synctv_core::models::UserStatus::Banned)
-            }
-            _ => None, // Unspecified or unknown => no filter
-        };
-        let role = match synctv_proto::common::UserRole::try_from(req.role) {
-            Ok(synctv_proto::common::UserRole::Root) => Some(synctv_core::models::UserRole::Root),
-            Ok(synctv_proto::common::UserRole::Admin) => Some(synctv_core::models::UserRole::Admin),
-            Ok(synctv_proto::common::UserRole::User) => Some(synctv_core::models::UserRole::User),
-            _ => None, // Unspecified or unknown => no filter
-        };
+        let status = synctv_core::models::UserStatus::try_from(req.status).ok();
+        let role = synctv_core::models::UserRole::try_from(req.role).ok();
         let search = if req.search.is_empty() {
             None
         } else {
@@ -2496,7 +2440,6 @@ impl AdminApiImpl {
             crate::proto::client::UpdateUserPreferencesRequest {
                 two_factor_enabled: req.two_factor_enabled,
                 notifications: req.notifications,
-                provider_defaults: req.provider_defaults,
             },
         )?;
         if update.is_empty() {
@@ -2530,7 +2473,6 @@ impl AdminApiImpl {
                 "updated_fields": {
                     "two_factor_enabled": update.two_factor_enabled.is_some(),
                     "notifications": update.notifications.is_some(),
-                    "provider_defaults": update.provider_defaults.is_some(),
                 },
             }),
             ctx,
@@ -2875,15 +2817,8 @@ impl AdminApiImpl {
             None
         } else {
             Some(
-                match synctv_proto::common::UserStatus::try_from(req.status) {
-                    Ok(synctv_proto::common::UserStatus::Active) => UserStatus::Active,
-                    Ok(synctv_proto::common::UserStatus::Banned) => UserStatus::Banned,
-                    _ => {
-                        return Err(ApiError::InvalidInput(
-                            "Unsupported user status".to_string(),
-                        ))
-                    }
-                },
+                UserStatus::try_from(req.status)
+                    .map_err(|_| ApiError::InvalidInput("Unsupported user status".to_string()))?,
             )
         };
 
@@ -3174,17 +3109,10 @@ impl AdminApiImpl {
         let page = page_i32_to_usize(req.page);
         let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
-        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
-            synctv_proto::common::ReviewStatus::Pending as i32
-        } else {
-            req.status
-        };
-
         let page = self
             .review_repository()
             .list_user_registrations(&UserRegistrationReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(status as i16)
-                    .unwrap_or_default(),
+                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 search: Some(req.search.clone()).filter(|search| !search.is_empty()),
                 limit: usize_to_i64_saturating(page_size),
                 offset: usize_to_i64_saturating(offset),
@@ -3254,11 +3182,6 @@ impl AdminApiImpl {
         let page = page_i32_to_usize(req.page);
         let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
-        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
-            synctv_proto::common::ReviewStatus::Pending as i32
-        } else {
-            req.status
-        };
         let requested_by_filter = if req.requested_by.trim().is_empty() {
             None
         } else {
@@ -3272,8 +3195,7 @@ impl AdminApiImpl {
         let page = self
             .review_repository()
             .list_room_creations(&RoomCreationReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(status as i16)
-                    .unwrap_or_default(),
+                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 requested_by: requested_by_filter,
                 search: Some(req.search.clone()).filter(|search| !search.is_empty()),
                 limit: usize_to_i64_saturating(page_size),
@@ -3344,11 +3266,6 @@ impl AdminApiImpl {
         let page = page_i32_to_usize(req.page);
         let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
-        let status = if req.status == synctv_proto::common::ReviewStatus::Unspecified as i32 {
-            synctv_proto::common::ReviewStatus::Pending as i32
-        } else {
-            req.status
-        };
         let room_id_filter = if req.room_id.trim().is_empty() {
             None
         } else {
@@ -3371,8 +3288,7 @@ impl AdminApiImpl {
         let page = self
             .review_repository()
             .list_room_joins(&RoomJoinReviewListQuery {
-                status: synctv_core::models::ReviewStatus::try_from(status as i16)
-                    .unwrap_or_default(),
+                status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 room_id: room_id_filter,
                 user_id: user_id_filter,
                 search: None,
@@ -3551,15 +3467,7 @@ impl AdminApiImpl {
 
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
-        let status = match synctv_proto::common::RoomStatus::try_from(req.status) {
-            Ok(synctv_proto::common::RoomStatus::Active) => {
-                Some(synctv_core::models::RoomStatus::Active)
-            }
-            Ok(synctv_proto::common::RoomStatus::Closed) => {
-                Some(synctv_core::models::RoomStatus::Closed)
-            }
-            _ => None,
-        };
+        let status = synctv_core::models::RoomStatus::try_from(req.status).ok();
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             status,
@@ -4073,7 +3981,6 @@ impl AdminApiImpl {
             ..Default::default()
         };
 
-        let pool = self.user_service.pool();
         let (
             total_users_res,
             active_users_res,
@@ -4091,7 +3998,7 @@ impl AdminApiImpl {
             self.room_service.list_rooms(&room_query_active),
             self.room_service.list_rooms(&room_query_banned),
             self.provider_instance_manager.get_all_instances(),
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM media").fetch_one(pool),
+            self.room_service.media_service().count_all_media(),
         );
 
         let (_, total_users) = total_users_res.unwrap_or((vec![], 0));
@@ -5893,25 +5800,14 @@ fn admin_user_to_proto(
     user: &synctv_core::models::User,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::admin::AdminUser {
-    let role = match user.role {
-        synctv_core::models::UserRole::Root => synctv_proto::common::UserRole::Root as i32,
-        synctv_core::models::UserRole::Admin => synctv_proto::common::UserRole::Admin as i32,
-        synctv_core::models::UserRole::User => synctv_proto::common::UserRole::User as i32,
-    };
-
-    let status = match user.status {
-        synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
-        synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
-    };
-
     crate::proto::admin::AdminUser {
         id: public_id_codec
             .encode_user_id(user.id)
             .expect("positive user ID must encode"),
         username: user.username.clone(),
         email: user.email.clone().unwrap_or_default(),
-        role,
-        status,
+        role: i32::from(user.role),
+        status: i32::from(user.status),
         created_at: user.created_at.timestamp(),
         updated_at: user.updated_at.timestamp(),
         is_banned: user.is_banned,
@@ -6284,7 +6180,7 @@ mod tests {
             .providers_manager()
             .create_builtin_defaults()
             .await
-            .expect("builtin provider defaults should initialize");
+            .expect("built-in providers should initialize");
         let audit_service = Arc::new(AuditService::new_unbuffered(pool));
         let config = Arc::new(Config::default());
         let publish_key_service = Arc::new(PublishKeyService::new(
@@ -6351,7 +6247,7 @@ mod tests {
             .providers_manager()
             .create_builtin_defaults()
             .await
-            .expect("builtin provider defaults should initialize");
+            .expect("built-in providers should initialize");
         let audit_service = Arc::new(AuditService::new_unbuffered(pool));
         let config = Arc::new(Config::default());
         let publish_key_service = Arc::new(PublishKeyService::new(

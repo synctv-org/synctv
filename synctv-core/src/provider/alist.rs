@@ -12,7 +12,7 @@ use super::{
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackDeliveryPreference, PlaybackInfo,
     PlaybackResult, PlaybackSubtitlePreference, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SubtitleTrack,
+    ProviderError, SourceConfig, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
@@ -1014,9 +1014,9 @@ impl MediaProvider for AlistProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::try_from(source_config.value())?;
 
         // Validate path is not empty and doesn't contain path traversal
         if config.path.is_empty() {

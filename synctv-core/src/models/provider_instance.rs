@@ -11,6 +11,8 @@ use std::collections::HashMap;
 
 use super::{pagination::PageParams, query::SortDirection, UserId};
 
+pub const DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS: u32 = 10;
+
 /// Normalize optional provider instance names at API, service, and repository boundaries.
 ///
 /// Blank names represent the default local provider binding and are stored as `NULL`.
@@ -22,6 +24,45 @@ pub fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
 #[must_use]
 pub fn normalize_provider_instance_name_owned(value: Option<String>) -> Option<String> {
     value.and_then(|value| normalize_provider_instance_name(Some(&value)).map(str::to_owned))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderInstanceBindingMismatch;
+
+impl std::fmt::Display for ProviderInstanceBindingMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "provider_instance_name does not match the provider instance used when the credential was created",
+        )
+    }
+}
+
+impl std::error::Error for ProviderInstanceBindingMismatch {}
+
+/// Resolve the effective provider instance for a credential-backed request.
+///
+/// If no credential is involved, the explicit request binding is used. If a
+/// credential is involved, its stored provider instance is authoritative: an
+/// omitted request binding adopts it, while a different explicit binding is
+/// rejected.
+pub fn resolve_provider_instance_binding(
+    requested_instance_name: Option<&str>,
+    credential_instance_name: Option<Option<&str>>,
+) -> Result<Option<String>, ProviderInstanceBindingMismatch> {
+    let requested = normalize_provider_instance_name(requested_instance_name).map(str::to_string);
+    let Some(credential_instance_name) = credential_instance_name else {
+        return Ok(requested);
+    };
+
+    let credential_instance =
+        normalize_provider_instance_name(credential_instance_name).map(str::to_string);
+    if let Some(requested) = requested {
+        if Some(requested.clone()) != credential_instance {
+            return Err(ProviderInstanceBindingMismatch);
+        }
+    }
+
+    Ok(credential_instance)
 }
 
 sort_field_enum! {
@@ -107,7 +148,58 @@ pub struct ProviderInstance {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewProviderInstance {
+    pub name: String,
+    pub endpoint: String,
+    pub comment: Option<String>,
+    pub jwt_secret: Option<String>,
+    pub custom_ca: Option<String>,
+    pub timeout_seconds: u32,
+    pub tls: bool,
+    pub insecure_tls: bool,
+    pub providers: Vec<String>,
+}
+
 impl ProviderInstance {
+    #[must_use]
+    pub fn new_remote(request: NewProviderInstance) -> Self {
+        let now = Utc::now();
+        let timeout_seconds = if request.timeout_seconds == 0 {
+            DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS
+        } else {
+            request.timeout_seconds
+        };
+
+        Self {
+            name: request.name,
+            endpoint: request.endpoint,
+            comment: trim_optional_string(request.comment),
+            jwt_secret: trim_optional_string(request.jwt_secret),
+            custom_ca: trim_optional_string(request.custom_ca),
+            timeout: Self::timeout_string_from_seconds(timeout_seconds),
+            tls: request.tls,
+            insecure_tls: request.insecure_tls,
+            providers: request.providers,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[must_use]
+    pub fn timeout_string_from_seconds(seconds: u32) -> String {
+        format!("{seconds}s")
+    }
+
+    #[must_use]
+    pub fn timeout_seconds(&self) -> u32 {
+        self.parse_timeout()
+            .ok()
+            .and_then(|timeout| u32::try_from(timeout.as_secs()).ok())
+            .unwrap_or(DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS)
+    }
+
     /// Check if this instance supports a specific media provider type
     #[must_use]
     pub fn supports_provider(&self, provider: &str) -> bool {
@@ -121,6 +213,13 @@ impl ProviderInstance {
             .map(std::time::Duration::from)
             .map_err(|e| format!("Invalid timeout format '{}': {}", self.timeout, e))
     }
+}
+
+fn trim_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed.to_string())
+    })
 }
 
 /// User Media Provider Credential
@@ -413,6 +512,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_instance_new_remote_normalizes_optional_fields_and_default_timeout() {
+        let instance = ProviderInstance::new_remote(NewProviderInstance {
+            name: "remote".to_string(),
+            endpoint: "http://localhost:50051".to_string(),
+            comment: Some("  primary remote  ".to_string()),
+            jwt_secret: Some("   ".to_string()),
+            custom_ca: Some("  ca-pem  ".to_string()),
+            timeout_seconds: 0,
+            tls: true,
+            insecure_tls: false,
+            providers: vec!["alist".to_string()],
+        });
+
+        assert_eq!(instance.comment.as_deref(), Some("primary remote"));
+        assert_eq!(instance.jwt_secret, None);
+        assert_eq!(instance.custom_ca.as_deref(), Some("ca-pem"));
+        assert_eq!(
+            instance.timeout_seconds(),
+            DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS
+        );
+        assert_eq!(instance.timeout, "10s");
+        assert!(instance.enabled);
+    }
+
+    #[test]
     fn test_normalize_provider_instance_name() {
         assert_eq!(normalize_provider_instance_name(None), None);
         assert_eq!(normalize_provider_instance_name(Some("")), None);
@@ -546,5 +670,28 @@ mod tests {
             .as_deref(),
             Some("JBSWY3DPEHPK3PXP")
         );
+    }
+
+    #[test]
+    fn provider_instance_binding_uses_credential_when_request_omits_instance() {
+        assert_eq!(
+            resolve_provider_instance_binding(None, Some(Some(" alist_remote ")))
+                .expect("credential binding should resolve")
+                .as_deref(),
+            Some("alist_remote")
+        );
+    }
+
+    #[test]
+    fn provider_instance_binding_rejects_explicit_conflict() {
+        assert!(
+            resolve_provider_instance_binding(Some("alist_other"), Some(Some("alist_remote")),)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_instance_binding_rejects_explicit_instance_for_unbound_credential() {
+        assert!(resolve_provider_instance_binding(Some("alist_remote"), Some(None)).is_err());
     }
 }

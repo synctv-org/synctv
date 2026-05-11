@@ -10,16 +10,18 @@
 use crate::{
     models::{
         normalize_provider_instance_name, Media, MediaId, PermissionBits, PlaylistId, RoomId,
-        UserId, UserProviderDefaults,
+        UserId,
     },
     provider::{
         provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
+        SourceConfig,
     },
     repository::UserProviderCredentialRepository,
-    repository::{MediaRepository, PlaylistRepository, UserPreferencesRepository, UserRepository},
+    repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
         notification::{MediaAddedNotification, NotificationService},
         permission::PermissionService,
+        provider_binding::resolve_credential_provider_instance_binding,
         ProvidersManager,
     },
     Error, Result,
@@ -103,7 +105,6 @@ pub struct MediaService {
     credential_encryption: Option<crate::service::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-    user_preferences_repo: UserPreferencesRepository,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -148,42 +149,6 @@ impl MediaService {
         }
 
         Ok(())
-    }
-
-    fn provider_instance_binding_from_defaults(
-        provider_defaults: Option<&UserProviderDefaults>,
-        source_provider: &str,
-        explicit_provider_instance_name: Option<&str>,
-    ) -> Option<String> {
-        if let Some(instance_name) =
-            normalize_provider_instance_name(explicit_provider_instance_name)
-        {
-            return Some(instance_name.to_string());
-        }
-
-        provider_defaults
-            .and_then(|defaults| defaults.get_instance_name(source_provider))
-            .map(str::to_string)
-    }
-
-    async fn resolve_provider_instance_binding(
-        &self,
-        user_id: &UserId,
-        source_provider: &str,
-        explicit_provider_instance_name: Option<&str>,
-    ) -> Result<Option<String>> {
-        if let Some(instance_name) =
-            normalize_provider_instance_name(explicit_provider_instance_name)
-        {
-            return Ok(Some(instance_name.to_string()));
-        }
-
-        let preferences = self.user_preferences_repo.get_or_default(user_id).await?;
-        Ok(Self::provider_instance_binding_from_defaults(
-            Some(&preferences.provider_defaults),
-            source_provider,
-            None,
-        ))
     }
 
     async fn resolve_media_provider(
@@ -236,7 +201,6 @@ impl MediaService {
         providers_manager: Arc<ProvidersManager>,
         notification_service: NotificationService,
     ) -> Self {
-        let user_preferences_repo = UserPreferencesRepository::new(media_repo.pool().clone());
         Self {
             media_repo,
             playlist_repo,
@@ -245,7 +209,6 @@ impl MediaService {
             notification_service,
             credential_encryption: None,
             credential_repo: None,
-            user_preferences_repo,
         }
     }
 
@@ -263,7 +226,6 @@ impl MediaService {
         credential_encryption: Option<crate::service::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
-        let user_preferences_repo = UserPreferencesRepository::new(media_repo.pool().clone());
         Self {
             media_repo,
             playlist_repo,
@@ -272,7 +234,6 @@ impl MediaService {
             notification_service,
             credential_encryption,
             credential_repo,
-            user_preferences_repo,
         }
     }
 
@@ -349,21 +310,50 @@ impl MediaService {
             debug_assert_eq!(playlist.room_id, room_id);
         }
 
-        let bound_provider_instance = self
-            .resolve_provider_instance_binding(
-                &user_id,
-                &request.source_provider,
-                request.provider_instance_name.as_deref(),
-            )
-            .await?;
+        let explicit_provider_instance =
+            normalize_provider_instance_name(request.provider_instance_name.as_deref())
+                .map(str::to_string);
 
         // Resolve the provider adapter from the declared type plus optional
         // top-level instance binding. Empty and None instance names both use
         // the default provider instance.
         let provider = self
-            .resolve_media_provider(&request.source_provider, bound_provider_instance.as_deref())
+            .resolve_media_provider(
+                &request.source_provider,
+                explicit_provider_instance.as_deref(),
+            )
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
+
+        let dependency_ctx = self.build_provider_context(
+            &user_id,
+            &room_id,
+            Some(&user_id),
+            explicit_provider_instance.as_deref(),
+        );
+
+        provider
+            .validate_source_config(&dependency_ctx, SourceConfig::media(&request.source_config))
+            .await
+            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
+
+        let bound_provider_instance = resolve_credential_provider_instance_binding(
+            provider.as_ref(),
+            self.credential_repo.as_ref(),
+            &dependency_ctx,
+            &request.source_config,
+            explicit_provider_instance.as_deref(),
+        )
+        .await?;
+        let provider = if bound_provider_instance != explicit_provider_instance {
+            self.resolve_media_provider(
+                &request.source_provider,
+                bound_provider_instance.as_deref(),
+            )
+            .await?
+        } else {
+            provider
+        };
 
         // Validate source_config using provider trait method
         let ctx = self.build_provider_context(
@@ -374,7 +364,7 @@ impl MediaService {
         );
 
         provider
-            .validate_source_config(&ctx, &request.source_config)
+            .validate_source_config(&ctx, SourceConfig::media(&request.source_config))
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
@@ -487,28 +477,58 @@ impl MediaService {
             )));
         }
 
-        let provider_defaults = self
-            .user_preferences_repo
-            .get_or_default(&user_id)
-            .await?
-            .provider_defaults;
-
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
         for item in items {
             validate_media_name(&item.name)?;
 
-            let bound_provider_instance = Self::provider_instance_binding_from_defaults(
-                Some(&provider_defaults),
-                &item.source_provider,
-                item.provider_instance_name.as_deref(),
-            );
+            let explicit_provider_instance =
+                normalize_provider_instance_name(item.provider_instance_name.as_deref())
+                    .map(str::to_string);
 
             // Resolve provider by declared type plus optional top-level instance binding.
             let provider = self
-                .resolve_media_provider(&item.source_provider, bound_provider_instance.as_deref())
+                .resolve_media_provider(
+                    &item.source_provider,
+                    explicit_provider_instance.as_deref(),
+                )
                 .await?;
             self.ensure_provider_credential_repo(provider.name())?;
+
+            let dependency_ctx = self.build_provider_context(
+                &user_id,
+                &room_id,
+                Some(&user_id),
+                explicit_provider_instance.as_deref(),
+            );
+
+            provider
+                .validate_source_config(&dependency_ctx, SourceConfig::media(&item.source_config))
+                .await
+                .map_err(|e| {
+                    Error::InvalidInput(format!(
+                        "Invalid source_config for item '{}': {}",
+                        item.name, e
+                    ))
+                })?;
+
+            let bound_provider_instance = resolve_credential_provider_instance_binding(
+                provider.as_ref(),
+                self.credential_repo.as_ref(),
+                &dependency_ctx,
+                &item.source_config,
+                explicit_provider_instance.as_deref(),
+            )
+            .await?;
+            let provider = if bound_provider_instance != explicit_provider_instance {
+                self.resolve_media_provider(
+                    &item.source_provider,
+                    bound_provider_instance.as_deref(),
+                )
+                .await?
+            } else {
+                provider
+            };
 
             let ctx = self.build_provider_context(
                 &user_id,
@@ -517,9 +537,8 @@ impl MediaService {
                 bound_provider_instance.as_deref(),
             );
 
-            // Validate source_config using provider trait method
             provider
-                .validate_source_config(&ctx, &item.source_config)
+                .validate_source_config(&ctx, SourceConfig::media(&item.source_config))
                 .await
                 .map_err(|e| {
                     Error::InvalidInput(format!(
@@ -789,85 +808,6 @@ impl MediaService {
         )))
     }
 
-    /// Remove media from playlist
-    ///
-    /// Uses `check_permission_no_cache` to ensure fresh permissions (avoids stale cache).
-    /// Rejects removal if the target media is currently playing in the room.
-    pub async fn remove_media(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_id: MediaId,
-    ) -> Result<()> {
-        // Get existing media to verify ownership
-        let media = self
-            .media_repo
-            .get_by_room_and_id(&room_id, &media_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-
-        // Check permission: DELETE_MEDIA_SELF if user owns the media, DELETE_MEDIA_ANY otherwise
-        // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
-        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
-            PermissionBits::DELETE_MEDIA_SELF
-        } else {
-            PermissionBits::DELETE_MEDIA_ANY
-        };
-        self.permission_service
-            .check_permission_no_cache(&room_id, &user_id, required_permission)
-            .await?;
-
-        // Use a transaction to atomically check "currently playing" and delete
-        let mut tx = self.media_repo.pool().begin().await?;
-
-        // Lock room_playback_state FOR UPDATE and reject if target media is playing
-        let playing_media_id = sqlx::query_scalar!(
-            r#"SELECT playing_media_id AS "playing_media_id?: MediaId"
-             FROM room_playback_state
-             WHERE room_id = $1
-             FOR UPDATE"#,
-            room_id.as_i64(),
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .flatten();
-
-        if playing_media_id.as_ref() == Some(&media_id) {
-            return Err(Error::InvalidInput(
-                "Cannot remove media that is currently playing".to_string(),
-            ));
-        }
-
-        // Delete within the transaction
-        sqlx::query!("DELETE FROM media WHERE id = $1", media_id.as_i64())
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await?;
-
-        tracing::info!(
-            room_id = %room_id,
-            media_id = %media_id,
-            "Media removed from playlist"
-        );
-        let actor_username = self.resolve_actor_username(&user_id).await;
-
-        if let Err(e) = self.notification_service.notify_media_removed(
-            &room_id,
-            Some(&user_id),
-            &actor_username,
-            media_id,
-        ) {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                "Failed to broadcast media removed event"
-            );
-        }
-
-        Ok(())
-    }
-
     /// Get media by ID
     pub async fn get_media(&self, media_id: &MediaId) -> Result<Option<Media>> {
         self.media_repo.get_by_id(media_id).await
@@ -968,121 +908,6 @@ impl MediaService {
         self.media_repo
             .get_room_root_limit_offset(room_id, limit, offset)
             .await
-    }
-
-    /// Bulk remove media from playlist
-    ///
-    /// Removes multiple media items in a single transaction.
-    /// Uses a single batch query to verify ownership instead of N individual queries.
-    pub async fn remove_media_batch(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        media_ids: Vec<MediaId>,
-    ) -> Result<usize> {
-        if media_ids.is_empty() {
-            return Ok(0);
-        }
-
-        if media_ids.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(format!(
-                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
-            )));
-        }
-
-        // Use explicit transaction to prevent TOCTOU between read and delete
-        let mut tx = self.media_repo.pool().begin().await?;
-
-        // Batch-load all media in a single query within the transaction
-        let media_items = self
-            .media_repo
-            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
-            .await?;
-
-        if media_items.len() != media_ids.len() {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
-            ));
-        }
-
-        // Split room-scoped media into owned/non-owned groups.
-        let mut has_owned = false;
-        let mut has_non_owned = false;
-        for media in &media_items {
-            if media.creator_id.as_ref() == Some(&user_id) {
-                has_owned = true;
-            } else {
-                has_non_owned = true;
-            }
-        }
-
-        // Check per-group permissions: user needs DELETE_MEDIA_SELF for their own
-        // items and DELETE_MEDIA_ANY for others' items. Only fail if the user
-        // lacks the permission for a group that actually has items.
-        // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
-        if has_owned {
-            self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MEDIA_SELF)
-                .await?;
-        }
-        if has_non_owned {
-            self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MEDIA_ANY)
-                .await?;
-        }
-
-        // Lock room_playback_state FOR UPDATE and reject if any target media is playing
-        let playing_media_id = sqlx::query_scalar!(
-            r#"SELECT playing_media_id AS "playing_media_id?: MediaId"
-             FROM room_playback_state
-             WHERE room_id = $1
-             FOR UPDATE"#,
-            room_id.as_i64(),
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .flatten();
-
-        if let Some(ref playing_id) = playing_media_id {
-            if media_ids.iter().any(|mid| mid == playing_id) {
-                return Err(Error::InvalidInput(
-                    "Cannot remove media that is currently playing".to_string(),
-                ));
-            }
-        }
-
-        // Bulk delete within the same transaction
-        let deleted_count = self
-            .media_repo
-            .delete_batch_with_executor(&media_ids, &mut *tx)
-            .await?;
-
-        tx.commit().await?;
-
-        tracing::info!(
-            room_id = %room_id,
-            count = deleted_count,
-            "Bulk removed media from playlist"
-        );
-        let actor_username = self.resolve_actor_username(&user_id).await;
-
-        for mid in &media_ids {
-            if let Err(e) = self.notification_service.notify_media_removed(
-                &room_id,
-                Some(&user_id),
-                &actor_username,
-                *mid,
-            ) {
-                tracing::warn!(
-                    error = %e,
-                    room_id = %room_id,
-                    media_id = %mid,
-                    "Failed to broadcast media removed event"
-                );
-            }
-        }
-
-        Ok(deleted_count)
     }
 
     pub async fn move_media(
@@ -1443,6 +1268,10 @@ impl MediaService {
 
     pub async fn count_playlist_media(&self, playlist_id: &PlaylistId) -> Result<i64> {
         self.media_repo.count_by_playlist(playlist_id).await
+    }
+
+    pub async fn count_all_media(&self) -> Result<i64> {
+        self.media_repo.count_all().await
     }
 
     pub async fn count_room_playlist_media(

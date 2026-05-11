@@ -7,7 +7,7 @@ use super::{
     store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SubtitleTrack,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
@@ -752,9 +752,9 @@ impl MediaProvider for EmbyProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = EmbySourceConfig::try_from(source_config.value())?;
 
         // Validate item_id is non-empty
         if config.item_id.is_empty() {

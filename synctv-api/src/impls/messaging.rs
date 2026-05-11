@@ -2069,10 +2069,10 @@ impl StreamMessageHandler {
                     role: role_proto,
                     permissions,
                     status: if self.principal.is_guest() {
-                        synctv_proto::common::MemberStatus::Active as i32
+                        member_status_to_proto(synctv_core::models::MemberStatus::Active)
                     } else {
                         member.map_or(
-                            synctv_proto::common::MemberStatus::Active as i32,
+                            member_status_to_proto(synctv_core::models::MemberStatus::Active),
                             |member| member_status_to_proto(member.status),
                         )
                     },
@@ -3862,7 +3862,7 @@ fn cluster_event_to_server_messages(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
-                    status: synctv_proto::common::MemberStatus::Active as i32,
+                    status: member_status_to_proto(synctv_core::models::MemberStatus::Active),
                     added_permissions: added_permissions.0,
                     removed_permissions: removed_permissions.0,
                     admin_added_permissions: admin_added_permissions.0,
@@ -3891,7 +3891,7 @@ fn cluster_event_to_server_messages(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
-                    status: synctv_proto::common::MemberStatus::Active as i32,
+                    status: member_status_to_proto(synctv_core::models::MemberStatus::Active),
                     added_permissions: 0,
                     removed_permissions: 0,
                     admin_added_permissions: 0,

@@ -385,8 +385,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.UpdateRoomSettingsRequest",
             "#[serde(from = \"crate::http_serde::AdminUpdateRoomSettingsRequestDef\")]",
         );
-    main_builder =
-        main_builder.type_attribute(".synctv.client.UserProviderDefaults", "#[derive(Eq, Hash)]");
     for path in [
         ".synctv.client.ListMyRoomsRequest",
         ".synctv.client.ListNotificationsRequest",

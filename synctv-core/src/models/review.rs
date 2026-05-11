@@ -47,8 +47,68 @@ impl std::fmt::Display for ReviewStatus {
     }
 }
 
+impl From<ReviewStatus> for synctv_proto::common::ReviewStatus {
+    fn from(value: ReviewStatus) -> Self {
+        match value {
+            ReviewStatus::Pending => Self::Pending,
+            ReviewStatus::Approved => Self::Approved,
+            ReviewStatus::Rejected => Self::Rejected,
+        }
+    }
+}
+
+impl From<ReviewStatus> for i32 {
+    fn from(value: ReviewStatus) -> Self {
+        synctv_proto::common::ReviewStatus::from(value) as Self
+    }
+}
+
+impl TryFrom<synctv_proto::common::ReviewStatus> for ReviewStatus {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::ReviewStatus) -> Result<Self, Self::Error> {
+        match value {
+            synctv_proto::common::ReviewStatus::Pending => Ok(Self::Pending),
+            synctv_proto::common::ReviewStatus::Approved => Ok(Self::Approved),
+            synctv_proto::common::ReviewStatus::Rejected => Ok(Self::Rejected),
+            synctv_proto::common::ReviewStatus::Unspecified => {
+                Err(format!("Unknown review status: {}", value as i32))
+            }
+        }
+    }
+}
+
+impl TryFrom<i32> for ReviewStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::ReviewStatus::try_from(value)
+            .map_err(|_| format!("Unknown review status: {value}"))?;
+        Self::try_from(proto)
+    }
+}
+
 sqlx_i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
     Pending = 1,
     Approved = 2,
     Rejected = 3,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::ReviewStatus;
+
+    #[test]
+    fn review_status_proto_conversions_reject_unspecified_input() {
+        assert_eq!(
+            i32::from(ReviewStatus::Pending),
+            synctv_proto::common::ReviewStatus::Pending as i32
+        );
+        assert_eq!(
+            ReviewStatus::try_from(synctv_proto::common::ReviewStatus::Approved).unwrap(),
+            ReviewStatus::Approved
+        );
+        assert!(ReviewStatus::try_from(synctv_proto::common::ReviewStatus::Unspecified).is_err());
+        assert!(ReviewStatus::try_from(0).is_err());
+    }
+}

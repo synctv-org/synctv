@@ -8,7 +8,9 @@
 
 use serde_json::json;
 use synctv_core::models::{MediaId, RoomId, UserId};
-use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
+use synctv_core::provider::{
+    MediaProvider, ProviderContext, ProviderError, RtmpProvider, SourceConfig,
+};
 
 fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
@@ -37,7 +39,9 @@ async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
     ];
 
     for config in malicious_configs {
-        let result = provider.validate_source_config(&ctx, &config).await;
+        let result = provider
+            .validate_source_config(&ctx, SourceConfig::media(&config))
+            .await;
         assert!(
             result.is_err(),
             "RtmpProvider should reject source_config with URL fields: {config}"
@@ -58,7 +62,9 @@ async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
     let provider = RtmpProvider::new();
     let ctx = create_context();
 
-    let result = provider.validate_source_config(&ctx, &json!({})).await;
+    let result = provider
+        .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+        .await;
     assert!(
         result.is_ok(),
         "RtmpProvider should accept valid source_config: {:?}",
@@ -71,7 +77,9 @@ async fn test_rtmp_provider_validate_source_config_accepts_empty_config_with_con
     let provider = RtmpProvider::new();
     let ctx = create_context();
 
-    let result = provider.validate_source_config(&ctx, &json!({})).await;
+    let result = provider
+        .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+        .await;
     assert!(
         result.is_ok(),
         "RtmpProvider should accept empty source_config when context provides room/media binding: {:?}",
@@ -85,7 +93,7 @@ async fn test_rtmp_provider_validate_source_config_rejects_identity_fields() {
     let ctx = create_context();
 
     let result = provider
-        .validate_source_config(&ctx, &json!({"room_id": "room123"}))
+        .validate_source_config(&ctx, SourceConfig::media(&json!({"room_id": "room123"})))
         .await;
     assert!(
         matches!(result, Err(ProviderError::InvalidConfig(_))),

@@ -72,18 +72,20 @@ impl std::fmt::Display for RoomStatus {
     }
 }
 
-// Conversion from proto RoomStatus to core RoomStatus
-impl From<synctv_proto::common::RoomStatus> for RoomStatus {
-    fn from(value: synctv_proto::common::RoomStatus) -> Self {
+impl TryFrom<synctv_proto::common::RoomStatus> for RoomStatus {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::RoomStatus) -> Result<Self, Self::Error> {
         match value {
-            synctv_proto::common::RoomStatus::Closed => Self::Closed,
-            synctv_proto::common::RoomStatus::Active
-            | synctv_proto::common::RoomStatus::Unspecified => Self::Active,
+            synctv_proto::common::RoomStatus::Active => Ok(Self::Active),
+            synctv_proto::common::RoomStatus::Closed => Ok(Self::Closed),
+            synctv_proto::common::RoomStatus::Unspecified => {
+                Err(format!("Unknown room status: {}", value as i32))
+            }
         }
     }
 }
 
-// Conversion from core RoomStatus to proto RoomStatus
 impl From<RoomStatus> for synctv_proto::common::RoomStatus {
     fn from(value: RoomStatus) -> Self {
         match value {
@@ -93,10 +95,19 @@ impl From<RoomStatus> for synctv_proto::common::RoomStatus {
     }
 }
 
-// Conversion from core RoomStatus to i32 (via proto enum)
 impl From<RoomStatus> for i32 {
     fn from(value: RoomStatus) -> Self {
         synctv_proto::common::RoomStatus::from(value) as Self
+    }
+}
+
+impl TryFrom<i32> for RoomStatus {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::RoomStatus::try_from(value)
+            .map_err(|_| format!("Unknown room status: {value}"))?;
+        Self::try_from(proto)
     }
 }
 
@@ -518,13 +529,13 @@ impl Display for PlayMode {
 impl std::str::FromStr for PlayMode {
     type Err = crate::Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "sequential" => Ok(Self::Sequential),
             "repeat_one" => Ok(Self::RepeatOne),
             "repeat_all" => Ok(Self::RepeatAll),
             "shuffle" => Ok(Self::Shuffle),
-            _ => Err(Error::InvalidInput(format!("Invalid PlayMode: {s}"))),
+            other => Err(Error::InvalidInput(format!("Invalid PlayMode: {other}"))),
         }
     }
 }
@@ -566,6 +577,33 @@ impl std::str::FromStr for RoomSettingsJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_play_mode_parse_trimmed_case_insensitive_names() {
+        assert_eq!(
+            " sequential ".parse::<PlayMode>().unwrap(),
+            PlayMode::Sequential
+        );
+        assert_eq!(
+            " REPEAT_ONE ".parse::<PlayMode>().unwrap(),
+            PlayMode::RepeatOne
+        );
+        assert_eq!(" shuffle ".parse::<PlayMode>().unwrap(), PlayMode::Shuffle);
+    }
+
+    #[test]
+    fn room_status_proto_conversions_reject_unspecified_input() {
+        assert_eq!(
+            i32::from(RoomStatus::Active),
+            synctv_proto::common::RoomStatus::Active as i32
+        );
+        assert_eq!(
+            RoomStatus::try_from(synctv_proto::common::RoomStatus::Closed).unwrap(),
+            RoomStatus::Closed
+        );
+        assert!(RoomStatus::try_from(synctv_proto::common::RoomStatus::Unspecified).is_err());
+        assert!(RoomStatus::try_from(0).is_err());
+    }
 
     #[test]
     fn test_status_transition_active_to_closed_is_valid() {

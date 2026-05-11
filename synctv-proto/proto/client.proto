@@ -547,7 +547,6 @@ message UserAuthFactors {
 message UserPreferences {
     bool two_factor_enabled = 1;
     UserNotificationPreferences notifications = 3;
-    UserProviderDefaults provider_defaults = 5;
     // Low-priority extension payload; core preferences use typed fields.
     bytes settings = 15;
 }
@@ -561,25 +560,6 @@ message UserNotificationPreferences {
     bool system_announcement_email = 6;
 }
 
-message UserProviderDefaults {
-    repeated UserProviderDefault defaults = 1 [(buf.validate.field).repeated = {
-        max_items: 32
-    }];
-}
-
-message UserProviderDefault {
-    string provider = 1 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
-    string instance_name = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
-}
-
 message GetUserPreferencesRequest {}
 
 message GetUserPreferencesResponse {
@@ -590,7 +570,6 @@ message GetUserPreferencesResponse {
 message UpdateUserPreferencesRequest {
     optional bool two_factor_enabled = 1;
     UserNotificationPreferences notifications = 3;
-    UserProviderDefaults provider_defaults = 5;
 }
 
 message UpdateUserPreferencesResponse {

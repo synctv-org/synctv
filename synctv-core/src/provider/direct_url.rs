@@ -5,7 +5,7 @@
 use super::{
     proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::{ProviderStoreExt, VersionedPlayback},
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -431,11 +431,11 @@ impl MediaProvider for DirectUrlProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
+        super::reject_source_config_provider_instance_name(source_config.value(), "DirectUrl")?;
 
-        let config = DirectUrlSourceConfig::try_from(source_config)?;
+        let config = DirectUrlSourceConfig::try_from(source_config.value())?;
 
         Self::validate_source_url(&config.url)?;
 
@@ -829,7 +829,7 @@ mod tests {
             "http://[::1]/video.mp4",
         ] {
             provider
-                .validate_source_config(&ctx, &json!({ "url": url }))
+                .validate_source_config(&ctx, SourceConfig::media(&json!({ "url": url })))
                 .await
                 .expect("default SSRF policy should allow blocked hosts and IP literals");
         }
@@ -841,7 +841,7 @@ mod tests {
         provider
             .validate_source_config(
                 &ProviderContext::new("synctv"),
-                &json!({ "url": "http://example.com:8080/video.mp4" }),
+                SourceConfig::media(&json!({ "url": "http://example.com:8080/video.mp4" })),
             )
             .await
             .expect("default SSRF policy should allow non-default ports");
@@ -853,10 +853,10 @@ mod tests {
         let err = provider
             .validate_source_config(
                 &ProviderContext::new("synctv"),
-                &json!({
+                SourceConfig::media(&json!({
                     "url": "https://example.com/video.mp4",
                     "provider_instance_name": "remote-direct"
-                }),
+                })),
             )
             .await
             .expect_err("DirectUrl source_config must not contain provider_instance_name");

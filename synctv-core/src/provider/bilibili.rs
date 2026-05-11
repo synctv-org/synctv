@@ -6,7 +6,7 @@ use super::{
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SubtitleTrack,
+    ProviderError, SourceConfig, SubtitleTrack,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -565,10 +565,10 @@ impl MediaProvider for BilibiliProvider {
     async fn validate_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
         // Validate that source_config parses to a known variant
-        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let config = BilibiliSourceConfig::try_from(source_config.value())?;
 
         match &config {
             BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
@@ -1228,7 +1228,10 @@ mod tests {
             .block_on(async {
                 let provider = BilibiliProvider::new(fake_provider_instance_manager());
                 provider
-                    .validate_source_config(&ProviderContext::new("test"), config)
+                    .validate_source_config(
+                        &ProviderContext::new("test"),
+                        SourceConfig::media(config),
+                    )
                     .await
             })
     }

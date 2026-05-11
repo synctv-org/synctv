@@ -9,6 +9,7 @@
 //! - Allow/Deny permission pattern for customization
 
 use serde::{Deserialize, Serialize};
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 use std::str::FromStr;
 
 /// 64-bit permission bitmask (u64 as per design document)
@@ -157,6 +158,11 @@ impl PermissionBits {
         Self(Self::NONE)
     }
 
+    #[must_use]
+    pub const fn bits(self) -> u64 {
+        self.0
+    }
+
     /// Check if has specific permission
     #[must_use]
     pub const fn has(&self, permission: u64) -> bool {
@@ -211,6 +217,110 @@ impl Default for PermissionBits {
     }
 }
 
+impl From<u64> for PermissionBits {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PermissionBits> for u64 {
+    fn from(value: PermissionBits) -> Self {
+        value.0
+    }
+}
+
+impl BitOr for PermissionBits {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOr<u64> for PermissionBits {
+    type Output = Self;
+
+    fn bitor(self, rhs: u64) -> Self::Output {
+        Self(self.0 | rhs)
+    }
+}
+
+impl BitOrAssign for PermissionBits {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl BitOrAssign<u64> for PermissionBits {
+    fn bitor_assign(&mut self, rhs: u64) {
+        self.0 |= rhs;
+    }
+}
+
+impl BitAnd for PermissionBits {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl BitAnd<u64> for PermissionBits {
+    type Output = Self;
+
+    fn bitand(self, rhs: u64) -> Self::Output {
+        Self(self.0 & rhs)
+    }
+}
+
+impl BitAndAssign for PermissionBits {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
+impl BitAndAssign<u64> for PermissionBits {
+    fn bitand_assign(&mut self, rhs: u64) {
+        self.0 &= rhs;
+    }
+}
+
+impl BitXor for PermissionBits {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+impl BitXor<u64> for PermissionBits {
+    type Output = Self;
+
+    fn bitxor(self, rhs: u64) -> Self::Output {
+        Self(self.0 ^ rhs)
+    }
+}
+
+impl BitXorAssign for PermissionBits {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0;
+    }
+}
+
+impl BitXorAssign<u64> for PermissionBits {
+    fn bitxor_assign(&mut self, rhs: u64) {
+        self.0 ^= rhs;
+    }
+}
+
+impl Not for PermissionBits {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self(!self.0)
+    }
+}
+
 /// Room role preset (Telegram-style design)
 ///
 /// These are the room-level roles that determine base permissions.
@@ -244,13 +354,13 @@ impl Role {
 impl FromStr for Role {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
             "creator" => Ok(Self::Creator),
             "admin" => Ok(Self::Admin),
             "member" => Ok(Self::Member),
             "guest" => Ok(Self::Guest),
-            _ => Err(format!("Unknown role: {s}")),
+            other => Err(format!("Unknown role: {other}")),
         }
     }
 }
@@ -263,6 +373,49 @@ impl std::fmt::Display for Role {
             Self::Member => write!(f, "member"),
             Self::Guest => write!(f, "guest"),
         }
+    }
+}
+
+impl From<Role> for synctv_proto::common::RoomMemberRole {
+    fn from(value: Role) -> Self {
+        match value {
+            Role::Creator => Self::Creator,
+            Role::Admin => Self::Admin,
+            Role::Member => Self::Member,
+            Role::Guest => Self::Guest,
+        }
+    }
+}
+
+impl From<Role> for i32 {
+    fn from(value: Role) -> Self {
+        synctv_proto::common::RoomMemberRole::from(value) as Self
+    }
+}
+
+impl TryFrom<synctv_proto::common::RoomMemberRole> for Role {
+    type Error = String;
+
+    fn try_from(value: synctv_proto::common::RoomMemberRole) -> Result<Self, Self::Error> {
+        match value {
+            synctv_proto::common::RoomMemberRole::Creator => Ok(Self::Creator),
+            synctv_proto::common::RoomMemberRole::Admin => Ok(Self::Admin),
+            synctv_proto::common::RoomMemberRole::Member => Ok(Self::Member),
+            synctv_proto::common::RoomMemberRole::Guest => Ok(Self::Guest),
+            synctv_proto::common::RoomMemberRole::Unspecified => {
+                Err(format!("Unknown room member role: {}", value as i32))
+            }
+        }
+    }
+}
+
+impl TryFrom<i32> for Role {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        let proto = synctv_proto::common::RoomMemberRole::try_from(value)
+            .map_err(|_| format!("Unknown room member role: {value}"))?;
+        Self::try_from(proto).map_err(|_| format!("Unknown room member role: {value}"))
     }
 }
 
@@ -350,6 +503,23 @@ mod tests {
     }
 
     #[test]
+    fn test_permission_bits_std_bit_ops() {
+        let chat = PermissionBits::from(PermissionBits::SEND_CHAT);
+        let media = PermissionBits::from(PermissionBits::ADD_MEDIA);
+        let combined = chat | media;
+
+        assert!(combined.has_all(PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA));
+        assert_eq!((combined & chat).bits(), PermissionBits::SEND_CHAT);
+        assert_eq!((combined ^ chat).bits(), PermissionBits::ADD_MEDIA);
+
+        let mut assigned = PermissionBits::empty();
+        assigned |= PermissionBits::SEND_CHAT;
+        assigned |= media;
+        assigned &= !chat;
+        assert_eq!(assigned.bits(), PermissionBits::ADD_MEDIA);
+    }
+
+    #[test]
     fn test_permission_grant_idempotent() {
         let mut perms = PermissionBits::empty();
         perms.grant(PermissionBits::SEND_CHAT);
@@ -386,6 +556,7 @@ mod tests {
         assert_eq!(Role::from_str("guest").unwrap(), Role::Guest);
         assert_eq!(Role::from_str("CREATOR").unwrap(), Role::Creator);
         assert_eq!(Role::from_str("Admin").unwrap(), Role::Admin);
+        assert_eq!(Role::from_str(" member ").unwrap(), Role::Member);
     }
 
     #[test]

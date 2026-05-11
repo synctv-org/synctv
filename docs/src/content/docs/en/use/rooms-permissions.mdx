@@ -163,11 +163,8 @@ User preferences are database-backed user-level settings, not YAML configuration
 | `notifications.room_invitation_email` | `false` | Email room invitation notifications |
 | `notifications.room_event_email` | `false` | Email room event notifications |
 | `notifications.system_announcement_email` | `true` | Email system announcements |
-| `provider_defaults.alist_instance_name` | `null` | Default Alist instance |
-| `provider_defaults.emby_instance_name` | `null` | Default Emby instance |
-| `provider_defaults.bilibili_instance_name` | `null` | Default Bilibili instance |
 
-The database table also has a `settings` JSONB extension payload for low-priority experimental preferences. Stable product preferences should use explicit columns. Do not store secrets, tokens, cookies, passwords, or provider credentials in it.
+Provider instance bindings are not user preferences. They are stored on provider credentials when the user logs in to a provider through a specific instance. The database table also has a `settings` JSONB extension payload for low-priority experimental preferences. Stable product preferences should use explicit columns. Do not store secrets, tokens, cookies, passwords, or provider credentials in it.
 
 2FA constraints:
 

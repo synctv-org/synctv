@@ -119,12 +119,14 @@ async fn execute_flv_stream(
     info!(room_id = %room_id, media_id = %media_id, provider = %provider_name, "FLV streaming request");
 
     let infrastructure = state
+        .shared_api_runtime
         .client_api
         .live_infrastructure()
         .ok_or_else(live_streaming_unavailable_http_error)?;
 
     let source_url = if provider_name == "live_proxy" {
         state
+            .shared_api_runtime
             .client_api
             .get_live_proxy_source_url(&room_id, &media_id)
             .await
@@ -250,6 +252,7 @@ async fn execute_hls_playlist(
     info!(room_id = %room_id, media_id = %media_id, provider = %provider_name, "HLS playlist request");
 
     let infrastructure = state
+        .shared_api_runtime
         .client_api
         .live_infrastructure()
         .ok_or_else(live_streaming_unavailable_http_error)?;
@@ -333,6 +336,7 @@ async fn execute_hls_segment(
     }
 
     let infrastructure = state
+        .shared_api_runtime
         .client_api
         .live_infrastructure()
         .ok_or_else(live_streaming_unavailable_http_error)?;

@@ -13,34 +13,18 @@ use std::sync::Arc;
 use super::{
     admin_execute::{execute_admin_endpoint, execute_root_endpoint, request_metadata},
     middleware::RequestMetadata,
-    validation::ValidatedQuery,
+    validation::ProtoQuery,
     AppError, AppResult, AppState, WithRoomId, WithUserId,
 };
 use crate::proto::admin;
 
 fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>, AppError> {
-    state.admin_api.clone().ok_or_else(|| {
+    state.shared_api_runtime.admin_api.clone().ok_or_else(|| {
         AppError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "Admin service is not available on this server.",
         )
     })
-}
-
-/// Map a typed `ApiError` to an HTTP `AppError` with guaranteed-correct
-/// status code mapping (no keyword-based heuristics).
-fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
-    AppError::from(err)
-}
-
-// Path validation helpers
-
-fn validate_admin_proto_path<T>(path: T) -> Result<T, AppError>
-where
-    T: prost_reflect::ReflectMessage,
-{
-    crate::impls::validate_proto_request(&path).map_err(admin_err_to_app_error)?;
-    Ok(path)
 }
 
 // Router
@@ -140,7 +124,7 @@ pub fn create_admin_router() -> Router<AppState> {
 pub(crate) async fn list_user_registration_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListUserRegistrationReviewsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListUserRegistrationReviewsRequest>,
 ) -> AppResult<Json<admin::ListUserRegistrationReviewsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -233,7 +217,7 @@ pub(crate) async fn reject_user_registration_review(
 pub(crate) async fn list_room_creation_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListRoomCreationReviewsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListRoomCreationReviewsRequest>,
 ) -> AppResult<Json<admin::ListRoomCreationReviewsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -320,7 +304,7 @@ pub(crate) async fn reject_room_creation_review(
 pub(crate) async fn list_room_join_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListRoomJoinReviewsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListRoomJoinReviewsRequest>,
 ) -> AppResult<Json<admin::ListRoomJoinReviewsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -409,7 +393,7 @@ pub(crate) async fn reject_room_join_review(
 pub(crate) async fn list_ban_records(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListBanRecordsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListBanRecordsRequest>,
 ) -> AppResult<Json<admin::ListBanRecordsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -501,7 +485,7 @@ pub(crate) async fn get_settings_group(
     State(state): State<AppState>,
     Path(path): Path<admin::GetSettingsGroupRequest>,
 ) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
-    let req = validate_admin_proto_path(path)?;
+    let req = path;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -577,7 +561,7 @@ pub(crate) async fn send_test_email(
                 .await
         })
         .await
-        .map_err(admin_err_to_app_error)?;
+        .map_err(AppError::from)?;
     Ok(Json(resp))
 }
 
@@ -600,7 +584,7 @@ pub(crate) async fn send_test_email(
 pub(crate) async fn list_users(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListUsersRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListUsersRequest>,
 ) -> AppResult<Json<admin::ListUsersResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -695,7 +679,7 @@ pub(crate) async fn update_user_preferences(
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<admin::UpdateUserPreferencesResponse>> {
-    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let req = req.with_user_id(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -796,7 +780,7 @@ pub(crate) async fn set_user_role(
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
-    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let req = req.with_user_id(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -832,7 +816,7 @@ pub(crate) async fn set_user_password(
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
-    req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    req = req.with_user_id(path.user_id);
     if req.reason.is_empty() {
         req.reason = "Admin forced password reset".to_string();
     }
@@ -871,7 +855,7 @@ pub(crate) async fn set_user_username(
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
-    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let req = req.with_user_id(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -907,7 +891,7 @@ pub(crate) async fn ban_user(
     Path(path): Path<admin::UserPathRequest>,
     Json(req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
-    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let req = req.with_user_id(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -976,7 +960,7 @@ pub(crate) async fn get_user_rooms(
     Path(path): Path<admin::UserPathRequest>,
     Query(req): Query<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
-    let req = req.with_user_id(validate_admin_proto_path(path)?.user_id);
+    let req = req.with_user_id(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1009,17 +993,6 @@ pub(crate) async fn batch_ban_users(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanUsersRequest>,
 ) -> AppResult<Json<admin::BatchBanUsersResponse>> {
-    if req.user_ids.is_empty() {
-        return Err(AppError::bad_request("user_ids cannot be empty"));
-    }
-    if req.user_ids.len() > 100 {
-        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
-    }
-    if req.reason.len() > 500 {
-        return Err(AppError::bad_request(
-            "Reason too long (max 500 characters)",
-        ));
-    }
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1053,12 +1026,6 @@ pub(crate) async fn batch_delete_users(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteUsersRequest>,
 ) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
-    if req.user_ids.is_empty() {
-        return Err(AppError::bad_request("user_ids cannot be empty"));
-    }
-    if req.user_ids.len() > 100 {
-        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
-    }
     let resp = execute_root_endpoint(
         &state,
         request_meta,
@@ -1091,7 +1058,7 @@ pub(crate) async fn batch_delete_users(
 pub(crate) async fn list_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListRoomsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListRoomsRequest>,
 ) -> AppResult<Json<admin::ListRoomsResponse>> {
     let resp = execute_admin_endpoint(
         &state,
@@ -1186,7 +1153,7 @@ pub(crate) async fn set_room_password(
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
-    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
+    let req = req.with_room_id(path.room_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1223,7 +1190,7 @@ pub(crate) async fn get_room_members(
     Path(path): Path<admin::RoomPathRequest>,
     Query(req): Query<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
-    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
+    let req = req.with_room_id(path.room_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1256,7 +1223,7 @@ pub(crate) async fn ban_room(
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
-    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
+    let req = req.with_room_id(path.room_id);
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1353,7 +1320,7 @@ pub(crate) async fn set_room_settings(
     Path(path): Path<admin::RoomPathRequest>,
     Json(req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
-    let req = req.with_room_id(validate_admin_proto_path(path)?.room_id);
+    let req = req.with_room_id(path.room_id);
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1421,17 +1388,6 @@ pub(crate) async fn batch_ban_rooms(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanRoomsRequest>,
 ) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
-    if req.room_ids.is_empty() {
-        return Err(AppError::bad_request("room_ids cannot be empty"));
-    }
-    if req.room_ids.len() > 100 {
-        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
-    }
-    if req.reason.len() > 500 {
-        return Err(AppError::bad_request(
-            "Reason too long (max 500 characters)",
-        ));
-    }
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1464,12 +1420,6 @@ pub(crate) async fn batch_delete_rooms(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteRoomsRequest>,
 ) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
-    if req.room_ids.is_empty() {
-        return Err(AppError::bad_request("room_ids cannot be empty"));
-    }
-    if req.room_ids.len() > 100 {
-        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
-    }
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1501,7 +1451,7 @@ pub(crate) async fn batch_delete_rooms(
 pub(crate) async fn list_streams(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListActiveStreamsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListActiveStreamsRequest>,
 ) -> AppResult<Json<admin::ListActiveStreamsResponse>> {
     let response = execute_admin_endpoint(
         &state,
@@ -1558,7 +1508,7 @@ pub(crate) async fn kick_stream(
 pub(crate) async fn list_admins(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<admin::ListAdminsRequest>,
+    ProtoQuery(req): ProtoQuery<admin::ListAdminsRequest>,
 ) -> AppResult<Json<admin::ListAdminsResponse>> {
     let resp = execute_root_endpoint(
         &state,
@@ -1755,29 +1705,6 @@ mod tests {
         assert_eq!(query.sort_direction, admin::SortDirection::Asc as i32);
     }
 
-    #[test]
-    fn test_admin_path_scoped_queries_validate_after_path_id_injection() {
-        let members_query: admin::GetRoomMembersRequest =
-            serde_urlencoded::from_str("page_size=0").expect("query should deserialize");
-        assert!(
-            crate::impls::validate_proto_request(&members_query).is_err(),
-            "path-scoped request is invalid until the path room_id is injected"
-        );
-        let members_query = members_query.with_room_id("room_1".to_string());
-        crate::impls::validate_proto_request(&members_query)
-            .expect("path-injected room members query should validate");
-
-        let rooms_query: admin::GetUserRoomsRequest =
-            serde_urlencoded::from_str("page_size=0").expect("query should deserialize");
-        assert!(
-            crate::impls::validate_proto_request(&rooms_query).is_err(),
-            "path-scoped request is invalid until the path user_id is injected"
-        );
-        let rooms_query = rooms_query.with_user_id("usr_1".to_string());
-        crate::impls::validate_proto_request(&rooms_query)
-            .expect("path-injected user rooms query should validate");
-    }
-
     #[tokio::test]
     async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() {
         let mut state = crate::http::tests::test_app_state();
@@ -1836,7 +1763,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_admin_api_error() {
         let mut state = crate::http::tests::test_app_state();
-        state.admin_api = None;
+        Arc::make_mut(&mut state.shared_api_runtime).admin_api = None;
 
         let Err(err) = require_admin_api(&state) else {
             panic!("missing admin api should fail");
@@ -1904,24 +1831,6 @@ mod tests {
     fn test_admin_router_creation() {
         // Verify the admin router can be created without panicking
         let _router = create_admin_router();
-    }
-
-    #[test]
-    fn test_room_members_page_size_clamp() {
-        // The handler now uses centralized validation from validation module
-        use super::super::validation;
-
-        let raw_page_size: i32 = 1000;
-        let clamped = validation::validate_page_size(Some(raw_page_size));
-        assert_eq!(clamped, validation::MAX_PAGE_SIZE);
-
-        let raw_page_size: i32 = 0;
-        let clamped = validation::validate_page_size(Some(raw_page_size));
-        assert_eq!(clamped, 1);
-
-        let raw_page_size: i32 = 100;
-        let clamped = validation::validate_page_size(Some(raw_page_size));
-        assert_eq!(clamped, 100);
     }
 
     #[test]

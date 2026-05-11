@@ -2307,6 +2307,36 @@ impl UserService {
         Ok(created)
     }
 
+    pub async fn reject_registration_request(
+        &self,
+        request_id: &UserId,
+        reviewed_by: Option<&UserId>,
+        reason: &str,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r"
+            UPDATE user_registration_requests
+            SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
+            WHERE id = $1 AND reviewed_at IS NULL AND status = $5
+            ",
+        )
+        .bind(request_id)
+        .bind(ReviewStatus::Rejected)
+        .bind(reviewed_by.copied())
+        .bind(reason)
+        .bind(ReviewStatus::Pending)
+        .execute(self.repository.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(Error::NotFound(format!(
+                "Pending registration request {request_id} not found"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Validate that a user is allowed to access the system.
     ///
     /// Checks for banned or soft-deleted accounts, and optionally email

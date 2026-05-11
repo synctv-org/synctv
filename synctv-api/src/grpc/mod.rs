@@ -642,6 +642,35 @@ use synctv_core::service::{
 };
 use synctv_core::Config;
 
+fn proxy_slice_cache_config_from_app_config(
+    config: &Config,
+) -> synctv_proxy::slice_cache::SliceCacheConfig {
+    let backend = if config.proxy_slice_cache.file_backend_enabled {
+        synctv_proxy::slice_cache::CacheBackendConfig::File {
+            cache_dir: std::path::PathBuf::from(&config.proxy_slice_cache.file_cache_dir),
+            dir_levels: (2, 2),
+        }
+    } else {
+        synctv_proxy::slice_cache::CacheBackendConfig::Memory
+    };
+
+    synctv_proxy::slice_cache::SliceCacheConfig {
+        enabled: config.proxy_slice_cache.enabled,
+        slice_size: config.proxy_slice_cache.slice_size_bytes,
+        max_cache_size: config.proxy_slice_cache.max_cache_size_bytes,
+        segment_ttl: std::time::Duration::from_secs(config.proxy_slice_cache.segment_ttl_seconds),
+        stale_max_age: std::time::Duration::from_secs(
+            config.proxy_slice_cache.stale_max_age_seconds,
+        ),
+        stale_while_revalidate: config.proxy_slice_cache.stale_while_revalidate,
+        backend,
+        eviction_interval: std::time::Duration::from_secs(
+            config.proxy_slice_cache.eviction_interval_seconds,
+        ),
+        watermark_ratio: config.proxy_slice_cache.watermark_ratio,
+    }
+}
+
 struct ProxySliceCacheRuntime {
     cache: Arc<synctv_proxy::slice_cache::SliceCache>,
 }
@@ -742,15 +771,15 @@ pub struct GrpcServerConfig<'a> {
 fn resolve_provider_proxy_runtime(
     config: &Config,
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
-    shared_http_app_state: Option<&Arc<crate::http::AppState>>,
+    shared_api_runtime: Option<&Arc<crate::http::SharedApiRuntime>>,
 ) -> (
     Arc<synctv_core::service::ProxySigningKey>,
     Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
 ) {
-    if let Some(shared_http_app_state) = shared_http_app_state {
+    if let Some(shared_api_runtime) = shared_api_runtime {
         return (
-            shared_http_app_state.proxy_signing_key.clone(),
-            shared_http_app_state.provider_stores.clone(),
+            shared_api_runtime.proxy_signing_key.clone(),
+            shared_api_runtime.provider_stores.clone(),
         );
     }
 
@@ -822,6 +851,7 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
     };
     let proxy_http_client =
         synctv_proxy::build_proxy_http_client().expect("gRPC proxy HTTP client should build");
+    let proxy_slice_cache_config = proxy_slice_cache_config_from_app_config(deps.config.as_ref());
 
     Arc::new(crate::http::create_app_state_from_config(
         crate::http::RouterConfig {
@@ -856,7 +886,7 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             builtin_stun_url: deps.builtin_stun_url,
             credential_encryption: deps.credential_encryption,
             proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
+                proxy_slice_cache_config,
                 proxy_http_client.clone(),
             )),
             proxy_http_client,
@@ -908,7 +938,9 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
     let (proxy_signing_key, provider_stores) = resolve_provider_proxy_runtime(
         config,
         redis_runtime.clone(),
-        shared_http_app_state.as_ref(),
+        shared_http_app_state
+            .as_ref()
+            .map(|state| &state.shared_api_runtime),
     );
     let shared_http_app_state = shared_http_app_state.or_else(|| {
         Some(build_fallback_http_app_state(FallbackHttpAppStateDeps {
@@ -1809,6 +1841,16 @@ mod tests {
             danmaku_per_second: 7,
             window_seconds: 11,
         };
+        let mut fallback_config = context.config.as_ref().clone();
+        fallback_config.proxy_slice_cache.enabled = false;
+        fallback_config.proxy_slice_cache.slice_size_bytes = 4 * 1024 * 1024;
+        fallback_config.proxy_slice_cache.max_cache_size_bytes = 1024 * 1024 * 1024;
+        fallback_config.proxy_slice_cache.segment_ttl_seconds = 600;
+        fallback_config.proxy_slice_cache.stale_max_age_seconds = 120;
+        fallback_config.proxy_slice_cache.stale_while_revalidate = false;
+        fallback_config.proxy_slice_cache.eviction_interval_seconds = 30;
+        fallback_config.proxy_slice_cache.watermark_ratio = 0.75;
+        let fallback_config = Arc::new(fallback_config);
         let http_state = build_fallback_http_app_state(FallbackHttpAppStateDeps {
             user_service: context.user_service,
             user_cache: Arc::new(
@@ -1818,7 +1860,7 @@ mod tests {
             room_service: context.room_service,
             event_service: Some(event_service.clone()),
             connection_service: connection_service.clone(),
-            config: context.config,
+            config: fallback_config.clone(),
             content_filter: content_filter.clone(),
             publish_key_service: None,
             jwt_service: context.jwt_service,
@@ -1850,7 +1892,7 @@ mod tests {
 
         assert!(
             Arc::ptr_eq(
-                &http_state.client_api.connection_service,
+                &http_state.shared_api_runtime.client_api.connection_service,
                 &connection_service
             ),
             "standalone gRPC fallback HTTP state must reuse the injected connection service for client APIs"
@@ -1858,6 +1900,7 @@ mod tests {
         assert!(
             Arc::ptr_eq(
                 &http_state
+                    .shared_api_runtime
                     .admin_api
                     .as_ref()
                     .expect("fallback HTTP state should wire admin API")
@@ -1867,7 +1910,10 @@ mod tests {
             "standalone gRPC fallback HTTP state must reuse the injected connection service for admin APIs"
         );
         assert!(
-            Arc::ptr_eq(&http_state.proxy_signing_key, &proxy_signing_key),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.proxy_signing_key,
+                &proxy_signing_key
+            ),
             "fallback HTTP state must reuse the shared proxy signing key"
         );
         assert!(
@@ -1875,13 +1921,16 @@ mod tests {
             "fallback HTTP state must reuse the injected WebSocket ticket service"
         );
         assert!(
-            Arc::ptr_eq(&http_state.provider_stores, &provider_stores),
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.provider_stores,
+                &provider_stores
+            ),
             "fallback HTTP state must reuse the shared provider store registry"
         );
         assert!(
             Arc::ptr_eq(
                 &http_state.shared_api_runtime.provider_access_service,
-                &http_state.provider_access_service
+                &http_state.shared_api_runtime.provider_access_service
             ),
             "fallback HTTP state must expose the same provider access cache across transports"
         );
@@ -1896,69 +1945,83 @@ mod tests {
             "fallback HTTP state must preserve the injected realtime event service"
         );
         assert_eq!(
-            http_state.content_filter.max_chat_length, content_filter.max_chat_length,
+            http_state.shared_api_runtime.content_filter.max_chat_length,
+            content_filter.max_chat_length,
             "fallback HTTP state must preserve custom chat filtering limits"
         );
         assert_eq!(
-            http_state.content_filter.max_danmaku_length, content_filter.max_danmaku_length,
+            http_state
+                .shared_api_runtime
+                .content_filter
+                .max_danmaku_length,
+            content_filter.max_danmaku_length,
             "fallback HTTP state must preserve custom danmaku filtering limits"
         );
         assert_eq!(
-            http_state.messaging_rate_limit_config.chat_per_second,
+            http_state
+                .shared_api_runtime
+                .messaging_rate_limit_config
+                .chat_per_second,
             messaging_rate_limit_config.chat_per_second,
             "fallback HTTP state must preserve configured chat rate limits"
         );
         assert_eq!(
-            http_state.messaging_rate_limit_config.danmaku_per_second,
+            http_state
+                .shared_api_runtime
+                .messaging_rate_limit_config
+                .danmaku_per_second,
             messaging_rate_limit_config.danmaku_per_second,
             "fallback HTTP state must preserve configured danmaku rate limits"
         );
         assert_eq!(
-            http_state.messaging_rate_limit_config.window_seconds,
+            http_state
+                .shared_api_runtime
+                .messaging_rate_limit_config
+                .window_seconds,
             messaging_rate_limit_config.window_seconds,
             "fallback HTTP state must preserve configured rate-limit windows"
         );
-        assert!(
-            Arc::ptr_eq(
-                &http_state.shared_api_runtime.client_api,
-                &http_state.client_api
-            ),
-            "fallback HTTP state must expose the same shared ClientApiImpl instance across transports"
+        assert_eq!(
+            http_state.proxy_slice_cache.config().enabled,
+            fallback_config.proxy_slice_cache.enabled,
+            "fallback HTTP state must preserve proxy slice cache enablement"
         );
-        assert!(
-            Arc::ptr_eq(
-                http_state
-                    .shared_api_runtime
-                    .admin_api
-                    .as_ref()
-                    .expect("fallback HTTP state should wire shared admin API"),
-                http_state
-                    .admin_api
-                    .as_ref()
-                    .expect("fallback HTTP state should wire admin API"),
-            ),
-            "fallback HTTP state must expose the same shared AdminApiImpl instance across transports"
+        assert_eq!(
+            http_state.proxy_slice_cache.config().slice_size,
+            fallback_config.proxy_slice_cache.slice_size_bytes,
+            "fallback HTTP state must preserve proxy slice size"
         );
-        assert!(
-            Arc::ptr_eq(
-                &http_state.shared_api_runtime.alist_api,
-                &http_state.alist_api
-            ),
-            "fallback HTTP state must expose the same shared AlistApiImpl instance across transports"
+        assert_eq!(
+            http_state.proxy_slice_cache.config().max_cache_size,
+            fallback_config.proxy_slice_cache.max_cache_size_bytes,
+            "fallback HTTP state must preserve proxy cache size"
         );
-        assert!(
-            Arc::ptr_eq(
-                &http_state.shared_api_runtime.bilibili_api,
-                &http_state.bilibili_api
-            ),
-            "fallback HTTP state must expose the same shared BilibiliApiImpl instance across transports"
+        assert_eq!(
+            http_state.proxy_slice_cache.config().segment_ttl,
+            std::time::Duration::from_secs(fallback_config.proxy_slice_cache.segment_ttl_seconds),
+            "fallback HTTP state must preserve proxy cache TTL"
         );
-        assert!(
-            Arc::ptr_eq(
-                &http_state.shared_api_runtime.emby_api,
-                &http_state.emby_api
+        assert_eq!(
+            http_state.proxy_slice_cache.config().stale_max_age,
+            std::time::Duration::from_secs(fallback_config.proxy_slice_cache.stale_max_age_seconds),
+            "fallback HTTP state must preserve proxy stale max age"
+        );
+        assert_eq!(
+            http_state.proxy_slice_cache.config().stale_while_revalidate,
+            fallback_config.proxy_slice_cache.stale_while_revalidate,
+            "fallback HTTP state must preserve stale-while-revalidate"
+        );
+        assert_eq!(
+            http_state.proxy_slice_cache.config().eviction_interval,
+            std::time::Duration::from_secs(
+                fallback_config.proxy_slice_cache.eviction_interval_seconds,
             ),
-            "fallback HTTP state must expose the same shared EmbyApiImpl instance across transports"
+            "fallback HTTP state must preserve eviction interval"
+        );
+        assert_eq!(
+            http_state.proxy_slice_cache.config().watermark_ratio,
+            fallback_config.proxy_slice_cache.watermark_ratio,
+            "fallback HTTP state must preserve cache watermark"
         );
     }
 
@@ -1981,16 +2044,25 @@ mod tests {
         let shared_http_app_state = shared_http_app_state();
         let config = synctv_core::Config::default();
 
-        let (signing_key, provider_stores) =
-            resolve_provider_proxy_runtime(&config, None, Some(&shared_http_app_state));
+        let (signing_key, provider_stores) = resolve_provider_proxy_runtime(
+            &config,
+            None,
+            Some(&shared_http_app_state.shared_api_runtime),
+        );
 
         assert!(
-            Arc::ptr_eq(&signing_key, &shared_http_app_state.proxy_signing_key),
-            "gRPC must reuse the HTTP proxy signing key when unified app state is provided"
+            Arc::ptr_eq(
+                &signing_key,
+                &shared_http_app_state.shared_api_runtime.proxy_signing_key
+            ),
+            "gRPC must reuse the shared proxy signing key when unified app state is provided"
         );
         assert!(
-            Arc::ptr_eq(&provider_stores, &shared_http_app_state.provider_stores),
-            "gRPC must reuse the HTTP provider store registry when unified app state is provided"
+            Arc::ptr_eq(
+                &provider_stores,
+                &shared_http_app_state.shared_api_runtime.provider_stores
+            ),
+            "gRPC must reuse the shared provider store registry when unified app state is provided"
         );
     }
 

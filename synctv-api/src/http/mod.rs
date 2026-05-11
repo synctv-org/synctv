@@ -196,12 +196,10 @@ pub struct RouterConfig {
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
 }
 
-/// Shared application state.
+/// Shared transport-agnostic API runtime derived from `RouterConfig`.
 ///
-/// Common service fields live in `RouterConfig` (shared via `Arc`). Derived
-/// fields that are computed at startup (API impls, validators, etc.) live
-/// directly on `AppState`. Thanks to the `Deref` impl, all `RouterConfig`
-/// fields are accessible transparently (e.g. `state.user_service`).
+/// HTTP, gRPC, and management transports reuse these instances instead of
+/// constructing parallel API impls, validators, caches, or provider stores.
 #[derive(Clone)]
 pub struct SharedApiRuntime {
     /// Redis runtime abstraction derived from the shared connection when available.
@@ -252,48 +250,6 @@ pub struct AppState {
     pub router_config: Arc<RouterConfig>,
     /// Shared transport-agnostic runtime reused across HTTP, gRPC, and management.
     pub shared_api_runtime: Arc<SharedApiRuntime>,
-    /// Redis runtime abstraction derived from the shared connection when available.
-    pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
-    /// Shared rate limit config (created once at startup, not per-request)
-    pub rate_limit_config: Arc<middleware::RateLimitConfig>,
-    /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
-    pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
-    /// Shared content filter configured at startup.
-    pub content_filter: Arc<synctv_core::service::ContentFilter>,
-    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
-    /// Shared JWT validator (created once at startup, not per-request)
-    pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
-    /// Shared security pipeline for post-JWT checks (password, user status)
-    pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<crate::PublicIdCodec>,
-    /// Shared impl-level request executor for auth, rate limiting, and timeout.
-    pub request_executor: Arc<crate::impls::RequestExecutor>,
-    // Unified API implementation layer
-    pub client_api: Arc<crate::impls::ClientApiImpl>,
-    pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
-    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
-    pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
-    pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
-    pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
-    // Provider API implementations are stored once in AppState.
-    pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
-    pub alist_api: Arc<crate::impls::AlistApiImpl>,
-    pub emby_api: Arc<crate::impls::EmbyApiImpl>,
-    /// Typed provider credential/session access cache.
-    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    /// Per-provider stores for caching and distributed locking (lazy creation)
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
-    pub proxy_provider_registry: Arc<synctv_core::provider::proxy::ProxyProviderRegistry>,
-    /// Services available to providers during proxy resolution (DB access)
-    pub proxy_services: Arc<ProxyServices>,
-    /// HMAC signing key for proxy URL authentication
-    pub proxy_signing_key: Arc<ProxySigningKey>,
-    /// Shared proxy slice cache used by unified provider proxy routes.
-    pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
-    /// Shared outbound HTTP client used by proxy handlers.
-    pub proxy_http_client: reqwest::Client,
     pub metrics_access_controller: Arc<metrics_auth::MetricsAccessController>,
 }
 
@@ -314,7 +270,7 @@ impl AppState {
     ///
     /// Returns `None` when Redis is not configured.
     pub async fn resolve_redis_conn(&self) -> Option<redis::aio::ConnectionManager> {
-        match &self.redis_runtime {
+        match &self.shared_api_runtime.redis_runtime {
             Some(runtime) => Some(runtime.snapshot().await),
             None => None,
         }
@@ -353,37 +309,10 @@ pub fn create_router_with_state_from_config(
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
     let shared_api_runtime = Arc::new(build_shared_api_runtime(&config));
-    let proxy_slice_cache = config.proxy_slice_cache.clone();
-    let proxy_http_client = config.proxy_http_client.clone();
 
     AppState {
         router_config: Arc::new(config),
         shared_api_runtime: shared_api_runtime.clone(),
-        redis_runtime: shared_api_runtime.redis_runtime.clone(),
-        rate_limit_config: shared_api_runtime.rate_limit_config.clone(),
-        messaging_rate_limit_config: shared_api_runtime.messaging_rate_limit_config.clone(),
-        content_filter: shared_api_runtime.content_filter.clone(),
-        heartbeat_schedule: shared_api_runtime.heartbeat_schedule,
-        jwt_validator: shared_api_runtime.jwt_validator.clone(),
-        security_pipeline: shared_api_runtime.security_pipeline.clone(),
-        public_id_codec: shared_api_runtime.public_id_codec.clone(),
-        request_executor: shared_api_runtime.request_executor.clone(),
-        client_api: shared_api_runtime.client_api.clone(),
-        admin_api: shared_api_runtime.admin_api.clone(),
-        email_api: shared_api_runtime.email_api.clone(),
-        notification_api: shared_api_runtime.notification_api.clone(),
-        oauth2_api: shared_api_runtime.oauth2_api.clone(),
-        provider_common_api: shared_api_runtime.provider_common_api.clone(),
-        bilibili_api: shared_api_runtime.bilibili_api.clone(),
-        alist_api: shared_api_runtime.alist_api.clone(),
-        emby_api: shared_api_runtime.emby_api.clone(),
-        provider_access_service: shared_api_runtime.provider_access_service.clone(),
-        provider_stores: shared_api_runtime.provider_stores.clone(),
-        proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
-        proxy_services: shared_api_runtime.proxy_services.clone(),
-        proxy_signing_key: shared_api_runtime.proxy_signing_key.clone(),
-        proxy_slice_cache,
-        proxy_http_client,
         metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
     }
 }
@@ -1506,8 +1435,12 @@ mod tests {
             Arc::new(synctv_core::repository::ChatRepository::new(pool)),
             synctv_core::service::chat::ChatRuntime {
                 rate_limiter: router_config.rate_limiter.clone(),
-                rate_limit_config: state.messaging_rate_limit_config.as_ref().clone(),
-                content_filter: state.content_filter.as_ref().clone(),
+                rate_limit_config: state
+                    .shared_api_runtime
+                    .messaging_rate_limit_config
+                    .as_ref()
+                    .clone(),
+                content_filter: state.shared_api_runtime.content_filter.as_ref().clone(),
                 username_cache: router_config.user_service.username_cache().clone(),
             },
             synctv_core::service::chat::ChatDependencies {
@@ -1713,11 +1646,17 @@ mod tests {
             "The injected cache configuration must be preserved"
         );
         assert!(
-            Arc::ptr_eq(&state.provider_stores, &injected_provider_stores),
+            Arc::ptr_eq(
+                &state.shared_api_runtime.provider_stores,
+                &injected_provider_stores
+            ),
             "AppState must reuse the injected provider store registry"
         );
         assert!(
-            Arc::ptr_eq(&state.proxy_signing_key, &injected_proxy_signing_key),
+            Arc::ptr_eq(
+                &state.shared_api_runtime.proxy_signing_key,
+                &injected_proxy_signing_key
+            ),
             "AppState must reuse the injected proxy signing key"
         );
         assert!(
@@ -1729,7 +1668,7 @@ mod tests {
             "The injected proxy HTTP client must remain usable in AppState"
         );
         assert!(
-            state.security_pipeline.has_user_cache(),
+            state.shared_api_runtime.security_pipeline.has_user_cache(),
             "AppState security pipeline should carry the shared user cache"
         );
     }
@@ -1738,7 +1677,7 @@ mod tests {
     async fn test_build_app_state_wires_user_cache_into_security_pipeline() {
         let state = test_app_state();
         assert!(
-            state.security_pipeline.has_user_cache(),
+            state.shared_api_runtime.security_pipeline.has_user_cache(),
             "build_app_state should wire the shared user cache into the auth security pipeline"
         );
     }
@@ -1747,7 +1686,10 @@ mod tests {
     async fn test_build_app_state_wires_blacklist_into_security_pipeline() {
         let state = test_app_state();
         assert!(
-            state.security_pipeline.has_blacklist_store(),
+            state
+                .shared_api_runtime
+                .security_pipeline
+                .has_blacklist_store(),
             "build_app_state should wire token blacklist configuration through the builder"
         );
     }
@@ -2930,6 +2872,7 @@ mod tests {
                 .with_client_ip(Some("127.0.0.1".parse().expect("ip")));
 
         let err = state
+            .shared_api_runtime
             .request_executor
             .execute_optional_user_with_control(
                 &request_meta,

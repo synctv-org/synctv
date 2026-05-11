@@ -48,8 +48,9 @@ pub(crate) async fn generate_publish_key(
     request_meta: RequestMetadata,
 ) -> AppResult<Json<CreatePublishKeyResponse>> {
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -93,10 +94,11 @@ pub(crate) async fn handle_stream_info(
     State(state): State<AppState>,
 ) -> AppResult<Json<GetStreamInfoResponse>> {
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let room_id = req.room_id;
     let media_id = req.media_id;
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,

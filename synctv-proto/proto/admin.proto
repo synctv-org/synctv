@@ -1088,16 +1088,17 @@ message BatchResultItem {
 // Batch ban users request
 message BatchBanUsersRequest {
     repeated string user_ids = 1 [(buf.validate.field).repeated = {
+        min_items: 1,
         max_items: 100,
         items: {
             string: {
                 min_len: 1,
-        max_len: 64,
+                max_len: 64,
                 pattern: "^usr_[A-Za-z0-9]+$"
             }
         }
     }];
-    string reason = 2;            // Optional reason for the ban
+    string reason = 2 [(buf.validate.field).string.max_len = 500]; // Optional reason for the ban
 }
 
 // Batch ban users response
@@ -1110,11 +1111,12 @@ message BatchBanUsersResponse {
 // Batch delete users request
 message BatchDeleteUsersRequest {
     repeated string user_ids = 1 [(buf.validate.field).repeated = {
+        min_items: 1,
         max_items: 100,
         items: {
             string: {
                 min_len: 1,
-        max_len: 64,
+                max_len: 64,
                 pattern: "^usr_[A-Za-z0-9]+$"
             }
         }
@@ -1131,16 +1133,17 @@ message BatchDeleteUsersResponse {
 // Batch ban rooms request
 message BatchBanRoomsRequest {
     repeated string room_ids = 1 [(buf.validate.field).repeated = {
+        min_items: 1,
         max_items: 100,
         items: {
             string: {
                 min_len: 1,
-        max_len: 64,
+                max_len: 64,
                 pattern: "^room_[A-Za-z0-9]+$"
             }
         }
     }];
-    string reason = 2;            // Optional reason for the ban
+    string reason = 2 [(buf.validate.field).string.max_len = 500]; // Optional reason for the ban
 }
 
 // Batch ban rooms response
@@ -1183,11 +1186,12 @@ message ListBanRecordsResponse {
 // Batch delete rooms request
 message BatchDeleteRoomsRequest {
     repeated string room_ids = 1 [(buf.validate.field).repeated = {
+        min_items: 1,
         max_items: 100,
         items: {
             string: {
                 min_len: 1,
-        max_len: 64,
+                max_len: 64,
                 pattern: "^room_[A-Za-z0-9]+$"
             }
         }

@@ -251,8 +251,10 @@ data:
       require_uppercase: {{ if hasKey $passwordComplexity "requireUppercase" }}{{ $passwordComplexity.requireUppercase }}{{ else }}true{{ end }}
       require_lowercase: {{ if hasKey $passwordComplexity "requireLowercase" }}{{ $passwordComplexity.requireLowercase }}{{ else }}true{{ end }}
       require_digit: {{ if hasKey $passwordComplexity "requireDigit" }}{{ $passwordComplexity.requireDigit }}{{ else }}true{{ end }}
-      require_special: {{ $passwordComplexity.requireSpecial | default false }}
-      max_repeated_chars: {{ $passwordComplexity.maxRepeatedChars | default 3 }}
+      require_special: {{ if hasKey $passwordComplexity "requireSpecial" }}{{ $passwordComplexity.requireSpecial }}{{ else }}false{{ end }}
+      max_repeated_chars: {{ if hasKey $passwordComplexity "maxRepeatedChars" }}{{ $passwordComplexity.maxRepeatedChars }}{{ else }}3{{ end }}
+      zxcvbn_enabled: {{ if hasKey $passwordComplexity "zxcvbnEnabled" }}{{ $passwordComplexity.zxcvbnEnabled }}{{ else }}false{{ end }}
+      zxcvbn_min_score: {{ if hasKey $passwordComplexity "zxcvbnMinScore" }}{{ $passwordComplexity.zxcvbnMinScore }}{{ else }}3{{ end }}
 
     buffer_sizes:
       websocket_outbound: {{ $bufferSizes.websocketOutbound | default 256 }}

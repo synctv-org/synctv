@@ -337,12 +337,12 @@ impl ClientApiImpl {
         mut req: crate::proto::client::CreateRoomRequest,
     ) -> Result<crate::proto::client::CreateRoomResponse, ApiError> {
         // Validate and sanitize room name
-        req.name = crate::http::validation::validate_room_name(&req.name)
+        req.name = crate::impls::validation::validate_room_name(&req.name)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
         // Validate and sanitize room description against ROOM_DESCRIPTION_MAX
         if !req.description.is_empty() {
-            req.description = crate::http::validation::validate_room_description(&req.description)
+            req.description = crate::impls::validation::validate_room_description(&req.description)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         }
 

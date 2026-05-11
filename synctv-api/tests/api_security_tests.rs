@@ -2,9 +2,7 @@
 //! Tests for API security behavior:
 //! - Guest-token validation must use GuestTokenValidator (blacklist check)
 //! - WebSocket Bearer token case-sensitivity
-//! - set_password must validate password strength at API layer
 //! - Logout must require auth token
-//! - Input validation: room description, page clamping, admin page_size cap
 //! - sqlx::Error must not leak DB details in gRPC responses
 
 #![allow(clippy::unwrap_used)]
@@ -174,45 +172,6 @@ fn test_invalid_auth_header_should_error() {
     assert!(result.is_err(), "'Bearer' without token should be rejected");
 }
 
-/// Weak passwords (too short) should be rejected by the HTTP validation layer.
-/// The register endpoint calls validate_password(); set_password should too.
-#[test]
-fn test_weak_password_rejected_by_http_validation() {
-    use synctv_api::http::validation::validate_password;
-
-    // Too short
-    let result = validate_password("short");
-    assert!(
-        result.is_err(),
-        "Password 'short' (5 chars) should be rejected as too short"
-    );
-
-    // Common password
-    let result = validate_password("password");
-    assert!(
-        result.is_err(),
-        "Common password 'password' should be rejected"
-    );
-
-    // Valid password should pass
-    let result = validate_password("MySecure123!");
-    assert!(result.is_ok(), "Strong password should be accepted");
-}
-
-/// Verify that validate_password rejects passwords under minimum length.
-#[test]
-fn test_password_min_length_enforced() {
-    use synctv_api::http::validation::validate_password;
-
-    // Single character
-    let result = validate_password("a");
-    assert!(result.is_err(), "Single char password should be rejected");
-
-    // Empty
-    let result = validate_password("");
-    assert!(result.is_err(), "Empty password should be rejected");
-}
-
 /// Logout without an Authorization header should return an error.
 /// confuses clients and doesn't actually perform any blacklisting.
 #[test]
@@ -235,100 +194,6 @@ fn test_logout_without_token_should_fail() {
 fn test_logout_with_valid_header_extracts_token() {
     let token = JwtValidator::extract_bearer_token("Bearer valid.jwt.token").unwrap();
     assert_eq!(token, "valid.jwt.token");
-}
-
-// Input validation: room description
-
-/// Room descriptions exceeding ROOM_DESCRIPTION_MAX should be rejected.
-#[test]
-fn test_room_description_max_length_enforced() {
-    use synctv_api::http::validation::{limits, validate_room_description};
-
-    let long_desc = "a".repeat(limits::ROOM_DESCRIPTION_MAX + 1);
-    let result = validate_room_description(&long_desc);
-    assert!(
-        result.is_err(),
-        "Room description exceeding max length should be rejected"
-    );
-
-    // Exactly at max should be OK
-    let exact_desc = "a".repeat(limits::ROOM_DESCRIPTION_MAX);
-    let result = validate_room_description(&exact_desc);
-    assert!(
-        result.is_ok(),
-        "Room description at exactly max length should be accepted"
-    );
-}
-
-// Input validation: page value clamping
-
-/// Negative page values (i32) must be clamped to 1, not wrap when cast to u32.
-#[test]
-fn test_negative_page_clamped_to_one() {
-    use synctv_api::http::validation::validate_page;
-
-    // Negative page should be clamped to 1
-    assert_eq!(validate_page(Some(-1)), 1);
-    assert_eq!(validate_page(Some(-100)), 1);
-    assert_eq!(validate_page(Some(i32::MIN)), 1);
-}
-
-/// Page size should be clamped to valid range.
-#[test]
-fn test_page_size_clamped() {
-    use synctv_api::http::validation::validate_page_size;
-
-    // Negative page_size clamped to 1
-    assert_eq!(validate_page_size(Some(-1)), 1);
-    assert_eq!(validate_page_size(Some(0)), 1);
-}
-
-// Input validation: admin page_size cap
-
-/// Admin endpoints (list_rooms, list_users) must cap page_size.
-/// PageParams::new already clamps to MAX_PAGE_SIZE (100) for u32 values.
-/// But when i32 is cast to u32 without clamping, negative values wrap.
-#[test]
-fn test_admin_page_size_capped_by_page_params() {
-    use synctv_core::models::PageParams;
-
-    // page_size 200 should be capped at MAX_PAGE_SIZE (100)
-    let params = PageParams::new(Some(1), Some(200));
-    assert!(
-        params.page_size <= 100,
-        "PageParams should cap page_size at MAX_PAGE_SIZE, got {}",
-        params.page_size
-    );
-
-    // page_size 0 should be clamped to 1
-    let params = PageParams::new(Some(1), Some(0));
-    assert_eq!(params.page_size, 1);
-}
-
-/// Verify that PageParams handles the i32-to-u32 cast for admin endpoints.
-/// When i32 values like -1 are cast with `as u32`, they become very large.
-/// The admin code should use positive checks before passing to PageParams.
-#[test]
-fn test_admin_negative_page_handled() {
-    // In admin list_rooms: `let page = if req.page > 0 { req.page } else { 1 };`
-    // This ensures negative i32 values default to 1 before casting to u32.
-    let page: i32 = -5;
-    let safe_page: i32 = if page > 0 { page } else { 1 };
-    assert_eq!(safe_page, 1);
-
-    let page_size: i32 = -10;
-    let safe_page_size: i32 = if page_size > 0 { page_size } else { 50 };
-    assert_eq!(safe_page_size, 50);
-
-    // Now the cap at MAX_PAGE_SIZE
-    let page_size: i32 = 500;
-    let safe_page_size: i32 = if page_size > 0 { page_size } else { 50 };
-    let params =
-        synctv_core::models::PageParams::new(Some(1), Some(safe_page_size.cast_unsigned()));
-    assert!(
-        params.page_size <= 100,
-        "PageParams should cap at MAX_PAGE_SIZE even for large values"
-    );
 }
 
 /// Internal errors (including sqlx::Error) must be sanitized before

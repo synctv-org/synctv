@@ -18,6 +18,7 @@ pub mod providers;
 pub mod request_context;
 mod room_members_snapshot;
 pub mod room_settings_snapshot;
+pub(crate) mod validation;
 
 // Re-export for convenience
 pub use admin::AdminApiImpl;
@@ -758,6 +759,67 @@ mod tests {
             }
             other => panic!("expected invalid input, got {other:?}"),
         }
+    }
+
+    fn assert_invalid_proto_request<M>(request: &M, expected: &str)
+    where
+        M: prost::Message + prost_reflect::ReflectMessage + Default,
+    {
+        let error = validate_proto_request(request).unwrap_err();
+        match error {
+            ApiError::InvalidInput(message) => {
+                assert!(message.contains(expected), "{message}");
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_proto_request_rejects_empty_admin_batch_ids() {
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchBanUsersRequest::default(),
+            "user_ids",
+        );
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchDeleteUsersRequest::default(),
+            "user_ids",
+        );
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchBanRoomsRequest::default(),
+            "room_ids",
+        );
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchDeleteRoomsRequest::default(),
+            "room_ids",
+        );
+    }
+
+    #[test]
+    fn test_validate_proto_request_rejects_admin_batch_ban_reason_over_limit() {
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchBanUsersRequest {
+                user_ids: vec!["usr_abc123".to_string()],
+                reason: "x".repeat(501),
+            },
+            "reason",
+        );
+        assert_invalid_proto_request(
+            &crate::proto::admin::BatchBanRoomsRequest {
+                room_ids: vec!["room_abc123".to_string()],
+                reason: "x".repeat(501),
+            },
+            "reason",
+        );
+    }
+
+    #[test]
+    fn test_validate_proto_request_rejects_invalid_settings_group() {
+        assert_invalid_proto_request(
+            &crate::proto::admin::GetSettingsGroupRequest {
+                group: "bad/group".to_string(),
+            },
+            "group",
+        );
     }
 
     #[test]

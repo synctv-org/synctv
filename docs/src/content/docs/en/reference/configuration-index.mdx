@@ -286,6 +286,8 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `password_complexity.require_digit` | boolean | `true` | Require digits |
 | `password_complexity.require_special` | boolean | `false` | Require special characters |
 | `password_complexity.max_repeated_chars` | integer | `3` | Maximum repeated consecutive characters; `0` disables this check |
+| `password_complexity.zxcvbn_enabled` | boolean | `false` | Enable zxcvbn entropy scoring for account passwords |
+| `password_complexity.zxcvbn_min_score` | integer `0`-`4` | `3` | Minimum zxcvbn score when enabled |
 | `buffer_sizes.websocket_outbound` | integer | `256` | Per-connection WebSocket outbound queue size |
 | `buffer_sizes.audit_buffer` | integer | `10000` | Audit event buffer capacity |
 | `cache.l1_capacity` | integer | `500` | L1 in-memory cache capacity |

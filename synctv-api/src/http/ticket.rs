@@ -74,8 +74,8 @@ pub async fn create_ticket(
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
     let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
 
     let ticket_response = executor
         .execute_user_endpoint_with_control(

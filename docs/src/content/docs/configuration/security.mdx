@@ -128,6 +128,8 @@ password_complexity:
   require_digit: true
   require_special: false
   max_repeated_chars: 3
+  zxcvbn_enabled: false
+  zxcvbn_min_score: 3
 ```
 
 这组策略作用于用户账户密码，不作用于房间密码。
@@ -135,6 +137,7 @@ password_complexity:
 生产策略通常更应该依赖更长密码和限流，而不是在电视端、移动端等输入体验差的客户端强制大量特殊字符。
 
 `max_repeated_chars=0` 会关闭连续重复字符检查。
+`zxcvbn_enabled=false` 是默认值。启用后，SyncTV 使用 zxcvbn 熵估算器，并拒绝分数低于 `zxcvbn_min_score` 的密码（范围 `0`-`4`，推荐最低 `3`）。
 
 ## CORS 和可信代理
 

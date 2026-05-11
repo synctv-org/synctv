@@ -24,8 +24,7 @@ use axum::{
 use futures::future::BoxFuture;
 use futures::FutureExt;
 
-use synctv_core::models::{RoomId, UserId};
-use synctv_core::provider::proxy::{ProxyAction, ProxyRequestContext};
+use synctv_core::provider::proxy::ProxyAction;
 use synctv_core::provider::ExecutionControl;
 
 use crate::http::{
@@ -33,21 +32,8 @@ use crate::http::{
     middleware::RequestMetadata,
     AppError, AppState,
 };
+use crate::impls::providers::proxy::{resolve_provider_proxy_action, ProviderProxyResolution};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
-
-fn decode_or_parse_proxy_user_id(
-    codec: &crate::PublicIdCodec,
-    value: &str,
-) -> Result<UserId, ApiError> {
-    crate::impls::parse_user_id_param(value, "user_id", codec)
-}
-
-fn decode_or_parse_proxy_room_id(
-    codec: &crate::PublicIdCodec,
-    value: &str,
-) -> Result<RoomId, ApiError> {
-    crate::impls::parse_room_id_param(value, "room_id", codec)
-}
 
 fn set_default_cache_control(
     mut response: axum::response::Response,
@@ -338,18 +324,11 @@ fn execute_unified_proxy_handler(
     method: Method,
 ) -> BoxFuture<'static, AppResult<axum::response::Response>> {
     async move {
-        crate::impls::validate_proto_request(&path).map_err(AppError::from)?;
-        let crate::proto::providers::common::ProviderProxyPathRequest {
-            provider_name,
-            sub_path,
-        } = path;
         let query_str = raw_query.0.unwrap_or_default();
 
-        let request_executor = state.request_executor.clone();
+        let request_executor = state.shared_api_runtime.request_executor.clone();
         let resolve_request_meta = request_meta.clone();
         let state_for_resolution = state.clone();
-        let provider_name_for_resolution = provider_name.clone();
-        let sub_path_for_resolution = sub_path.clone();
         let query_str_for_resolution = query_str.clone();
         let headers_for_resolution = headers.clone();
 
@@ -358,60 +337,26 @@ fn execute_unified_proxy_handler(
                 &resolve_request_meta,
                 EndpointRateLimitCategory::Streaming,
                 move |request_control| async move {
-                    let version = sub_path_for_resolution.split('/').next().unwrap_or("");
-                    let claims = state_for_resolution
-                        .proxy_signing_key
-                        .parse_and_verify_query(
-                            &query_str_for_resolution,
-                            &provider_name_for_resolution,
-                            version,
-                        )
-                        .map_err(|error| {
-                            tracing::warn!(
-                                error = %error,
-                                message = synctv_common::messages::INVALID_PROXY_SIGNATURE,
-                                "Proxy signature validation failed"
-                            );
-                            ApiError::Authentication(
-                                synctv_common::messages::INVALID_PROXY_SIGNATURE.to_string(),
-                            )
-                        })?;
-
-                    let uid = decode_or_parse_proxy_user_id(
-                        &state_for_resolution.public_id_codec,
-                        &claims.user_id,
-                    )?;
-                    let rid = decode_or_parse_proxy_room_id(
-                        &state_for_resolution.public_id_codec,
-                        &claims.room_id,
-                    )?;
-                    validate_fresh_proxy_access_api(&state_for_resolution, &rid, &uid).await?;
-
-                    let proxy = state_for_resolution
-                        .proxy_provider_registry
-                        .get(&provider_name_for_resolution)
-                        .ok_or_else(|| {
-                            ApiError::NotFound(
-                                synctv_common::messages::UNKNOWN_PROVIDER.to_string(),
-                            )
-                        })?;
-
-                    let store = state_for_resolution
-                        .provider_stores
-                        .load(&provider_name_for_resolution);
-                    let proxy_base = format!("/api/providers/proxy/{provider_name_for_resolution}");
-                    let ctx = ProxyRequestContext {
-                        sub_path: &sub_path_for_resolution,
-                        query_string: Some(&query_str_for_resolution),
-                        store: Some(&store),
-                        proxy_base: &proxy_base,
-                        services: &state_for_resolution.proxy_services,
-                        verified_claims: Some(&claims),
-                        request_context: Some(&request_control),
+                    let action = resolve_provider_proxy_action(ProviderProxyResolution {
+                        path,
+                        query_string: &query_str_for_resolution,
                         request_headers: &headers_for_resolution,
-                    };
-
-                    let action = proxy.resolve_proxy(&ctx).await.map_err(ApiError::from)?;
+                        public_id_codec: &state_for_resolution.shared_api_runtime.public_id_codec,
+                        proxy_signing_key: &state_for_resolution
+                            .shared_api_runtime
+                            .proxy_signing_key,
+                        proxy_provider_registry: &state_for_resolution
+                            .shared_api_runtime
+                            .proxy_provider_registry,
+                        provider_stores: state_for_resolution
+                            .shared_api_runtime
+                            .provider_stores
+                            .as_ref(),
+                        proxy_services: &state_for_resolution.shared_api_runtime.proxy_services,
+                        user_service: &state_for_resolution.user_service,
+                        request_control: &request_control,
+                    })
+                    .await?;
 
                     Ok::<_, ApiError>((action, request_control.cancellation_token()))
                 },
@@ -476,52 +421,6 @@ fn app_error_from_control(err: &synctv_common::ExecutionControlError) -> AppErro
             synctv_common::messages::REQUEST_TIMED_OUT,
         ),
     }
-}
-
-fn map_proxy_membership_probe_error(err: synctv_core::Error) -> AppError {
-    match err {
-        synctv_core::Error::Authorization(_) => {
-            AppError::forbidden(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM)
-        }
-        other => AppError::from(other),
-    }
-}
-
-async fn validate_fresh_proxy_access(
-    state: &AppState,
-    room_id: &RoomId,
-    user_id: &UserId,
-) -> AppResult<()> {
-    let user = state.user_service.get_user(user_id).await?;
-    if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
-        return Err(AppError::forbidden(
-            synctv_common::messages::STALE_PROXY_ACCESS,
-        ));
-    }
-
-    let room = state.proxy_services.room_service.get_room(room_id).await?;
-    if room.is_banned || !room.status.is_active() {
-        return Err(AppError::forbidden(
-            "Proxy URL is no longer valid for this room",
-        ));
-    }
-
-    state
-        .proxy_services
-        .room_service
-        .check_membership(room_id, user_id)
-        .await
-        .map_err(map_proxy_membership_probe_error)
-}
-
-async fn validate_fresh_proxy_access_api(
-    state: &AppState,
-    room_id: &RoomId,
-    user_id: &UserId,
-) -> Result<(), ApiError> {
-    validate_fresh_proxy_access(state, room_id, user_id)
-        .await
-        .map_err(app_error_to_api_error)
 }
 
 fn app_error_to_api_error(err: AppError) -> ApiError {
@@ -855,17 +754,23 @@ mod tests {
 
     #[test]
     fn proxy_membership_probe_backend_outage_maps_to_503() {
-        let err = map_proxy_membership_probe_error(synctv_core::Error::ServiceUnavailable(
-            "membership backend temporarily unavailable".to_string(),
-        ));
+        let err = map_api_error(
+            crate::impls::providers::proxy::map_proxy_membership_probe_error(
+                synctv_core::Error::ServiceUnavailable(
+                    "membership backend temporarily unavailable".to_string(),
+                ),
+            ),
+        );
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
     fn proxy_membership_probe_authorization_stays_403() {
-        let err = map_proxy_membership_probe_error(synctv_core::Error::Authorization(
-            "Not a member of this room".to_string(),
-        ));
+        let err = map_api_error(
+            crate::impls::providers::proxy::map_proxy_membership_probe_error(
+                synctv_core::Error::Authorization("Not a member of this room".to_string()),
+            ),
+        );
         assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
@@ -1086,8 +991,9 @@ mod tests {
 
         let registry = ProxyProviderRegistry::new();
         registry.register("test_provider", Arc::new(TestProxyProvider));
-        state.proxy_provider_registry = Arc::new(registry);
-        state.proxy_services = Arc::new(synctv_core::provider::proxy::ProxyServices {
+        let shared_runtime = Arc::make_mut(&mut state.shared_api_runtime);
+        shared_runtime.proxy_provider_registry = Arc::new(registry);
+        shared_runtime.proxy_services = Arc::new(synctv_core::provider::proxy::ProxyServices {
             room_service,
             credential_encryption: None,
             credential_repo: Arc::new(
@@ -1098,8 +1004,8 @@ mod tests {
                 ),
             ),
             provider_access_service: None,
-            signing_key: state.proxy_signing_key.clone(),
-            public_id_codec: state.public_id_codec.clone(),
+            signing_key: shared_runtime.proxy_signing_key.clone(),
+            public_id_codec: shared_runtime.public_id_codec.clone(),
         });
         state
     }
@@ -1136,6 +1042,7 @@ mod tests {
             .expect("member");
 
         let (room, _) = state
+            .shared_api_runtime
             .proxy_services
             .room_service
             .create_room(
@@ -1148,6 +1055,7 @@ mod tests {
             .await
             .expect("room");
         state
+            .shared_api_runtime
             .proxy_services
             .room_service
             .join_room(room.id, member.id, None)
@@ -1155,9 +1063,17 @@ mod tests {
             .expect("join");
 
         let raw_query = build_proxy_query(
-            state.proxy_signing_key.as_ref(),
-            &state.public_id_codec.encode_room_id(room.id).unwrap(),
-            &state.public_id_codec.encode_user_id(member.id).unwrap(),
+            state.shared_api_runtime.proxy_signing_key.as_ref(),
+            &state
+                .shared_api_runtime
+                .public_id_codec
+                .encode_room_id(room.id)
+                .unwrap(),
+            &state
+                .shared_api_runtime
+                .public_id_codec
+                .encode_user_id(member.id)
+                .unwrap(),
             "v1",
         );
 
@@ -1200,6 +1116,7 @@ mod tests {
             .expect("member");
 
         let (room, _) = state
+            .shared_api_runtime
             .proxy_services
             .room_service
             .create_room(
@@ -1212,6 +1129,7 @@ mod tests {
             .await
             .expect("room");
         state
+            .shared_api_runtime
             .proxy_services
             .room_service
             .join_room(room.id, member.id, None)
@@ -1219,13 +1137,22 @@ mod tests {
             .expect("join");
 
         let raw_query = build_proxy_query(
-            state.proxy_signing_key.as_ref(),
-            &state.public_id_codec.encode_room_id(room.id).unwrap(),
-            &state.public_id_codec.encode_user_id(member.id).unwrap(),
+            state.shared_api_runtime.proxy_signing_key.as_ref(),
+            &state
+                .shared_api_runtime
+                .public_id_codec
+                .encode_room_id(room.id)
+                .unwrap(),
+            &state
+                .shared_api_runtime
+                .public_id_codec
+                .encode_user_id(member.id)
+                .unwrap(),
             "v1",
         );
 
         state
+            .shared_api_runtime
             .proxy_services
             .room_service
             .update_room_status(&room.id, RoomStatus::Closed)

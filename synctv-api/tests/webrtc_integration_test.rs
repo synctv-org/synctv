@@ -697,10 +697,6 @@ mod permissions {
     }
 }
 
-// Note: Network quality functionality was removed with the SFU module.
-// The get_network_quality API now always returns an empty peer list.
-// This is tested in the HTTP integration tests.
-
 mod message_types {
     use synctv_proto::client::{WebRtcAnswer, WebRtcIceCandidate, WebRtcOffer};
 

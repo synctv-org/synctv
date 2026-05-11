@@ -179,6 +179,8 @@ pub struct PasswordValidator {
     require_special_char: bool,
     /// Maximum consecutive repeated characters allowed (0 = disabled)
     max_repeated_chars: usize,
+    zxcvbn_enabled: bool,
+    zxcvbn_min_score: u8,
 }
 
 impl Default for PasswordValidator {
@@ -190,6 +192,8 @@ impl Default for PasswordValidator {
             require_digit: true,
             require_special_char: false,
             max_repeated_chars: 3,
+            zxcvbn_enabled: false,
+            zxcvbn_min_score: 3,
         }
     }
 }
@@ -210,6 +214,8 @@ impl PasswordValidator {
             require_digit: config.require_digit,
             require_special_char: config.require_special,
             max_repeated_chars: config.max_repeated_chars,
+            zxcvbn_enabled: config.zxcvbn_enabled,
+            zxcvbn_min_score: config.zxcvbn_min_score,
         }
     }
 
@@ -228,6 +234,13 @@ impl PasswordValidator {
     #[must_use]
     pub const fn with_max_repeated_chars(mut self, max: usize) -> Self {
         self.max_repeated_chars = max;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_zxcvbn(mut self, enabled: bool, min_score: u8) -> Self {
+        self.zxcvbn_enabled = enabled;
+        self.zxcvbn_min_score = min_score;
         self
     }
 
@@ -303,6 +316,20 @@ impl PasswordValidator {
                     count = 1;
                 }
                 prev = Some(ch);
+            }
+        }
+
+        if self.zxcvbn_enabled {
+            let entropy = zxcvbn::zxcvbn(password, &[]);
+            let score = u8::from(entropy.score());
+            if score < self.zxcvbn_min_score {
+                return Err(ValidationError::Field {
+                    field: "password".to_string(),
+                    message: format!(
+                        "is too weak according to zxcvbn score {score}; minimum required score is {}",
+                        self.zxcvbn_min_score
+                    ),
+                });
             }
         }
 
@@ -720,6 +747,8 @@ mod tests {
             require_digit: true,
             require_special: true,
             max_repeated_chars: 2,
+            zxcvbn_enabled: false,
+            zxcvbn_min_score: 3,
         };
         let validator = PasswordValidator::from_config(&config);
 
@@ -731,6 +760,18 @@ mod tests {
         assert!(validator.validate("abcde1fghi").is_err());
         // 3 consecutive chars with max_repeated_chars=2
         assert!(validator.validate("aaabcde1!f").is_err());
+    }
+
+    #[test]
+    fn test_password_zxcvbn_is_opt_in() {
+        let default_validator = PasswordValidator::new();
+        assert!(default_validator.validate("Password123").is_ok());
+
+        let zxcvbn_validator = PasswordValidator::new().with_zxcvbn(true, 3);
+        assert!(zxcvbn_validator.validate("Password123").is_err());
+        assert!(zxcvbn_validator
+            .validate("CorrectHorseBatteryStaple123")
+            .is_ok());
     }
 
     #[test]

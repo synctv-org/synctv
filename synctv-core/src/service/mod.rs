@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod audit_partition_manager;
 pub mod auth;
+pub mod ban_record;
 pub mod chat;
 pub mod chat_partition_manager;
 pub mod cleanup;
@@ -29,6 +30,7 @@ pub mod proxy_signature;
 pub mod publish_key;
 pub mod rate_limit;
 pub mod remote_provider_manager;
+pub mod review;
 pub mod room;
 pub mod room_settings;
 pub mod settings;
@@ -55,6 +57,9 @@ pub use auth::{
     brute_force_protection_from_shared_state_profile, hash_password, verify_password,
     AuthenticatedToken, BruteForceProtection, BruteForceProtectionService, Claims, GuestClaims,
     JwtService, SecurityPipeline, TokenBlacklistStore, TokenType,
+};
+pub use ban_record::{
+    BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,
 };
 pub use chat::ChatService;
 pub use chat_partition_manager::{
@@ -104,6 +109,11 @@ pub use rate_limit::{
     RateLimitError, RateLimiter, RequestRateLimiterService,
 };
 pub use remote_provider_manager::RemoteProviderManager;
+pub use review::{
+    ReviewPage, ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord,
+    RoomJoinReviewListQuery, RoomJoinReviewRecord, UserRegistrationReviewListQuery,
+    UserRegistrationReviewRecord,
+};
 pub use room::{
     AuthorizedAdminActor, ClusterOutboxDeleteEntriesEventFactory, ClusterOutboxRoomEventFactory,
     ClusterOutboxSettingsEventFactory, RoomService,

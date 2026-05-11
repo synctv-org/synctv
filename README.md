@@ -128,6 +128,7 @@ Repository process documents:
 
 - `synctv`: application binary and CLI.
 - `synctv-core`: core business logic, configuration, services, and repositories.
+- `synctv-core/testing`: reusable integration-test fixtures and service helpers.
 - `synctv-api`: HTTP/gRPC API layer.
 - `synctv-livestream`: RTMP/HLS/HTTP-FLV livestream support.
 - `synctv-cluster`: cluster coordination.

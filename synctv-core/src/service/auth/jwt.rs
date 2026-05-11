@@ -1496,12 +1496,12 @@ mod tests {
     }
 
     #[test]
-    fn test_weak_secret_common_password_rejected() {
-        // Common password pattern with padding - using simple repeated pattern
+    fn test_weak_secret_repeated_word_rejected() {
+        // Repeated low-variety word pattern with padding.
         let result = JwtService::new("passpasspasspasspasspasspass12");
         assert!(
             result.is_err(),
-            "Repeated common password should be rejected"
+            "Repeated low-variety secret should be rejected"
         );
     }
 

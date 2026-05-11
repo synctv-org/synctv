@@ -84,8 +84,8 @@ pub async fn register(
 ) -> AppResult<Json<RegisterResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -123,8 +123,8 @@ pub async fn start_opaque_registration(
 ) -> AppResult<Json<StartOpaqueRegistrationResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -162,8 +162,8 @@ pub async fn finish_opaque_registration(
 ) -> AppResult<Json<RegisterResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -203,42 +203,24 @@ pub async fn login(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let state_for_login = state.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let email_api = state.shared_api_runtime.email_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<LoginRequest>(request).await?;
-                if req.email_token.is_empty() {
-                    let client_api = state_for_login.client_api.clone();
-                    return client_api
-                        .login_with_control(req, client_ip, Some(&request_control))
-                        .await;
-                }
-                if req.password.is_empty()
-                    && !req.email.trim().is_empty()
-                    && req.username.trim().is_empty()
-                {
-                    let email_api = require_email_api_api(&state_for_login)?;
-                    let result = email_api
-                        .confirm_email_login_with_control(
-                            &req.email,
-                            &req.email_token,
-                            client_ip,
-                            Some(&request_control),
-                        )
-                        .await?;
-                    return Ok(crate::impls::client::login_outcome_to_proto(
-                        result.login,
-                        &state_for_login.public_id_codec,
-                    ));
-                }
-
-                Err(ApiError::InvalidInput(
-                    "Email login token requires email only and cannot be combined with username or password.".to_string(),
-                ))
+                client_api
+                    .login_request_with_control(
+                        email_api.as_deref(),
+                        req,
+                        client_ip,
+                        Some(&request_control),
+                    )
+                    .await
             },
         )
         .await
@@ -267,8 +249,9 @@ pub async fn create_guest_token(
     request: Request,
 ) -> AppResult<Json<CreateGuestTokenResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -308,8 +291,8 @@ pub async fn start_opaque_login(
 ) -> AppResult<Json<StartOpaqueLoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -350,8 +333,8 @@ pub async fn finish_opaque_login(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -389,8 +372,9 @@ pub async fn start_passkey_registration(
 ) -> AppResult<Json<StartPasskeyRegistrationResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -429,8 +413,9 @@ pub async fn finish_passkey_registration(
 ) -> AppResult<Json<RegisterResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -472,8 +457,9 @@ pub async fn start_passkey_login(
 ) -> AppResult<Json<StartPasskeyLoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -512,8 +498,9 @@ pub async fn finish_passkey_login(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -534,7 +521,7 @@ pub async fn finish_passkey_login(
 fn require_email_api_api(
     state: &AppState,
 ) -> Result<std::sync::Arc<crate::impls::EmailApiImpl>, ApiError> {
-    state.email_api.clone().ok_or_else(|| {
+    state.shared_api_runtime.email_api.clone().ok_or_else(|| {
         ApiError::ServiceUnavailable(synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE.to_string())
     })
 }
@@ -561,6 +548,7 @@ pub async fn request_email_login(
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let state_for_request = state.clone();
     let result = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -588,29 +576,23 @@ pub async fn request_mfa_email_code(
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let state_for_request = state.clone();
     let result = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<RequestMfaEmailCodeRequest>(request).await?;
-                crate::impls::validate_proto_request(&req)?;
                 let email_api = require_email_api_api(&state_for_request)?;
                 email_api
-                    .request_mfa_email_code_with_control(
-                        &req.mfa_session_id,
-                        Some(&request_control),
-                    )
+                    .request_mfa_email_code_response_with_control(req, Some(&request_control))
                     .await
             },
         )
         .await
         .map_err(super::error::map_api_error)?;
 
-    Ok(Json(RequestMfaEmailCodeResponse {
-        message: result.message,
-        masked_email: result.masked_email,
-    }))
+    Ok(Json(result))
 }
 
 pub async fn verify_mfa_email_code(
@@ -621,25 +603,24 @@ pub async fn verify_mfa_email_code(
     let client_ip = request_meta.client_ip;
     let state_for_request = state.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
                 let req = parse_auth_json::<VerifyMfaEmailCodeRequest>(request).await?;
-                crate::impls::validate_proto_request(&req)?;
                 let email_api = require_email_api_api(&state_for_request)?;
                 let outcome = email_api
-                    .verify_mfa_email_code_with_control(
-                        &req.mfa_session_id,
-                        &req.email_token,
+                    .verify_mfa_email_code_request_with_control(
+                        req,
                         client_ip,
                         Some(&request_control),
                     )
                     .await?;
                 Ok::<_, ApiError>(crate::impls::client::login_outcome_to_proto(
                     outcome,
-                    &state_for_request.public_id_codec,
+                    &state_for_request.shared_api_runtime.public_id_codec,
                 ))
             },
         )
@@ -654,8 +635,9 @@ pub async fn start_mfa_passkey(
     request: Request,
 ) -> AppResult<Json<StartMfaPasskeyResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -677,8 +659,9 @@ pub async fn finish_mfa_passkey(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -702,8 +685,9 @@ pub async fn verify_mfa_password(
 ) -> AppResult<Json<LoginResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
     let client_ip = request_meta.client_ip;
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -741,8 +725,8 @@ pub async fn refresh_token(
     request: Request,
 ) -> AppResult<Json<RefreshTokenResponse>> {
     let (request_meta, request) = extract_auth_request(&state, request).await?;
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_public_endpoint_with_control(
             &request_meta,
@@ -790,8 +774,8 @@ pub async fn logout(
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
     let authorization = request_meta.authorization.clone();
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let outcome = executor
         .execute_user_endpoint(
             &request_meta,

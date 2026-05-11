@@ -11,6 +11,71 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+/// Logical stream identity used by the application layer.
+///
+/// Storage currently encodes this as `"{room_id}:{media_id}"`; callers should
+/// use this type instead of hand-building that string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StreamKey {
+    room_id: String,
+    media_id: String,
+}
+
+impl StreamKey {
+    fn new(room_id: impl Into<String>, media_id: impl Into<String>) -> Self {
+        Self {
+            room_id: room_id.into(),
+            media_id: media_id.into(),
+        }
+    }
+
+    fn encode(&self) -> String {
+        format!("{}:{}", self.room_id, self.media_id)
+    }
+
+    fn decode(value: &str) -> Option<Self> {
+        value.split_once(':').map(|(room_id, media_id)| Self {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+        })
+    }
+
+    fn into_pair(self) -> (String, String) {
+        (self.room_id, self.media_id)
+    }
+}
+
+/// RTMP transport identity used by xiu/RTMP callbacks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RtmpKey {
+    app_name: String,
+    stream_name: String,
+}
+
+impl RtmpKey {
+    fn new(app_name: impl Into<String>, stream_name: impl Into<String>) -> Self {
+        Self {
+            app_name: app_name.into(),
+            stream_name: stream_name.into(),
+        }
+    }
+
+    fn encode(&self) -> String {
+        format!("{}\0{}", self.app_name, self.stream_name)
+    }
+
+    fn decode(value: &str) -> Option<Self> {
+        value.split_once('\0').map(|(app_name, stream_name)| Self {
+            app_name: app_name.to_string(),
+            stream_name: stream_name.to_string(),
+        })
+    }
+
+    fn into_pair(self) -> (String, String) {
+        (self.app_name, self.stream_name)
+    }
+}
+
 /// RAII guard that decrements a stream's subscriber count on drop.
 ///
 /// Hold this for the lifetime of a viewer connection:
@@ -64,15 +129,15 @@ impl Drop for StreamSubscriberGuard {
 /// Using regular `HashMap`/`HashSet` instead of `DashMap`/`DashSet` since
 /// the outer lock already provides synchronization.
 struct StreamTrackerInner {
-    /// `user_id` -> Set of `"{room_id}:{media_id}"` composite keys
+    /// `user_id` -> Set of encoded [`StreamKey`] values
     by_user: HashMap<String, HashSet<String>>,
     /// `room_id` -> Set<`media_id`>
     by_room: HashMap<String, HashSet<String>>,
-    /// `"{room_id}:{media_id}"` -> `user_id`
+    /// encoded [`StreamKey`] -> `user_id`
     by_stream: HashMap<String, String>,
-    /// `"{app_name}\0{stream_name}"` -> `"{room_id}:{media_id}"` (RTMP->logical)
+    /// encoded [`RtmpKey`] -> encoded [`StreamKey`] (RTMP->logical)
     by_rtmp: HashMap<String, String>,
-    /// `"{room_id}:{media_id}"` -> `"{app_name}\0{stream_name}"` (logical->RTMP, for cleanup)
+    /// encoded [`StreamKey`] -> encoded [`RtmpKey`] (logical->RTMP, for cleanup)
     rtmp_reverse: HashMap<String, String>,
 }
 
@@ -135,29 +200,16 @@ impl StreamTracker {
         }
     }
 
-    /// Build a composite key from `(room_id, media_id)`.
-    ///
-    /// Format: `"{room_id}:{media_id}"` — used as the canonical key across
-    /// `by_stream`, `by_user` sets, `rtmp_reverse` keys, and `PublisherManager`.
     fn stream_key(room_id: &str, media_id: &str) -> String {
-        format!("{room_id}:{media_id}")
+        StreamKey::new(room_id, media_id).encode()
     }
 
-    /// Parse a composite stream key back into `(room_id, media_id)`.
-    ///
-    /// Splits on the first `:` — `room_id` and `media_id` must not contain colons.
     fn parse_stream_key(key: &str) -> Option<(String, String)> {
-        key.split_once(':')
-            .map(|(r, m)| (r.to_string(), m.to_string()))
+        StreamKey::decode(key).map(StreamKey::into_pair)
     }
 
-    /// Build an RTMP composite key from `(app_name, stream_name)`.
-    ///
-    /// Format: `"{app_name}\0{stream_name}"` — uses null byte separator to
-    /// avoid ambiguity (RTMP `app_name/stream_name` can contain colons but
-    /// not null bytes).
     fn rtmp_key(app_name: &str, stream_name: &str) -> String {
-        format!("{app_name}\0{stream_name}")
+        RtmpKey::new(app_name, stream_name).encode()
     }
 
     /// Register that `user_id` is publishing `(room_id, media_id)` via RTMP
@@ -384,11 +436,10 @@ impl StreamTracker {
     pub fn get_rtmp_identifiers(&self, room_id: &str, media_id: &str) -> Option<(String, String)> {
         let inner = self.inner.read();
         let sk = Self::stream_key(room_id, media_id);
-        inner.rtmp_reverse.get(&sk).and_then(|rk| {
-            // rtmp_key format is "{app_name}\0{stream_name}"
-            rk.split_once('\0')
-                .map(|(app, stream)| (app.to_string(), stream.to_string()))
-        })
+        inner
+            .rtmp_reverse
+            .get(&sk)
+            .and_then(|rk| RtmpKey::decode(rk).map(RtmpKey::into_pair))
     }
 
     /// Iterate over all stream entries. Returns owned `Vec` of `(stream_key, user_id)`.
@@ -548,6 +599,24 @@ impl StreamTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stream_and_rtmp_key_roundtrip() {
+        let stream_key = StreamKey::new("room1", "media1").encode();
+        assert_eq!(
+            StreamKey::decode(&stream_key).map(StreamKey::into_pair),
+            Some(("room1".to_string(), "media1".to_string()))
+        );
+
+        let rtmp_key = RtmpKey::new("room:with:colon", "stream:with:colon").encode();
+        assert_eq!(
+            RtmpKey::decode(&rtmp_key).map(RtmpKey::into_pair),
+            Some((
+                "room:with:colon".to_string(),
+                "stream:with:colon".to_string()
+            ))
+        );
+    }
 
     #[test]
     fn test_clear_removes_all_entries() {

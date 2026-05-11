@@ -8,7 +8,7 @@
 
 use crate::http::error::AppResult;
 use crate::http::middleware::RequestMetadata;
-use crate::http::validation::ValidatedQuery;
+use crate::http::validation::ProtoQuery;
 use crate::http::AppState;
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
@@ -25,6 +25,7 @@ fn get_notification_api(
     state: &AppState,
 ) -> Result<&crate::impls::NotificationApiImpl, crate::http::AppError> {
     state
+        .shared_api_runtime
         .notification_api
         .as_ref()
         .map(std::convert::AsRef::as_ref)
@@ -57,7 +58,7 @@ fn get_notification_api(
 )]
 pub async fn list_notifications(
     request_meta: RequestMetadata,
-    ValidatedQuery(query): ValidatedQuery<crate::proto::client::ListNotificationsRequest>,
+    ProtoQuery(query): ProtoQuery<crate::proto::client::ListNotificationsRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<ListNotificationsResponse>> {
     let api = get_notification_api(&state)?;
@@ -66,6 +67,7 @@ pub async fn list_notifications(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     let result = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -110,6 +112,7 @@ pub async fn get_notification(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -152,6 +155,7 @@ pub async fn mark_as_read(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -200,6 +204,7 @@ pub async fn mark_all_as_read(
     let req = req.map_or_else(MarkAllAsReadRequest::default, |Json(req)| req);
 
     state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -248,6 +253,7 @@ pub async fn delete_notification(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -291,6 +297,7 @@ pub async fn delete_all_read(
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
 
     state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,

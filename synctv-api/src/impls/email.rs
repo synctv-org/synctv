@@ -10,8 +10,9 @@ use synctv_core::service::{
 };
 use synctv_proto::client::{
     ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
-    ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
-    SendVerificationEmailRequest, SendVerificationEmailResponse,
+    ConfirmPasswordResetResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    RequestPasswordResetRequest, RequestPasswordResetResponse, SendVerificationEmailRequest,
+    SendVerificationEmailResponse, VerifyMfaEmailCodeRequest,
 };
 
 use crate::impls::ApiError;
@@ -635,6 +636,22 @@ impl EmailApiImpl {
         })
     }
 
+    pub async fn request_mfa_email_code_response_with_control(
+        &self,
+        req: RequestMfaEmailCodeRequest,
+        control: Option<&ExecutionControl>,
+    ) -> Result<RequestMfaEmailCodeResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let result = self
+            .request_mfa_email_code_with_control(&req.mfa_session_id, control)
+            .await?;
+
+        Ok(RequestMfaEmailCodeResponse {
+            message: result.message,
+            masked_email: result.masked_email,
+        })
+    }
+
     pub async fn verify_mfa_email_code_with_control(
         &self,
         mfa_session_id: &str,
@@ -665,6 +682,22 @@ impl EmailApiImpl {
             )
             .await
             .map_err(ApiError::from)
+    }
+
+    pub async fn verify_mfa_email_code_request_with_control(
+        &self,
+        req: VerifyMfaEmailCodeRequest,
+        client_ip: Option<std::net::IpAddr>,
+        control: Option<&ExecutionControl>,
+    ) -> Result<AuthenticatedLogin, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        self.verify_mfa_email_code_with_control(
+            &req.mfa_session_id,
+            &req.email_token,
+            client_ip,
+            control,
+        )
+        .await
     }
 }
 

@@ -437,7 +437,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.list_playlists_for_actor(&actor, req).await
     }
@@ -447,7 +446,6 @@ impl ClientApiImpl {
         access: &GuestRoomAccess,
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
         self.list_playlists_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
     }
@@ -457,6 +455,7 @@ impl ClientApiImpl {
         actor: &RoomActor,
         req: crate::proto::client::ListPlaylistsRequest,
     ) -> Result<crate::proto::client::ListPlaylistsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
             .await?;
         let rid = actor.room_id();

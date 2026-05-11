@@ -4,7 +4,7 @@ use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId};
-use synctv_core::repository::{ReviewRepository, RoomJoinReviewListQuery, RoomJoinReviewRecord};
+use synctv_core::service::{RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
 use super::convert::{
     members_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role, room_member_to_proto,
@@ -117,7 +117,8 @@ impl ClientApiImpl {
         room_id: &synctv_core::models::RoomId,
         request_id: ReviewRequestId,
     ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
-        let row = ReviewRepository::new(self.user_service.pool().clone())
+        let row = self
+            .review_service
             .load_room_join_in_room(request_id, *room_id)
             .await?
             .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?;
@@ -149,7 +150,8 @@ impl ClientApiImpl {
             )?)
         };
 
-        let page = ReviewRepository::new(self.user_service.pool().clone())
+        let page = self
+            .review_service
             .list_room_joins(&RoomJoinReviewListQuery {
                 status,
                 room_id: Some(rid),
@@ -180,7 +182,6 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
         let actor = self.room_actor_for_user(user_id, room_id).await?;
         self.get_room_members_for_actor(&actor, req).await
     }
@@ -190,7 +191,6 @@ impl ClientApiImpl {
         access: &GuestRoomAccess,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
-        crate::impls::validate_proto_request(&req)?;
         self.get_room_members_for_actor(&RoomActor::Guest(access.clone()), req)
             .await
     }
@@ -200,6 +200,7 @@ impl ClientApiImpl {
         actor: &RoomActor,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         self.require_room_permission(actor, PermissionBits::VIEW_MEMBER_LIST)
             .await?;
         let rid = actor.room_id();

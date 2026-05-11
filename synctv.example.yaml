@@ -376,6 +376,12 @@ password_complexity:
   # Maximum consecutive repeated characters allowed (prevents "aaaaaa").
   # Set to 0 to disable this check.
   max_repeated_chars: 3
+  # Optional zxcvbn entropy estimator. Disabled by default; enable only when
+  # you want dictionary/pattern-based password strength scoring.
+  zxcvbn_enabled: false
+  # Minimum zxcvbn score when enabled. Valid range: 0-4. zxcvbn recommends
+  # treating scores below 3 as weak.
+  zxcvbn_min_score: 3
 
 # ============================================================================
 # Connection Limits

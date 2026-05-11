@@ -3,7 +3,7 @@
 // Request and response types are proto-generated structs.
 
 use axum::{
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
     Json,
 };
 use futures::future::BoxFuture;
@@ -12,7 +12,7 @@ use std::future::Future;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use synctv_core::service::auth::{JwtValidator, TokenType};
 
-use super::validation::{StrictQuery, ValidatedQuery};
+use super::validation::ProtoQuery;
 use super::{middleware::RequestMetadata, AppResult, AppState, WithMediaId, WithPlaylistId};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
@@ -209,15 +209,11 @@ fn build_get_playback_request(query: &GetPlaybackQuery) -> AppResult<GetPlayback
     let request = GetPlaybackRequest {
         playback_client_profile,
     };
-    crate::impls::validate_proto_request(&request).map_err(super::error::map_api_error)?;
     Ok(request)
 }
 
-fn validate_room_path(
-    path: crate::proto::client::RoomPathRequest,
-) -> Result<String, super::AppError> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
-    Ok(path.room_id)
+fn extract_room_id(path: crate::proto::client::RoomPathRequest) -> String {
+    path.room_id
 }
 
 fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
@@ -237,8 +233,8 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let executor = state.client_api.clone();
-        let client_api = state.client_api.clone();
+        let executor = state.shared_api_runtime.client_api.clone();
+        let client_api = state.shared_api_runtime.client_api.clone();
         executor
             .execute_public_endpoint(&request_meta, category, move || operation(client_api))
             .await
@@ -265,8 +261,8 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let executor = state.client_api.clone();
-        let client_api = state.client_api.clone();
+        let executor = state.shared_api_runtime.client_api.clone();
+        let client_api = state.shared_api_runtime.client_api.clone();
         executor
             .execute_user_endpoint(&request_meta, category, move |authenticated| {
                 operation(client_api, authenticated)
@@ -302,8 +298,8 @@ where
             .ok_or_else(super::AppError::missing_authorization_header)?;
         let is_guest_token =
             synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
-        let executor = state.client_api.clone();
-        let client_api = state.client_api.clone();
+        let executor = state.shared_api_runtime.client_api.clone();
+        let client_api = state.shared_api_runtime.client_api.clone();
         if is_guest_token {
             executor
                 .execute_public_endpoint(&request_meta, category, move || {
@@ -364,8 +360,8 @@ where
             .ok_or_else(super::AppError::missing_authorization_header)?;
         let is_guest_token =
             synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
-        let executor = state.client_api.clone();
-        let client_api = state.client_api.clone();
+        let executor = state.shared_api_runtime.client_api.clone();
+        let client_api = state.shared_api_runtime.client_api.clone();
         if is_guest_token {
             executor
                 .execute_public_endpoint_with_control(
@@ -480,7 +476,7 @@ pub async fn get_room(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetRoomResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -525,11 +521,11 @@ pub async fn join_room(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     req.room_id = room_id.clone();
     let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -576,7 +572,7 @@ pub async fn leave_room(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<LeaveRoomResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -618,7 +614,7 @@ pub async fn delete_room(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<DeleteRoomResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     tracing::info!(room_id = %room_id, "Deleting room");
     let room_id_for_log = room_id.clone();
 
@@ -665,7 +661,7 @@ pub async fn add_media(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBody>,
 ) -> AppResult<Json<AddMediaResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -707,9 +703,8 @@ pub async fn delete_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    ValidatedQuery(query): ValidatedQuery<DeleteMediaQuery>,
+    ProtoQuery(query): ProtoQuery<DeleteMediaQuery>,
 ) -> AppResult<Json<DeleteMediaResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let proto_req = DeleteMediaRequest {
         media_id,
@@ -757,7 +752,7 @@ pub async fn delete_entries(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<DeleteEntriesBody>,
 ) -> AppResult<Json<DeleteEntriesResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -800,7 +795,7 @@ pub async fn move_media(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<MoveMediaRequest>,
 ) -> AppResult<Json<MoveMediaResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -843,7 +838,7 @@ pub async fn list_playlist_items(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<ListPlaylistItemsRequest>,
 ) -> AppResult<Json<crate::proto::client::ListPlaylistItemsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -886,7 +881,7 @@ pub async fn start_playback(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StartPlaybackBody>,
 ) -> AppResult<Json<StartPlaybackResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -929,7 +924,7 @@ pub async fn stop_playback(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<StopPlaybackBody>,
 ) -> AppResult<Json<StopPlaybackResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -970,9 +965,9 @@ pub async fn get_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    StrictQuery(query): StrictQuery<GetPlaybackQuery>,
+    ProtoQuery(query): ProtoQuery<GetPlaybackQuery>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let req = build_get_playback_request(&query)?;
     let response = execute_room_actor_endpoint_with_control(
         &state,
@@ -1015,9 +1010,9 @@ pub async fn get_room_members(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<GetRoomMembersRequest>,
+    ProtoQuery(req): ProtoQuery<GetRoomMembersRequest>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response =
         execute_room_actor_endpoint(
             &state,
@@ -1058,9 +1053,9 @@ pub async fn list_room_streams(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<ListRoomStreamsRequest>,
+    ProtoQuery(req): ProtoQuery<ListRoomStreamsRequest>,
 ) -> AppResult<Json<ListRoomStreamsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1135,7 +1130,7 @@ pub async fn set_room_password(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<SetRoomPasswordBody>,
 ) -> AppResult<Json<SetRoomPasswordResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1176,7 +1171,7 @@ pub async fn get_room_settings(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetRoomSettingsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -1216,7 +1211,7 @@ pub async fn push_media_batch(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaBatchBody>,
 ) -> AppResult<Json<crate::proto::client::AddMediaBatchResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1260,7 +1255,6 @@ pub async fn edit_media(
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
     Json(req): Json<EditMediaBody>,
 ) -> AppResult<Json<EditMediaResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let req = req.with_media_id(media_id);
     let response = execute_user_endpoint(
@@ -1302,7 +1296,7 @@ pub async fn clear_playlist(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ClearPlaylistResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1344,7 +1338,6 @@ pub async fn get_media(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::Media>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let media =
         execute_room_actor_endpoint(
@@ -1387,7 +1380,6 @@ pub async fn get_playlist(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::GetPlaylistResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -1430,7 +1422,7 @@ pub async fn get_playlist(
 pub async fn list_or_get_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<ListRoomsRequest>,
+    ProtoQuery(req): ProtoQuery<ListRoomsRequest>,
 ) -> AppResult<Json<ListRoomsResponse>> {
     let response = execute_public_endpoint(
         &state,
@@ -1474,7 +1466,7 @@ pub async fn update_room_settings(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdateRoomSettingsBody>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1517,7 +1509,7 @@ pub async fn transfer_room_ownership(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<TransferRoomOwnershipBody>,
 ) -> AppResult<Json<TransferRoomOwnershipResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1563,7 +1555,7 @@ pub async fn update_playback(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<UpdatePlayback>,
 ) -> AppResult<Json<GetPlaybackResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1603,7 +1595,7 @@ pub async fn reset_room_settings(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<ResetRoomSettingsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1645,11 +1637,9 @@ pub async fn get_chat_history(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    RawQuery(raw_query): RawQuery,
-    ValidatedQuery(mut req): ValidatedQuery<GetChatHistoryRequest>,
+    ProtoQuery(mut req): ProtoQuery<GetChatHistoryRequest>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
-    let room_id = validate_room_path(path)?;
-    validate_chat_history_query(raw_query.as_deref())?;
+    let room_id = extract_room_id(path);
     req.limit = if req.limit == 0 {
         50
     } else {
@@ -1668,20 +1658,6 @@ pub async fn get_chat_history(
         .await?;
 
     Ok(Json(response))
-}
-
-fn validate_chat_history_query(raw_query: Option<&str>) -> AppResult<()> {
-    let Some(raw_query) = raw_query else {
-        return Ok(());
-    };
-
-    if url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key == "before") {
-        return Err(super::AppError::bad_request(
-            "The 'before' query parameter is no longer supported; use 'cursor' instead",
-        ));
-    }
-
-    Ok(())
 }
 
 /// Create a playlist
@@ -1712,7 +1688,7 @@ pub async fn create_playlist(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<CreatePlaylistBody>,
 ) -> AppResult<Json<CreatePlaylistResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1757,7 +1733,6 @@ pub async fn update_playlist(
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
     Json(req): Json<UpdatePlaylistBody>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -1805,7 +1780,6 @@ pub async fn move_playlist(
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
     Json(req): Json<MovePlaylistBody>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -1853,9 +1827,8 @@ pub async fn delete_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    ValidatedQuery(query): ValidatedQuery<DeletePlaylistQuery>,
+    ProtoQuery(query): ProtoQuery<DeletePlaylistQuery>,
 ) -> AppResult<Json<DeletePlaylistResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(super::error::map_api_error)?;
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -1904,9 +1877,9 @@ pub async fn list_playlists(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    ValidatedQuery(req): ValidatedQuery<ListPlaylistsRequest>,
+    ProtoQuery(req): ProtoQuery<ListPlaylistsRequest>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
-    let room_id = validate_room_path(path)?;
+    let room_id = extract_room_id(path);
     let response =
         execute_room_actor_endpoint(
             &state,
@@ -1939,7 +1912,7 @@ pub async fn list_playlists(
 pub async fn get_hot_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(mut req): ValidatedQuery<GetHotRoomsRequest>,
+    ProtoQuery(mut req): ProtoQuery<GetHotRoomsRequest>,
 ) -> AppResult<Json<GetHotRoomsResponse>> {
     req.limit = if req.limit == 0 {
         10
@@ -1963,8 +1936,7 @@ mod tests {
 
     use super::{
         build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-        validate_chat_history_query, AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody,
-        GetPlaybackQuery, UpdatePlayback,
+        AddMediaBatchBody, CreatePlaylistBody, DeleteEntriesBody, GetPlaybackQuery, UpdatePlayback,
     };
     use crate::proto::client::{
         DeleteMediaQuery, DeletePlaylistQuery, GetChatHistoryRequest, GetRoomMembersRequest,
@@ -2363,24 +2335,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_chat_history_request_rejects_before_param() {
-        let err = validate_chat_history_query(Some("limit=20&before=1710000000"))
-            .expect_err("before must be rejected");
-
-        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(
-            err.message.contains("no longer supported"),
-            "unexpected message: {}",
-            err.message
-        );
-    }
-
-    #[test]
     fn test_parse_chat_history_request_accepts_cursor_only() {
-        validate_chat_history_query(Some(
-            "limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123",
-        ))
-        .expect("cursor-only request");
         let req: GetChatHistoryRequest = serde_urlencoded::from_str(
             "limit=20&cursor=2026-03-31T12%3A00%3A00%2B00%3A00%7Cmsg_123",
         )

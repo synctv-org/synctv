@@ -498,7 +498,7 @@ pub(crate) fn build_add_media_request(
     let name = if name.is_empty() {
         DEFAULT_MEDIA_TITLE.to_string()
     } else {
-        crate::http::validation::validate_media_name(&name)
+        crate::impls::validation::validate_media_name(&name)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid media name: {e}")))?
     };
 
@@ -597,7 +597,7 @@ pub(crate) fn build_edit_media_request(
         None
     } else {
         Some(
-            crate::http::validation::validate_media_name(&req.name)
+            crate::impls::validation::validate_media_name(&req.name)
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid media name: {e}")))?,
         )
     };

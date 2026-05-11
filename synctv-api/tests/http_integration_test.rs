@@ -1492,20 +1492,6 @@ mod auth_flow {
         );
     }
 
-    /// Verify password validation rejects common weak passwords at the API layer
-    #[test]
-    fn test_weak_password_rejected_at_validation() {
-        use synctv_api::http::validation::validate_password;
-
-        // Common passwords should fail
-        assert!(validate_password("password").is_err());
-        assert!(validate_password("123456").is_err());
-        assert!(validate_password("qwerty").is_err());
-
-        // Non-common passwords that meet length requirement should pass
-        assert!(validate_password("MyUniquePass1!").is_ok());
-    }
-
     /// Guest token flow: issue -> validate -> verify room binding
     #[test]
     fn test_guest_auth_flow() {

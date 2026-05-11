@@ -4,16 +4,15 @@ This directory contains performance benchmarks for the SyncTV Rust implementatio
 
 ## Running Benchmarks
 
-Run all benchmarks:
+Run all registered workspace benchmarks:
 ```bash
 cargo bench
 ```
 
-Run specific benchmark:
+Run registered `synctv-core` benchmarks:
 ```bash
-cargo bench --bench user_cache
-cargo bench --bench room_queries
-cargo bench --bench auth_service
+cargo bench -p synctv-core --bench auth_service
+cargo bench -p synctv-core --bench database_benchmarks
 ```
 
 ## Benchmark Structure
@@ -21,18 +20,21 @@ cargo bench --bench auth_service
 ```
 benches/
 ├── database/
-│   ├── user_queries.rs     # Database query performance (users)
-│   ├── room_queries.rs     # Database query performance (rooms)
-│   └── chat_queries.rs     # Database query performance (chat)
+│   └── room_queries.rs     # Historical room query Criterion benchmark
 ├── cache/
-│   ├── user_cache.rs       # User cache performance
-│   └── room_cache.rs       # Room cache performance
+│   └── user_cache.rs       # Historical user cache Criterion benchmark
 ├── service/
-│   ├── auth_service.rs     # Authentication service performance
-│   ├── room_service.rs     # Room service performance
-│   └── chat_service.rs     # Chat service performance
+│   └── auth_service.rs     # Stub; moved to synctv-core/benches/auth_service.rs
 └── README.md
+
+synctv-core/benches/
+├── auth_service.rs         # Registered auth service benchmark
+└── database_benchmarks.rs  # Registered database benchmark
 ```
+
+The workspace currently registers `synctv-core` benchmarks through
+`synctv-core/Cargo.toml`. The files under the repository-level `benches/`
+directory are not registered by the virtual workspace manifest.
 
 ## Understanding Results
 

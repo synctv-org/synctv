@@ -286,6 +286,8 @@ curl -fsS http://localhost:8080/health/ready
 | `password_complexity.require_digit` | 布尔值 | `true` | 是否要求数字 |
 | `password_complexity.require_special` | 布尔值 | `false` | 是否要求特殊字符 |
 | `password_complexity.max_repeated_chars` | 整数 | `3` | 最大连续重复字符数，0 表示关闭 |
+| `password_complexity.zxcvbn_enabled` | 布尔值 | `false` | 是否启用 zxcvbn 熵估算评分 |
+| `password_complexity.zxcvbn_min_score` | 整数 `0`-`4` | `3` | 启用 zxcvbn 时的最低分数 |
 | `buffer_sizes.websocket_outbound` | 整数 | `256` | 每连接 WebSocket 出站队列 |
 | `buffer_sizes.audit_buffer` | 整数 | `10000` | 审计事件缓冲容量 |
 | `cache.l1_capacity` | 整数 | `500` | L1 内存缓存容量 |

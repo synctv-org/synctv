@@ -3132,9 +3132,6 @@ impl StreamMessageHandler {
                     .handle_unobserve_resource(unobserve)
                     .await?;
             }
-            Some(Message::SfuMigrationAnswer(_)) => {
-                return Err("SFU is no longer supported".to_string());
-            }
             None => {
                 return Err("Empty message".to_string());
             }

@@ -1,8 +1,6 @@
-//! End-to-end RTMP authentication tests.
+//! RTMP authentication callback contract tests.
 //!
-//! These tests verify the complete RTMP authentication flow including:
-//! - JWT token validation
-//! - Room permission verification
+//! These tests use a mock `AuthCallback` to verify callback-level behavior:
 //! - Publisher registry integration
 //! - Authentication failure cleanup
 //! - `on_unpublish` callback behavior
@@ -14,8 +12,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use synctv_livestream::relay::StreamRegistryTrait;
 use synctv_livestream::{AuthCallback, AuthPublishRewrite};
-
-// Mock Auth Callback for Testing
 
 /// Tracks callback invocations for testing
 #[derive(Debug, Default)]
@@ -48,18 +44,18 @@ impl CallbackTracker {
     }
 }
 
-/// Mock auth callback that simulates JWT validation and room permission checks
+/// Mock auth callback that returns configured auth and room-match outcomes.
 struct MockRtmpAuthCallback {
     registry: Arc<dyn StreamRegistryTrait>,
     tracker: Arc<CallbackTracker>,
-    /// Simulates whether the JWT token is valid
+    /// Whether the mocked auth result should allow publishing.
     should_authenticate: bool,
-    /// Simulates the `room_id` extracted from JWT
-    jwt_room_id: String,
-    /// Simulates the `media_id` extracted from JWT
-    jwt_media_id: String,
-    /// Simulates the `user_id` extracted from JWT
-    jwt_user_id: String,
+    /// Room ID the mock treats as authorized.
+    authorized_room_id: String,
+    /// Media ID used when registering the publisher.
+    authorized_media_id: String,
+    /// User ID used when registering the publisher.
+    authorized_user_id: String,
 }
 
 impl MockRtmpAuthCallback {
@@ -68,9 +64,9 @@ impl MockRtmpAuthCallback {
             registry,
             tracker,
             should_authenticate: true,
-            jwt_room_id: "test_room".to_string(),
-            jwt_media_id: "test_media".to_string(),
-            jwt_user_id: "test_user".to_string(),
+            authorized_room_id: "test_room".to_string(),
+            authorized_media_id: "test_media".to_string(),
+            authorized_user_id: "test_user".to_string(),
         }
     }
 
@@ -80,17 +76,17 @@ impl MockRtmpAuthCallback {
     }
 
     fn with_room_id(mut self, room_id: &str) -> Self {
-        self.jwt_room_id = room_id.to_string();
+        self.authorized_room_id = room_id.to_string();
         self
     }
 
     fn with_media_id(mut self, media_id: &str) -> Self {
-        self.jwt_media_id = media_id.to_string();
+        self.authorized_media_id = media_id.to_string();
         self
     }
 
     fn _with_user_id(mut self, user_id: &str) -> Self {
-        self.jwt_user_id = user_id.to_string();
+        self.authorized_user_id = user_id.to_string();
         self
     }
 }
@@ -105,16 +101,14 @@ impl AuthCallback for MockRtmpAuthCallback {
     ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
         self.tracker.publishes.fetch_add(1, Ordering::SeqCst);
 
-        // Simulate JWT validation
         if !self.should_authenticate {
-            return Err("Invalid JWT token".into());
+            return Err("mock auth rejected publish".into());
         }
 
-        // Simulate room permission check: app_name (room_id in URL) must match JWT room_id
-        if app_name != self.jwt_room_id {
+        if app_name != self.authorized_room_id {
             return Err(format!(
-                "Room ID mismatch: token has {}, request is for {}",
-                self.jwt_room_id, app_name
+                "Room ID mismatch: mock authorized {}, request is for {}",
+                self.authorized_room_id, app_name
             )
             .into());
         }
@@ -123,10 +117,10 @@ impl AuthCallback for MockRtmpAuthCallback {
         let registered = self
             .registry
             .try_register_publisher(
-                &self.jwt_room_id,
-                &self.jwt_media_id,
+                &self.authorized_room_id,
+                &self.authorized_media_id,
                 "test_node",
-                &self.jwt_user_id,
+                &self.authorized_user_id,
                 "localhost:50051",
             )
             .await?;
@@ -134,15 +128,15 @@ impl AuthCallback for MockRtmpAuthCallback {
         if !registered {
             return Err(format!(
                 "Another publisher is already active for media {} in room {}",
-                self.jwt_media_id, self.jwt_room_id
+                self.authorized_media_id, self.authorized_room_id
             )
             .into());
         }
 
         // Return rewrite so StreamHub uses canonical identifiers
         Ok(Some(AuthPublishRewrite {
-            app_name: self.jwt_room_id.clone(),
-            stream_name: self.jwt_media_id.clone(),
+            app_name: self.authorized_room_id.clone(),
+            stream_name: self.authorized_media_id.clone(),
         }))
     }
 
@@ -184,21 +178,21 @@ impl AuthCallback for MockRtmpAuthCallback {
     }
 }
 
-// JWT Token Validation Tests
+// Mock Auth Callback Tests
 
-/// Test that a valid JWT token is accepted and produces correct rewrite
+/// Test that a accepted mock auth result is accepted and produces correct rewrite
 #[tokio::test]
-async fn test_jwt_token_validation_success() {
+async fn test_mock_auth_publish_success() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room123")
         .with_media_id("media456");
 
-    // Simulate RTMP publish with room_id matching JWT
-    let result = auth.on_publish("room123", "jwt_token_here", None).await;
+    // Simulate RTMP publish with room_id matching the mock authorization
+    let result = auth.on_publish("room123", "publish_token", None).await;
 
-    assert!(result.is_ok(), "Valid JWT should authenticate successfully");
+    assert!(result.is_ok(), "mock auth should allow publish");
     let rewrite = result.unwrap();
     assert!(rewrite.is_some());
     let rewrite = rewrite.unwrap();
@@ -213,18 +207,18 @@ async fn test_jwt_token_validation_success() {
     assert_eq!(tracker.publish_calls(), 1);
 }
 
-/// Test that an invalid JWT token is rejected
+/// Test that a rejected mock auth result is propagated.
 #[tokio::test]
-async fn test_jwt_token_validation_failure() {
+async fn test_mock_auth_rejection_failure() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone()).with_auth_result(false);
 
     let result = auth.on_publish("room123", "invalid_token", None).await;
 
-    assert!(result.is_err(), "Invalid JWT should be rejected");
+    assert!(result.is_err(), "mock auth rejection should fail publish");
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("Invalid JWT token"));
+    assert!(err.contains("mock auth rejected publish"));
 
     // Verify registry was NOT updated
     assert!(!registry
@@ -233,32 +227,35 @@ async fn test_jwt_token_validation_failure() {
         .unwrap());
 }
 
-/// Test JWT token extraction from query string
+/// Test callback handling of a room mismatch.
 #[tokio::test]
-async fn test_jwt_token_from_query_string() {
+async fn test_mock_auth_ignores_query_string_token() {
     let registry = synctv_livestream::relay::local_stream_registry();
     let tracker = Arc::new(CallbackTracker::new());
     let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
         .with_room_id("room123")
         .with_media_id("media456");
 
-    // Simulate RTMP publish with token in query string
+    // Simulate RTMP publish with query string token
     let result = auth
         .on_publish(
             "room123",
             "stream_name",
-            Some("token=jwt_token_here&other=value"),
+            Some("token=publish_token&other=value"),
         )
         .await;
 
-    assert!(result.is_ok(), "JWT in query string should be accepted");
+    assert!(
+        result.is_ok(),
+        "mock auth should accept matching room even with query string"
+    );
     let rewrite = result.unwrap().unwrap();
     assert_eq!(rewrite.stream_name, "media456");
 }
 
-// Room Permission Verification Tests
+// Room Match Tests
 
-/// Test that `room_id` mismatch is detected
+/// Test that room mismatch is detected
 #[tokio::test]
 async fn test_room_id_mismatch_rejected() {
     let registry = synctv_livestream::relay::local_stream_registry();
@@ -267,7 +264,7 @@ async fn test_room_id_mismatch_rejected() {
         .with_room_id("room_A")
         .with_media_id("media123");
 
-    let result = auth.on_publish("room_B", "jwt_token", None).await;
+    let result = auth.on_publish("room_B", "publish_token", None).await;
 
     assert!(result.is_err(), "Room ID mismatch should be rejected");
     let err = result.unwrap_err().to_string();
@@ -275,7 +272,10 @@ async fn test_room_id_mismatch_rejected() {
         err.contains("Room ID mismatch"),
         "Error should mention room mismatch: {err}"
     );
-    assert!(err.contains("room_A"), "Error should show JWT room: {err}");
+    assert!(
+        err.contains("room_A"),
+        "Error should show authorized room: {err}"
+    );
     assert!(
         err.contains("room_B"),
         "Error should show requested room: {err}"
@@ -291,7 +291,7 @@ async fn test_room_id_match_accepted() {
         .with_room_id("correct_room")
         .with_media_id("media123");
 
-    let result = auth.on_publish("correct_room", "jwt_token", None).await;
+    let result = auth.on_publish("correct_room", "publish_token", None).await;
 
     assert!(result.is_ok(), "Correct room_id should be accepted");
 }
@@ -322,7 +322,7 @@ async fn test_rollback_on_streamhub_failure() {
         .with_media_id("media1");
 
     // Auth succeeds
-    let result = auth.on_publish("room1", "jwt_token", None).await;
+    let result = auth.on_publish("room1", "publish_token", None).await;
     assert!(result.is_ok());
     assert!(registry.is_stream_active("room1", "media1").await.unwrap());
 
@@ -351,7 +351,9 @@ async fn test_on_unpublish_cleanup() {
         .with_media_id("media1");
 
     // Publish
-    auth.on_publish("room1", "jwt_token", None).await.unwrap();
+    auth.on_publish("room1", "publish_token", None)
+        .await
+        .unwrap();
     assert!(registry.is_stream_active("room1", "media1").await.unwrap());
 
     // Unpublish
@@ -392,11 +394,11 @@ async fn test_duplicate_publisher_rejected() {
         .with_media_id("media1");
 
     // First publish succeeds
-    let result1 = auth.on_publish("room1", "jwt1", None).await;
+    let result1 = auth.on_publish("room1", "publish1", None).await;
     assert!(result1.is_ok());
 
     // Second publish to same room/media fails
-    let result2 = auth.on_publish("room1", "jwt2", None).await;
+    let result2 = auth.on_publish("room1", "publish2", None).await;
     assert!(result2.is_err());
     let err = result2.unwrap_err().to_string();
     assert!(
@@ -427,22 +429,4 @@ async fn test_on_play_always_rejected() {
         "Error should suggest alternatives: {err}"
     );
     assert_eq!(tracker.play_calls(), 1);
-}
-
-// Integration Tests (marked with #[ignore])
-
-/// End-to-end test that requires Docker (Redis container)
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_e2e_rtmp_auth_with_redis() {
-    // This test would use testcontainers to spin up Redis
-    // and verify the full RTMP auth flow with real Redis backend
-    // Steps:
-}
-
-/// End-to-end test with real `StreamHub`
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_e2e_rtmp_with_streamhub() {
-    // This test would verify the complete flow:
 }

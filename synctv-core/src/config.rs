@@ -2598,6 +2598,14 @@ impl Config {
             "SYNCTV_PASSWORD_COMPLEXITY_MAX_REPEATED_CHARS",
             &mut self.password_complexity.max_repeated_chars,
         )?;
+        env_override_bool(
+            "SYNCTV_PASSWORD_COMPLEXITY_ZXCVBN_ENABLED",
+            &mut self.password_complexity.zxcvbn_enabled,
+        )?;
+        env_override_parse(
+            "SYNCTV_PASSWORD_COMPLEXITY_ZXCVBN_MIN_SCORE",
+            &mut self.password_complexity.zxcvbn_min_score,
+        )?;
 
         env_override_parse(
             "SYNCTV_BUFFER_SIZES_WEBSOCKET_OUTBOUND",
@@ -3059,6 +3067,10 @@ impl Config {
         }
         if let Err(error) = crate::PublicIdCodec::from_config(&self.public_ids) {
             errors.push(error);
+        }
+
+        if self.password_complexity.zxcvbn_min_score > 4 {
+            errors.push("password_complexity.zxcvbn_min_score must be between 0 and 4".to_string());
         }
 
         if !self.security.credential_encryption_key.is_empty() {
@@ -4190,6 +4202,8 @@ pub struct PasswordComplexityConfig {
     pub require_digit: bool,
     pub require_special: bool,
     pub max_repeated_chars: usize,
+    pub zxcvbn_enabled: bool,
+    pub zxcvbn_min_score: u8,
 }
 
 impl Default for PasswordComplexityConfig {
@@ -4201,6 +4215,8 @@ impl Default for PasswordComplexityConfig {
             require_digit: true,
             require_special: false,
             max_repeated_chars: 3,
+            zxcvbn_enabled: false,
+            zxcvbn_min_score: 3,
         }
     }
 }

@@ -2821,7 +2821,7 @@ pub struct Danmaku {
 pub struct ClientMessage {
     #[prost(
         oneof = "client_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
     )]
     pub message: ::core::option::Option<client_message::Message>,
 }
@@ -2847,7 +2847,7 @@ pub mod client_message {
         ObserveResource(super::ObserveResource),
         #[prost(message, tag = "6")]
         UnobserveResource(super::UnobserveResource),
-        /// WebRTC signaling messages (P2P and SFU modes)
+        /// WebRTC signaling messages (P2P)
         #[prost(message, tag = "7")]
         WebrtcOffer(super::WebRtcOffer),
         #[prost(message, tag = "8")]
@@ -2858,9 +2858,6 @@ pub mod client_message {
         WebrtcJoin(super::WebRtcJoin),
         #[prost(message, tag = "11")]
         WebrtcLeave(super::WebRtcLeave),
-        /// SFU migration: client responds to server's migration offer
-        #[prost(message, tag = "12")]
-        SfuMigrationAnswer(super::SfuMigrationAnswer),
     }
 }
 #[derive(::prost_reflect::ReflectMessage)]
@@ -3010,7 +3007,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -3065,11 +3062,6 @@ pub mod server_message {
         WebrtcJoin(super::WebRtcJoin),
         #[prost(message, tag = "21")]
         WebrtcLeave(super::WebRtcLeave),
-        /// SFU migration: server requests existing P2P peer to renegotiate via SFU
-        #[prost(message, tag = "22")]
-        SfuMigrationOffer(super::SfuMigrationOffer),
-        #[prost(message, tag = "23")]
-        SfuMigrationStatus(super::SfuMigrationStatus),
         /// User notification push (replaces NOTIFICATION_PUSH error code abuse)
         #[prost(message, tag = "24")]
         Notification(super::UserNotification),
@@ -3504,7 +3496,7 @@ pub struct SetPasswordRequest {
     /// SECURITY: Plaintext credential - requires TLS in transit. Validation: required
     #[prost(string, tag = "1")]
     pub old_password: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
     #[prost(string, tag = "2")]
     pub new_password: ::prost::alloc::string::String,
 }
@@ -3893,7 +3885,7 @@ pub struct ConfirmPasswordResetRequest {
     /// Reset code from email. Validation: required
     #[prost(string, tag = "2")]
     pub token: ::prost::alloc::string::String,
-    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
+    /// SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
     #[prost(string, tag = "3")]
     pub new_password: ::prost::alloc::string::String,
 }
@@ -4209,69 +4201,6 @@ pub struct WebRtcLeave {
     #[prost(string, tag = "2")]
     pub conn_id: ::prost::alloc::string::String,
 }
-/// Server -> Client: SFU migration offer for an existing P2P peer
-/// The server creates a server-side PeerConnection and sends an SDP offer
-/// so the client can renegotiate its media routing through the SFU.
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SfuMigrationOffer")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationOffer))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SfuMigrationOffer {
-    /// Unique ID for this migration batch
-    #[prost(string, tag = "1")]
-    pub migration_id: ::prost::alloc::string::String,
-    /// SDP offer (JSON string)
-    #[prost(string, tag = "2")]
-    pub data: ::prost::alloc::string::String,
-}
-/// Client -> Server: SFU migration answer from peer
-/// The client responds with an SDP answer to complete the renegotiation.
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SfuMigrationAnswer")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationAnswer))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SfuMigrationAnswer {
-    /// Must match the migration_id from the offer
-    #[prost(string, tag = "1")]
-    pub migration_id: ::prost::alloc::string::String,
-    /// SDP answer (JSON string)
-    #[prost(string, tag = "2")]
-    pub data: ::prost::alloc::string::String,
-}
-/// Server -> Client: Broadcast migration status to all peers in the room
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.SfuMigrationStatus")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationStatus))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SfuMigrationStatus {
-    /// Migration batch ID
-    #[prost(string, tag = "1")]
-    pub migration_id: ::prost::alloc::string::String,
-    /// Current migration state
-    #[prost(enumeration = "SfuMigrationState", tag = "2")]
-    pub state: i32,
-    /// Total peers being migrated
-    #[prost(int32, tag = "3")]
-    pub total_peers: i32,
-    /// Peers that completed migration
-    #[prost(int32, tag = "4")]
-    pub completed_peers: i32,
-    /// Peers that failed migration
-    #[prost(int32, tag = "5")]
-    pub failed_peers: i32,
-}
 /// ICE Servers Configuration
 /// Server sends this to client upon request or connection
 /// Contains ICE server URLs for NAT traversal
@@ -4386,58 +4315,6 @@ pub struct HealthResponse {
     #[prost(message, optional, tag = "2")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: ::core::option::Option<HealthDetails>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.GetNetworkQualityRequest")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityRequest))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetNetworkQualityRequest {}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.GetNetworkQualityResponse")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNetworkQualityResponse))]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetNetworkQualityResponse {
-    /// Quality stats for each peer in the room
-    #[prost(message, repeated, tag = "1")]
-    pub peers: ::prost::alloc::vec::Vec<PeerNetworkQuality>,
-}
-#[derive(::prost_reflect::ReflectMessage)]
-#[prost_reflect(message_name = "synctv.client.PeerNetworkQuality")]
-#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_PeerNetworkQuality))]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PeerNetworkQuality {
-    #[prost(string, tag = "1")]
-    pub peer_id: ::prost::alloc::string::String,
-    /// Round-trip time in milliseconds
-    #[prost(uint32, tag = "2")]
-    pub rtt_ms: u32,
-    /// Packet loss rate (0.0 - 1.0)
-    #[prost(float, tag = "3")]
-    pub packet_loss_rate: f32,
-    /// Jitter in milliseconds
-    #[prost(uint32, tag = "4")]
-    pub jitter_ms: u32,
-    /// Available bandwidth in kbps
-    #[prost(uint32, tag = "5")]
-    pub available_bandwidth_kbps: u32,
-    /// Quality score (0-5, where 5 is excellent)
-    #[prost(uint32, tag = "6")]
-    pub quality_score: u32,
-    /// Suggested quality action based on current network conditions
-    #[prost(enumeration = "QualityAction", tag = "7")]
-    pub quality_action: i32,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.NotificationProto")]
@@ -5434,90 +5311,6 @@ impl ResourceDeliveryMode {
             "RESOURCE_DELIVERY_MODE_UNSPECIFIED" => Some(Self::Unspecified),
             "RESOURCE_DELIVERY_MODE_NOTIFY_ONLY" => Some(Self::NotifyOnly),
             "RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT" => Some(Self::PushSnapshot),
-            _ => None,
-        }
-    }
-}
-/// Migration state for status updates
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_SfuMigrationState))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum SfuMigrationState {
-    Unspecified = 0,
-    /// Migration has begun
-    Started = 1,
-    /// All peers migrated successfully
-    Completed = 2,
-    /// Migration failed for one or more peers
-    Failed = 3,
-}
-impl SfuMigrationState {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "SFU_MIGRATION_STATE_UNSPECIFIED",
-            Self::Started => "SFU_MIGRATION_STATE_STARTED",
-            Self::Completed => "SFU_MIGRATION_STATE_COMPLETED",
-            Self::Failed => "SFU_MIGRATION_STATE_FAILED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "SFU_MIGRATION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
-            "SFU_MIGRATION_STATE_STARTED" => Some(Self::Started),
-            "SFU_MIGRATION_STATE_COMPLETED" => Some(Self::Completed),
-            "SFU_MIGRATION_STATE_FAILED" => Some(Self::Failed),
-            _ => None,
-        }
-    }
-}
-/// Suggested action based on network quality assessment
-#[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "openapi", schema(as = synctv_client_QualityAction))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum QualityAction {
-    Unspecified = 0,
-    /// No change needed
-    None = 1,
-    /// Lower video resolution/bitrate
-    ReduceQuality = 2,
-    /// Lower framerate
-    ReduceFramerate = 3,
-    /// Drop video, audio only
-    AudioOnly = 4,
-}
-impl QualityAction {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "QUALITY_ACTION_UNSPECIFIED",
-            Self::None => "QUALITY_ACTION_NONE",
-            Self::ReduceQuality => "QUALITY_ACTION_REDUCE_QUALITY",
-            Self::ReduceFramerate => "QUALITY_ACTION_REDUCE_FRAMERATE",
-            Self::AudioOnly => "QUALITY_ACTION_AUDIO_ONLY",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "QUALITY_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
-            "QUALITY_ACTION_NONE" => Some(Self::None),
-            "QUALITY_ACTION_REDUCE_QUALITY" => Some(Self::ReduceQuality),
-            "QUALITY_ACTION_REDUCE_FRAMERATE" => Some(Self::ReduceFramerate),
-            "QUALITY_ACTION_AUDIO_ONLY" => Some(Self::AudioOnly),
             _ => None,
         }
     }
@@ -9278,33 +9071,6 @@ pub mod room_service_client {
                 .insert(GrpcMethod::new("synctv.client.RoomService", "GetIceServers"));
             self.inner.unary(req, path, codec).await
         }
-        /// WebRTC Network Quality Monitoring
-        pub async fn get_network_quality(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetNetworkQualityRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetNetworkQualityResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.client.RoomService/GetNetworkQuality",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("synctv.client.RoomService", "GetNetworkQuality"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         /// Playlist Management (room-scoped operations)
         pub async fn create_playlist(
             &mut self,
@@ -9884,14 +9650,6 @@ pub mod room_service_server {
             request: tonic::Request<super::GetIceServersRequest>,
         ) -> std::result::Result<
             tonic::Response<super::GetIceServersResponse>,
-            tonic::Status,
-        >;
-        /// WebRTC Network Quality Monitoring
-        async fn get_network_quality(
-            &self,
-            request: tonic::Request<super::GetNetworkQualityRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetNetworkQualityResponse>,
             tonic::Status,
         >;
         /// Playlist Management (room-scoped operations)
@@ -11001,52 +10759,6 @@ pub mod room_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetIceServersSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.client.RoomService/GetNetworkQuality" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetNetworkQualitySvc<T: RoomService>(pub Arc<T>);
-                    impl<
-                        T: RoomService,
-                    > tonic::server::UnaryService<super::GetNetworkQualityRequest>
-                    for GetNetworkQualitySvc<T> {
-                        type Response = super::GetNetworkQualityResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetNetworkQualityRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as RoomService>::get_network_quality(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetNetworkQualitySvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

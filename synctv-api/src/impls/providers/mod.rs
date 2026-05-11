@@ -5,6 +5,7 @@ pub mod bilibili;
 pub mod common;
 pub mod emby;
 pub mod playback;
+pub mod proxy;
 pub mod rtmp;
 
 use std::sync::Arc;

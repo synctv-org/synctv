@@ -132,6 +132,8 @@ password_complexity:
   require_digit: true
   require_special: false
   max_repeated_chars: 3
+  zxcvbn_enabled: false
+  zxcvbn_min_score: 3
 ```
 
 This applies to user account passwords, not room passwords.
@@ -139,6 +141,7 @@ This applies to user account passwords, not room passwords.
 Production policy usually benefits more from longer passwords and rate limits than from forcing many special characters on clients with poor text input.
 
 `max_repeated_chars=0` disables the repeated-character check.
+`zxcvbn_enabled=false` is the default. When enabled, SyncTV uses the zxcvbn entropy estimator and rejects passwords with a score below `zxcvbn_min_score` (`0`-`4`; `3` is the recommended minimum).
 
 ## CORS and Trusted Proxies
 

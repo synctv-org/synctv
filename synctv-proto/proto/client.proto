@@ -92,9 +92,6 @@ service RoomService {
     // WebRTC ICE Servers Configuration
     rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
 
-    // WebRTC Network Quality Monitoring
-    rpc GetNetworkQuality(GetNetworkQualityRequest) returns (GetNetworkQualityResponse);
-
     // Playlist Management (room-scoped operations)
     rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
@@ -1898,14 +1895,12 @@ message ClientMessage {
         UpdatePlayback playback_update = 4;
         ObserveResource observe_resource = 5;
         UnobserveResource unobserve_resource = 6;
-        // WebRTC signaling messages (P2P and SFU modes)
+        // WebRTC signaling messages (P2P)
         WebRTCOffer webrtc_offer = 7;
         WebRTCAnswer webrtc_answer = 8;
         WebRTCIceCandidate webrtc_ice_candidate = 9;
         WebRTCJoin webrtc_join = 10;
         WebRTCLeave webrtc_leave = 11;
-        // SFU migration: client responds to server's migration offer
-        SfuMigrationAnswer sfu_migration_answer = 12;
     }
 }
 
@@ -1994,9 +1989,6 @@ message ServerMessage {
         WebRTCIceCandidate webrtc_ice_candidate = 19;
         WebRTCJoin webrtc_join = 20;
         WebRTCLeave webrtc_leave = 21;
-        // SFU migration: server requests existing P2P peer to renegotiate via SFU
-        SfuMigrationOffer sfu_migration_offer = 22;
-        SfuMigrationStatus sfu_migration_status = 23;
         // User notification push (replaces NOTIFICATION_PUSH error code abuse)
         UserNotification notification = 24;
         MediaUpdated media_updated = 25;
@@ -2166,7 +2158,7 @@ message SetUsernameResponse {
 // SECURITY: passwords are transmitted as plaintext. TLS MUST be used.
 message SetPasswordRequest {
     string old_password = 1; // SECURITY: Plaintext credential - requires TLS in transit. Validation: required
-    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
+    string new_password = 2; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
 }
 
 message SetPasswordResponse {
@@ -2374,7 +2366,7 @@ message RequestPasswordResetResponse {
 message ConfirmPasswordResetRequest {
     string email = 1; // Validation: required, email format
     string token = 2;       // Reset code from email. Validation: required
-    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, rejects common weak passwords
+    string new_password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars, basic complexity; optional zxcvbn when enabled
 }
 
 message ConfirmPasswordResetResponse {
@@ -2500,42 +2492,6 @@ message WebRTCLeave {
     string conn_id = 2;     // Leaver's connection ID
 }
 
-// ==================== SFU Migration Messages ====================
-// When the room crosses the SFU threshold, the server sends migration offers
-// to existing P2P peers so they transition to SFU-routed media.
-
-// Migration state for status updates
-enum SfuMigrationState {
-    SFU_MIGRATION_STATE_UNSPECIFIED = 0;
-    SFU_MIGRATION_STATE_STARTED = 1;     // Migration has begun
-    SFU_MIGRATION_STATE_COMPLETED = 2;   // All peers migrated successfully
-    SFU_MIGRATION_STATE_FAILED = 3;      // Migration failed for one or more peers
-}
-
-// Server -> Client: SFU migration offer for an existing P2P peer
-// The server creates a server-side PeerConnection and sends an SDP offer
-// so the client can renegotiate its media routing through the SFU.
-message SfuMigrationOffer {
-    string migration_id = 1;   // Unique ID for this migration batch
-    string data = 2;           // SDP offer (JSON string)
-}
-
-// Client -> Server: SFU migration answer from peer
-// The client responds with an SDP answer to complete the renegotiation.
-message SfuMigrationAnswer {
-    string migration_id = 1;   // Must match the migration_id from the offer
-    string data = 2;           // SDP answer (JSON string)
-}
-
-// Server -> Client: Broadcast migration status to all peers in the room
-message SfuMigrationStatus {
-    string migration_id = 1;            // Migration batch ID
-    SfuMigrationState state = 2;        // Current migration state
-    int32 total_peers = 3;              // Total peers being migrated
-    int32 completed_peers = 4;          // Peers that completed migration
-    int32 failed_peers = 5;             // Peers that failed migration
-}
-
 // ICE Servers Configuration
 // Server sends this to client upon request or connection
 // Contains ICE server URLs for NAT traversal
@@ -2575,41 +2531,6 @@ message HealthDetails {
 message HealthResponse {
     string status = 1;
     optional HealthDetails details = 2;
-}
-
-// ==================== Network Quality Monitoring ====================
-// Real-time network quality monitoring for WebRTC connections
-
-message GetNetworkQualityRequest {}
-
-message GetNetworkQualityResponse {
-    // Quality stats for each peer in the room
-    repeated PeerNetworkQuality peers = 1;
-}
-
-// Suggested action based on network quality assessment
-enum QualityAction {
-    QUALITY_ACTION_UNSPECIFIED = 0;
-    QUALITY_ACTION_NONE = 1;             // No change needed
-    QUALITY_ACTION_REDUCE_QUALITY = 2;   // Lower video resolution/bitrate
-    QUALITY_ACTION_REDUCE_FRAMERATE = 3; // Lower framerate
-    QUALITY_ACTION_AUDIO_ONLY = 4;       // Drop video, audio only
-}
-
-message PeerNetworkQuality {
-    string peer_id = 1;
-    // Round-trip time in milliseconds
-    uint32 rtt_ms = 2;
-    // Packet loss rate (0.0 - 1.0)
-    float packet_loss_rate = 3;
-    // Jitter in milliseconds
-    uint32 jitter_ms = 4;
-    // Available bandwidth in kbps
-    uint32 available_bandwidth_kbps = 5;
-    // Quality score (0-5, where 5 is excellent)
-    uint32 quality_score = 6;
-    // Suggested quality action based on current network conditions
-    QualityAction quality_action = 7;
 }
 
 // ==================== Notification Messages ====================

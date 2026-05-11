@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 
-use super::{middleware::RequestMetadata, validation::ValidatedQuery, AppResult, AppState};
+use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::GetProfileResponse;
 use crate::proto::client::{
@@ -46,8 +46,8 @@ pub async fn get_me(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -67,8 +67,8 @@ pub async fn get_user_preferences(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -89,8 +89,8 @@ pub async fn update_user_preferences(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -139,19 +139,14 @@ pub async fn update_user(
     if password.is_some() {
         updated_fields.push("password");
     }
-    if updated_fields.is_empty() {
-        return Err(super::AppError::bad_request(
-            "No valid update fields provided (username or password)",
-        ));
-    }
 
     let response_username = username.clone();
     let update_username = username.clone();
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -189,8 +184,8 @@ pub async fn start_opaque_password_update(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -215,8 +210,8 @@ pub async fn finish_opaque_password_update(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -241,8 +236,8 @@ pub async fn start_passkey_bind(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -263,8 +258,8 @@ pub async fn finish_passkey_bind(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -288,8 +283,8 @@ pub async fn list_passkeys(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -310,8 +305,8 @@ pub async fn delete_passkey(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -346,13 +341,13 @@ pub async fn delete_passkey(
 pub async fn list_my_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<crate::proto::client::ListMyRoomsRequest>,
+    ProtoQuery(req): ProtoQuery<crate::proto::client::ListMyRoomsRequest>,
 ) -> AppResult<Json<ListMyRoomsResponse>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let response = executor
         .execute_user_endpoint(
             &request_meta,
@@ -392,8 +387,8 @@ pub async fn delete_me(
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
-    let executor = state.client_api.clone();
-    let client_api = state.client_api.clone();
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     executor
         .execute_user_endpoint(
             &request_meta,

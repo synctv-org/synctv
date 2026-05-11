@@ -309,57 +309,6 @@ mod tests {
     use tonic::Code;
 
     #[test]
-    fn test_validate_oauth2_proto_request_rejects_invalid_redirect_url() {
-        let err = crate::impls::validate_proto_request(&GetAuthorizationUrlRequest {
-            provider: "github".to_string(),
-            redirect_url: "javascript:alert(1)".to_string(),
-        })
-        .map_err(|error| Status::invalid_argument(error.to_string()))
-        .expect_err("invalid redirect URL must be rejected before hitting oauth2 impl");
-        assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("redirect_url"));
-    }
-
-    #[test]
-    fn test_validate_oauth2_proto_request_rejects_invalid_state() {
-        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
-            provider: "github".to_string(),
-            code: "code.with.dots".to_string(),
-            state: "short".to_string(),
-        })
-        .map_err(|error| Status::invalid_argument(error.to_string()))
-        .expect_err("invalid OAuth2 state must be rejected before exchange");
-        assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("state"));
-    }
-
-    #[test]
-    fn test_validate_oauth2_proto_request_rejects_invalid_code() {
-        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
-            provider: "github".to_string(),
-            code: "code with spaces".to_string(),
-            state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
-        })
-        .map_err(|error| Status::invalid_argument(error.to_string()))
-        .expect_err("invalid OAuth2 code must be rejected before exchange");
-        assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("code"));
-    }
-
-    #[test]
-    fn test_validate_oauth2_proto_request_rejects_too_long_provider_user_id() {
-        let too_long = "a".repeat(257);
-        let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
-            provider: "github".to_string(),
-            provider_user_id: too_long,
-        })
-        .map_err(|error| Status::invalid_argument(error.to_string()))
-        .expect_err("overlong provider_user_id must be rejected");
-        assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("provider_user_id"));
-    }
-
-    #[test]
     fn test_unlink_missing_binding_maps_to_grpc_not_found() {
         let status = map_api_error(crate::impls::ApiError::NotFound(
             "No binding found for this provider".to_string(),

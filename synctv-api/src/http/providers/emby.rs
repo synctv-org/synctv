@@ -19,8 +19,8 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use synctv_core::service::{ProxySigningKey, ProxyUrlClaims};
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppError,
-    AppResult, AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppError, AppResult,
+    AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::common::ProviderInstanceQuery;
@@ -334,15 +334,16 @@ fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.emby_api.clone();
+    let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -383,15 +384,16 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.emby_api.clone();
+    let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -432,15 +434,16 @@ pub(crate) async fn list(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.emby_api.clone();
+    let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -484,9 +487,10 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
-    let api = state.emby_api.clone();
+    let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -521,12 +525,13 @@ pub(crate) async fn logout(
 pub(crate) async fn binds(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     let instance_name = provider_instance_name(&query)?;
-    let api = state.emby_api.clone();
+    let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -579,6 +584,7 @@ pub(crate) async fn thumbnail(
     let operation_state = state.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -587,6 +593,7 @@ pub(crate) async fn thumbnail(
                 let state = operation_state;
                 let auth_user_id_key = authenticated.user_id.to_string();
                 let public_auth_user_id = state
+                    .shared_api_runtime
                     .public_id_codec
                     .encode_user_id(authenticated.user_id)
                     .map_err(crate::impls::ApiError::Internal)?;
@@ -598,7 +605,7 @@ pub(crate) async fn thumbnail(
                     max_width,
                 };
                 if let Some(room_id) = authorize_thumbnail_request(
-                    &state.proxy_signing_key,
+                    &state.shared_api_runtime.proxy_signing_key,
                     &auth_user_id_key,
                     &public_auth_user_id,
                     raw_query,
@@ -608,16 +615,22 @@ pub(crate) async fn thumbnail(
                 .map_err(app_error_to_api_error)?
                 {
                     let room_id = state
+                        .shared_api_runtime
                         .public_id_codec
                         .decode_room_id(&room_id)
                         .map_err(crate::impls::ApiError::InvalidInput)?;
-                    super::validate_fresh_proxy_access(&state, &room_id, &authenticated.user_id)
-                        .await
-                        .map_err(app_error_to_api_error)?;
+                    crate::impls::providers::proxy::validate_fresh_provider_proxy_access(
+                        &state.user_service,
+                        &state.shared_api_runtime.proxy_services,
+                        &room_id,
+                        &authenticated.user_id,
+                    )
+                    .await?;
                 }
 
                 let credential_lookup_user_id = if let Some(public_id) = credential_owner_id {
                     state
+                        .shared_api_runtime
                         .public_id_codec
                         .decode_user_id(public_id)
                         .map_err(crate::impls::ApiError::InvalidInput)?

@@ -11,8 +11,7 @@ use axum::{
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppResult,
-    AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::alist::GetBindsResponse;
@@ -64,15 +63,16 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -114,15 +114,16 @@ pub(crate) async fn login(
 pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -163,15 +164,16 @@ pub(crate) async fn list(
 pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::SearchRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -212,15 +214,16 @@ pub(crate) async fn search(
 pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::alist::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -264,9 +267,10 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -301,12 +305,13 @@ pub(crate) async fn logout(
 pub(crate) async fn binds(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     let instance_name = provider_instance_name(&query)?;
-    let api = state.alist_api.clone();
+    let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,

@@ -13,8 +13,7 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::common::provider_instance_name;
 use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ValidatedQuery, AppResult,
-    AppState,
+    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::bilibili::GetBindsResponse;
@@ -67,15 +66,16 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
 pub(crate) async fn parse(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::ParseRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -114,15 +114,16 @@ pub(crate) async fn parse(
 pub(crate) async fn login_qr(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrCodeResponse>> {
     tracing::info!("Bilibili login QR request");
 
     let instance_name = provider_instance_name(&query)?;
     let req = crate::proto::providers::bilibili::LoginQrRequest::default();
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -163,15 +164,16 @@ pub(crate) async fn login_qr(
 pub(crate) async fn qr_check(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::CheckQrRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -215,15 +217,16 @@ pub(crate) async fn qr_check(
 pub(crate) async fn new_captcha(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::CaptchaResponse>> {
     tracing::info!("Bilibili new captcha request");
 
     let instance_name = provider_instance_name(&query)?;
     let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -264,15 +267,16 @@ pub(crate) async fn new_captcha(
 pub(crate) async fn sms_send(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::SendSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -313,15 +317,16 @@ pub(crate) async fn sms_send(
 pub(crate) async fn sms_login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::LoginSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -367,15 +372,16 @@ pub(crate) async fn sms_login(
 pub(crate) async fn user_info(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
     Json(req): Json<crate::proto::providers::bilibili::UserInfoRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint_with_control(
             &request_meta,
@@ -419,12 +425,13 @@ pub(crate) async fn user_info(
 pub(crate) async fn binds(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(query): ValidatedQuery<ProviderInstanceQuery>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
     let instance_name = provider_instance_name(&query)?;
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let response = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -465,9 +472,10 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
-    let api = state.bilibili_api.clone();
+    let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,

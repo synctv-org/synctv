@@ -7,6 +7,7 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{AuditService, ProvidersManager, RemoteProviderManager, UserService};
+use synctv_proto::providers::common::ProviderInstanceQuery;
 
 use crate::impls::admin::{validate_admin_auth, RequestContext, ValidatedAdmin};
 use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
@@ -107,6 +108,13 @@ pub fn extract_instance_name(name: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+pub fn provider_instance_name_from_query(
+    query: &ProviderInstanceQuery,
+) -> Result<Option<&str>, ApiError> {
+    crate::impls::validate_proto_request(query)?;
+    Ok((!query.instance_name.is_empty()).then_some(query.instance_name.as_str()))
 }
 
 pub(crate) fn resolve_bound_instance_name(

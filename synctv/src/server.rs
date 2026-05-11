@@ -234,17 +234,18 @@ struct ManagementApiHandles {
 fn management_apis_from_http_state(
     state: &synctv_api::http::AppState,
 ) -> anyhow::Result<ManagementApiHandles> {
-    let admin_api = state
+    let shared_runtime = &state.shared_api_runtime;
+    let admin_api = shared_runtime
         .admin_api
         .clone()
         .ok_or_else(|| anyhow::anyhow!("management server requires shared admin API wiring"))?;
     Ok(ManagementApiHandles {
-        client: state.client_api.clone(),
+        client: shared_runtime.client_api.clone(),
         admin: admin_api,
-        provider_common: state.provider_common_api.clone(),
-        alist: state.alist_api.clone(),
-        bilibili: state.bilibili_api.clone(),
-        emby: state.emby_api.clone(),
+        provider_common: shared_runtime.provider_common_api.clone(),
+        alist: shared_runtime.alist_api.clone(),
+        bilibili: shared_runtime.bilibili_api.clone(),
+        emby: shared_runtime.emby_api.clone(),
     })
 }
 
@@ -1894,12 +1895,18 @@ mod tests {
             management_apis.client.provider_stores.is_some(),
             "management client API must carry provider stores for versioned playback mappings"
         );
-        assert!(Arc::ptr_eq(&management_apis.alist, &http_state.alist_api));
+        assert!(Arc::ptr_eq(
+            &management_apis.alist,
+            &http_state.shared_api_runtime.alist_api
+        ));
         assert!(Arc::ptr_eq(
             &management_apis.bilibili,
-            &http_state.bilibili_api
+            &http_state.shared_api_runtime.bilibili_api
         ));
-        assert!(Arc::ptr_eq(&management_apis.emby, &http_state.emby_api));
+        assert!(Arc::ptr_eq(
+            &management_apis.emby,
+            &http_state.shared_api_runtime.emby_api
+        ));
         assert!(
             Arc::ptr_eq(
                 management_apis
@@ -1934,18 +1941,22 @@ mod tests {
             "shared HTTP state must keep the credential repository wiring"
         );
         assert!(
-            Arc::ptr_eq(&management_apis.client, &http_state.client_api),
-            "management server must reuse the shared HTTP client API instance"
+            Arc::ptr_eq(
+                &management_apis.client,
+                &http_state.shared_api_runtime.client_api
+            ),
+            "management server must reuse the shared client API instance"
         );
         assert!(
             Arc::ptr_eq(
                 &management_apis.admin,
                 http_state
+                    .shared_api_runtime
                     .admin_api
                     .as_ref()
-                    .expect("HTTP state should include admin API when settings are wired")
+                    .expect("shared runtime should include admin API when settings are wired")
             ),
-            "management server must reuse the shared HTTP admin API instance"
+            "management server must reuse the shared admin API instance"
         );
     }
 

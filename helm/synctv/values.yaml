@@ -476,6 +476,8 @@ config:
     requireDigit: true
     requireSpecial: false
     maxRepeatedChars: 3
+    zxcvbnEnabled: false
+    zxcvbnMinScore: 3
 
   ## BufferSizesConfig
   bufferSizes:
@@ -516,8 +518,8 @@ config:
 ## ============================================================================
 ## Secrets (sensitive values injected as env vars with SYNCTV_ prefix)
 ##
-## AUTOMATIC PASSWORD GENERATION: All passwords and secrets below are now
-## auto-generated on first install when left empty (recommended for production).
+## AUTOMATIC PASSWORD GENERATION: Passwords and secrets below are auto-generated
+## on first install when left empty.
 ##
 ## On first install: Random secure passwords are generated and stored in the Secret
 ## On upgrades: Existing passwords are automatically preserved
@@ -525,8 +527,9 @@ config:
 ## To view generated passwords:
 ##   kubectl get secret synctv-secrets -n <namespace> -o jsonpath='{.data}' | jq 'map_values(@base64d)'
 ##
-## You can still provide explicit values via `--set` flags, separate values file,
-## or external secret managers (e.g., sealed-secrets, external-secrets, Vault).
+## Chart-generated secrets are suitable for simple installs if the release
+## Secret is backed up and kept stable. For externally managed production secret
+## lifecycles, provide explicit values or set existingSecret.
 ## Raw SyncTV config files also support *_file secret references, but this chart's default
 ## path is to inject sensitive values via Kubernetes Secrets and environment variables.
 ## ============================================================================

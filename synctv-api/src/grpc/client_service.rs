@@ -32,20 +32,19 @@ use crate::proto::client::{
     FinishOpaquePasswordUpdateResponse, FinishOpaqueRegistrationRequest, FinishPasskeyBindRequest,
     FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest, GetChatHistoryRequest,
     GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetIceServersRequest,
-    GetIceServersResponse, GetNetworkQualityRequest, GetNetworkQualityResponse, GetPlaybackRequest,
-    GetPlaybackResponse, GetPlaylistRequest, GetPlaylistResponse, GetProfileRequest,
-    GetProfileResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetRoomMembersRequest,
-    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
-    JoinRoomRequest, JoinRoomResponse, KickMemberRequest, KickMemberResponse, LeaveRoomRequest,
-    LeaveRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest,
-    ListPasskeysResponse, ListPlaylistItemsRequest, ListPlaylistItemsResponse,
-    ListPlaylistsRequest, ListPlaylistsResponse, ListRoomJoinReviewsRequest,
-    ListRoomJoinReviewsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
-    ListRoomsResponse, LoginRequest, LoginResponse, LogoutRequest, LogoutResponse,
-    MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse,
-    PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
-    RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    GetIceServersResponse, GetPlaybackRequest, GetPlaybackResponse, GetPlaylistRequest,
+    GetPlaylistResponse, GetProfileRequest, GetProfileResponse, GetPublicSettingsRequest,
+    GetPublicSettingsResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
+    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetUserPreferencesRequest,
+    GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse, KickMemberRequest,
+    KickMemberResponse, LeaveRoomRequest, LeaveRoomResponse, ListMyRoomsRequest,
+    ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse, ListPlaylistItemsRequest,
+    ListPlaylistItemsResponse, ListPlaylistsRequest, ListPlaylistsResponse,
+    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomStreamsRequest,
+    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, LoginRequest, LoginResponse,
+    LogoutRequest, LogoutResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistRequest,
+    MovePlaylistResponse, PasskeyCredentialResponse, RefreshTokenRequest, RefreshTokenResponse,
+    RegisterRequest, RegisterResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
     RequestEmailLoginRequest, RequestEmailLoginResponse, RequestMfaEmailCodeRequest,
     RequestMfaEmailCodeResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendVerificationEmailRequest,
@@ -544,55 +543,25 @@ impl AuthService for ClientServiceImpl {
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
         let executor = self.client_api.clone();
-        let response = if req.email_token.is_empty() {
-            let client_api = self.client_api.clone();
-            executor
-                .execute_public_endpoint_with_control(
-                    &metadata,
-                    EndpointRateLimitCategory::Auth,
-                    move |request_control| async move {
-                        client_api
-                            .login_with_control(req, client_ip, Some(&request_control))
-                            .await
-                    },
-                )
-                .await
-                .map_err(map_api_error)?
-        } else if req.password.is_empty()
-            && !req.email.trim().is_empty()
-            && req.username.trim().is_empty()
-        {
-            let email_api = self.email_api().map_err(map_email_flow_error)?;
-            let email_api = email_api.clone();
-            let email = req.email.clone();
-            let email_token = req.email_token.clone();
-            let result = executor
-                .execute_public_endpoint_with_control(
-                    &metadata,
-                    EndpointRateLimitCategory::Auth,
-                    move |request_control| async move {
-                        email_api
-                            .confirm_email_login_with_control(
-                                &email,
-                                &email_token,
-                                client_ip,
-                                Some(&request_control),
-                            )
-                            .await
-                    },
-                )
-                .await
-                .map_err(map_email_flow_error)?;
-
-            crate::impls::client::login_outcome_to_proto(
-                result.login,
-                &self.client_api.public_id_codec,
+        let client_api = self.client_api.clone();
+        let email_api = self.email_api.clone();
+        let response = executor
+            .execute_public_endpoint_with_control(
+                &metadata,
+                EndpointRateLimitCategory::Auth,
+                move |request_control| async move {
+                    client_api
+                        .login_request_with_control(
+                            email_api.as_deref(),
+                            req,
+                            client_ip,
+                            Some(&request_control),
+                        )
+                        .await
+                },
             )
-        } else {
-            return Err(Status::invalid_argument(
-                "Email token login requires email only and cannot be combined with username or password.",
-            ));
-        };
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -812,22 +781,15 @@ impl AuthService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
-                    crate::impls::validate_proto_request(&req)?;
                     email_api
-                        .request_mfa_email_code_with_control(
-                            &req.mfa_session_id,
-                            Some(&request_control),
-                        )
+                        .request_mfa_email_code_response_with_control(req, Some(&request_control))
                         .await
                 },
             )
             .await
             .map_err(map_email_flow_error)?;
 
-        Ok(Response::new(RequestMfaEmailCodeResponse {
-            message: result.message,
-            masked_email: result.masked_email,
-        }))
+        Ok(Response::new(result))
     }
 
     async fn verify_mfa_email_code(
@@ -846,11 +808,9 @@ impl AuthService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Auth,
                 move |request_control| async move {
-                    crate::impls::validate_proto_request(&req)?;
                     let outcome = email_api
-                        .verify_mfa_email_code_with_control(
-                            &req.mfa_session_id,
-                            &req.email_token,
+                        .verify_mfa_email_code_request_with_control(
+                            req,
                             client_ip,
                             Some(&request_control),
                         )
@@ -1960,28 +1920,6 @@ impl RoomService for ClientServiceImpl {
                 },
             )
             .await?;
-        Ok(Response::new(response))
-    }
-
-    async fn get_network_quality(
-        &self,
-        request: Request<GetNetworkQualityRequest>,
-    ) -> Result<Response<GetNetworkQualityResponse>, Status> {
-        let (metadata, room_id) = self.internal_room_request_context(&request)?;
-        let executor = self.client_api.clone();
-        let client_api = self.client_api.clone();
-        let response = executor
-            .execute_user_endpoint(
-                &metadata,
-                EndpointRateLimitCategory::Read,
-                move |authenticated| async move {
-                    client_api
-                        .get_network_quality(&room_id, &authenticated.user_id)
-                        .await
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 

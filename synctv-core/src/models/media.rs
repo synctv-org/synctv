@@ -309,8 +309,8 @@ pub struct PlaybackResult {
     /// - "high", "medium", "low" (different qualities)
     pub playback_infos: std::collections::HashMap<String, PlaybackInfo>,
 
-    /// Default mode name (must be a key in `playback_infos`)
-    /// Provider decides based on `source_config.prefer_proxy` etc.
+    /// Default mode name (must be a key in `playback_infos`).
+    /// Provider decides this from its own source configuration and runtime context.
     pub default_mode: String,
 
     /// Media-level metadata (duration, thumbnail, title, author, etc.)

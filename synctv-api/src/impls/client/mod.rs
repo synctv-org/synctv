@@ -41,7 +41,7 @@ use futures::future::BoxFuture;
 use std::sync::Arc;
 use synctv_core::models::{PermissionBits, RoomId, RoomStatus};
 use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
-use synctv_core::service::{RoomService, UserService};
+use synctv_core::service::{ReviewService, RoomService, UserService};
 use synctv_core::RedisConnectionRuntime;
 
 // Re-export public items from convert module
@@ -174,6 +174,7 @@ impl RoomActor {
 pub struct ClientApiImpl {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
+    pub review_service: Arc<ReviewService>,
     pub connection_service: Arc<dyn RealtimeConnectionService>,
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -415,6 +416,7 @@ impl ClientApiImpl {
         settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
         public_id_codec: Arc<crate::PublicIdCodec>,
     ) -> Self {
+        let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
@@ -440,6 +442,7 @@ impl ClientApiImpl {
         Self {
             user_service,
             room_service,
+            review_service,
             connection_service,
             config,
             publish_key_service,
@@ -477,6 +480,7 @@ impl ClientApiImpl {
     /// Create a new `ClientApiImpl` from a config struct.
     #[must_use]
     pub fn from_config(config: ClientApiConfig) -> Self {
+        let review_service = Arc::new(ReviewService::new(config.user_service.pool().clone()));
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
@@ -503,6 +507,7 @@ impl ClientApiImpl {
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
+            review_service,
             connection_service: config.connection_service,
             config: config.config,
             publish_key_service: config.publish_key_service,

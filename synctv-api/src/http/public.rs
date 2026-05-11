@@ -31,9 +31,13 @@ pub fn create_public_router() -> Router<AppState> {
 pub async fn get_public_settings(
     State(state): State<AppState>,
 ) -> Result<Json<GetPublicSettingsResponse>, super::AppError> {
-    let response = state.client_api.get_public_settings().map_err(|e| {
-        tracing::error!(error = %e, "Failed to load public settings");
-        super::AppError::internal_server_error("Failed to load public settings")
-    })?;
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .get_public_settings()
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to load public settings");
+            super::AppError::internal_server_error("Failed to load public settings")
+        })?;
     Ok(Json(response))
 }

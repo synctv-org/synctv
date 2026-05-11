@@ -5,7 +5,7 @@ use axum::{
 };
 
 use super::super::middleware::RequestMetadata;
-use super::super::validation::ValidatedQuery;
+use super::super::validation::ProtoQuery;
 use super::super::{
     admin_execute::{
         execute_admin_endpoint, execute_admin_endpoint_with_control, request_metadata,
@@ -62,7 +62,7 @@ pub(crate) async fn list_instances(
     State(state): State<AppState>,
 ) -> Result<Json<ProviderInstancesResponse>, super::super::AppError> {
     let request_meta = request_metadata(request_meta);
-    let api = state.provider_common_api.clone();
+    let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
     let response = executor
         .execute_user_endpoint(
@@ -105,12 +105,12 @@ pub(crate) async fn list_instances(
 pub(crate) async fn list_provider_instances(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ValidatedQuery(req): ValidatedQuery<ListProviderInstancesRequest>,
+    ProtoQuery(req): ProtoQuery<ListProviderInstancesRequest>,
 ) -> Result<Json<ListProviderInstancesResponse>, super::super::AppError> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, _, _| async move { api.list_provider_instances(req).await },
     )
     .await?;
@@ -140,7 +140,7 @@ pub(crate) async fn add_provider_instance(
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, request_control, validated, ctx| async move {
             api.add_provider_instance(req, &validated.user_id, &ctx, Some(&request_control))
                 .await
@@ -172,12 +172,11 @@ pub(crate) async fn update_provider_instance(
     Path(path): Path<DeleteProviderInstanceRequest>,
     Json(req): Json<UpdateProviderInstanceRequest>,
 ) -> Result<Json<UpdateProviderInstanceResponse>, super::super::AppError> {
-    crate::impls::validate_proto_request(&path).map_err(super::super::error::map_api_error)?;
     let req = req.with_provider_instance_name(path.name);
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, request_control, validated, ctx| async move {
             api.update_provider_instance(req, &validated.user_id, &ctx, Some(&request_control))
                 .await
@@ -209,7 +208,7 @@ pub(crate) async fn delete_provider_instance(
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, validated, ctx| async move {
             api.delete_provider_instance(req, &validated.user_id, &ctx)
                 .await
@@ -241,7 +240,7 @@ pub(crate) async fn reconnect_provider_instance(
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, request_control, validated, ctx| async move {
             api.reconnect_provider_instance(req, &validated.user_id, &ctx, Some(&request_control))
                 .await
@@ -273,7 +272,7 @@ pub(crate) async fn enable_provider_instance(
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, request_control, _, _| async move {
             api.enable_provider_instance(req, Some(&request_control))
                 .await
@@ -305,7 +304,7 @@ pub(crate) async fn disable_provider_instance(
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,
-        |state| Ok(state.provider_common_api.clone()),
+        |state| Ok(state.shared_api_runtime.provider_common_api.clone()),
         move |api, request_control, _, _| async move {
             api.disable_provider_instance(req, Some(&request_control))
                 .await
@@ -339,9 +338,8 @@ pub(crate) async fn list_backends(
     State(state): State<AppState>,
     Path(req): Path<ListProviderBackendsRequest>,
 ) -> Result<Json<ProviderBackendsResponse>, super::super::AppError> {
-    provider_type(&req)?;
     let request_meta = request_metadata(request_meta);
-    let api = state.provider_common_api.clone();
+    let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
     let response = executor
         .execute_user_endpoint(
@@ -357,15 +355,8 @@ pub(crate) async fn list_backends(
 pub(crate) fn provider_instance_name(
     query: &ProviderInstanceQuery,
 ) -> Result<Option<&str>, super::super::AppError> {
-    crate::impls::validate_proto_request(query).map_err(super::super::error::map_api_error)?;
-    Ok((!query.instance_name.is_empty()).then_some(query.instance_name.as_str()))
-}
-
-pub(crate) fn provider_type(
-    request: &ListProviderBackendsRequest,
-) -> Result<&str, super::super::AppError> {
-    crate::impls::validate_proto_request(request).map_err(super::super::error::map_api_error)?;
-    Ok(request.provider_type.as_str())
+    crate::impls::providers::common::provider_instance_name_from_query(query)
+        .map_err(super::super::error::map_api_error)
 }
 
 #[cfg(test)]

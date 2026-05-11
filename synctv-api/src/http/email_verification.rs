@@ -47,7 +47,7 @@ fn email_token_service_unavailable_error() -> AppError {
 
 /// Resolve the shared `EmailApiImpl` from `AppState`, or return an error if email is not configured.
 fn require_email_api(state: &AppState) -> Result<&std::sync::Arc<EmailApiImpl>, AppError> {
-    state.email_api.as_ref().ok_or_else(|| {
+    state.shared_api_runtime.email_api.as_ref().ok_or_else(|| {
         if state.email_token_service.is_none() {
             email_token_service_unavailable_error()
         } else {
@@ -75,7 +75,7 @@ where
     async move {
         let request_meta = request_metadata(request_meta);
         let email_api = require_email_api(state)?.clone();
-        let executor = state.request_executor.clone();
+        let executor = state.shared_api_runtime.request_executor.clone();
         executor
             .execute_public_with_control(
                 &request_meta,

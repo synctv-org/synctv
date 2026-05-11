@@ -332,25 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn enum_roundtrip_quality_action() {
-        for action in [
-            crate::client::QualityAction::Unspecified,
-            crate::client::QualityAction::None,
-            crate::client::QualityAction::ReduceQuality,
-            crate::client::QualityAction::ReduceFramerate,
-            crate::client::QualityAction::AudioOnly,
-        ] {
-            let pnq = crate::client::PeerNetworkQuality {
-                quality_action: action.into(),
-                ..Default::default()
-            };
-            let bytes = pnq.encode_to_vec();
-            let decoded = crate::client::PeerNetworkQuality::decode(bytes.as_slice()).unwrap();
-            assert_eq!(decoded.quality_action, i32::from(action));
-        }
-    }
-
-    #[test]
     fn enum_roundtrip_provider_instance_status() {
         for status in [
             crate::providers::common::ProviderInstanceStatus::Unspecified,

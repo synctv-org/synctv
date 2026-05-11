@@ -87,33 +87,6 @@ impl ClientApiImpl {
 
         Ok(GetIceServersResponse { servers })
     }
-
-    /// Get network quality stats for peers in a room
-    ///
-    /// Note: With SFU removed, this always returns an empty list.
-    /// Network quality is now handled purely peer-to-peer without centralized tracking.
-    pub async fn get_network_quality(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<crate::proto::client::GetNetworkQualityResponse, ApiError> {
-        use crate::proto::client::GetNetworkQualityResponse;
-
-        // Check membership
-        self.room_service
-            .check_membership(room_id, user_id)
-            .await
-            .map_err(Self::map_room_access_error)?;
-
-        // SFU removed: network quality is now handled peer-to-peer
-        tracing::debug!(
-            room_id = %room_id,
-            user_id = %user_id,
-            "Network quality requested but SFU is no longer supported"
-        );
-
-        Ok(GetNetworkQualityResponse { peers: vec![] })
-    }
 }
 
 #[cfg(test)]

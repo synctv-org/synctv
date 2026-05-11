@@ -165,14 +165,15 @@ impl ClientApiImpl {
         };
         crate::impls::validate_proto_request(&request)?;
 
+        if normalized_username.is_none() && new_password.is_none() {
+            return Err(ApiError::InvalidInput(
+                "No valid update fields provided (username or password)".to_string(),
+            ));
+        }
+
         if let Some(ref username) = normalized_username {
             UsernameValidator::new()
                 .validate(username)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        }
-
-        if let Some(ref password) = new_password {
-            crate::http::validation::validate_password(password)
                 .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         }
 

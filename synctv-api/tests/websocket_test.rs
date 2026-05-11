@@ -885,12 +885,6 @@ mod websocket_e2e {
             RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
         );
 
-        // Build AppState
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-            jwt_service.clone(),
-        )));
-        let rate_limit_config = Arc::new(synctv_api::http::middleware::RateLimitConfig::default());
-
         // Minimal providers (unused in WebSocket tests but required by AppState)
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
@@ -918,34 +912,6 @@ mod websocket_e2e {
         let mut config_inner = synctv_core::Config::default();
         config_inner.server.cors_allowed_origins = cors_allowed_origins;
         let config = Arc::new(config_inner);
-
-        // ClientApiImpl
-        let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
-            user_service.clone(),
-            room_service.clone(),
-            connection_manager.clone(),
-            config.clone(),
-            None, // publish_key_service
-            jwt_service.clone(),
-            None, // live_streaming_infrastructure
-            None, // providers_manager
-            None, // settings_registry
-            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
-        ));
-
-        // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
-        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
-            providers.bilibili.clone(),
-            user_provider_credential_repo.clone(),
-        ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(
-            providers.alist.clone(),
-            user_provider_credential_repo.clone(),
-        ));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(
-            providers.emby.clone(),
-            user_provider_credential_repo.clone(),
-        ));
 
         let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
@@ -1006,126 +972,7 @@ mod websocket_e2e {
             providers_manager: None,
         };
 
-        let shared_security_pipeline = Arc::new(
-            synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            ),
-        );
-        let shared_request_executor = Arc::new(synctv_api::impls::RequestExecutor::new(
-            router_config.config.clone(),
-            jwt_validator.clone(),
-            shared_security_pipeline.clone(),
-            router_config.rate_limiter.clone(),
-        ));
-        let provider_common_api = Arc::new(
-            synctv_api::impls::ProviderCommonApiImpl::new(
-                router_config.provider_instance_manager.clone(),
-                router_config.user_service.clone(),
-                router_config.audit_service.clone(),
-            )
-            .with_request_executor(shared_request_executor.clone()),
-        );
-        let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
-        let shared_provider_stores: std::sync::Arc<
-            dyn synctv_core::provider::store::ProviderStoreResolver,
-        > = std::sync::Arc::new(
-            synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
-        );
-        let shared_provider_access_service: std::sync::Arc<
-            dyn synctv_core::provider::ProviderAccessService,
-        > = std::sync::Arc::new(
-            synctv_core::provider::CachedProviderAccessService::new(
-                user_provider_credential_repo.clone(),
-                providers.alist.clone(),
-            )
-            .with_store(shared_provider_stores.load("credentials")),
-        );
-        let shared_api_runtime = std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
-            redis_runtime: None,
-            rate_limit_config: rate_limit_config.clone(),
-            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
-            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_millis(400),
-                std::time::Duration::from_millis(100),
-            ),
-            jwt_validator: jwt_validator.clone(),
-            security_pipeline: shared_security_pipeline.clone(),
-            public_id_codec: public_id_codec.clone(),
-            request_executor: shared_request_executor.clone(),
-            client_api: client_api.clone(),
-            admin_api: None,
-            email_api: None,
-            notification_api: None,
-            oauth2_api: None,
-            provider_common_api: provider_common_api.clone(),
-            bilibili_api: bilibili_api.clone(),
-            alist_api: alist_api.clone(),
-            emby_api: emby_api.clone(),
-            user_provider_credential_repository: user_provider_credential_repo.clone(),
-            provider_access_service: shared_provider_access_service.clone(),
-            provider_stores: shared_provider_stores.clone(),
-            proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
-            proxy_services: {
-                let signing_key =
-                    std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
-                        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                    ));
-                std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
-                    room_service: room_service.clone(),
-                    credential_encryption: None,
-                    credential_repo: user_provider_credential_repo.clone(),
-                    provider_access_service: None,
-                    signing_key,
-                    public_id_codec: public_id_codec.clone(),
-                })
-            },
-            proxy_signing_key: std::sync::Arc::new(
-                synctv_core::service::ProxySigningKey::derive_from(
-                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                ),
-            ),
-        });
-
-        let state = synctv_api::AppState {
-            router_config: Arc::new(router_config),
-            shared_api_runtime: shared_api_runtime.clone(),
-            redis_runtime: None,
-            rate_limit_config,
-            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
-            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_millis(400),
-                std::time::Duration::from_millis(100),
-            ),
-            jwt_validator,
-            security_pipeline: shared_api_runtime.security_pipeline.clone(),
-            public_id_codec: shared_api_runtime.public_id_codec.clone(),
-            request_executor: shared_request_executor,
-            client_api,
-            admin_api: None,
-            email_api: None,
-            notification_api: None,
-            oauth2_api: None,
-            provider_common_api,
-            bilibili_api,
-            alist_api,
-            emby_api,
-            provider_access_service: shared_api_runtime.provider_access_service.clone(),
-            provider_stores: shared_api_runtime.provider_stores.clone(),
-            proxy_provider_registry: shared_api_runtime.proxy_provider_registry.clone(),
-            proxy_services: shared_api_runtime.proxy_services.clone(),
-            proxy_signing_key: shared_api_runtime.proxy_signing_key.clone(),
-            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            )),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
-            metrics_access_controller: std::sync::Arc::new(
-                synctv_api::http::metrics_auth::MetricsAccessController::new(),
-            ),
-        };
+        let state = synctv_api::http::create_app_state_from_config(router_config);
 
         // Build a minimal router with just the WebSocket endpoint
         let app = axum::Router::new()
@@ -4729,10 +4576,6 @@ mod websocket_connection_limit_timing {
         let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> = Arc::new(
             RateLimiter::local_only(format!("{redis_key_prefix}ws-rate-limit:")),
         );
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-            jwt_service.clone(),
-        )));
-        let rate_limit_config = Arc::new(synctv_api::http::middleware::RateLimitConfig::default());
 
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
@@ -4758,32 +4601,6 @@ mod websocket_connection_limit_timing {
         };
 
         let config = Arc::new(synctv_core::Config::default());
-
-        let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
-            user_service.clone(),
-            room_service.clone(),
-            connection_manager.clone(),
-            config.clone(),
-            None,
-            jwt_service.clone(),
-            None,
-            None,
-            None,
-            Arc::new(synctv_api::PublicIdCodec::default_for_tests()),
-        ));
-
-        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
-            providers.bilibili.clone(),
-            user_provider_credential_repo.clone(),
-        ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(
-            providers.alist.clone(),
-            user_provider_credential_repo.clone(),
-        ));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(
-            providers.emby.clone(),
-            user_provider_credential_repo.clone(),
-        ));
 
         let router_config = synctv_api::http::RouterConfig {
             config,
@@ -4838,122 +4655,7 @@ mod websocket_connection_limit_timing {
             providers_manager: None,
         };
 
-        let shared_security_pipeline = Arc::new(
-            synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            ),
-        );
-        let shared_provider_stores = std::sync::Arc::new(
-            synctv_core::provider::store::ProviderStoreRegistry::local_only(""),
-        );
-        let shared_provider_access_service: std::sync::Arc<
-            dyn synctv_core::provider::ProviderAccessService,
-        > = std::sync::Arc::new(
-            synctv_core::provider::CachedProviderAccessService::new(
-                user_provider_credential_repo.clone(),
-                providers.alist.clone(),
-            )
-            .with_store(shared_provider_stores.load("credentials")),
-        );
-        let shared_proxy_provider_registry = std::sync::Arc::new(providers.build_proxy_registry());
-        let public_id_codec = Arc::new(synctv_api::PublicIdCodec::default_for_tests());
-        let shared_proxy_signing_key =
-            std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
-                b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-            ));
-        let shared_proxy_services =
-            std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
-                room_service: room_service.clone(),
-                credential_encryption: None,
-                credential_repo: user_provider_credential_repo.clone(),
-                provider_access_service: None,
-                signing_key: shared_proxy_signing_key.clone(),
-                public_id_codec: public_id_codec.clone(),
-            });
-        let shared_request_executor = Arc::new(synctv_api::impls::RequestExecutor::new(
-            router_config.config.clone(),
-            jwt_validator.clone(),
-            shared_security_pipeline.clone(),
-            router_config.rate_limiter.clone(),
-        ));
-        let provider_common_api = Arc::new(
-            synctv_api::impls::ProviderCommonApiImpl::new(
-                router_config.provider_instance_manager.clone(),
-                router_config.user_service.clone(),
-                router_config.audit_service.clone(),
-            )
-            .with_request_executor(shared_request_executor.clone()),
-        );
-
-        let state = synctv_api::AppState {
-            router_config: Arc::new(router_config),
-            shared_api_runtime: std::sync::Arc::new(synctv_api::http::SharedApiRuntime {
-                redis_runtime: None,
-                rate_limit_config: rate_limit_config.clone(),
-                messaging_rate_limit_config: Arc::new(
-                    synctv_core::service::RateLimitConfig::default(),
-                ),
-                content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
-                heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                    std::time::Duration::from_millis(400),
-                    std::time::Duration::from_millis(100),
-                ),
-                jwt_validator: jwt_validator.clone(),
-                security_pipeline: shared_security_pipeline.clone(),
-                public_id_codec: public_id_codec.clone(),
-                request_executor: shared_request_executor.clone(),
-                client_api: client_api.clone(),
-                admin_api: None,
-                email_api: None,
-                notification_api: None,
-                oauth2_api: None,
-                provider_common_api: provider_common_api.clone(),
-                bilibili_api: bilibili_api.clone(),
-                alist_api: alist_api.clone(),
-                emby_api: emby_api.clone(),
-                user_provider_credential_repository: user_provider_credential_repo.clone(),
-                provider_access_service: shared_provider_access_service.clone(),
-                provider_stores: shared_provider_stores.clone(),
-                proxy_provider_registry: shared_proxy_provider_registry.clone(),
-                proxy_services: shared_proxy_services.clone(),
-                proxy_signing_key: shared_proxy_signing_key.clone(),
-            }),
-            redis_runtime: None,
-            rate_limit_config,
-            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
-            content_filter: Arc::new(synctv_core::service::ContentFilter::new()),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
-                std::time::Duration::from_millis(400),
-                std::time::Duration::from_millis(100),
-            ),
-            jwt_validator,
-            security_pipeline: shared_security_pipeline,
-            public_id_codec,
-            request_executor: shared_request_executor,
-            client_api,
-            admin_api: None,
-            email_api: None,
-            notification_api: None,
-            oauth2_api: None,
-            provider_common_api,
-            bilibili_api,
-            alist_api,
-            emby_api,
-            provider_access_service: shared_provider_access_service,
-            provider_stores: shared_provider_stores,
-            proxy_provider_registry: shared_proxy_provider_registry,
-            proxy_services: shared_proxy_services,
-            proxy_signing_key: shared_proxy_signing_key,
-            proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
-                synctv_proxy::slice_cache::SliceCacheConfig::default(),
-            )),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
-            metrics_access_controller: std::sync::Arc::new(
-                synctv_api::http::metrics_auth::MetricsAccessController::new(),
-            ),
-        };
+        let state = synctv_api::http::create_app_state_from_config(router_config);
 
         let app = axum::Router::new()
             .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))

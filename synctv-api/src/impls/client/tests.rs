@@ -1147,25 +1147,6 @@ fn test_playlist_to_proto_dynamic() {
 }
 
 #[test]
-fn test_pagination_page_zero_treated_as_one() {
-    // validate_page should treat page=0 as page=1 (1-based pagination)
-    assert_eq!(crate::http::validation::validate_page(Some(0)), 1);
-}
-
-#[test]
-fn test_pagination_page_negative_treated_as_one() {
-    assert_eq!(crate::http::validation::validate_page(Some(-1)), 1);
-    assert_eq!(crate::http::validation::validate_page(Some(-100)), 1);
-}
-
-#[test]
-fn test_pagination_page_positive_passes_through() {
-    assert_eq!(crate::http::validation::validate_page(Some(1)), 1);
-    assert_eq!(crate::http::validation::validate_page(Some(5)), 5);
-    assert_eq!(crate::http::validation::validate_page(Some(100)), 100);
-}
-
-#[test]
 fn test_members_to_proto_pattern_multiple_roles() {
     let public_id_codec = test_public_id_codec();
     let creator = {

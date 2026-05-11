@@ -81,7 +81,11 @@ the internal Service:
 kubectl -n synctv port-forward svc/synctv 8080:8080
 ```
 
-At minimum, production deployments should override these secrets:
+When `existingSecret` is not set, the chart auto-generates the built-in Secret
+on first install and preserves existing values on upgrade. That is suitable for
+simple production installs as long as the release Secret is backed up and kept
+stable. Override values explicitly, or use `existingSecret`, when your
+production process requires externally managed or pre-provisioned secrets:
 
 ```yaml
 secrets:
@@ -99,6 +103,10 @@ secrets:
   bootstrap:
     rootPassword: "replace-me"
 ```
+
+Do not rotate `secrets.security.credentialEncryptionKey` or
+`secrets.security.opaqueServerSetupSecret` casually; changing them can break
+provider credential decryption or password authentication.
 
 ## Standard Mode
 
@@ -279,6 +287,10 @@ openssl rand -hex 32
 openssl rand -base64 48
 ```
 
+The built-in chart Secret uses generated values when these fields are left
+empty. Use the commands above when you need to provide values through
+`--set`, a private values file, or an external secret manager.
+
 #### 2. Use External Secrets
 
 ```yaml
@@ -435,8 +447,9 @@ You can then scrape through either Prometheus Operator (`ServiceMonitor`) or Vic
 
 ## Production Checklist
 
-- [ ] Change all default secrets in `secrets` section
-- [ ] Keep `secrets.security.opaqueServerSetupSecret` stable across upgrades
+- [ ] Decide whether to use the chart-generated Secret or an externally managed `existingSecret`
+- [ ] Back up generated secrets or keep externally managed secrets stable across upgrades
+- [ ] Keep `secrets.security.credentialEncryptionKey` and `secrets.security.opaqueServerSetupSecret` stable
 - [ ] Configure ingress and enable TLS when exposing SyncTV outside the cluster
 - [ ] Set appropriate resource limits
 - [ ] Choose the HLS model before enabling autoscaling: publisher-node proxy for small deployments, or shared_file/OSS for production traffic

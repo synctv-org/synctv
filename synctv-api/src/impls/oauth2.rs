@@ -696,6 +696,10 @@ impl From<LinkedProviderInfo> for LinkedProvider {
 #[cfg(test)]
 mod tests {
     use crate::impls::ApiError;
+    use synctv_proto::client::{
+        ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
+        GetAuthorizationUrlRequest, UnlinkProviderRequest,
+    };
 
     #[test]
     fn test_bind_user_lookup_backend_failure_stays_service_unavailable() {
@@ -786,6 +790,61 @@ mod tests {
 
         assert!(matches!(err.classify(), crate::impls::ErrorKind::NotFound));
         assert_eq!(err.code(), crate::impls::error_codes::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_oauth2_request_validation_rejects_invalid_redirect_url() {
+        let err = crate::impls::validate_proto_request(&GetAuthorizationUrlRequest {
+            provider: "github".to_string(),
+            redirect_url: "javascript:alert(1)".to_string(),
+        })
+        .expect_err("invalid redirect URL must be rejected");
+
+        assert!(err.to_string().contains("redirect_url"));
+    }
+
+    #[test]
+    fn test_oauth2_request_validation_accepts_native_app_redirect_url() {
+        crate::impls::validate_proto_request(&GetAuthorizationUrlForBindRequest {
+            provider: "logto1".to_string(),
+            redirect_url: "io.github.synctv://oauth2/callback".to_string(),
+        })
+        .expect("native app redirect URL should remain valid");
+    }
+
+    #[test]
+    fn test_oauth2_request_validation_rejects_invalid_exchange_code() {
+        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
+            provider: "github".to_string(),
+            code: "code with spaces".to_string(),
+            state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
+        })
+        .expect_err("invalid code must be rejected");
+
+        assert!(err.to_string().contains("code"));
+    }
+
+    #[test]
+    fn test_oauth2_request_validation_rejects_invalid_exchange_state() {
+        let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
+            provider: "github".to_string(),
+            code: "code.with.dots".to_string(),
+            state: "short".to_string(),
+        })
+        .expect_err("invalid state must be rejected");
+
+        assert!(err.to_string().contains("state"));
+    }
+
+    #[test]
+    fn test_oauth2_request_validation_rejects_too_long_provider_user_id() {
+        let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
+            provider: "github".to_string(),
+            provider_user_id: "a".repeat(257),
+        })
+        .expect_err("overlong provider_user_id must be rejected");
+
+        assert!(err.to_string().contains("provider_user_id"));
     }
 
     #[test]

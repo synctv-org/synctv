@@ -102,11 +102,11 @@ pub(crate) fn build_update_playback(
         .unwrap_or(crate::proto::client::PlaybackUpdateType::Unspecified);
 
     if let Some(position) = position {
-        crate::http::validation::validate_playback_position(position)
+        crate::impls::validation::validate_playback_position(position)
             .map_err(|err| ApiError::InvalidInput(err.to_string()))?;
     }
     if let Some(speed) = speed {
-        crate::http::validation::validate_playback_speed(speed)
+        crate::impls::validation::validate_playback_speed(speed)
             .map_err(|err| ApiError::InvalidInput(err.to_string()))?;
     }
 
@@ -746,6 +746,7 @@ impl ClientApiImpl {
         req: crate::proto::client::GetPlaybackRequest,
         request_control: Option<&ExecutionControl>,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         match actor.user_id() {
             Some(user_id) => {
                 let room_id = self

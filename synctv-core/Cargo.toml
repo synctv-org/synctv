@@ -36,6 +36,7 @@ oauth2.workspace = true
 webauthn-rs.workspace = true
 aes-gcm.workspace = true
 ammonia.workspace = true
+zxcvbn.workspace = true
 
 # Serialization
 serde.workspace = true

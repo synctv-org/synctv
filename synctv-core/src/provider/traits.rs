@@ -7,17 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Video quality option
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QualityOption {
-    /// Quality name (e.g., "1080P", "720P")
-    pub name: String,
-    /// Quality code for provider API
-    pub code: String,
-    /// Bitrate in kbps (optional)
-    pub bitrate: Option<u32>,
-}
-
 /// Subtitle track
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleTrack {
@@ -249,7 +238,8 @@ pub trait MediaProvider: Send + Sync {
     ///
     /// # Example
     /// ```rust
-    /// // Bilibili: source_config = {"bvid": "BV1xx", "cid": 123, "prefer_proxy": false}
+    /// // Bilibili video:
+    /// // source_config = {"type": "video", "bvid": "BV1xx", "cid": 123, "shared": false}
     /// // Returns: {
     /// //   playback_infos: {"direct": {...}, "proxied": {...}},
     /// //   default_mode: "direct"

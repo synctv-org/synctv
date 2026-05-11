@@ -261,16 +261,19 @@ async fn extract_handshake_auth(
             == Some(synctv_core::service::TokenType::Guest)
         {
             let public_room_id = state
+                .shared_api_runtime
                 .public_id_codec
                 .encode_room_id(*room_id)
                 .map_err(AppError::bad_request)?;
             return state
+                .shared_api_runtime
                 .request_executor
                 .execute_public_with_control(
                     request_meta,
                     EndpointRateLimitCategory::WebSocket,
                     move |_request_control| async move {
                         let access = state
+                            .shared_api_runtime
                             .client_api
                             .validate_guest_room_access(&token, &public_room_id)
                             .await?;
@@ -294,6 +297,7 @@ async fn extract_handshake_auth(
                 .map_err(crate::http::error::map_api_error);
         }
         return state
+            .shared_api_runtime
             .request_executor
             .execute_user_with_control(
                 request_meta,
@@ -311,6 +315,7 @@ async fn extract_handshake_auth(
     }
 
     state
+        .shared_api_runtime
         .request_executor
         .execute_public_with_control(
             request_meta,
@@ -852,8 +857,6 @@ const fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::WebrtcIceCandidate(_)) => "WebrtcIceCandidate",
         Some(Message::WebrtcJoin(_)) => "WebrtcJoin",
         Some(Message::WebrtcLeave(_)) => "WebrtcLeave",
-        Some(Message::SfuMigrationOffer(_)) => "SfuMigrationOffer",
-        Some(Message::SfuMigrationStatus(_)) => "SfuMigrationStatus",
         Some(Message::Notification(_)) => "Notification",
         Some(Message::PlaybackSnapshot(_)) => "PlaybackSnapshot",
         None => "None",
@@ -980,8 +983,6 @@ pub async fn websocket_handler(
     peer_ip: OptionalPeerIp,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, AppError> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
-    crate::impls::validate_proto_request(&query).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
     let request_meta = websocket_request_metadata(state.config.as_ref(), &headers, peer_ip.0)?;
     let handshake_control = ExecutionControl::from_timeout(request_meta.timeout);
@@ -1151,6 +1152,9 @@ async fn prepare_websocket_upgrade(
     request_meta: &ApiRequestMetadata,
     handshake_control: &ExecutionControl,
 ) -> Result<PreparedWebSocketUpgrade, AppError> {
+    crate::impls::validation::validate_websocket_connect_request(query)
+        .map_err(crate::http::error::map_api_error)?;
+
     validate_websocket_origin(
         headers,
         &state.config.server.cors_allowed_origins,
@@ -1159,6 +1163,7 @@ async fn prepare_websocket_upgrade(
     )?;
 
     let rid = state
+        .shared_api_runtime
         .public_id_codec
         .decode_room_id(room_id)
         .map_err(|error| AppError::bad_request(format!("Invalid room_id: {error}")))?;
@@ -1274,8 +1279,8 @@ async fn handle_socket(
 
     // Use the shared rate limiter from app state
     let rate_limiter = state.rate_limiter.clone();
-    let rate_limit_config = state.messaging_rate_limit_config.clone();
-    let content_filter = websocket_content_filter(&state.content_filter);
+    let rate_limit_config = state.shared_api_runtime.messaging_rate_limit_config.clone();
+    let content_filter = websocket_content_filter(&state.shared_api_runtime.content_filter);
 
     // Separate outbound channels keep critical state/control messages from being
     // starved behind a backlog of best-effort traffic.
@@ -1309,14 +1314,14 @@ async fn handle_socket(
         rate_limiter,
         rate_limit_config,
         content_filter,
-        state.public_id_codec.clone(),
+        state.shared_api_runtime.public_id_codec.clone(),
         ws_sender_for_handler,
     )
-    .with_playback_snapshot_service(state.client_api.clone())
-    .with_playlist_items_snapshot_service(state.client_api.clone())
-    .with_room_members_snapshot_service(state.client_api.clone())
+    .with_playback_snapshot_service(state.shared_api_runtime.client_api.clone())
+    .with_playlist_items_snapshot_service(state.shared_api_runtime.client_api.clone())
+    .with_room_members_snapshot_service(state.shared_api_runtime.client_api.clone())
     .with_connection_id(connection_id.clone())
-    .with_heartbeat_schedule(state.heartbeat_schedule)
+    .with_heartbeat_schedule(state.shared_api_runtime.heartbeat_schedule)
     .with_filter_private_ice_candidates(state.config.webrtc.filter_private_ice_candidates)
     .with_ws_message_rate_limit(
         state

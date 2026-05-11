@@ -44,11 +44,11 @@ pub async fn add_member(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<AddMemberBody>,
 ) -> AppResult<Json<crate::proto::client::AddMemberResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -83,15 +83,15 @@ pub async fn list_room_join_reviews(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    crate::http::validation::ValidatedQuery(req): crate::http::validation::ValidatedQuery<
+    crate::http::validation::ProtoQuery(req): crate::http::validation::ProtoQuery<
         crate::proto::client::ListRoomJoinReviewsRequest,
     >,
 ) -> AppResult<Json<crate::proto::client::ListRoomJoinReviewsResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomPathRequest { room_id } = path;
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -132,15 +132,15 @@ pub async fn approve_room_join_review(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
 ) -> AppResult<Json<crate::proto::client::ApproveRoomJoinReviewResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomJoinReviewPathRequest {
         room_id,
         request_id,
     } = path;
     let req = crate::proto::client::ApproveRoomJoinReviewRequest { request_id };
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -184,15 +184,15 @@ pub async fn reject_room_join_review(
     Path(path): Path<crate::proto::client::RoomJoinReviewPathRequest>,
     Json(mut req): Json<crate::proto::client::RejectRoomJoinReviewRequest>,
 ) -> AppResult<Json<crate::proto::client::RejectRoomJoinReviewResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomJoinReviewPathRequest {
         room_id,
         request_id,
     } = path;
     req.request_id = request_id;
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -235,12 +235,12 @@ pub async fn kick_member(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::KickMemberResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = crate::proto::client::KickMemberRequest::default().with_user_id(user_id);
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -284,12 +284,12 @@ pub async fn set_member_permissions(
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
     Json(req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
 ) -> AppResult<Json<crate::proto::client::UpdateMemberPermissionsResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = req.with_user_id(user_id);
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -334,11 +334,11 @@ pub async fn ban_member(
     Path(path): Path<crate::proto::client::RoomPathRequest>,
     Json(req): Json<BanMemberBody>,
 ) -> AppResult<Json<crate::proto::client::BanMemberResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let room_id = path.room_id;
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,
@@ -381,12 +381,12 @@ pub async fn unban_member(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::UnbanMemberResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(crate::http::error::map_api_error)?;
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     let req = crate::proto::client::UnbanMemberRequest::default().with_user_id(user_id);
     let request_meta = request_metadata(request_meta);
-    let client_api = state.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
+        .shared_api_runtime
         .client_api
         .execute_user_endpoint(
             &request_meta,

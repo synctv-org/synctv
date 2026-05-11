@@ -49,11 +49,12 @@ pub async fn get_ice_servers(
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
 ) -> AppResult<Json<GetIceServersResponse>> {
-    crate::impls::validate_proto_request(&path).map_err(map_api_error)?;
     let public_room_id = path.room_id;
-    let room_id =
-        crate::impls::proto_validated_room_id(public_room_id.clone(), &state.public_id_codec)
-            .map_err(map_api_error)?;
+    let room_id = crate::impls::proto_validated_room_id(
+        public_room_id.clone(),
+        &state.shared_api_runtime.public_id_codec,
+    )
+    .map_err(map_api_error)?;
     let request_meta = RequestMetadata(request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT)));
 
     let response = super::room::execute_room_actor_endpoint(

@@ -18,14 +18,12 @@ use synctv_core::models::{
     UserStatus,
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
-use synctv_core::repository::{
-    BanRecordListQuery, BanRecordRepository, BanRecordRow, BanRecordTargetType, ReviewRepository,
-    RoomCreationReviewListQuery, RoomCreationReviewRecord, RoomJoinReviewListQuery,
-    RoomJoinReviewRecord, UserRegistrationReviewListQuery, UserRegistrationReviewRecord,
-};
 use synctv_core::service::{
-    AuditService, AuthorizedAdminActor, EmailService, RemoteProviderManager, RoomService,
-    SettingsRegistry, SettingsService, UserService,
+    AuditService, AuthorizedAdminActor, BanRecordListQuery, BanRecordRow, BanRecordService,
+    BanRecordTargetType, EmailService, RemoteProviderManager, ReviewService,
+    RoomCreationReviewListQuery, RoomCreationReviewRecord, RoomJoinReviewListQuery,
+    RoomJoinReviewRecord, RoomService, SettingsRegistry, SettingsService,
+    UserRegistrationReviewListQuery, UserRegistrationReviewRecord, UserService,
 };
 use synctv_core::Error as CoreError;
 use synctv_livestream::api::LiveStreamingInfrastructure;
@@ -297,6 +295,8 @@ pub async fn validate_admin_auth(
 pub struct AdminApiImpl {
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
+    pub review_service: Arc<ReviewService>,
+    pub ban_record_service: Arc<BanRecordService>,
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Arc<EmailService>,
@@ -552,14 +552,6 @@ fn compare_active_streams(
 }
 
 impl AdminApiImpl {
-    fn ban_record_repository(&self) -> BanRecordRepository {
-        BanRecordRepository::new(self.user_service.pool().clone())
-    }
-
-    fn review_repository(&self) -> ReviewRepository {
-        ReviewRepository::new(self.user_service.pool().clone())
-    }
-
     fn publish_room_cache_invalidation(&self, room_id: &RoomId) {
         self.room_cache_fanout.publish_invalidation(room_id);
     }
@@ -1391,6 +1383,8 @@ impl AdminApiImpl {
         audit_service: Arc<AuditService>,
         public_id_codec: Arc<crate::PublicIdCodec>,
     ) -> Self {
+        let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
+        let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
         let cluster_fanout = default_cluster_fanout_service(None, config.cluster_runtime_enabled());
         let room_settings_fanout =
             default_room_settings_fanout_service(cluster_fanout.clone(), None);
@@ -1413,6 +1407,8 @@ impl AdminApiImpl {
         Self {
             room_service,
             user_service,
+            review_service,
+            ban_record_service,
             settings_service,
             settings_registry,
             email_service,
@@ -2672,12 +2668,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::GetSettingsGroupResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         let requested_group = req.group.trim();
-        if requested_group.is_empty() {
-            return Err(ApiError::InvalidInput(
-                "settings group must not be empty".to_string(),
-            ));
-        }
 
         let group = Self::project_settings_groups(self.effective_settings_by_key()?)?
             .into_iter()
@@ -3058,7 +3050,7 @@ impl AdminApiImpl {
         request_id: UserId,
     ) -> Result<crate::proto::admin::UserRegistrationReview, ApiError> {
         let row = self
-            .review_repository()
+            .review_service
             .load_user_registration(request_id)
             .await?
             .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
@@ -3070,7 +3062,7 @@ impl AdminApiImpl {
         request_id: RoomId,
     ) -> Result<crate::proto::admin::RoomCreationReview, ApiError> {
         let row = self
-            .review_repository()
+            .review_service
             .load_room_creation(request_id)
             .await?
             .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
@@ -3082,7 +3074,7 @@ impl AdminApiImpl {
         request_id: ReviewRequestId,
     ) -> Result<crate::proto::admin::RoomJoinReview, ApiError> {
         let row = self
-            .review_repository()
+            .review_service
             .load_room_join(request_id)
             .await?
             .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))?;
@@ -3093,7 +3085,7 @@ impl AdminApiImpl {
         &self,
         request_id: ReviewRequestId,
     ) -> Result<(RoomId, UserId), ApiError> {
-        self.review_repository()
+        self.review_service
             .load_room_join_target(request_id)
             .await?
             .ok_or_else(|| ApiError::NotFound("Review not found".to_string()))
@@ -3110,7 +3102,7 @@ impl AdminApiImpl {
         let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100);
         let offset = page.saturating_sub(1).saturating_mul(page_size);
         let page = self
-            .review_repository()
+            .review_service
             .list_user_registrations(&UserRegistrationReviewListQuery {
                 status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 search: Some(req.search.clone()).filter(|search| !search.is_empty()),
@@ -3158,13 +3150,10 @@ impl AdminApiImpl {
             crate::impls::proto_validated_user_id(req.request_id, &self.public_id_codec)?;
         let reviewed_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);
-        let rows_affected = self
-            .review_repository()
-            .reject_user_registration(user_request_id, reviewed_by.copied(), &req.reason)
-            .await?;
-        if rows_affected == 0 {
-            return Err(ApiError::NotFound("Pending review not found".to_string()));
-        }
+        self.user_service
+            .reject_registration_request(&user_request_id, reviewed_by, &req.reason)
+            .await
+            .map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::RejectUserRegistrationReviewResponse {
             review: Some(self.load_user_registration_review(user_request_id).await?),
@@ -3193,7 +3182,7 @@ impl AdminApiImpl {
         };
 
         let page = self
-            .review_repository()
+            .review_service
             .list_room_creations(&RoomCreationReviewListQuery {
                 status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 requested_by: requested_by_filter,
@@ -3286,7 +3275,7 @@ impl AdminApiImpl {
         };
 
         let page = self
-            .review_repository()
+            .review_service
             .list_room_joins(&RoomJoinReviewListQuery {
                 status: synctv_core::models::ReviewStatus::try_from(req.status).unwrap_or_default(),
                 room_id: room_id_filter,
@@ -3395,7 +3384,7 @@ impl AdminApiImpl {
         };
 
         let page = self
-            .ban_record_repository()
+            .ban_record_service
             .list(&BanRecordListQuery {
                 target_type: match crate::proto::admin::BanTargetType::try_from(req.target_type) {
                     Ok(crate::proto::admin::BanTargetType::User) => Some(BanRecordTargetType::User),

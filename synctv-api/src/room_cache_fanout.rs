@@ -82,14 +82,14 @@ mod tests {
         let service =
             default_room_cache_fanout_service(default_cluster_fanout_service(None, false));
 
-        service.publish_invalidation(&RoomId::from(109_001));
+        service.publish_invalidation(&RoomId::expect_positive(109_001));
     }
 
     #[tokio::test]
     async fn test_room_cache_fanout_publishes_room_target_invalidation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let service = default_room_cache_fanout_service(channel_cluster_fanout_service(tx));
-        let room_id = RoomId::from(109_002);
+        let room_id = RoomId::expect_positive(109_002);
 
         service.publish_invalidation(&room_id);
 
@@ -101,7 +101,7 @@ mod tests {
                 assert_eq!(targets.len(), 1);
                 match &targets[0] {
                     CacheTarget::Room { room_id } => {
-                        assert_eq!(room_id, &RoomId::from(109_002));
+                        assert_eq!(room_id, &RoomId::expect_positive(109_002));
                     }
                     other => panic!("expected CacheTarget::Room, got {other:?}"),
                 }

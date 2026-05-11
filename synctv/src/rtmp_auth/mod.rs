@@ -1553,7 +1553,7 @@ mod tests {
         );
         assert!(
             restarted_auth
-                .get_user_stream(UserId::from(309))
+                .get_user_stream(UserId::expect_positive(309))
                 .await
                 .is_some(),
             "restarted unpublish must leave the persisted user stream mapping intact without a fence"
@@ -1587,7 +1587,7 @@ mod tests {
         );
         assert!(
             restarted_auth
-                .get_user_stream(UserId::from(310))
+                .get_user_stream(UserId::expect_positive(310))
                 .await
                 .is_some(),
             "restarted rollback must leave the persisted user stream mapping intact without a fence"
@@ -1634,8 +1634,10 @@ mod tests {
             .expect("restarted stale unpublish must not remove the replacement publisher");
         assert_eq!(current.user_id, second_user_id);
         assert_eq!(
-            restarted_auth.get_user_stream(UserId::from(312)).await,
-            Some((RoomId::from(108), MediaId::from(208),)),
+            restarted_auth
+                .get_user_stream(UserId::expect_positive(312))
+                .await,
+            Some((RoomId::expect_positive(108), MediaId::expect_positive(208),)),
             "replacement publisher mapping must remain after restarted stale unpublish"
         );
     }
@@ -1701,7 +1703,7 @@ mod tests {
         let room = Room::new_with_status(
             "Closed room".to_string(),
             String::new(),
-            UserId::from(1),
+            UserId::expect_positive(1),
             RoomStatus::Closed,
         );
         let err =
@@ -1718,7 +1720,7 @@ mod tests {
 
     #[test]
     fn test_validate_rtmp_room_state_rejects_banned_room() {
-        let mut room = Room::new("Banned room".to_string(), UserId::from(1));
+        let mut room = Room::new("Banned room".to_string(), UserId::expect_positive(1));
         room.ban();
 
         assert_eq!(
@@ -1816,10 +1818,10 @@ mod tests {
             .await
             .expect("seed user stream mapping");
 
-        let user_stream = auth.get_user_stream(UserId::from(1)).await;
+        let user_stream = auth.get_user_stream(UserId::expect_positive(1)).await;
         assert_eq!(
             user_stream,
-            Some((RoomId::from(101), MediaId::from(201))),
+            Some((RoomId::expect_positive(101), MediaId::expect_positive(201))),
             "RTMP auth must re-read the shared Redis handle after a hot swap"
         );
     }
@@ -1851,10 +1853,10 @@ mod tests {
             .await
             .expect("seed user stream mapping");
 
-        let user_stream = auth.get_user_stream(UserId::from(2)).await;
+        let user_stream = auth.get_user_stream(UserId::expect_positive(2)).await;
         assert_eq!(
             user_stream,
-            Some((RoomId::from(102), MediaId::from(202))),
+            Some((RoomId::expect_positive(102), MediaId::expect_positive(202))),
             "RTMP auth should accept injected redis runtime trait objects"
         );
     }
@@ -1878,8 +1880,11 @@ mod tests {
         }
 
         async fn get(&self, user_id: UserId) -> anyhow::Result<Option<(RoomId, MediaId)>> {
-            if user_id == UserId::from(3) {
-                Ok(Some((RoomId::from(103), MediaId::from(203))))
+            if user_id == UserId::expect_positive(3) {
+                Ok(Some((
+                    RoomId::expect_positive(103),
+                    MediaId::expect_positive(203),
+                )))
             } else {
                 Ok(None)
             }
@@ -1896,10 +1901,10 @@ mod tests {
             make_test_auth_with_registry_dyn(synctv_livestream::relay::local_stream_registry())
                 .with_user_stream_index(Arc::new(MockSharedUserStreamIndex));
 
-        let user_stream = auth.get_user_stream(UserId::from(3)).await;
+        let user_stream = auth.get_user_stream(UserId::expect_positive(3)).await;
         assert_eq!(
             user_stream,
-            Some((RoomId::from(103), MediaId::from(203))),
+            Some((RoomId::expect_positive(103), MediaId::expect_positive(203))),
             "RTMP auth should accept any injected shared user-stream index implementation"
         );
     }

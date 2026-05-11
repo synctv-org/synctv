@@ -1,6 +1,6 @@
 //! `ProviderInstanceRepository` integration tests
 //!
-//! Tests: encryption of sensitive fields, CHECK constraints.
+//! Tests: encryption of sensitive fields and relational constraints.
 //!
 //! Run with: cargo test -p synctv-core --test `provider_instance_repository_tests`
 #![allow(clippy::unwrap_used)]
@@ -41,11 +41,11 @@ fn make_instance(
     }
 }
 
-// ─── CHECK constraint: plaintext jwt_secret rejected ─────────────────
+// ─── Schema remains storage-only; encryption policy lives in repository ───
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
+async fn test_plaintext_jwt_secret_is_not_a_schema_policy() {
     let (_container, pool) = create_test_pool().await;
 
     let result = sqlx::query(
@@ -64,21 +64,15 @@ async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
     .await;
 
     assert!(
-        result.is_err(),
-        "Plaintext jwt_secret should be rejected by CHECK constraint"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("valid_jwt_secret_format") || err_msg.contains("check"),
-        "Error should mention CHECK constraint, got: {err_msg}"
+        result.is_ok(),
+        "storage schema should not encode credential encryption format policy, got: {:?}",
+        result.err()
     );
 }
 
-// ─── CHECK constraint: plaintext custom_ca rejected ───────────────────
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
+async fn test_plaintext_custom_ca_is_not_a_schema_policy() {
     let (_container, pool) = create_test_pool().await;
 
     let result = sqlx::query(
@@ -97,21 +91,17 @@ async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
     .await;
 
     assert!(
-        result.is_err(),
-        "Plaintext custom_ca should be rejected by CHECK constraint"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("valid_custom_ca_format") || err_msg.contains("check"),
-        "Error should mention CHECK constraint, got: {err_msg}"
+        result.is_ok(),
+        "storage schema should not encode credential encryption format policy, got: {:?}",
+        result.err()
     );
 }
 
-// ─── CHECK constraint: NULL secrets allowed ────────────────────────────
+// ─── NULL secrets are storage-valid ─────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_null_secrets_allowed_by_check_constraint() {
+async fn test_null_secrets_allowed_by_schema() {
     let (_container, pool) = create_test_pool().await;
 
     // NULL secrets should be allowed
@@ -136,11 +126,11 @@ async fn test_null_secrets_allowed_by_check_constraint() {
     );
 }
 
-// ─── CHECK constraint: enc: prefixed secrets allowed ───────────────────
+// ─── Encrypted secrets are storage-valid ────────────────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_enc_prefixed_secrets_allowed_by_check_constraint() {
+async fn test_enc_prefixed_secrets_allowed_by_schema() {
     let (_container, pool) = create_test_pool().await;
 
     // enc: prefixed secrets should be allowed

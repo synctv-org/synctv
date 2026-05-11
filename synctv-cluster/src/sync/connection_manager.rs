@@ -3933,7 +3933,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_connection() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         let result = manager.register("conn1".to_string(), user_id).await;
         assert!(result.is_ok());
@@ -3944,7 +3944,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_duplicate_connection_id_is_rejected_without_double_counting() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_110);
+        let user_id = UserId::expect_positive(10_000_110);
 
         manager
             .register("dup-conn".to_string(), user_id)
@@ -3988,7 +3988,7 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from(10_000_111);
+        let user_id = UserId::expect_positive(10_000_111);
 
         let first = {
             let manager = Arc::clone(&manager);
@@ -4077,8 +4077,8 @@ mod tests {
         let cleanup_op = manager.unregister_cleanup_op(
             "conn-123",
             "token-123",
-            UserId::from(40_123_001),
-            Some(RoomId::from(40_123_002)),
+            UserId::expect_positive(40_123_001),
+            Some(RoomId::expect_positive(40_123_002)),
         );
 
         manager.enqueue_pending_retry_for_test(cleanup_op.clone());
@@ -4099,8 +4099,8 @@ mod tests {
         let manager =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix));
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
-        let user1 = UserId::from(10_000_112);
-        let user2 = UserId::from(10_000_113);
+        let user1 = UserId::expect_positive(10_000_112);
+        let user2 = UserId::expect_positive(10_000_113);
 
         let task1 = {
             let manager = Arc::clone(&manager);
@@ -4170,7 +4170,7 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         // First two should succeed
         assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
@@ -4190,7 +4190,7 @@ mod tests {
             ..Default::default()
         };
         let manager = Arc::new(ConnectionManager::new(limits));
-        let user_id = UserId::from(10_000_114);
+        let user_id = UserId::expect_positive(10_000_114);
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
 
         let task1 = {
@@ -4231,8 +4231,8 @@ mod tests {
     #[tokio::test]
     async fn test_join_room() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4251,8 +4251,8 @@ mod tests {
     async fn test_has_other_connection_for_user_in_room_distributed_uses_local_state_without_redis()
     {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4276,9 +4276,9 @@ mod tests {
     #[tokio::test]
     async fn test_has_other_connection_for_user_in_room_distributed_ignores_other_rooms() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
-        let other_room_id = RoomId::from(10_000_094);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
+        let other_room_id = RoomId::expect_positive(10_000_094);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4305,8 +4305,8 @@ mod tests {
     #[tokio::test]
     async fn test_has_existing_presence_for_user_in_room_distributed_uses_same_logic() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4337,12 +4337,12 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let room_id = RoomId::from(10_000_092);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         // Register two connections and join room
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
-        let user3 = UserId::from(10_000_115);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
+        let user3 = UserId::expect_positive(10_000_115);
 
         manager.register("conn1".to_string(), user1).await.unwrap();
         manager.register("conn2".to_string(), user2).await.unwrap();
@@ -4365,14 +4365,20 @@ mod tests {
             ..Default::default()
         };
         let manager = Arc::new(ConnectionManager::new(limits));
-        let room_id = RoomId::from(10_000_116);
+        let room_id = RoomId::expect_positive(10_000_116);
 
         manager
-            .register("conn-room-race-1".to_string(), UserId::from(10_000_117))
+            .register(
+                "conn-room-race-1".to_string(),
+                UserId::expect_positive(10_000_117),
+            )
             .await
             .expect("first registration");
         manager
-            .register("conn-room-race-2".to_string(), UserId::from(10_000_118))
+            .register(
+                "conn-room-race-2".to_string(),
+                UserId::expect_positive(10_000_118),
+            )
             .await
             .expect("second registration");
 
@@ -4421,9 +4427,9 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from(10_000_119);
-        let room_a = RoomId::from(10_000_120);
-        let room_b = RoomId::from(10_000_121);
+        let user_id = UserId::expect_positive(10_000_119);
+        let room_a = RoomId::expect_positive(10_000_120);
+        let room_b = RoomId::expect_positive(10_000_121);
 
         manager
             .register("conn-switch".to_string(), user_id)
@@ -4511,8 +4517,8 @@ mod tests {
                 })
             }),
         );
-        let user_id = UserId::from(10_000_122);
-        let room_id = RoomId::from(10_000_123);
+        let user_id = UserId::expect_positive(10_000_122);
+        let room_id = RoomId::expect_positive(10_000_123);
 
         manager
             .register("conn-unregister-race".to_string(), user_id)
@@ -4555,7 +4561,7 @@ mod tests {
     #[tokio::test]
     async fn test_record_message() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4573,7 +4579,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_user_connections_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4591,7 +4597,7 @@ mod tests {
     #[tokio::test]
     async fn test_user_connection_count_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_124);
+        let user_id = UserId::expect_positive(10_000_124);
 
         manager
             .register("user-count-1".to_string(), user_id)
@@ -4612,8 +4618,8 @@ mod tests {
     #[tokio::test]
     async fn test_room_connection_count_distributed_without_redis_uses_local_state() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4637,8 +4643,8 @@ mod tests {
     #[tokio::test]
     async fn test_room_online_user_count_deduplicates_same_user_connections() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4670,9 +4676,9 @@ mod tests {
     #[tokio::test]
     async fn test_user_connection_count_in_room_distributed_counts_all_connections() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_125);
-        let room_id = RoomId::from(10_000_126);
-        let other_room_id = RoomId::from(10_000_127);
+        let user_id = UserId::expect_positive(10_000_125);
+        let room_id = RoomId::expect_positive(10_000_126);
+        let other_room_id = RoomId::expect_positive(10_000_127);
 
         manager
             .register("room-count-1".to_string(), user_id)
@@ -4703,8 +4709,8 @@ mod tests {
     #[tokio::test]
     async fn test_unregister() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4726,7 +4732,7 @@ mod tests {
     #[tokio::test]
     async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_128);
+        let user_id = UserId::expect_positive(10_000_128);
         let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
@@ -4757,7 +4763,7 @@ mod tests {
     #[tokio::test]
     async fn test_users_online_metric_decrements_only_after_last_connection_leaves() {
         let manager = ConnectionManager::default();
-        let user_id = UserId::from(10_000_129);
+        let user_id = UserId::expect_positive(10_000_129);
         let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
@@ -4787,8 +4793,8 @@ mod tests {
     #[tokio::test]
     async fn test_metrics() {
         let manager = ConnectionManager::default();
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
 
         manager.register("conn1".to_string(), user1).await.unwrap();
         manager.register("conn2".to_string(), user2).await.unwrap();
@@ -4810,7 +4816,7 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4832,7 +4838,7 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4862,8 +4868,8 @@ mod tests {
             ..Default::default()
         };
         let manager = ConnectionManager::new(limits);
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
 
         manager
             .register("conn1".to_string(), user_id)
@@ -4894,8 +4900,8 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from(10_000_010);
-        let room_id = RoomId::from(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
         let user_key = format!("{prefix}connections:user:{user_id}");
         let room_key = format!("{prefix}connections:room:{room_id}");
 
@@ -4985,9 +4991,9 @@ mod tests {
         let foreign_meta = ConnectionInfoPersistent {
             connection_id: "other_node_conn".to_string(),
             registration_token: "foreign-token".to_string(),
-            user_id: UserId::from(20_000_201),
+            user_id: UserId::expect_positive(20_000_201),
             actor_id: "usr_foreign".to_string(),
-            room_id: Some(RoomId::from(20_000_202)),
+            room_id: Some(RoomId::expect_positive(20_000_202)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5062,7 +5068,7 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test3:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
         let user_key = format!("{prefix}connections:user:{user_id}");
 
         // Register a connection (should succeed and write to Redis)
@@ -5157,8 +5163,8 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test6:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_a = UserId::from(10_000_130);
-        let room_a = RoomId::from(10_000_120);
+        let user_a = UserId::expect_positive(10_000_130);
+        let room_a = RoomId::expect_positive(10_000_120);
         let stale_missing = "conn-missing";
         let stale_mismatch = "conn-mismatch";
         let valid = "conn-valid";
@@ -5174,9 +5180,9 @@ mod tests {
         let mismatch_metadata = ConnectionInfoPersistent {
             connection_id: stale_mismatch.to_string(),
             registration_token: "mismatch-token".to_string(),
-            user_id: UserId::from(10_000_131),
+            user_id: UserId::expect_positive(10_000_131),
             actor_id: "usr_mismatch".to_string(),
-            room_id: Some(RoomId::from(10_000_121)),
+            room_id: Some(RoomId::expect_positive(10_000_121)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5278,8 +5284,8 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test7:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from(10_000_131);
-        let room_id = RoomId::from(10_000_132);
+        let user_id = UserId::expect_positive(10_000_131);
+        let room_id = RoomId::expect_positive(10_000_132);
 
         manager
             .register("conn-meta-ttl".to_string(), user_id)
@@ -5314,8 +5320,8 @@ mod tests {
         let (_container, client, conn, prefix) = docker_redis_connection("test8:").await;
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, &prefix);
 
-        let user_id = UserId::from(10_000_133);
-        let room_id = RoomId::from(10_000_134);
+        let user_id = UserId::expect_positive(10_000_133);
+        let room_id = RoomId::expect_positive(10_000_134);
         let user_index_key = format!("{prefix}conn_mgr:user:{user_id}");
         let room_index_key = format!("{prefix}conn_mgr:room:{room_id}");
         let user_index_directory_key = format!("{prefix}{USER_INDEX_DIRECTORY_KEY_SUFFIX}");
@@ -5394,7 +5400,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let manager = ConnectionManager::new(limits).with_redis(conn, &prefix);
-        let user_id = UserId::from(10_000_135);
+        let user_id = UserId::expect_positive(10_000_135);
         let user_key = format!("{prefix}connections:user:{user_id}");
 
         manager
@@ -5440,11 +5446,14 @@ mod tests {
             .with_shared_redis(shared_conn.clone(), &prefix);
 
         manager
-            .register("conn-shared".to_string(), UserId::from(10_000_136))
+            .register(
+                "conn-shared".to_string(),
+                UserId::expect_positive(10_000_136),
+            )
             .await
             .unwrap();
         manager
-            .join_room("conn-shared", RoomId::from(10_000_137))
+            .join_room("conn-shared", RoomId::expect_positive(10_000_137))
             .await
             .unwrap();
 
@@ -5470,7 +5479,7 @@ mod tests {
             .unwrap();
         *shared_conn.write().await = replacement_conn;
 
-        let moved_room = RoomId::from(10_000_138);
+        let moved_room = RoomId::expect_positive(10_000_138);
         manager.join_room("conn-shared", moved_room).await.unwrap();
 
         let moved_room_key = format!("{prefix}connections:room:{moved_room}");
@@ -5510,7 +5519,10 @@ mod tests {
             .with_redis_runtime(runtime, &prefix);
 
         manager
-            .register("conn-runtime".to_string(), UserId::from(10_000_139))
+            .register(
+                "conn-runtime".to_string(),
+                UserId::expect_positive(10_000_139),
+            )
             .await
             .expect("register should use injected redis runtime");
 
@@ -5536,8 +5548,8 @@ mod tests {
         let cleanup_op = manager.unregister_cleanup_op(
             "conn-recover",
             "token-recover",
-            UserId::from(20_000_301),
-            Some(RoomId::from(20_000_302)),
+            UserId::expect_positive(20_000_301),
+            Some(RoomId::expect_positive(20_000_302)),
         );
         let PendingRedisOp::UnregisterCleanup {
             total_key,
@@ -5558,9 +5570,9 @@ mod tests {
         let metadata = ConnectionInfoPersistent {
             connection_id: "conn-recover".to_string(),
             registration_token: "token-recover".to_string(),
-            user_id: UserId::from(20_000_301),
+            user_id: UserId::expect_positive(20_000_301),
             actor_id: "usr_recover".to_string(),
-            room_id: Some(RoomId::from(20_000_302)),
+            room_id: Some(RoomId::expect_positive(20_000_302)),
             connected_at_unix: 0,
             last_activity_unix: 0,
             message_count: 0,
@@ -5623,9 +5635,9 @@ mod tests {
         let persistent = ConnectionInfoPersistent {
             connection_id: "conn1".to_string(),
             registration_token: "token1".to_string(),
-            user_id: UserId::from(20_000_401),
+            user_id: UserId::expect_positive(20_000_401),
             actor_id: "usr_20000401".to_string(),
-            room_id: Some(RoomId::from(20_000_402)),
+            room_id: Some(RoomId::expect_positive(20_000_402)),
             connected_at_unix: 1000,
             last_activity_unix: 2000,
             message_count: 5,
@@ -5638,8 +5650,11 @@ mod tests {
 
         assert_eq!(deserialized.connection_id, "conn1");
         assert_eq!(deserialized.registration_token, "token1");
-        assert_eq!(deserialized.user_id, UserId::from(20_000_401));
-        assert_eq!(deserialized.room_id, Some(RoomId::from(20_000_402)));
+        assert_eq!(deserialized.user_id, UserId::expect_positive(20_000_401));
+        assert_eq!(
+            deserialized.room_id,
+            Some(RoomId::expect_positive(20_000_402))
+        );
         assert_eq!(deserialized.message_count, 5);
         assert!(deserialized.rtc_joined);
     }
@@ -5665,7 +5680,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId::from(1);
+        let rid = RoomId::expect_positive(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_ok());
@@ -5683,7 +5698,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId::from(1);
+        let rid = RoomId::expect_positive(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_err());
@@ -5702,7 +5717,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let uid = UserId::from(1);
+        let uid = UserId::expect_positive(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert!(mgr.reserve_user_slot(&uid).is_ok());
@@ -5719,7 +5734,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let uid = UserId::from(1);
+        let uid = UserId::expect_positive(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert!(mgr.reserve_user_slot(&uid).is_err());
@@ -5738,8 +5753,8 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid1 = RoomId::from(1);
-        let rid2 = RoomId::from(2);
+        let rid1 = RoomId::expect_positive(1);
+        let rid2 = RoomId::expect_positive(2);
 
         assert!(mgr.reserve_room_slot(&rid1).is_ok());
         assert!(
@@ -5757,7 +5772,7 @@ mod tests {
             ..ConnectionLimits::default()
         };
         let mgr = ConnectionManager::new(limits);
-        let rid = RoomId::from(1);
+        let rid = RoomId::expect_positive(1);
 
         // Release without prior reservation should not panic
         mgr.release_room_reservation(&rid);
@@ -5775,7 +5790,7 @@ mod tests {
     #[tokio::test]
     async fn test_release_room_reservation_removes_zero_counter_entry() {
         let mgr = ConnectionManager::new(ConnectionLimits::default());
-        let rid = RoomId::from(1);
+        let rid = RoomId::expect_positive(1);
 
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert_eq!(mgr.pending_room_reservations.len(), 1);
@@ -5792,7 +5807,7 @@ mod tests {
     #[tokio::test]
     async fn test_release_user_reservation_removes_zero_counter_entry() {
         let mgr = ConnectionManager::new(ConnectionLimits::default());
-        let uid = UserId::from(1);
+        let uid = UserId::expect_positive(1);
 
         assert!(mgr.reserve_user_slot(&uid).is_ok());
         assert_eq!(mgr.pending_user_reservations.len(), 1);
@@ -5814,7 +5829,7 @@ mod tests {
         // the disconnect retry task is NOT started until start() is called.
         let manager = ConnectionManager::new(ConnectionLimits::default());
         // Verify manager is functional for basic operations without start()
-        let user_id = UserId::from(10_000_010);
+        let user_id = UserId::expect_positive(10_000_010);
         assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
         assert_eq!(manager.connection_count(), 1);
     }

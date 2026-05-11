@@ -972,6 +972,9 @@ impl UserRepository {
         match query.sort_by {
             UserListSortBy::Username => format!("username {direction}, id {direction}"),
             UserListSortBy::Email => format!("email {direction} NULLS LAST, id {direction}"),
+            UserListSortBy::Status => {
+                format!("is_banned {direction}, created_at {direction}, id {direction}")
+            }
             UserListSortBy::Role => {
                 format!("role {direction}, created_at {direction}, id {direction}")
             }
@@ -1303,6 +1306,24 @@ mod tests {
         assert_eq!(
             UserRepository::build_order_by(&query),
             "username ASC, id ASC"
+        );
+    }
+
+    #[test]
+    fn test_user_list_order_clause_supports_effective_status() {
+        let query = UserListQuery {
+            search: None,
+            status: None,
+            role: None,
+            is_banned: None,
+            sort_by: crate::models::UserListSortBy::Status,
+            sort_direction: crate::models::SortDirection::Desc,
+            pagination: crate::models::PageParams::default(),
+        };
+
+        assert_eq!(
+            UserRepository::build_order_by(&query),
+            "is_banned DESC, created_at DESC, id DESC"
         );
     }
 

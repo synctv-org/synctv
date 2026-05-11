@@ -280,11 +280,11 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from(107_001)
+        RoomId::expect_positive(107_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(107_002)
+        UserId::expect_positive(107_002)
     }
 
     #[tokio::test]

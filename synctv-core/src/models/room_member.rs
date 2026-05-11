@@ -437,7 +437,7 @@ mod tests {
     use super::*;
 
     fn test_member(role: RoomRole) -> RoomMember {
-        RoomMember::new(RoomId::from(1), UserId::from(1), role)
+        RoomMember::new(RoomId::expect_positive(1), UserId::expect_positive(1), role)
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
         assert!(!left_member.is_active());
 
         let mut banned_member = test_member(RoomRole::Member);
-        banned_member.ban(UserId::from(2), None);
+        banned_member.ban(UserId::expect_positive(2), None);
         assert!(!banned_member.is_active());
     }
 
@@ -527,7 +527,7 @@ mod tests {
             "Precondition: left_at starts as None"
         );
 
-        let banner = UserId::from(2);
+        let banner = UserId::expect_positive(2);
         member.ban(banner, Some("bad behavior".to_string()));
 
         assert_eq!(member.status, MemberStatus::Left);
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn test_unban_preserves_lifecycle_state() {
         let mut member = test_member(RoomRole::Member);
-        let banner = UserId::from(2);
+        let banner = UserId::expect_positive(2);
         member.ban(banner, None);
         assert!(member.left_at.is_some(), "Precondition: ban sets left_at");
 

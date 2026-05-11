@@ -4,7 +4,7 @@
 
 use super::query_builder::escape_ilike;
 use crate::{
-    models::{Playlist, PlaylistId, PlaylistListQuery, RoomId},
+    models::{normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery, RoomId},
     Result,
 };
 use sqlx::{FromRow, PgPool, Row};
@@ -61,14 +61,7 @@ impl PlaylistRepository {
     fn normalize_provider_instance_name_for_db(
         provider_instance_name: Option<&str>,
     ) -> Option<&str> {
-        provider_instance_name.and_then(|provider_instance_name| {
-            let trimmed = provider_instance_name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        })
+        normalize_provider_instance_name(provider_instance_name)
     }
 
     #[must_use]
@@ -128,12 +121,11 @@ impl PlaylistRepository {
             builder.push_bind(source_provider.clone());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
-            let trimmed = provider_instance_name.trim();
-            if trimmed.is_empty() {
-                builder.push(" AND NULLIF(p.provider_instance_name, '') IS NULL");
-            } else {
+            if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
                 builder.push(" AND p.provider_instance_name = ");
                 builder.push_bind(trimmed.to_owned());
+            } else {
+                builder.push(" AND NULLIF(p.provider_instance_name, '') IS NULL");
             }
         }
         if let Some(dynamic_only) = query.dynamic_only {
@@ -1074,8 +1066,8 @@ impl PlaylistRepository {
             return Ok(false);
         };
 
-        let rows = sqlx::query!(
-            r#"WITH RECURSIVE playlist_tree AS (
+        let rows = sqlx::query(
+            r"WITH RECURSIVE playlist_tree AS (
                 SELECT id, 0 AS depth
                 FROM playlists
                 WHERE id = $1
@@ -1088,18 +1080,18 @@ impl PlaylistRepository {
             SELECT id, MAX(depth) AS depth
             FROM playlist_tree
             GROUP BY id
-            ORDER BY MAX(depth) DESC, id"#,
-            id as &PlaylistId,
-            room_id as RoomId,
+            ORDER BY MAX(depth) DESC, id",
         )
+        .bind(id.as_i64())
+        .bind(room_id.as_i64())
         .fetch_all(&mut *tx)
         .await?;
 
         let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = PlaylistId::from(row.id.unwrap_or_default());
-            let depth = row.depth.unwrap_or_default();
+            let playlist_id = row.try_get::<PlaylistId, _>("id")?;
+            let depth = row.try_get::<Option<i32>, _>("depth")?.unwrap_or_default();
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
@@ -1165,7 +1157,7 @@ impl PlaylistRepository {
         let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = PlaylistId::from(row.try_get::<i64, _>("id")?);
+            let playlist_id = row.try_get::<PlaylistId, _>("id")?;
             let depth = row.try_get::<i32, _>("depth")?;
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
@@ -1367,8 +1359,8 @@ mod tests {
 
     #[test]
     fn test_advisory_lock_key_deterministic() {
-        let room_id = RoomId::from(80_001);
-        let parent_id = PlaylistId::from(80_002);
+        let room_id = RoomId::expect_positive(80_001);
+        let parent_id = PlaylistId::expect_positive(80_002);
         let key1 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
         let key2 = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
         assert_eq!(key1, key2, "Lock key should be deterministic");
@@ -1376,10 +1368,10 @@ mod tests {
 
     #[test]
     fn test_advisory_lock_key_different() {
-        let room1 = RoomId::from(80_003);
-        let room2 = RoomId::from(80_004);
-        let parent1 = PlaylistId::from(80_005);
-        let parent2 = PlaylistId::from(80_006);
+        let room1 = RoomId::expect_positive(80_003);
+        let room2 = RoomId::expect_positive(80_004);
+        let parent1 = PlaylistId::expect_positive(80_005);
+        let parent2 = PlaylistId::expect_positive(80_006);
         let key_room1_parent1 = PlaylistRepository::scope_lock_key(&room1, Some(&parent1));
         let key_room1_parent2 = PlaylistRepository::scope_lock_key(&room1, Some(&parent2));
         let key_room2_parent1 = PlaylistRepository::scope_lock_key(&room2, Some(&parent1));
@@ -1395,8 +1387,8 @@ mod tests {
         let test_ids = [1, 42, 80_007, i64::from(i32::MAX), i64::MAX / 2];
 
         for id in test_ids {
-            let room_id = RoomId::from(id);
-            let parent_id = PlaylistId::from(id);
+            let room_id = RoomId::expect_positive(id);
+            let parent_id = PlaylistId::expect_positive(id);
             let key = PlaylistRepository::scope_lock_key(&room_id, Some(&parent_id));
             assert!(key >= 0, "Lock key should be non-negative for id: {id}");
         }
@@ -1433,7 +1425,7 @@ mod tests {
             provider_instance_name: Some("   ".to_string()),
             ..PlaylistListQuery::default()
         };
-        let room_id = RoomId::from(80_008);
+        let room_id = RoomId::expect_positive(80_008);
 
         PlaylistRepository::push_playlist_scope_filters(&mut builder, &room_id, None, &query);
 

@@ -282,11 +282,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from(108_001)
+        RoomId::expect_positive(108_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(108_002)
+        UserId::expect_positive(108_002)
     }
 
     async fn local_cluster_manager(node_id: &str) -> Arc<ClusterManager> {

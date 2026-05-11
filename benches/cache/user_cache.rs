@@ -9,7 +9,7 @@ use synctv_core::cache::user_cache::{CachedUser, UserCache};
 use synctv_core::models::{UserId, UserRole, UserStatus};
 
 fn bench_user_id(offset: i64) -> UserId {
-    UserId::from(1_000_000 + offset)
+    UserId::expect_positive(1_000_000 + offset)
 }
 
 fn create_test_user(id: UserId, username: &str) -> CachedUser {

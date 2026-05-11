@@ -73,8 +73,8 @@ async fn test_cross_replica_cache_invalidation() {
 
     let mut received_user = false;
     let mut received_room = false;
-    let updated_user = UserId::from(10_010_001);
-    let updated_room = RoomId::from(10_010_002);
+    let updated_user = UserId::expect_positive(10_010_001);
+    let updated_room = RoomId::expect_positive(10_010_002);
     broadcast_until_cache_invalidation(
         &node_b,
         &mut local_rx_a,
@@ -120,8 +120,8 @@ async fn test_cross_replica_permission_changed() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from(10_000_036);
-    let user_id = UserId::from(10_000_037);
+    let room_id = RoomId::expect_positive(10_000_036);
+    let user_id = UserId::expect_positive(10_000_037);
 
     // Subscribe on node A (simulating a WebSocket client on node A watching the room)
     let (mut room_rx, conn_id) = node_a
@@ -135,7 +135,7 @@ async fn test_cross_replica_permission_changed() {
         || ClusterEvent::PermissionChanged {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            target_user_id: UserId::from(10_000_038),
+            target_user_id: UserId::expect_positive(10_000_038),
             target_username: "target_user".to_string(),
             new_permissions: synctv_core::models::PermissionBits(
                 synctv_core::models::PermissionBits::DEFAULT_MEMBER
@@ -148,11 +148,11 @@ async fn test_cross_replica_permission_changed() {
             removed_permissions: synctv_core::models::PermissionBits::empty(),
             admin_added_permissions: synctv_core::models::PermissionBits::empty(),
             admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
-            changed_by: UserId::from(10_000_039),
+            changed_by: UserId::expect_positive(10_000_039),
             changed_by_username: "admin_user".to_string(),
             timestamp: Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::PermissionChanged { target_user_id, .. } if *target_user_id == UserId::from(10_000_038)),
+        |event| matches!(event, ClusterEvent::PermissionChanged { target_user_id, .. } if *target_user_id == UserId::expect_positive(10_000_038)),
         "PermissionChanged on node A",
     )
     .await;
@@ -165,7 +165,7 @@ async fn test_cross_replica_permission_changed() {
         ..
     } = &received
     {
-        assert_eq!(*target_user_id, UserId::from(10_000_038));
+        assert_eq!(*target_user_id, UserId::expect_positive(10_000_038));
         assert!(
             new_permissions.has(synctv_core::models::PermissionBits::KICK_MEMBER),
             "New permissions should include KICK_MEMBER"
@@ -224,7 +224,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
             .await;
 
     let mut received_target = false;
-    let perm_changed_user = UserId::from(10_010_003);
+    let perm_changed_user = UserId::expect_positive(10_010_003);
     broadcast_until_cache_invalidation(
         &node_b,
         &mut local_rx_a,
@@ -327,8 +327,8 @@ async fn test_cluster_permission_cache_consistency() {
         .expect("Failed to create node B");
 
     // Test 1: User permission invalidation
-    let user_id = UserId::from(10_010_004);
-    let room_id = RoomId::from(10_010_005);
+    let user_id = UserId::expect_positive(10_010_004);
+    let room_id = RoomId::expect_positive(10_010_005);
 
     broadcast_until_cache_invalidation(
         &node_a,
@@ -387,7 +387,7 @@ async fn test_cluster_permission_cache_consistency() {
         let event = ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::User {
-                user_id: UserId::from(10_020_000 + i64::from(i)),
+                user_id: UserId::expect_positive(10_020_000 + i64::from(i)),
             }],
             timestamp: Utc::now(),
         };
@@ -570,7 +570,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: UserId::from(10_030_000 + i64::from(i)),
+                    user_id: UserId::expect_positive(10_030_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };
@@ -585,7 +585,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: UserId::from(10_040_000 + i64::from(i)),
+                    user_id: UserId::expect_positive(10_040_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };
@@ -600,7 +600,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: UserId::from(10_050_000 + i64::from(i)),
+                    user_id: UserId::expect_positive(10_050_000 + i64::from(i)),
                 }],
                 timestamp: Utc::now(),
             };

@@ -1135,7 +1135,7 @@ impl OAuth2Service {
         let user_email = user_info.email.clone();
 
         if signup_policy.signup_need_review {
-            let existing_pending_identity: Option<i64> = sqlx::query_scalar(
+            let existing_pending_identity: Option<UserId> = sqlx::query_scalar(
                 r"
                 SELECT id
                 FROM user_registration_requests
@@ -1153,7 +1153,7 @@ impl OAuth2Service {
             if let Some(request_id) = existing_pending_identity {
                 tx.rollback().await?;
                 return Ok(OAuth2LinkResult::PendingReview(OAuth2PendingRegistration {
-                    request_id: UserId::from(request_id),
+                    request_id,
                 }));
             }
 
@@ -1241,7 +1241,7 @@ impl OAuth2Service {
                         match message.as_str() {
                             PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS => {}
                             PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS => {
-                                let request_id: Option<i64> = sqlx::query_scalar(
+                                let request_id: Option<UserId> = sqlx::query_scalar(
                                     r"
                                     SELECT id
                                     FROM user_registration_requests
@@ -1259,9 +1259,7 @@ impl OAuth2Service {
                                 if let Some(request_id) = request_id {
                                     tx.rollback().await?;
                                     return Ok(OAuth2LinkResult::PendingReview(
-                                        OAuth2PendingRegistration {
-                                            request_id: UserId::from(request_id),
-                                        },
+                                        OAuth2PendingRegistration { request_id },
                                     ));
                                 }
                                 tx.rollback().await?;
@@ -1927,7 +1925,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_preserves_bind_user_id() {
         let service = create_test_service();
-        let user_id = UserId::from(93_001);
+        let user_id = UserId::expect_positive(93_001);
         let state = OAuth2State {
             instance_name: "logto".to_string(),
             redirect_url: None,
@@ -2230,7 +2228,7 @@ mod tests {
             )
             .await;
 
-        let user_id = UserId::from(93_002);
+        let user_id = UserId::expect_positive(93_002);
         let (auth_url, state_token) = service
             .get_authorization_url_with_user("logto", None, Some(user_id))
             .await
@@ -2398,7 +2396,7 @@ mod tests {
             )
             .await;
 
-        let user_id = UserId::from(93_003);
+        let user_id = UserId::expect_positive(93_003);
 
         // Step 1: Generate auth URL with user binding
         let (_, state_token) = service
@@ -2462,7 +2460,7 @@ mod tests {
             instance_name: "github".to_string(),
             redirect_url: Some("/dashboard".to_string()),
             created_at: chrono::Utc::now(),
-            bind_user_id: Some(UserId::from(93_004)),
+            bind_user_id: Some(UserId::expect_positive(93_004)),
             pkce_verifier: "S256_challenge_verifier".to_string(),
         };
 

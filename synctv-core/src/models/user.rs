@@ -457,6 +457,7 @@ sort_field_enum! {
     pub enum UserListSortBy {
         Username => { display: "username", sql: "username" },
         Email => { display: "email", sql: "email" },
+        Status => { display: "status", sql: "is_banned" },
         Role => { display: "role", sql: "role" },
         UpdatedAt => { display: "updated_at", sql: "updated_at", aliases: ["updatedat"] },
         CreatedAt => { display: "created_at", sql: "created_at", aliases: ["createdat"] },

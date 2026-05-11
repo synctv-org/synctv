@@ -217,16 +217,16 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from(105_001)
+        RoomId::expect_positive(105_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(105_002)
+        UserId::expect_positive(105_002)
     }
 
     fn playlist() -> Playlist {
         Playlist {
-            id: PlaylistId::from(105_003),
+            id: PlaylistId::expect_positive(105_003),
             room_id: room_id(),
             creator_id: Some(user_id()),
             name: "fanout playlist".to_string(),
@@ -280,10 +280,10 @@ mod tests {
                 playlist,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(105_001));
-                assert_eq!(user_id, UserId::from(105_002));
+                assert_eq!(room_id, RoomId::expect_positive(105_001));
+                assert_eq!(user_id, UserId::expect_positive(105_002));
                 assert_eq!(username, "tester");
-                assert_eq!(playlist.id, PlaylistId::from(105_003));
+                assert_eq!(playlist.id, PlaylistId::expect_positive(105_003));
             }
             other => panic!("expected PlaylistCreated, got {other:?}"),
         }

@@ -115,10 +115,11 @@ impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
 ///
 /// For internal errors, the details are logged server-side and a generic
 /// message is returned to the client to avoid leaking sensitive information.
-pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
+#[must_use]
+pub fn map_api_error_ref(err: &crate::impls::ApiError) -> tonic::Status {
     use crate::impls::ErrorKind;
     let msg = err.message().to_string();
-    let status = match err.classify() {
+    match err.classify() {
         ErrorKind::NotFound => tonic::Status::not_found(msg),
         ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
         ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
@@ -132,9 +133,11 @@ pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
             tracing::error!("API internal error: {msg}");
             tonic::Status::internal("Internal error")
         }
-    };
-    drop(err);
-    status
+    }
+}
+
+pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
+    map_api_error_ref(&err)
 }
 
 #[must_use]

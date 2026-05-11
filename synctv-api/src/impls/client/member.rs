@@ -3,8 +3,8 @@
 use crate::impls::ApiError;
 use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
-use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, RoomId, UserId};
+use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId};
+use synctv_core::repository::{ReviewRepository, RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
 use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -59,33 +59,26 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
 }
 
 fn room_join_review_row_to_proto(
-    row: &sqlx::postgres::PgRow,
+    row: &RoomJoinReviewRecord,
     public_id_codec: &crate::PublicIdCodec,
 ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
-    let id: ReviewRequestId = row.try_get("id")?;
-    let requested_at: chrono::DateTime<chrono::Utc> = row.try_get("requested_at")?;
-    let reviewed_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("reviewed_at")?;
-    let room_id: RoomId = row.try_get("room_id")?;
-    let user_id: UserId = row.try_get("user_id")?;
-    let reviewed_by: Option<UserId> = row.try_get("reviewed_by")?;
-    let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
-    let status: ReviewStatus = row.try_get("status")?;
     Ok(crate::proto::client::RoomJoinReview {
         id: public_id_codec
-            .encode_review_request_id(id)
+            .encode_review_request_id(row.id)
             .map_err(ApiError::InvalidInput)?,
         room_id: public_id_codec
-            .encode_room_id(room_id)
+            .encode_room_id(row.room_id)
             .map_err(ApiError::InvalidInput)?,
         user_id: public_id_codec
-            .encode_user_id(user_id)
+            .encode_user_id(row.user_id)
             .map_err(ApiError::InvalidInput)?,
-        username: row.try_get("username")?,
-        requested_role: row.try_get("requested_role")?,
-        status: i32::from(i16::from(status)),
-        requested_at: requested_at.timestamp(),
-        reviewed_at: reviewed_at.map_or(0, |timestamp| timestamp.timestamp()),
-        reviewed_by: reviewed_by
+        username: row.username.clone(),
+        requested_role: row.requested_role,
+        status: i32::from(i16::from(row.status)),
+        requested_at: row.requested_at.timestamp(),
+        reviewed_at: row.reviewed_at.map_or(0, |timestamp| timestamp.timestamp()),
+        reviewed_by: row
+            .reviewed_by
             .map(|id| {
                 public_id_codec
                     .encode_user_id(id)
@@ -93,7 +86,7 @@ fn room_join_review_row_to_proto(
             })
             .transpose()?
             .unwrap_or_default(),
-        rejection_reason: rejection_reason.unwrap_or_default(),
+        rejection_reason: row.rejection_reason.clone().unwrap_or_default(),
     })
 }
 
@@ -129,21 +122,10 @@ impl ClientApiImpl {
         room_id: &synctv_core::models::RoomId,
         request_id: ReviewRequestId,
     ) -> Result<crate::proto::client::RoomJoinReview, ApiError> {
-        let row = sqlx::query(
-            r"
-            SELECT rjr.id, rjr.room_id, rjr.user_id, COALESCE(u.username, '') AS username,
-                   COALESCE(rjr.requested_role, 0)::int4 AS requested_role, rjr.status,
-                   rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
-            FROM room_join_requests rjr
-            LEFT JOIN users u ON u.id = rjr.user_id
-            WHERE rjr.id = $1 AND rjr.room_id = $2
-            ",
-        )
-        .bind(request_id)
-        .bind(room_id)
-        .fetch_optional(self.user_service.pool())
-        .await?
-        .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?;
+        let row = ReviewRepository::new(self.user_service.pool().clone())
+            .load_room_join_in_room(request_id, *room_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("Room join review not found".to_string()))?;
         room_join_review_row_to_proto(&row, &self.public_id_codec)
     }
 
@@ -172,49 +154,24 @@ impl ClientApiImpl {
             )?)
         };
 
-        let total = sqlx::query_scalar::<_, i64>(
-            r"
-            SELECT COUNT(*)
-            FROM room_join_requests
-            WHERE room_id = $1
-              AND status = $2
-              AND ($3::bigint IS NULL OR user_id = $3)
-            ",
-        )
-        .bind(rid)
-        .bind(status)
-        .bind(target_user_id)
-        .fetch_one(self.user_service.pool())
-        .await?;
-
-        let rows = sqlx::query(
-            r"
-            SELECT rjr.id, rjr.room_id, rjr.user_id, COALESCE(u.username, '') AS username,
-                   COALESCE(rjr.requested_role, 0)::int4 AS requested_role, rjr.status,
-                   rjr.requested_at, rjr.reviewed_at, rjr.reviewed_by, rjr.rejection_reason
-            FROM room_join_requests rjr
-            LEFT JOIN users u ON u.id = rjr.user_id
-            WHERE rjr.room_id = $1
-              AND rjr.status = $2
-              AND ($3::bigint IS NULL OR rjr.user_id = $3)
-            ORDER BY rjr.requested_at DESC, rjr.id DESC
-            LIMIT $4 OFFSET $5
-            ",
-        )
-        .bind(rid)
-        .bind(status)
-        .bind(target_user_id)
-        .bind(usize_to_i64_saturating(page_size))
-        .bind(usize_to_i64_saturating(offset))
-        .fetch_all(self.user_service.pool())
-        .await?;
-        let reviews = rows
+        let page = ReviewRepository::new(self.user_service.pool().clone())
+            .list_room_joins(&RoomJoinReviewListQuery {
+                status,
+                room_id: Some(rid),
+                user_id: target_user_id,
+                search: None,
+                limit: usize_to_i64_saturating(page_size),
+                offset: usize_to_i64_saturating(offset),
+            })
+            .await?;
+        let reviews = page
+            .rows
             .iter()
             .map(|row| room_join_review_row_to_proto(row, &self.public_id_codec))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(crate::proto::client::ListRoomJoinReviewsResponse {
             reviews,
-            total: i32::try_from(total).unwrap_or(i32::MAX),
+            total: i32::try_from(page.total).unwrap_or(i32::MAX),
         })
     }
 

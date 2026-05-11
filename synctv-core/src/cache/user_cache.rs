@@ -289,7 +289,7 @@ mod tests {
     use super::*;
 
     fn create_test_user_id(id: i64) -> UserId {
-        UserId::from(id)
+        UserId::expect_positive(id)
     }
 
     fn create_test_user(id: UserId, username: &str) -> CachedUser {

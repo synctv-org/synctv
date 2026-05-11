@@ -2546,7 +2546,7 @@ mod tests {
         let event = ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::Room {
-                room_id: RoomId::from(10_000_150),
+                room_id: RoomId::expect_positive(10_000_150),
             }],
             timestamp: Utc::now(),
         };
@@ -2578,8 +2578,8 @@ mod tests {
     fn test_event_envelope_serialization() {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from(10_000_140),
-            user_id: UserId::from(10_000_141),
+            room_id: RoomId::expect_positive(10_000_140),
+            user_id: UserId::expect_positive(10_000_141),
             username: "testuser".to_string(),
             message: "Hello!".to_string(),
             timestamp: Utc::now(),
@@ -2606,8 +2606,8 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup() {
         let message_hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from(10_000_146);
-        let user_id = UserId::from(10_000_147);
+        let room_id = RoomId::expect_positive(10_000_146);
+        let user_id = UserId::expect_positive(10_000_147);
         let mut rx = message_hub
             .subscribe(room_id, user_id, "conn-1".to_string())
             .await
@@ -2790,8 +2790,8 @@ mod tests {
         // the Redis room channel.
         // IMPORTANT: subscribe() is async and must be awaited to actually register
         // the subscription and send the lifecycle event.
-        let room_id = RoomId::from(10_000_009);
-        let user_id = UserId::from(10_000_148);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user_id = UserId::expect_positive(10_000_148);
         let mut rx = message_hub
             .subscribe(room_id, user_id, "conn1".to_string())
             .await
@@ -3184,8 +3184,8 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Subscribe a client to room1 - this activates the room
-        let room1_id = RoomId::from(10_000_149);
-        let user1_id = UserId::from(10_000_150);
+        let room1_id = RoomId::expect_positive(10_000_149);
+        let user1_id = UserId::expect_positive(10_000_150);
         let mut rx1 = message_hub
             .subscribe(room1_id, user1_id, "conn1".to_string())
             .await
@@ -3210,8 +3210,8 @@ mod tests {
         assert_eq!(received.event_type(), "chat_message");
 
         // Now subscribe a client to room2 - this is a second room activation
-        let room2_id = RoomId::from(10_000_151);
-        let user2_id = UserId::from(10_000_152);
+        let room2_id = RoomId::expect_positive(10_000_151);
+        let user2_id = UserId::expect_positive(10_000_152);
         let mut rx2 = message_hub
             .subscribe(room2_id, user2_id, "conn2".to_string())
             .await
@@ -3248,9 +3248,9 @@ mod tests {
         let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
 
         // Simulate room activations during disconnection
-        let room1 = RoomId::from(10_000_092);
-        let room2 = RoomId::from(10_000_094);
-        let room3 = RoomId::from(10_000_153);
+        let room1 = RoomId::expect_positive(10_000_092);
+        let room2 = RoomId::expect_positive(10_000_094);
+        let room3 = RoomId::expect_positive(10_000_153);
 
         // Room activated
         pending_subscriptions.insert(room1);
@@ -3275,11 +3275,14 @@ mod tests {
     /// Unit test verifying the merge of active_rooms with pending_subscriptions.
     #[test]
     fn test_pending_subscriptions_merges_with_active_rooms() {
-        let active_rooms: Vec<RoomId> = vec![RoomId::from(10_000_154), RoomId::from(10_000_155)];
+        let active_rooms: Vec<RoomId> = vec![
+            RoomId::expect_positive(10_000_154),
+            RoomId::expect_positive(10_000_155),
+        ];
 
         // Simulate a room that was activated during disconnection
         // but is NOT in the current active_rooms (edge case - room became inactive)
-        let pending_room = RoomId::from(10_000_156);
+        let pending_room = RoomId::expect_positive(10_000_156);
         let mut pending_subscriptions: HashSet<RoomId> = HashSet::new();
         pending_subscriptions.insert(pending_room);
         pending_subscriptions.insert(active_rooms[0]); // Already active, but also pending
@@ -3352,9 +3355,9 @@ mod tests {
         )
         .unwrap();
 
-        let room_id = RoomId::from(10_000_156);
-        let user1 = synctv_core::models::id::UserId::from(10_000_010);
-        let user2 = synctv_core::models::id::UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_156);
+        let user1 = synctv_core::models::id::UserId::expect_positive(10_000_010);
+        let user2 = synctv_core::models::id::UserId::expect_positive(10_000_095);
         let mut rx1 = message_hub
             .subscribe(room_id, user1, "conn1".to_string())
             .await
@@ -3413,8 +3416,8 @@ mod tests {
         )
         .unwrap();
 
-        let room_id = RoomId::from(10_000_157);
-        let user_id = synctv_core::models::id::UserId::from(10_000_158);
+        let room_id = RoomId::expect_positive(10_000_157);
+        let user_id = synctv_core::models::id::UserId::expect_positive(10_000_158);
         let mut rx = message_hub
             .subscribe(room_id, user_id, "dedup-conn".to_string())
             .await

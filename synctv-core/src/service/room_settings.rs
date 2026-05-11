@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    cache::{CacheInvalidationRuntime, InvalidationMessage, SingleFlight},
+    cache::{CacheInvalidationRuntime, CloneableError, InvalidationMessage, SingleFlight},
     models::{RoomId, RoomSettings},
     repository::RoomSettingsRepository,
     service::notification::NotificationService,
@@ -68,7 +68,7 @@ pub struct RoomSettingsService {
     notification_service: Arc<NotificationService>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
-    single_flight: SingleFlight<String, RoomSettingsSnapshot, String>,
+    single_flight: SingleFlight<String, RoomSettingsSnapshot, CloneableError>,
 }
 
 impl std::fmt::Debug for RoomSettingsService {
@@ -319,7 +319,7 @@ impl RoomSettingsService {
                 let (settings, version) = repo
                     .get_with_version(&room_id_clone)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(CloneableError::from)?;
                 let snapshot = RoomSettingsSnapshot { settings, version };
 
                 // Store in cache
@@ -332,7 +332,7 @@ impl RoomSettingsService {
                 crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
                     "SingleFlight worker failed during room settings fetch".to_string(),
                 ),
-                crate::cache::SingleFlightError::Inner(message) => Error::Internal(message),
+                crate::cache::SingleFlightError::Inner(error) => Error::from(error),
             })?;
 
         Ok(snapshot)
@@ -598,7 +598,7 @@ mod tests {
     ) -> (RoomSettingsService, Arc<CacheInvalidationService>, RoomId) {
         let pool = PgPool::connect_lazy("postgres://localhost/test")
             .expect("lazy postgres pool for unit tests should build");
-        let room_id = RoomId::from(20_001);
+        let room_id = RoomId::expect_positive(20_001);
         let invalidation_service = Arc::new(CacheInvalidationService::new(
             "test-node".to_string(),
             "synctv:test:room-settings".to_string(),

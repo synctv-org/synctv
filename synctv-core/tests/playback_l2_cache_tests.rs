@@ -430,7 +430,8 @@ async fn test_playback_state_l2_has_proper_ttl() {
     let l2_key = "test:playback:ttl_test";
 
     // Set a value with TTL
-    let test_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_000));
+    let test_state =
+        synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_000));
     let state_json = serde_json::to_string(&test_state).unwrap();
     l2.set(l2_key, &state_json, 60).await.unwrap();
 
@@ -456,7 +457,8 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(redis_conn.clone()));
     let l2_key = "test:playback:version_test";
 
-    let mut newer_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_001));
+    let mut newer_state =
+        synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_001));
     newer_state.version = 10;
     newer_state.current_time = 100.0;
     newer_state.updated_at = Utc::now();
@@ -471,7 +473,8 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
         .unwrap();
     assert!(was_set, "Newer state should be set");
 
-    let mut older_state = synctv_core::models::RoomPlaybackState::new(RoomId::from(1_001_001));
+    let mut older_state =
+        synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(1_001_001));
     older_state.version = 5;
     older_state.current_time = 50.0;
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
@@ -716,7 +719,7 @@ async fn test_playback_state_cache_direct_with_redis() {
     )
     .expect("Failed to create PlaybackStateCache");
 
-    let room_id = RoomId::from(10_000_005);
+    let room_id = RoomId::expect_positive(10_000_005);
     let state = synctv_core::models::RoomPlaybackState::new(room_id);
 
     // Cache miss
@@ -768,7 +771,7 @@ async fn test_playback_state_cache_set_if_newer_with_redis() {
     let cache = PlaybackStateCache::new(l2_backend, 100, 5, 60, "test:playback:newer:".to_string())
         .expect("Failed to create PlaybackStateCache");
 
-    let room_id = RoomId::from(10_000_006);
+    let room_id = RoomId::expect_positive(10_000_006);
 
     let mut state1 = synctv_core::models::RoomPlaybackState::new(room_id);
     state1.version = 5;

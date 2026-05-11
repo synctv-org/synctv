@@ -305,7 +305,11 @@ mod tests {
         );
 
         service
-            .kick_stream(&RoomId::from(1001), &MediaId::from(2001), "test-reason")
+            .kick_stream(
+                &RoomId::expect_positive(1001),
+                &MediaId::expect_positive(2001),
+                "test-reason",
+            )
             .await;
 
         let published = publish_rx
@@ -333,7 +337,7 @@ mod tests {
             None,
             channel_cluster_fanout_service(publish_tx),
         );
-        let user_id = UserId::from(101_001);
+        let user_id = UserId::expect_positive(101_001);
 
         service.disconnect_user(&user_id, "user_deleted").await;
 
@@ -361,9 +365,9 @@ mod tests {
         connection_service.start();
         let mut disconnect_rx = connection_service.subscribe_disconnect();
 
-        let user_id = UserId::from(101);
-        let room_one = RoomId::from(201);
-        let room_two = RoomId::from(202);
+        let user_id = UserId::expect_positive(101);
+        let room_one = RoomId::expect_positive(201);
+        let room_two = RoomId::expect_positive(202);
         let user_id_key = user_id.to_string();
         let room_one_key = room_one.to_string();
         let room_two_key = room_two.to_string();

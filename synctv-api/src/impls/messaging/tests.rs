@@ -30,13 +30,13 @@ use synctv_core_testing::{
 };
 
 fn room_id() -> RoomId {
-    RoomId::from(1)
+    RoomId::expect_positive(1)
 }
 fn user_id() -> UserId {
-    UserId::from(1)
+    UserId::expect_positive(1)
 }
 fn media_id() -> MediaId {
-    MediaId::from(1)
+    MediaId::expect_positive(1)
 }
 fn public_id_codec() -> crate::PublicIdCodec {
     crate::PublicIdCodec::default_for_tests()
@@ -66,7 +66,7 @@ fn empty_playlist_items_response(
 }
 fn playlist() -> Playlist {
     Playlist {
-        id: PlaylistId::from(1),
+        id: PlaylistId::expect_positive(1),
         room_id: room_id(),
         creator_id: Some(user_id()),
         name: "Test Playlist".to_string(),
@@ -1743,7 +1743,7 @@ async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
     event_service.broadcast(ClusterEvent::ChatMessage {
         event_id: "evt-prejoin-window".to_string(),
         room_id: handler.room_id,
-        user_id: UserId::from(113_001),
+        user_id: UserId::expect_positive(113_001),
         username: "other".to_string(),
         message: "arrived-before-run-after-join".to_string(),
         timestamp: now(),
@@ -2797,7 +2797,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
     event_service.broadcast(ClusterEvent::UserLeft {
         event_id: "evt-after-snapshot-refresh-error".to_string(),
         room_id: handler.room_id,
-        user_id: UserId::from(113_002),
+        user_id: UserId::expect_positive(113_002),
         username: "another-user".to_string(),
         timestamp: now(),
     });
@@ -3419,7 +3419,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let healthy_handler = StreamMessageHandler::new(
         room_id(),
-        UserId::from(222),
+        UserId::expect_positive(222),
         "healthy-client".to_string(),
         &room_service,
         chat_service,
@@ -4010,14 +4010,14 @@ async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
         sender_a.clone(),
         Arc::clone(&event_service),
         Arc::clone(&connection_service),
-        UserId::from(11),
+        UserId::expect_positive(11),
     )
     .with_room_settings_snapshot_service(snapshot_service.clone());
     let handler_b = test_message_handler_for_user(
         sender_b.clone(),
         event_service,
         connection_service,
-        UserId::from(12),
+        UserId::expect_positive(12),
     )
     .with_room_settings_snapshot_service(snapshot_service.clone());
     let message_a = ClientMessage {
@@ -4309,7 +4309,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
-        media_id: synctv_core::models::MediaId::from(113_003),
+        media_id: synctv_core::models::MediaId::expect_positive(113_003),
         media_title: "next media".to_string(),
         timestamp: now(),
     });
@@ -4580,7 +4580,7 @@ async fn test_observed_room_members_receive_future_permission_updates() {
     event_service.broadcast(ClusterEvent::PermissionChanged {
         event_id: "evt-observe-room-members-update".to_string(),
         room_id: handler.room_id,
-        target_user_id: UserId::from(113_004),
+        target_user_id: UserId::expect_positive(113_004),
         target_username: "member_two".to_string(),
         changed_by: handler.user_id,
         changed_by_username: handler.username.clone(),
@@ -5131,7 +5131,10 @@ fn test_media_removed_batch_event_conversion() {
         room_id: room_id(),
         user_id: user_id(),
         username: "frank".to_string(),
-        media_ids: vec![MediaId::from(113_005), MediaId::from(113_006)],
+        media_ids: vec![
+            MediaId::expect_positive(113_005),
+            MediaId::expect_positive(113_006),
+        ],
         timestamp: now(),
     };
 
@@ -5144,10 +5147,10 @@ fn test_media_removed_batch_event_conversion() {
                 batch.media_ids,
                 vec![
                     public_id_codec()
-                        .encode_media_id(MediaId::from(113_005))
+                        .encode_media_id(MediaId::expect_positive(113_005))
                         .unwrap(),
                     public_id_codec()
-                        .encode_media_id(MediaId::from(113_006))
+                        .encode_media_id(MediaId::expect_positive(113_006))
                         .unwrap(),
                 ]
             );
@@ -5190,7 +5193,10 @@ fn test_playlist_reordered_event_conversion() {
         room_id: room_id(),
         user_id: user_id(),
         username: "grace".to_string(),
-        media_ids: vec![MediaId::from(113_006), MediaId::from(113_005)],
+        media_ids: vec![
+            MediaId::expect_positive(113_006),
+            MediaId::expect_positive(113_005),
+        ],
         timestamp: now(),
     };
 
@@ -5203,10 +5209,10 @@ fn test_playlist_reordered_event_conversion() {
                 reordered.media_ids,
                 vec![
                     public_id_codec()
-                        .encode_media_id(MediaId::from(113_006))
+                        .encode_media_id(MediaId::expect_positive(113_006))
                         .unwrap(),
                     public_id_codec()
-                        .encode_media_id(MediaId::from(113_005))
+                        .encode_media_id(MediaId::expect_positive(113_005))
                         .unwrap(),
                 ]
             );
@@ -5276,7 +5282,7 @@ fn test_playlist_deleted_event_conversion() {
         room_id: room_id(),
         user_id: user_id(),
         username: "ivan".to_string(),
-        playlist_id: PlaylistId::from(113_007),
+        playlist_id: PlaylistId::expect_positive(113_007),
         timestamp: now(),
     };
 
@@ -5288,7 +5294,7 @@ fn test_playlist_deleted_event_conversion() {
             assert_eq!(
                 deleted.playlist_id,
                 public_id_codec()
-                    .encode_playlist_id(PlaylistId::from(113_007))
+                    .encode_playlist_id(PlaylistId::expect_positive(113_007))
                     .unwrap()
             );
         }

@@ -133,11 +133,11 @@ mod tests {
     use synctv_core::models::{Playlist, RoomPlaybackState};
 
     fn room_id() -> RoomId {
-        RoomId::from(101)
+        RoomId::expect_positive(101)
     }
 
     fn user_id() -> UserId {
-        UserId::from(202)
+        UserId::expect_positive(202)
     }
 
     #[test]
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn playlist_update_invalidates_items_and_dependent_snapshot() {
-        let playlist_id = PlaylistId::from(303);
+        let playlist_id = PlaylistId::expect_positive(303);
         let event = ClusterEvent::PlaylistUpdated {
             event_id: "evt".to_string(),
             room_id: room_id(),
@@ -220,7 +220,7 @@ mod tests {
 
         assert!(resource_invalidations_for_cache_targets(
             &[CacheTarget::Room {
-                room_id: RoomId::from(999)
+                room_id: RoomId::expect_positive(999)
             }],
             room_id(),
             user_id(),
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(
             resource_invalidations_for_cache_targets(
                 &[CacheTarget::Username {
-                    user_id: UserId::from(999)
+                    user_id: UserId::expect_positive(999)
                 }],
                 room_id(),
                 user_id(),

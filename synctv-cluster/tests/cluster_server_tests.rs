@@ -205,7 +205,7 @@ async fn test_get_user_online_status_with_connection_manager() {
     let cm = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     // Register a connection
-    let user_id = UserId::from(10_000_028);
+    let user_id = UserId::expect_positive(10_000_028);
     cm.register("conn-1".to_string(), user_id).await.unwrap();
 
     let server = ClusterServer::new(registry, "test-node".to_string())

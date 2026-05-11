@@ -22,8 +22,8 @@ async fn test_critical_events_high_priority() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from(10_000_025);
-    let user_id = UserId::from(10_000_026);
+    let room_id = RoomId::expect_positive(10_000_025);
+    let user_id = UserId::expect_positive(10_000_026);
 
     let (mut room_rx, conn_id) = node_a
         .subscribe(room_id, user_id)
@@ -37,7 +37,7 @@ async fn test_critical_events_high_priority() {
         room_id,
         target_user_id: user_id,
         target_username: "listener".to_string(),
-        changed_by: UserId::from(10_000_027),
+        changed_by: UserId::expect_positive(10_000_027),
         changed_by_username: "admin".to_string(),
         new_permissions: synctv_core::models::PermissionBits(
             synctv_core::models::PermissionBits::DEFAULT_MEMBER,

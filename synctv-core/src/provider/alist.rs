@@ -2011,8 +2011,8 @@ mod tests {
     async fn test_alist_credential_dependencies_use_creator_credential() {
         let provider = AlistProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_credential_owner_id(UserId::from(2));
+            .with_user_id(UserId::expect_positive(1))
+            .with_credential_owner_id(UserId::expect_positive(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -2036,7 +2036,7 @@ mod tests {
     #[tokio::test]
     async fn test_alist_credential_dependencies_require_explicit_creator_credential_owner() {
         let provider = AlistProvider::new(fake_provider_instance_manager());
-        let ctx = ProviderContext::new("test").with_user_id(UserId::from(1));
+        let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
                 &ctx,

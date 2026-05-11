@@ -154,7 +154,7 @@ impl PublicIdCodec {
     where
         T: PublicIdType,
     {
-        self.decode_i64(value, T::PUBLIC_ID_KIND).map(T::from)
+        T::try_from(self.decode_i64(value, T::PUBLIC_ID_KIND)?)
     }
 
     pub fn encode_user_id(&self, id: UserId) -> Result<String, String> {
@@ -269,21 +269,34 @@ mod tests {
     fn default_codec_uses_prefixed_decimal_ids() {
         let codec = PublicIdCodec::default_for_tests();
 
-        assert_eq!(codec.encode_user_id(UserId::from(1)).unwrap(), "usr_1");
-        assert_eq!(codec.encode_room_id(RoomId::from(1)).unwrap(), "room_1");
-        assert_eq!(codec.encode_media_id(MediaId::from(1)).unwrap(), "med_1");
         assert_eq!(
-            codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+            codec.encode_user_id(UserId::expect_positive(1)).unwrap(),
+            "usr_1"
+        );
+        assert_eq!(
+            codec.encode_room_id(RoomId::expect_positive(1)).unwrap(),
+            "room_1"
+        );
+        assert_eq!(
+            codec.encode_media_id(MediaId::expect_positive(1)).unwrap(),
+            "med_1"
+        );
+        assert_eq!(
+            codec
+                .encode_playlist_id(PlaylistId::expect_positive(1))
+                .unwrap(),
             "pl_1"
         );
         assert_eq!(
             codec
-                .encode_review_request_id(ReviewRequestId::from(1))
+                .encode_review_request_id(ReviewRequestId::expect_positive(1))
                 .unwrap(),
             "rev_1"
         );
         assert_eq!(
-            codec.encode_ban_record_id(BanRecordId::from(1)).unwrap(),
+            codec
+                .encode_ban_record_id(BanRecordId::expect_positive(1))
+                .unwrap(),
             "ban_1"
         );
     }
@@ -292,7 +305,10 @@ mod tests {
     fn default_decode_requires_correct_prefix() {
         let codec = PublicIdCodec::default_for_tests();
 
-        assert_eq!(codec.decode_user_id("usr_1").unwrap(), UserId::from(1));
+        assert_eq!(
+            codec.decode_user_id("usr_1").unwrap(),
+            UserId::expect_positive(1)
+        );
         assert!(codec.decode_room_id("usr_1").is_err());
         assert!(codec.decode_user_id("room_1").is_err());
         assert!(codec.decode_user_id("1").is_err());
@@ -315,11 +331,14 @@ mod tests {
         })
         .unwrap();
 
-        let user = codec.encode_user_id(UserId::from(1)).unwrap();
+        let user = codec.encode_user_id(UserId::expect_positive(1)).unwrap();
 
         assert!(user.starts_with("usr_"));
         assert_ne!(user, "usr_1");
-        assert_eq!(codec.decode_user_id(&user).unwrap(), UserId::from(1));
+        assert_eq!(
+            codec.decode_user_id(&user).unwrap(),
+            UserId::expect_positive(1)
+        );
         assert!(codec.decode_room_id(&user).is_err());
     }
 
@@ -327,16 +346,18 @@ mod tests {
     fn generic_public_ids_are_domain_separated_by_prefix() {
         let codec = PublicIdCodec::default_for_tests();
         let review = codec
-            .encode_review_request_id(ReviewRequestId::from(1))
+            .encode_review_request_id(ReviewRequestId::expect_positive(1))
             .unwrap();
-        let ban = codec.encode_ban_record_id(BanRecordId::from(1)).unwrap();
+        let ban = codec
+            .encode_ban_record_id(BanRecordId::expect_positive(1))
+            .unwrap();
 
         assert_eq!(review, "rev_1");
         assert_eq!(ban, "ban_1");
         assert_ne!(review, ban);
         assert_eq!(
             codec.decode_review_request_id(&review).unwrap(),
-            ReviewRequestId::from(1)
+            ReviewRequestId::expect_positive(1)
         );
         assert!(codec.decode::<BanRecordId>(&review).is_err());
     }

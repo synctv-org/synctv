@@ -11,6 +11,19 @@ use std::collections::HashMap;
 
 use super::{pagination::PageParams, query::SortDirection, UserId};
 
+/// Normalize optional provider instance names at API, service, and repository boundaries.
+///
+/// Blank names represent the default local provider binding and are stored as `NULL`.
+#[must_use]
+pub fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|trimmed| !trimmed.is_empty())
+}
+
+#[must_use]
+pub fn normalize_provider_instance_name_owned(value: Option<String>) -> Option<String> {
+    value.and_then(|value| normalize_provider_instance_name(Some(&value)).map(str::to_owned))
+}
+
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -98,7 +111,7 @@ impl ProviderInstance {
     /// Check if this instance supports a specific media provider type
     #[must_use]
     pub fn supports_provider(&self, provider: &str) -> bool {
-        self.providers.contains(&provider.to_string())
+        self.providers.iter().any(|candidate| candidate == provider)
     }
 
     /// Parse timeout string to Duration
@@ -148,17 +161,6 @@ pub struct UserProviderCredential {
 impl UserProviderCredential {
     const BILIBILI_SCOPE: &'static str = "bilibili";
 
-    fn normalized_instance_name(provider_instance_name: Option<&str>) -> Option<&str> {
-        provider_instance_name.and_then(|name| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        })
-    }
-
     /// Generate `server_id` for Alist/Emby from host URL
     #[must_use]
     pub fn generate_server_id(host: &str) -> String {
@@ -174,7 +176,7 @@ impl UserProviderCredential {
     ) -> String {
         use sha2::{Digest, Sha256};
 
-        match Self::normalized_instance_name(provider_instance_name) {
+        match normalize_provider_instance_name(provider_instance_name) {
             Some(instance_name) => hex::encode(Sha256::digest(
                 format!("{host}\n{instance_name}").as_bytes(),
             )),
@@ -408,6 +410,21 @@ mod tests {
 
         let duration = instance.parse_timeout().unwrap();
         assert_eq!(duration, std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn test_normalize_provider_instance_name() {
+        assert_eq!(normalize_provider_instance_name(None), None);
+        assert_eq!(normalize_provider_instance_name(Some("")), None);
+        assert_eq!(normalize_provider_instance_name(Some("   ")), None);
+        assert_eq!(
+            normalize_provider_instance_name(Some("  alist_home  ")),
+            Some("alist_home")
+        );
+        assert_eq!(
+            normalize_provider_instance_name_owned(Some("  emby_main  ".to_string())),
+            Some("emby_main".to_string())
+        );
     }
 
     #[test]

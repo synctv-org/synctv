@@ -42,9 +42,10 @@ use crate::proto::{
     UpdateSettingsRequest, UpdateUserPasswordRequest, UpdateUserPreferencesRequest,
     UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
+use synctv_api::grpc::map_api_error_ref as map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
-    AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ErrorKind,
+    AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl,
     ProviderCommonApiImpl,
 };
 use synctv_core::models::{UserId, UserRole as CoreUserRole, UserStatus as CoreUserStatus};
@@ -330,6 +331,9 @@ impl ManagementServiceImpl {
     }
 
     async fn resolve_client_actor_user_id(&self, actor: Option<UserRef>) -> Result<UserId, Status> {
+        // Management creation commands execute as this real client actor, not as
+        // the authenticated admin/management process. The downstream client API
+        // enforces room membership and permissions for room-scoped resources.
         let actor_user_id = self.resolve_required_user_ref(actor, "actor").await?;
         let actor_user_id = self
             .public_id_codec
@@ -990,32 +994,15 @@ impl ManagementService for ManagementServiceImpl {
             .list_users(admin_proto::ListUsersRequest {
                 page: req.page,
                 page_size: req.page_size,
-                status: map_user_status(req.status),
-                role: map_user_role(req.role),
+                status: map_user_status(req.status)?,
+                role: map_user_role(req.role)?,
                 search: req.search,
-                sort_by: match crate::proto::UserListSortBy::try_from(req.sort_by) {
-                    Ok(crate::proto::UserListSortBy::Username) => {
-                        admin_proto::UserListSortBy::Username as i32
-                    }
-                    Ok(crate::proto::UserListSortBy::Email) => {
-                        admin_proto::UserListSortBy::Email as i32
-                    }
-                    Ok(crate::proto::UserListSortBy::Status) => {
-                        admin_proto::UserListSortBy::Status as i32
-                    }
-                    Ok(crate::proto::UserListSortBy::Role) => {
-                        admin_proto::UserListSortBy::Role as i32
-                    }
-                    Ok(crate::proto::UserListSortBy::UpdatedAt) => {
-                        admin_proto::UserListSortBy::UpdatedAt as i32
-                    }
-                    _ => admin_proto::UserListSortBy::CreatedAt as i32,
-                },
+                sort_by: map_user_list_sort_by(req.sort_by)?,
                 is_banned: req.is_banned,
-                sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction) {
-                    Ok(crate::proto::SortDirection::Asc) => admin_proto::SortDirection::Asc as i32,
-                    _ => admin_proto::SortDirection::Desc as i32,
-                },
+                sort_direction: map_sort_direction(
+                    req.sort_direction,
+                    admin_proto::SortDirection::Desc,
+                )?,
             })
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -1153,8 +1140,8 @@ impl ManagementService for ManagementServiceImpl {
                     username: req.username,
                     password: req.password,
                     email: req.email,
-                    role: map_user_role(req.role),
-                    status: map_user_status(req.status),
+                    role: map_user_role(req.role)?,
+                    status: map_user_status(req.status)?,
                 },
                 validated.role,
                 &validated.user_id,
@@ -1459,7 +1446,7 @@ impl ManagementService for ManagementServiceImpl {
             .update_user_role(
                 admin_proto::UpdateUserRoleRequest {
                     user_id,
-                    role: map_user_role(req.role),
+                    role: map_user_role(req.role)?,
                 },
                 &validated.user_id,
                 validated.role,
@@ -1531,25 +1518,14 @@ impl ManagementService for ManagementServiceImpl {
                 user_id,
                 page: req.page,
                 page_size: req.page_size,
-                status: map_room_status(req.status),
+                status: map_room_status(req.status)?,
                 search: req.search,
                 is_banned: req.is_banned,
-                sort_by: match crate::proto::RoomListSortBy::try_from(req.sort_by) {
-                    Ok(crate::proto::RoomListSortBy::Name) => {
-                        admin_proto::RoomListSortBy::Name as i32
-                    }
-                    Ok(crate::proto::RoomListSortBy::UpdatedAt) => {
-                        admin_proto::RoomListSortBy::UpdatedAt as i32
-                    }
-                    Ok(crate::proto::RoomListSortBy::LastActivityAt) => {
-                        admin_proto::RoomListSortBy::LastActivityAt as i32
-                    }
-                    _ => admin_proto::RoomListSortBy::CreatedAt as i32,
-                },
-                sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction) {
-                    Ok(crate::proto::SortDirection::Asc) => admin_proto::SortDirection::Asc as i32,
-                    _ => admin_proto::SortDirection::Desc as i32,
-                },
+                sort_by: map_room_list_sort_by(req.sort_by)?,
+                sort_direction: map_sort_direction(
+                    req.sort_direction,
+                    admin_proto::SortDirection::Desc,
+                )?,
             })
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -1679,26 +1655,15 @@ impl ManagementService for ManagementServiceImpl {
             .list_rooms(admin_proto::ListRoomsRequest {
                 page: req.page,
                 page_size: req.page_size,
-                status: map_room_status(req.status),
+                status: map_room_status(req.status)?,
                 search: req.search,
                 creator_id,
                 is_banned: req.is_banned,
-                sort_by: match crate::proto::RoomListSortBy::try_from(req.sort_by) {
-                    Ok(crate::proto::RoomListSortBy::Name) => {
-                        admin_proto::RoomListSortBy::Name as i32
-                    }
-                    Ok(crate::proto::RoomListSortBy::UpdatedAt) => {
-                        admin_proto::RoomListSortBy::UpdatedAt as i32
-                    }
-                    Ok(crate::proto::RoomListSortBy::LastActivityAt) => {
-                        admin_proto::RoomListSortBy::LastActivityAt as i32
-                    }
-                    _ => admin_proto::RoomListSortBy::CreatedAt as i32,
-                },
-                sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction) {
-                    Ok(crate::proto::SortDirection::Asc) => admin_proto::SortDirection::Asc as i32,
-                    _ => admin_proto::SortDirection::Desc as i32,
-                },
+                sort_by: map_room_list_sort_by(req.sort_by)?,
+                sort_direction: map_sort_direction(
+                    req.sort_direction,
+                    admin_proto::SortDirection::Desc,
+                )?,
             })
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -1737,24 +1702,11 @@ impl ManagementService for ManagementServiceImpl {
                 role: req.role,
                 status: req.status,
                 is_banned: req.is_banned,
-                sort_by: match crate::proto::RoomMemberListSortBy::try_from(req.sort_by) {
-                    Ok(crate::proto::RoomMemberListSortBy::Username) => {
-                        admin_proto::RoomMemberListSortBy::Username as i32
-                    }
-                    Ok(crate::proto::RoomMemberListSortBy::Role) => {
-                        admin_proto::RoomMemberListSortBy::Role as i32
-                    }
-                    Ok(crate::proto::RoomMemberListSortBy::Status) => {
-                        admin_proto::RoomMemberListSortBy::Status as i32
-                    }
-                    _ => admin_proto::RoomMemberListSortBy::JoinedAt as i32,
-                },
-                sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction) {
-                    Ok(crate::proto::SortDirection::Desc) => {
-                        admin_proto::SortDirection::Desc as i32
-                    }
-                    _ => admin_proto::SortDirection::Asc as i32,
-                },
+                sort_by: map_room_member_list_sort_by(req.sort_by)?,
+                sort_direction: map_sort_direction(
+                    req.sort_direction,
+                    admin_proto::SortDirection::Asc,
+                )?,
             })
             .await
             .map_err(|e| map_api_error(&e))?;
@@ -3509,33 +3461,100 @@ fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
     (proto, terminal)
 }
 
-fn map_user_role(role: i32) -> i32 {
-    match common_proto::UserRole::try_from(role).unwrap_or(common_proto::UserRole::Unspecified) {
+fn invalid_enum_value(field: &'static str, value: i32) -> Status {
+    Status::invalid_argument(format!("Invalid {field}: unknown enum value {value}"))
+}
+
+fn map_user_role(role: i32) -> Result<i32, Status> {
+    let role =
+        common_proto::UserRole::try_from(role).map_err(|_| invalid_enum_value("role", role))?;
+    Ok(match role {
         common_proto::UserRole::User => common_proto::UserRole::User as i32,
         common_proto::UserRole::Admin => common_proto::UserRole::Admin as i32,
         common_proto::UserRole::Root => common_proto::UserRole::Root as i32,
         common_proto::UserRole::Unspecified => common_proto::UserRole::Unspecified as i32,
-    }
+    })
 }
 
-fn map_user_status(status: i32) -> i32 {
-    match common_proto::UserStatus::try_from(status)
-        .unwrap_or(common_proto::UserStatus::Unspecified)
-    {
+fn map_user_status(status: i32) -> Result<i32, Status> {
+    let status = common_proto::UserStatus::try_from(status)
+        .map_err(|_| invalid_enum_value("status", status))?;
+    Ok(match status {
         common_proto::UserStatus::Active => common_proto::UserStatus::Active as i32,
         common_proto::UserStatus::Banned => common_proto::UserStatus::Banned as i32,
         common_proto::UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
-    }
+    })
 }
 
-fn map_room_status(status: i32) -> i32 {
-    match common_proto::RoomStatus::try_from(status)
-        .unwrap_or(common_proto::RoomStatus::Unspecified)
-    {
+fn map_room_status(status: i32) -> Result<i32, Status> {
+    let status = common_proto::RoomStatus::try_from(status)
+        .map_err(|_| invalid_enum_value("status", status))?;
+    Ok(match status {
         common_proto::RoomStatus::Active => common_proto::RoomStatus::Active as i32,
         common_proto::RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
         common_proto::RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
-    }
+    })
+}
+
+fn map_user_list_sort_by(sort_by: i32) -> Result<i32, Status> {
+    let sort_by = crate::proto::UserListSortBy::try_from(sort_by)
+        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
+    Ok(match sort_by {
+        crate::proto::UserListSortBy::Username => admin_proto::UserListSortBy::Username as i32,
+        crate::proto::UserListSortBy::Email => admin_proto::UserListSortBy::Email as i32,
+        crate::proto::UserListSortBy::Status => admin_proto::UserListSortBy::Status as i32,
+        crate::proto::UserListSortBy::Role => admin_proto::UserListSortBy::Role as i32,
+        crate::proto::UserListSortBy::UpdatedAt => admin_proto::UserListSortBy::UpdatedAt as i32,
+        crate::proto::UserListSortBy::CreatedAt | crate::proto::UserListSortBy::Unspecified => {
+            admin_proto::UserListSortBy::CreatedAt as i32
+        }
+    })
+}
+
+fn map_room_list_sort_by(sort_by: i32) -> Result<i32, Status> {
+    let sort_by = crate::proto::RoomListSortBy::try_from(sort_by)
+        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
+    Ok(match sort_by {
+        crate::proto::RoomListSortBy::Name => admin_proto::RoomListSortBy::Name as i32,
+        crate::proto::RoomListSortBy::UpdatedAt => admin_proto::RoomListSortBy::UpdatedAt as i32,
+        crate::proto::RoomListSortBy::LastActivityAt => {
+            admin_proto::RoomListSortBy::LastActivityAt as i32
+        }
+        crate::proto::RoomListSortBy::CreatedAt | crate::proto::RoomListSortBy::Unspecified => {
+            admin_proto::RoomListSortBy::CreatedAt as i32
+        }
+    })
+}
+
+fn map_room_member_list_sort_by(sort_by: i32) -> Result<i32, Status> {
+    let sort_by = crate::proto::RoomMemberListSortBy::try_from(sort_by)
+        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
+    Ok(match sort_by {
+        crate::proto::RoomMemberListSortBy::Username => {
+            admin_proto::RoomMemberListSortBy::Username as i32
+        }
+        crate::proto::RoomMemberListSortBy::Role => admin_proto::RoomMemberListSortBy::Role as i32,
+        crate::proto::RoomMemberListSortBy::Status => {
+            admin_proto::RoomMemberListSortBy::Status as i32
+        }
+        crate::proto::RoomMemberListSortBy::JoinedAt
+        | crate::proto::RoomMemberListSortBy::Unspecified => {
+            admin_proto::RoomMemberListSortBy::JoinedAt as i32
+        }
+    })
+}
+
+fn map_sort_direction(
+    sort_direction: i32,
+    default: admin_proto::SortDirection,
+) -> Result<i32, Status> {
+    let sort_direction = crate::proto::SortDirection::try_from(sort_direction)
+        .map_err(|_| invalid_enum_value("sort_direction", sort_direction))?;
+    Ok(match sort_direction {
+        crate::proto::SortDirection::Asc => admin_proto::SortDirection::Asc as i32,
+        crate::proto::SortDirection::Desc => admin_proto::SortDirection::Desc as i32,
+        crate::proto::SortDirection::Unspecified => default as i32,
+    })
 }
 
 fn validate_client_actor_user(user: &synctv_core::models::User) -> Result<(), Status> {
@@ -3577,25 +3596,6 @@ fn map_management_user_lookup_error(err: synctv_core::Error) -> Status {
         other => {
             tracing::error!("Management user lookup failed: {other}");
             Status::internal("Internal error")
-        }
-    }
-}
-
-fn map_api_error(err: &ApiError) -> tonic::Status {
-    let msg = err.message().to_string();
-    match err.classify() {
-        ErrorKind::NotFound => tonic::Status::not_found(msg),
-        ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
-        ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
-        ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
-        ErrorKind::Conflict => tonic::Status::aborted(msg),
-        ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
-        ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
-        ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),
-        ErrorKind::Timeout => tonic::Status::deadline_exceeded(msg),
-        ErrorKind::Internal => {
-            tracing::error!("Management API internal error: {msg}");
-            tonic::Status::internal("Internal error")
         }
     }
 }
@@ -3672,6 +3672,32 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("secret"));
+    }
+
+    #[test]
+    fn enum_mapping_rejects_unknown_user_sort_values() {
+        let status = super::map_user_list_sort_by(99)
+            .expect_err("unknown management user sort enum should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("sort_by"));
+    }
+
+    #[test]
+    fn enum_mapping_preserves_status_user_sort() {
+        assert_eq!(
+            super::map_user_list_sort_by(crate::proto::UserListSortBy::Status as i32).unwrap(),
+            synctv_proto::admin::UserListSortBy::Status as i32
+        );
+    }
+
+    #[test]
+    fn enum_mapping_rejects_unknown_sort_direction_values() {
+        let status = super::map_sort_direction(99, synctv_proto::admin::SortDirection::Desc)
+            .expect_err("unknown management sort direction enum should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("sort_direction"));
     }
 
     #[test]

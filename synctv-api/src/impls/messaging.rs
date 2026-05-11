@@ -194,7 +194,8 @@ fn internal_guest_user_id(room_id: RoomId, session_id: &str) -> UserId {
     room_id.hash(&mut hasher);
     session_id.hash(&mut hasher);
     let offset = hasher.finish() % GUEST_INTERNAL_USER_ID_SPAN;
-    UserId::from(GUEST_INTERNAL_USER_ID_BASE + i64::try_from(offset).unwrap_or(0))
+    UserId::try_from(GUEST_INTERNAL_USER_ID_BASE + i64::try_from(offset).unwrap_or(0))
+        .expect("internal guest user id range is positive")
 }
 
 #[must_use]

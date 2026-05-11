@@ -68,7 +68,7 @@ fn public_id_codec() -> synctv_api::PublicIdCodec {
 
 fn review_request_public_id(id: i64) -> String {
     public_id_codec()
-        .encode_review_request_id(ReviewRequestId::from(id))
+        .encode_review_request_id(ReviewRequestId::expect_positive(id))
         .unwrap()
 }
 

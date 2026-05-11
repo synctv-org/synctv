@@ -136,9 +136,9 @@ mod tests {
         source_provider: Option<String>,
     ) -> Playlist {
         Playlist {
-            id: PlaylistId::from(1),
-            room_id: RoomId::from(1),
-            creator_id: Some(UserId::from(1)),
+            id: PlaylistId::expect_positive(1),
+            room_id: RoomId::expect_positive(1),
+            creator_id: Some(UserId::expect_positive(1)),
             name: name.to_string(),
             parent_id,
             position: 0.0,
@@ -159,7 +159,7 @@ mod tests {
         let named = make_playlist("Music", None, None);
         assert!(named.is_top_level());
 
-        let child = make_playlist("", Some(PlaylistId::from(2)), None);
+        let child = make_playlist("", Some(PlaylistId::expect_positive(2)), None);
         assert!(!child.is_top_level());
     }
 
@@ -167,13 +167,13 @@ mod tests {
     fn test_playlist_is_dynamic() {
         let dynamic = make_playlist(
             "Alist Folder",
-            Some(PlaylistId::from(2)),
+            Some(PlaylistId::expect_positive(2)),
             Some("alist".to_string()),
         );
         assert!(dynamic.is_dynamic());
         assert!(!dynamic.is_static());
 
-        let static_pl = make_playlist("Manual Folder", Some(PlaylistId::from(2)), None);
+        let static_pl = make_playlist("Manual Folder", Some(PlaylistId::expect_positive(2)), None);
         assert!(!static_pl.is_dynamic());
         assert!(static_pl.is_static());
     }

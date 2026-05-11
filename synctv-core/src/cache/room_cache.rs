@@ -326,7 +326,7 @@ mod tests {
     use super::*;
 
     fn create_test_room_id(id: &str) -> RoomId {
-        RoomId::from(match id {
+        RoomId::expect_positive(match id {
             "r1" => 1,
             "r2" => 2,
             "room1" => 11,
@@ -537,10 +537,10 @@ mod tests {
 
         let now = chrono::Utc::now();
         let room = Room {
-            id: crate::models::RoomId::from(3),
+            id: crate::models::RoomId::expect_positive(3),
             name: "From Room".to_string(),
             description: "A room for testing From impl".to_string(),
-            created_by: UserId::from(1),
+            created_by: UserId::expect_positive(1),
             status: RoomStatus::Closed,
             is_banned: true,
             closed_at: Some(now),

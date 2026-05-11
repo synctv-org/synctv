@@ -8,7 +8,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use crate::{
-    models::{Media, MediaId, MediaListQuery, PageParams, PlaylistId, RoomId},
+    models::{
+        normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
+        RoomId,
+    },
     Result,
 };
 
@@ -119,10 +122,7 @@ impl MediaRepository {
     fn normalize_provider_instance_name_for_db(
         provider_instance_name: Option<&str>,
     ) -> Option<&str> {
-        provider_instance_name.and_then(|provider_instance_name| {
-            let trimmed = provider_instance_name.trim();
-            (!trimmed.is_empty()).then_some(trimmed)
-        })
+        normalize_provider_instance_name(provider_instance_name)
     }
 
     fn push_media_scope_filters(
@@ -154,12 +154,11 @@ impl MediaRepository {
             builder.push_bind(source_provider.clone());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
-            let trimmed = provider_instance_name.trim();
-            if trimmed.is_empty() {
-                builder.push(" AND NULLIF(m.provider_instance_name, '') IS NULL");
-            } else {
+            if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
                 builder.push(" AND m.provider_instance_name = ");
                 builder.push_bind(trimmed.to_owned());
+            } else {
+                builder.push(" AND NULLIF(m.provider_instance_name, '') IS NULL");
             }
         }
         match query.availability {
@@ -1894,7 +1893,7 @@ mod tests {
             provider_instance_name: Some("   ".to_string()),
             ..MediaListQuery::default()
         };
-        let room_id = RoomId::from(123_456_678);
+        let room_id = RoomId::expect_positive(123_456_678);
 
         MediaRepository::push_media_scope_filters(&mut builder, &room_id, None, &query);
 

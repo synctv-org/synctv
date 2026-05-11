@@ -250,7 +250,7 @@ mod tests {
         let event = ClusterEvent::CacheInvalidate {
             event_id: "cache-invalidate-admin-route".to_string(),
             targets: vec![CacheTarget::Room {
-                room_id: RoomId::from(10_000_151),
+                room_id: RoomId::expect_positive(10_000_151),
             }],
             timestamp: Utc::now(),
         };

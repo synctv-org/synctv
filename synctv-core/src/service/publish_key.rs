@@ -711,9 +711,9 @@ mod tests {
     async fn test_publish_key_service_supports_service_trait_object() {
         let service: Arc<dyn StreamingPublishKeyService> =
             Arc::new(PublishKeyService::new(create_jwt_service(), 24));
-        let room_id = RoomId::from(40_001);
-        let media_id = MediaId::from(40_002);
-        let user_id = UserId::from(40_003);
+        let room_id = RoomId::expect_positive(40_001);
+        let media_id = MediaId::expect_positive(40_002);
+        let user_id = UserId::expect_positive(40_003);
 
         let key = service
             .generate_publish_key(&room_id, &media_id, &user_id)
@@ -735,9 +735,9 @@ mod tests {
         let profile = SharedStateProfile::from_runtime(None, "trait-test:", false);
         let service = streaming_publish_key_service_from_shared_state_profile(jwt, 12, &profile)
             .expect("standalone mode should allow local publish-key service");
-        let room_id = RoomId::from(40_004);
-        let media_id = MediaId::from(40_005);
-        let user_id = UserId::from(40_006);
+        let room_id = RoomId::expect_positive(40_004);
+        let media_id = MediaId::expect_positive(40_005);
+        let user_id = UserId::expect_positive(40_006);
 
         let key = service
             .generate_publish_key(&room_id, &media_id, &user_id)

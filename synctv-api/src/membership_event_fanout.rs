@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from(102_001)
+        RoomId::expect_positive(102_001)
     }
 
     fn user_id(value: &str) -> UserId {
@@ -296,7 +296,7 @@ mod tests {
             "self-joiner" => 102_004,
             _ => 102_099,
         };
-        UserId::from(id)
+        UserId::expect_positive(id)
     }
 
     fn test_services() -> (Arc<RoomService>, Arc<UserService>) {

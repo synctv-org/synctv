@@ -218,11 +218,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from(104_001)
+        RoomId::expect_positive(104_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(104_002)
+        UserId::expect_positive(104_002)
     }
 
     #[tokio::test]
@@ -241,8 +241,8 @@ mod tests {
                 deleted_by,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(104_001));
-                assert_eq!(deleted_by, UserId::from(104_002));
+                assert_eq!(room_id, RoomId::expect_positive(104_001));
+                assert_eq!(deleted_by, UserId::expect_positive(104_002));
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
         }
@@ -262,8 +262,8 @@ mod tests {
             ClusterEvent::RoomBanned {
                 room_id, banned_by, ..
             } => {
-                assert_eq!(room_id, RoomId::from(104_001));
-                assert_eq!(banned_by, UserId::from(104_002));
+                assert_eq!(room_id, RoomId::expect_positive(104_001));
+                assert_eq!(banned_by, UserId::expect_positive(104_002));
             }
             other => panic!("expected RoomBanned, got {other:?}"),
         }

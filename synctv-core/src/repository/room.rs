@@ -1424,7 +1424,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let room_repo = RoomRepository::new(pool.clone());
 
-        let room_id = RoomId::from(92_001);
+        let room_id = RoomId::expect_positive(92_001);
         let result = room_repo.get_by_id(&room_id).await.unwrap();
         assert!(result.is_none());
     }
@@ -1981,7 +1981,7 @@ mod tests {
         assert!(!context.is_banned); // Owner is not banned
 
         // Non-existent room returns None
-        let non_existent = RoomId::from(92_002);
+        let non_existent = RoomId::expect_positive(92_002);
         let context = room_repo
             .get_join_context(&non_existent, &owner.id)
             .await

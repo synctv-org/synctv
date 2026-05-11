@@ -57,16 +57,35 @@ pub(crate) fn user_provider_defaults_to_proto(
     defaults: &synctv_core::models::UserProviderDefaults,
 ) -> crate::proto::client::UserProviderDefaults {
     crate::proto::client::UserProviderDefaults {
-        alist_instance_name: defaults.alist_instance_name.clone(),
-        emby_instance_name: defaults.emby_instance_name.clone(),
-        bilibili_instance_name: defaults.bilibili_instance_name.clone(),
+        defaults: defaults
+            .iter()
+            .map(
+                |(provider, instance_name)| crate::proto::client::UserProviderDefault {
+                    provider: provider.to_string(),
+                    instance_name: instance_name.to_string(),
+                },
+            )
+            .collect(),
     }
 }
 
 pub(crate) fn user_preferences_update_from_proto(
     req: crate::proto::client::UpdateUserPreferencesRequest,
-) -> synctv_core::models::UserPreferencesUpdate {
-    synctv_core::models::UserPreferencesUpdate {
+) -> Result<synctv_core::models::UserPreferencesUpdate, ApiError> {
+    let provider_defaults = req
+        .provider_defaults
+        .map(|value| {
+            synctv_core::models::UserProviderDefaults::try_from_iter(
+                value
+                    .defaults
+                    .into_iter()
+                    .map(|value| (value.provider, value.instance_name)),
+            )
+            .map_err(ApiError::InvalidInput)
+        })
+        .transpose()?;
+
+    Ok(synctv_core::models::UserPreferencesUpdate {
         two_factor_enabled: req.two_factor_enabled,
         notifications: req.notifications.map(|value| {
             synctv_core::models::UserNotificationPreferences {
@@ -78,14 +97,8 @@ pub(crate) fn user_preferences_update_from_proto(
                 system_announcement_email: value.system_announcement_email,
             }
         }),
-        provider_defaults: req.provider_defaults.map(|value| {
-            synctv_core::models::UserProviderDefaults {
-                alist_instance_name: value.alist_instance_name,
-                emby_instance_name: value.emby_instance_name,
-                bilibili_instance_name: value.bilibili_instance_name,
-            }
-        }),
-    }
+        provider_defaults,
+    })
 }
 
 async fn list_owned_room_ids(
@@ -246,7 +259,7 @@ impl ClientApiImpl {
         req: crate::proto::client::UpdateUserPreferencesRequest,
     ) -> Result<crate::proto::client::UpdateUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let update = user_preferences_update_from_proto(req);
+        let update = user_preferences_update_from_proto(req)?;
         if update.is_empty() {
             return Err(ApiError::InvalidInput(
                 "No valid user preference fields provided".to_string(),
@@ -441,5 +454,61 @@ impl ClientApiImpl {
         Ok(crate::proto::client::FinishOpaquePasswordUpdateResponse {
             user: Some(user_to_proto(&user, &self.public_id_codec)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_preferences_update_from_proto;
+    use crate::impls::ApiError;
+
+    #[test]
+    fn user_preferences_update_from_proto_normalizes_provider_defaults() {
+        let update = user_preferences_update_from_proto(
+            crate::proto::client::UpdateUserPreferencesRequest {
+                provider_defaults: Some(crate::proto::client::UserProviderDefaults {
+                    defaults: vec![
+                        crate::proto::client::UserProviderDefault {
+                            provider: " emby ".to_string(),
+                            instance_name: " home ".to_string(),
+                        },
+                        crate::proto::client::UserProviderDefault {
+                            provider: "alist".to_string(),
+                            instance_name: "primary".to_string(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let defaults = update.provider_defaults.unwrap();
+        assert_eq!(defaults.get_instance_name("alist"), Some("primary"));
+        assert_eq!(defaults.get_instance_name("emby"), Some("home"));
+    }
+
+    #[test]
+    fn user_preferences_update_from_proto_rejects_duplicate_provider_defaults() {
+        let error = user_preferences_update_from_proto(
+            crate::proto::client::UpdateUserPreferencesRequest {
+                provider_defaults: Some(crate::proto::client::UserProviderDefaults {
+                    defaults: vec![
+                        crate::proto::client::UserProviderDefault {
+                            provider: "alist".to_string(),
+                            instance_name: "one".to_string(),
+                        },
+                        crate::proto::client::UserProviderDefault {
+                            provider: "alist".to_string(),
+                            instance_name: "two".to_string(),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, ApiError::InvalidInput(_)));
     }
 }

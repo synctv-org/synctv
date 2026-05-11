@@ -394,7 +394,7 @@ mod tests {
     /// Test CreateNotificationRequest struct creation with minimal fields
     #[test]
     fn test_create_notification_request_minimal() {
-        let user_id = UserId::from(91_001);
+        let user_id = UserId::expect_positive(91_001);
         let req = CreateNotificationRequest {
             user_id,
             notification_type: NotificationType::SystemAnnouncement,
@@ -413,7 +413,7 @@ mod tests {
     /// Test CreateNotificationRequest with custom data
     #[test]
     fn test_create_notification_request_with_data() {
-        let user_id = UserId::from(91_002);
+        let user_id = UserId::expect_positive(91_002);
         let data = serde_json::json!({
             "room_id": "room_abc",
             "inviter": "user_789"

@@ -128,7 +128,7 @@ mod tests {
     use std::sync::Arc;
 
     fn create_test_room_id(id: &str) -> RoomId {
-        RoomId::from(match id {
+        RoomId::expect_positive(match id {
             "r1" => 1,
             "r2" => 2,
             _ => 3,

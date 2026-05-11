@@ -4794,7 +4794,7 @@ mod tests {
         assert!(config.public_ids.sqids.is_none());
         assert_eq!(
             codec
-                .encode_user_id(crate::models::UserId::from(1))
+                .encode_user_id(crate::models::UserId::expect_positive(1))
                 .expect("user ID should encode"),
             "usr_1"
         );
@@ -4807,7 +4807,7 @@ mod tests {
         let codec = crate::PublicIdCodec::from_config(&config.public_ids)
             .expect("sqids public IDs config should be valid");
         let encoded = codec
-            .encode_user_id(crate::models::UserId::from(1))
+            .encode_user_id(crate::models::UserId::expect_positive(1))
             .expect("user ID should encode");
 
         assert_eq!(
@@ -4825,7 +4825,7 @@ mod tests {
             codec
                 .decode_user_id(&encoded)
                 .expect("user ID should decode"),
-            crate::models::UserId::from(1)
+            crate::models::UserId::expect_positive(1)
         );
     }
 

@@ -31,7 +31,7 @@ fn public_id_codec() -> synctv_api::PublicIdCodec {
 
 fn review_request_public_id(id: i64) -> String {
     public_id_codec()
-        .encode_review_request_id(ReviewRequestId::from(id))
+        .encode_review_request_id(ReviewRequestId::expect_positive(id))
         .unwrap()
 }
 
@@ -819,7 +819,7 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .approve_join_request(
             joined_room.id,
             external_owner.id,
-            ReviewRequestId::from(actor_join_request_id),
+            ReviewRequestId::expect_positive(actor_join_request_id),
         )
         .await
         .unwrap();

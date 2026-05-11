@@ -155,7 +155,7 @@ impl ClientApiImpl {
             .credential_owner_id
             .as_ref()
             .and_then(|id| id.parse::<UserId>().ok())
-            .unwrap_or_else(|| UserId::from(i64::MAX));
+            .unwrap_or(UserId::MAX);
         let credential_owner_id = session
             .credential_owner_id
             .as_ref()
@@ -516,13 +516,13 @@ mod tests {
 
     #[test]
     fn playback_target_key_treats_static_and_dynamic_targets_as_distinct() {
-        let room_id = RoomId::from(1);
+        let room_id = RoomId::expect_positive(1);
         let mut state = RoomPlaybackState::new(room_id);
-        state.playing_media_id = Some(synctv_core::models::MediaId::from(2));
+        state.playing_media_id = Some(synctv_core::models::MediaId::expect_positive(2));
         assert_eq!(playback_target_key(&state).as_deref(), Some("media:2"));
 
         state.playing_media_id = None;
-        state.playing_playlist_id = Some(synctv_core::models::PlaylistId::from(3));
+        state.playing_playlist_id = Some(synctv_core::models::PlaylistId::expect_positive(3));
         state.target = b"target-a".to_vec();
         let first = playback_target_key(&state).expect("dynamic target key");
 

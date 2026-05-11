@@ -65,8 +65,8 @@ fn required_edit_permission(creator_id: Option<&UserId>, requester_id: &UserId) 
 
 #[test]
 fn test_edit_media_owner_vs_non_owner_permission() {
-    let owner = UserId::from(10_000_001);
-    let other = UserId::from(10_000_002);
+    let owner = UserId::expect_positive(10_000_001);
+    let other = UserId::expect_positive(10_000_002);
 
     assert_eq!(
         required_edit_permission(Some(&owner), &owner),
@@ -98,8 +98,8 @@ fn test_add_media_permission_denied() {
 
 #[test]
 fn test_remove_media_owner_vs_non_owner_permission() {
-    let owner = UserId::from(10_000_001);
-    let other = UserId::from(10_000_002);
+    let owner = UserId::expect_positive(10_000_001);
+    let other = UserId::expect_positive(10_000_002);
 
     // Owner deleting their own media needs DELETE_MEDIA_SELF
     assert_eq!(
@@ -119,9 +119,9 @@ fn test_remove_media_owner_vs_non_owner_permission() {
 
 #[test]
 fn test_remove_batch_mixed_permissions() {
-    let user_a = UserId::from(10_000_003);
-    let user_b = UserId::from(10_000_004);
-    let requester = UserId::from(10_000_003);
+    let user_a = UserId::expect_positive(10_000_003);
+    let user_b = UserId::expect_positive(10_000_004);
+    let requester = UserId::expect_positive(10_000_003);
 
     // In a batch delete with mixed ownership:
     // - Items owned by requester need DELETE_MEDIA_SELF

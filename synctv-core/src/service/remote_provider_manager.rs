@@ -13,7 +13,7 @@
 use crate::cache::{CacheInvalidationRuntime, InvalidationMessage};
 use crate::models::{ProviderInstance, ProviderInstanceListQuery};
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
-use crate::provider::ProviderError;
+use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
 use std::collections::HashMap;
 use std::future::Future;
@@ -93,7 +93,11 @@ impl std::fmt::Debug for RemoteProviderManager {
 }
 
 impl RemoteProviderManager {
-    const SUPPORTED_REMOTE_PROVIDERS: &'static [&'static str] = &["alist", "emby", "bilibili"];
+    const SUPPORTED_REMOTE_PROVIDERS: &'static [&'static str] = &[
+        AlistProvider::NAME,
+        EmbyProvider::NAME,
+        BilibiliProvider::NAME,
+    ];
 
     fn probe_execution_control(
         control: Option<&ExecutionControl>,

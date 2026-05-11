@@ -99,7 +99,7 @@ async fn test_user_not_found_returns_unified_error_message() {
     let user_service = create_user_service(pool);
 
     // Use a non-existent user ID
-    let non_existent_user_id = UserId::from(10_000_007);
+    let non_existent_user_id = UserId::expect_positive(10_000_007);
     let token_iat = Utc::now().timestamp();
 
     let result = validate_admin_auth(&user_service, non_existent_user_id, 0, token_iat).await;
@@ -231,7 +231,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     let mut error_messages: Vec<String> = Vec::new();
 
     // Scenario 1: User not found
-    let non_existent_id = UserId::from(10_000_008);
+    let non_existent_id = UserId::expect_positive(10_000_008);
     let token_iat = Utc::now().timestamp();
     let result = validate_admin_auth(&user_service, non_existent_id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));

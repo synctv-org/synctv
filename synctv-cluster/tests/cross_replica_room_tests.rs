@@ -35,7 +35,7 @@ async fn test_cross_replica_kick_user() {
         &mut admin_rx_a,
         || ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from(10_000_040),
+            user_id: UserId::expect_positive(10_000_040),
             reason: "banned_by_admin".to_string(),
             timestamp: Utc::now(),
         },
@@ -49,7 +49,7 @@ async fn test_cross_replica_kick_user() {
         user_id, reason, ..
     } = &received
     {
-        assert_eq!(*user_id, UserId::from(10_000_040));
+        assert_eq!(*user_id, UserId::expect_positive(10_000_040));
         assert_eq!(reason, "banned_by_admin");
     } else {
         panic!("Expected KickUser event, got {:?}", received.event_type());
@@ -78,8 +78,8 @@ async fn test_cross_replica_room_event_propagation() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from(10_000_011);
-    let user_id = UserId::from(10_000_041);
+    let room_id = RoomId::expect_positive(10_000_011);
+    let user_id = UserId::expect_positive(10_000_041);
 
     // User subscribes to room on node A (simulating a WebSocket connection on node A)
     let (mut room_rx, conn_id) = node_a
@@ -93,7 +93,7 @@ async fn test_cross_replica_room_event_propagation() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_042),
+            user_id: UserId::expect_positive(10_000_042),
             username: "sender".to_string(),
             message: "Hello from node B!".to_string(),
             timestamp: Utc::now(),
@@ -134,8 +134,8 @@ async fn test_cross_replica_kick_publisher() {
     let mut admin_rx_a = node_a.subscribe_admin_events();
 
     // Also subscribe to the room on node A so Redis subscriber is active for this room
-    let room_id = RoomId::from(10_000_043);
-    let user_id = UserId::from(10_000_044);
+    let room_id = RoomId::expect_positive(10_000_043);
+    let user_id = UserId::expect_positive(10_000_044);
     let (_room_rx, conn_id) = node_a
         .subscribe(room_id, user_id)
         .await
@@ -147,13 +147,13 @@ async fn test_cross_replica_kick_publisher() {
         || ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            media_id: MediaId::from(10_000_045),
+            media_id: MediaId::expect_positive(10_000_045),
             reason: "room_deleted".to_string(),
             timestamp: Utc::now(),
         },
         |event| {
             matches!(event, ClusterEvent::KickPublisher { room_id, media_id, .. }
-            if *room_id == RoomId::from(10_000_043) && *media_id == MediaId::from(10_000_045))
+            if *room_id == RoomId::expect_positive(10_000_043) && *media_id == MediaId::expect_positive(10_000_045))
         },
         "KickPublisher on node A",
     )
@@ -167,8 +167,8 @@ async fn test_cross_replica_kick_publisher() {
         ..
     } = &received
     {
-        assert_eq!(*rid, RoomId::from(10_000_043));
-        assert_eq!(*media_id, MediaId::from(10_000_045));
+        assert_eq!(*rid, RoomId::expect_positive(10_000_043));
+        assert_eq!(*media_id, MediaId::expect_positive(10_000_045));
         assert_eq!(reason, "room_deleted");
     } else {
         panic!("Expected KickPublisher event");
@@ -187,8 +187,8 @@ async fn test_cross_replica_room_deleted() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from(10_000_046);
-    let user_id = UserId::from(10_000_047);
+    let room_id = RoomId::expect_positive(10_000_046);
+    let user_id = UserId::expect_positive(10_000_047);
 
     // Subscribe user on node A
     let (mut room_rx, _conn_id) = node_a
@@ -207,10 +207,10 @@ async fn test_cross_replica_room_deleted() {
         || ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            deleted_by: UserId::from(10_000_039),
+            deleted_by: UserId::expect_positive(10_000_039),
             timestamp: Utc::now(),
         },
-        |event| matches!(event, ClusterEvent::RoomDeleted { room_id, .. } if *room_id == RoomId::from(10_000_046)),
+        |event| matches!(event, ClusterEvent::RoomDeleted { room_id, .. } if *room_id == RoomId::expect_positive(10_000_046)),
         "RoomDeleted on node A",
     )
     .await;
@@ -249,8 +249,8 @@ async fn test_cross_replica_room_settings_changed() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room_id = RoomId::from(10_000_048);
-    let user_id = UserId::from(10_000_049);
+    let room_id = RoomId::expect_positive(10_000_048);
+    let user_id = UserId::expect_positive(10_000_049);
 
     // Subscribe on node A
     let (mut room_rx, conn_id) = node_a
@@ -264,7 +264,7 @@ async fn test_cross_replica_room_settings_changed() {
         || ClusterEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_050),
+            user_id: UserId::expect_positive(10_000_050),
             username: "room_admin".to_string(),
             settings_json: serde_json::to_vec(&serde_json::json!({
                 "max_members": 50,
@@ -307,10 +307,10 @@ async fn test_multiple_rooms_cross_replica() {
     let node_a = create_node(&redis.redis_url, "node_a").await;
     let node_b = create_node(&redis.redis_url, "node_b").await;
 
-    let room1 = RoomId::from(10_000_051);
-    let room2 = RoomId::from(10_000_052);
-    let user1 = UserId::from(10_000_030);
-    let user2 = UserId::from(10_000_031);
+    let room1 = RoomId::expect_positive(10_000_051);
+    let room2 = RoomId::expect_positive(10_000_052);
+    let user1 = UserId::expect_positive(10_000_030);
+    let user2 = UserId::expect_positive(10_000_031);
 
     // User1 in room1 on node A, User2 in room2 on node A
     let (mut rx1, conn1) = node_a
@@ -328,7 +328,7 @@ async fn test_multiple_rooms_cross_replica() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: room1,
-            user_id: UserId::from(10_000_053),
+            user_id: UserId::expect_positive(10_000_053),
             username: "sender_b".to_string(),
             message: "To room 1".to_string(),
             timestamp: Utc::now(),
@@ -352,7 +352,7 @@ async fn test_multiple_rooms_cross_replica() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: room2,
-            user_id: UserId::from(10_000_053),
+            user_id: UserId::expect_positive(10_000_053),
             username: "sender_b".to_string(),
             message: "To room 2".to_string(),
             timestamp: Utc::now(),

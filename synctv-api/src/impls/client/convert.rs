@@ -1069,9 +1069,9 @@ mod tests {
         let expire_at = chrono::DateTime::from_timestamp(1_700_000_100, 0)
             .expect("test timestamp should be valid");
         let media = Media {
-            id: MediaId::from(1101),
+            id: MediaId::expect_positive(1101),
             playlist_id: None,
-            room_id: RoomId::from(1102),
+            room_id: RoomId::expect_positive(1102),
             creator_id: None,
             name: "Embedded Direct Playback".to_string(),
             position: 7.5,
@@ -1217,9 +1217,9 @@ mod tests {
     #[test]
     fn bilibili_live_danmaku_for_static_media_builds_signed_proxy_url() {
         let media = Media {
-            id: MediaId::from(1201),
+            id: MediaId::expect_positive(1201),
             playlist_id: None,
-            room_id: RoomId::from(1202),
+            room_id: RoomId::expect_positive(1202),
             creator_id: None,
             name: "Bilibili Live".to_string(),
             position: 0.0,
@@ -1243,7 +1243,7 @@ mod tests {
             .encode_room_id(media.room_id)
             .expect("room id should encode");
         let public_user_id = public_id_codec
-            .encode_user_id(UserId::from(301))
+            .encode_user_id(UserId::expect_positive(301))
             .expect("user id should encode");
         let danmaku = bilibili_live_danmaku_for_static_media(
             &media,
@@ -1276,10 +1276,10 @@ mod tests {
     fn media_to_proto_includes_resource_version() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let media = Media {
-            id: MediaId::from(101),
+            id: MediaId::expect_positive(101),
             playlist_id: None,
-            room_id: RoomId::from(102),
-            creator_id: Some(UserId::from(103)),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(UserId::expect_positive(103)),
             name: "Proto Media".to_string(),
             position: 3.5,
             source_provider: "direct_url".to_string(),
@@ -1298,10 +1298,10 @@ mod tests {
     fn media_to_proto_redacts_nested_credentials_without_cloning_sanitized_value() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let media = Media {
-            id: MediaId::from(104),
+            id: MediaId::expect_positive(104),
             playlist_id: None,
-            room_id: RoomId::from(102),
-            creator_id: Some(UserId::from(103)),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(UserId::expect_positive(103)),
             name: "Secret Media".to_string(),
             position: 1.0,
             source_provider: "alist".to_string(),
@@ -1352,9 +1352,9 @@ mod tests {
     fn playlist_to_proto_includes_resource_version() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let playlist = synctv_core::models::Playlist {
-            id: PlaylistId::from(105),
-            room_id: RoomId::from(102),
-            creator_id: Some(UserId::from(103)),
+            id: PlaylistId::expect_positive(105),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(UserId::expect_positive(103)),
             name: "Proto Playlist".to_string(),
             parent_id: None,
             position: 1.0,
@@ -1375,10 +1375,10 @@ mod tests {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let now = chrono::Utc::now();
         let room = Room {
-            id: RoomId::from(102),
+            id: RoomId::expect_positive(102),
             name: "Proto Room".to_string(),
             description: "Room description".to_string(),
-            created_by: UserId::from(103),
+            created_by: UserId::expect_positive(103),
             status: synctv_core::models::RoomStatus::Active,
             is_banned: false,
             closed_at: None,

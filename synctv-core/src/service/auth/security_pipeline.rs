@@ -193,7 +193,7 @@ impl SecurityPipeline {
     /// # Returns
     /// [`AuthenticatedToken`] on success, or an [`Error::Authentication`] on failure.
     pub async fn check(&self, claims: &Claims) -> Result<AuthenticatedToken> {
-        let user_id = claims.user_id();
+        let user_id = claims.user_id()?;
 
         if let Some(cache) = &self.user_cache {
             if let Ok(Some(cached)) = cache.get(&user_id).await {

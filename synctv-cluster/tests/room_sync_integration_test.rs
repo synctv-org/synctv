@@ -41,8 +41,8 @@ async fn test_cross_replica_subscription_visibility() {
     let hub_a = create_hub(&redis.redis_url, "test1:").await;
     let hub_b = create_hub(&redis.redis_url, "test1:").await;
 
-    let room_id = RoomId::from(10_000_070);
-    let user_id = UserId::from(10_000_003);
+    let room_id = RoomId::expect_positive(10_000_070);
+    let user_id = UserId::expect_positive(10_000_003);
 
     // Subscribe on hub A
     let (_rx, conn_id) = {
@@ -89,8 +89,8 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
     let hub_a = create_hub(&redis.redis_url, "test2:").await;
     let hub_b = create_hub(&redis.redis_url, "test2:").await;
 
-    let room_id = RoomId::from(10_000_071);
-    let user_id = UserId::from(10_000_072);
+    let room_id = RoomId::expect_positive(10_000_071);
+    let user_id = UserId::expect_positive(10_000_072);
 
     // Subscribe on hub A
     let conn_id = "conn_unsub_1".to_string();
@@ -134,9 +134,9 @@ async fn test_remove_room_removes_redis_state_across_replicas() {
     let hub_a = create_hub(&redis.redis_url, "test2b:").await;
     let hub_b = create_hub(&redis.redis_url, "test2b:").await;
 
-    let room_id = RoomId::from(10_000_073);
-    let user_a = UserId::from(10_000_074);
-    let user_b = UserId::from(10_000_075);
+    let room_id = RoomId::expect_positive(10_000_073);
+    let user_a = UserId::expect_positive(10_000_074);
+    let user_b = UserId::expect_positive(10_000_075);
 
     let _rx1 = hub_a
         .subscribe(room_id, user_a, "remove_conn_1".to_string())
@@ -178,21 +178,33 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let hub_a = create_hub(&redis.redis_url, "test3:").await;
     let hub_b = create_hub(&redis.redis_url, "test3:").await;
 
-    let room_id = RoomId::from(10_000_076);
+    let room_id = RoomId::expect_positive(10_000_076);
 
     // Subscribe 2 users on hub A
     let _rx1 = hub_a
-        .subscribe(room_id, UserId::from(10_000_077), "conn_a1".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_077),
+            "conn_a1".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(room_id, UserId::from(10_000_078), "conn_a2".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_078),
+            "conn_a2".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
 
     // Subscribe 1 user on hub B
     let _rx3 = hub_b
-        .subscribe(room_id, UserId::from(10_000_079), "conn_b1".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_079),
+            "conn_b1".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -255,8 +267,8 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     let mut lifecycle_rx = hub_a.subscribe_lifecycle();
 
-    let room_id = RoomId::from(10_000_080);
-    let user_id = UserId::from(10_000_081);
+    let room_id = RoomId::expect_positive(10_000_080);
+    let user_id = UserId::expect_positive(10_000_081);
 
     // First subscriber should trigger RoomActivated
     let _rx = hub_a
@@ -280,7 +292,11 @@ async fn test_room_lifecycle_events_across_replicas() {
 
     // Second subscriber in same room should NOT trigger another RoomActivated
     let _rx2 = hub_a
-        .subscribe(room_id, UserId::from(10_000_082), "lc_conn_2".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_082),
+            "lc_conn_2".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -327,19 +343,31 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let hub_a = create_hub(&redis.redis_url, "test5:").await;
     let hub_b = create_hub(&redis.redis_url, "test5:").await;
 
-    let room_id = RoomId::from(10_000_083);
+    let room_id = RoomId::expect_positive(10_000_083);
 
     // Subscribe 3 users on hub A
     let _rx1 = hub_a
-        .subscribe(room_id, UserId::from(10_000_084), "rec_conn_1".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_084),
+            "rec_conn_1".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
     let _rx2 = hub_a
-        .subscribe(room_id, UserId::from(10_000_085), "rec_conn_2".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_085),
+            "rec_conn_2".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
     let _rx3 = hub_a
-        .subscribe(room_id, UserId::from(10_000_086), "rec_conn_3".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_086),
+            "rec_conn_3".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -384,7 +412,7 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     let hub_a = create_hub(&redis.redis_url, "test6:").await;
     let hub_b = create_hub(&redis.redis_url, "test6:").await;
 
-    let room_id = RoomId::from(10_000_087);
+    let room_id = RoomId::expect_positive(10_000_087);
 
     // Subscribe 5 users on hub A and 5 on hub B concurrently
     let mut handles = Vec::new();
@@ -393,7 +421,11 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
         let rid = room_id;
         handles.push(tokio::spawn(async move {
             let _rx = hub
-                .subscribe(rid, UserId::from(150_000 + i), format!("conn_a_{i}"))
+                .subscribe(
+                    rid,
+                    UserId::expect_positive(150_000 + i),
+                    format!("conn_a_{i}"),
+                )
                 .await
                 .expect("subscribe should succeed");
         }));
@@ -403,7 +435,11 @@ async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
         let rid = room_id;
         handles.push(tokio::spawn(async move {
             let _rx = hub
-                .subscribe(rid, UserId::from(160_000 + i), format!("conn_b_{i}"))
+                .subscribe(
+                    rid,
+                    UserId::expect_positive(160_000 + i),
+                    format!("conn_b_{i}"),
+                )
                 .await
                 .expect("subscribe should succeed");
         }));
@@ -452,14 +488,22 @@ async fn test_stale_cleanup_does_not_delete_other_replica_active_subscriptions()
     let hub_a = create_hub(&redis.redis_url, "test7:").await;
     let hub_b = create_hub(&redis.redis_url, "test7:").await;
 
-    let room_id = RoomId::from(10_000_011);
+    let room_id = RoomId::expect_positive(10_000_011);
 
     let _rx_a = hub_a
-        .subscribe(room_id, UserId::from(10_000_003), "conn_a".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_003),
+            "conn_a".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
     let _rx_b = hub_b
-        .subscribe(room_id, UserId::from(10_000_004), "conn_b".to_string())
+        .subscribe(
+            room_id,
+            UserId::expect_positive(10_000_004),
+            "conn_b".to_string(),
+        )
         .await
         .expect("subscribe should succeed");
 
@@ -505,7 +549,7 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let prefix = "test8:";
 
     let hub = create_hub(&redis.redis_url, prefix).await;
-    let room_id = RoomId::from(10_000_088);
+    let room_id = RoomId::expect_positive(10_000_088);
 
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
     let mut conn = redis_connection_manager(&client).await;
@@ -513,7 +557,7 @@ async fn test_distributed_room_lookup_prunes_stale_hash_members() {
     let room_key = format!("{prefix}room_hub:room:{room_id}");
     let valid_conn_key = format!("{prefix}room_hub:conn:conn_valid");
     let wrong_room_conn_key = format!("{prefix}room_hub:conn:conn_wrong_room");
-    let valid_user_id = UserId::from(10_000_089);
+    let valid_user_id = UserId::expect_positive(10_000_089);
 
     let _: () = conn
         .hset(&room_key, "conn_missing", 10_000_099i64)
@@ -560,8 +604,8 @@ async fn test_audit_redis_subscriptions_prunes_stale_room_directory_members() {
     let client = redis::Client::open(redis.redis_url.as_str()).expect("redis client");
     let mut conn = redis_connection_manager(&client).await;
 
-    let live_room_id = RoomId::from(10_000_093);
-    let live_user_id = UserId::from(10_000_094);
+    let live_room_id = RoomId::expect_positive(10_000_093);
+    let live_user_id = UserId::expect_positive(10_000_094);
     let live_room_key = format!("{prefix}room_hub:room:{live_room_id}");
     let stale_room_key = format!("{prefix}room_hub:room:10000095");
     let room_index_directory_key = format!("{prefix}room_hub:room_index");
@@ -606,8 +650,8 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let prefix = "test10:";
 
     let hub = create_hub(&redis.redis_url, prefix).await;
-    let room_id = RoomId::from(10_000_090);
-    let user_id = UserId::from(10_000_091);
+    let room_id = RoomId::expect_positive(10_000_090);
+    let user_id = UserId::expect_positive(10_000_091);
 
     let _rx = hub
         .subscribe(room_id, user_id, "conn_ttl".to_string())

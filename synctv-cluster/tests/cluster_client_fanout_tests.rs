@@ -285,7 +285,7 @@ async fn test_cluster_client_no_remote_nodes_fan_out() {
     // Since get_all_nodes may error, the fan_out might error too.
     // But the key test is: when there ARE no remote nodes, the result is empty.
     let result = client
-        .fan_out_user_online_status(vec![UserId::from(1)])
+        .fan_out_user_online_status(vec![UserId::expect_positive(1)])
         .await;
 
     // The call may fail (Redis unavailable) or succeed with empty.
@@ -336,7 +336,7 @@ async fn test_cluster_client_fan_out_fails_closed_when_degraded_cache_is_stale()
     );
 
     let err = client
-        .fan_out_user_online_status(vec![UserId::from(1)])
+        .fan_out_user_online_status(vec![UserId::expect_positive(1)])
         .await
         .expect_err("stale degraded topology must not be used for fan-out routing");
     assert!(err.to_string().contains("stale"), "unexpected error: {err}");

@@ -542,7 +542,7 @@ async fn test_reject_member_marks_membership_rejected_and_allows_reapply() {
         .reject_join_request(
             room.id,
             creator.id,
-            ReviewRequestId::from(request_id),
+            ReviewRequestId::expect_positive(request_id),
             Some("not now"),
         )
         .await

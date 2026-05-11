@@ -8,10 +8,15 @@
 //! 3. Generate Playback - Dynamically generate playback info when playing
 
 use crate::{
-    models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
-    provider::{DirectoryItem, DynamicListQuery, ProviderContext},
+    models::{
+        normalize_provider_instance_name, Media, MediaId, PermissionBits, PlaylistId, RoomId,
+        UserId, UserProviderDefaults,
+    },
+    provider::{
+        provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
+    },
     repository::UserProviderCredentialRepository,
-    repository::{MediaRepository, PlaylistRepository, UserRepository},
+    repository::{MediaRepository, PlaylistRepository, UserPreferencesRepository, UserRepository},
     service::{
         notification::{MediaAddedNotification, NotificationService},
         permission::PermissionService,
@@ -38,22 +43,8 @@ fn batch_media_position(index: usize, start_position: f64) -> f64 {
     MEDIA_BATCH_POSITION_STEP.mul_add(f64::from(index), start_position)
 }
 
-fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
-    value.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
-    })
-}
-
 fn validate_media_name(name: &str) -> Result<()> {
     crate::validation::validate_media_name(name).map_err(|e| Error::InvalidInput(e.to_string()))
-}
-
-fn provider_requires_credential_repo(provider_name: &str) -> bool {
-    matches!(
-        provider_name,
-        crate::provider::AlistProvider::NAME | crate::provider::EmbyProvider::NAME
-    )
 }
 
 /// Request to add a media item
@@ -112,6 +103,7 @@ pub struct MediaService {
     credential_encryption: Option<crate::service::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    user_preferences_repo: UserPreferencesRepository,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -158,6 +150,42 @@ impl MediaService {
         Ok(())
     }
 
+    fn provider_instance_binding_from_defaults(
+        provider_defaults: Option<&UserProviderDefaults>,
+        source_provider: &str,
+        explicit_provider_instance_name: Option<&str>,
+    ) -> Option<String> {
+        if let Some(instance_name) =
+            normalize_provider_instance_name(explicit_provider_instance_name)
+        {
+            return Some(instance_name.to_string());
+        }
+
+        provider_defaults
+            .and_then(|defaults| defaults.get_instance_name(source_provider))
+            .map(str::to_string)
+    }
+
+    async fn resolve_provider_instance_binding(
+        &self,
+        user_id: &UserId,
+        source_provider: &str,
+        explicit_provider_instance_name: Option<&str>,
+    ) -> Result<Option<String>> {
+        if let Some(instance_name) =
+            normalize_provider_instance_name(explicit_provider_instance_name)
+        {
+            return Ok(Some(instance_name.to_string()));
+        }
+
+        let preferences = self.user_preferences_repo.get_or_default(user_id).await?;
+        Ok(Self::provider_instance_binding_from_defaults(
+            Some(&preferences.provider_defaults),
+            source_provider,
+            None,
+        ))
+    }
+
     async fn resolve_media_provider(
         &self,
         source_provider: &str,
@@ -201,13 +229,14 @@ impl MediaService {
 
     /// Create a new media service
     #[must_use]
-    pub const fn new(
+    pub fn new(
         media_repo: MediaRepository,
         playlist_repo: PlaylistRepository,
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
         notification_service: NotificationService,
     ) -> Self {
+        let user_preferences_repo = UserPreferencesRepository::new(media_repo.pool().clone());
         Self {
             media_repo,
             playlist_repo,
@@ -216,6 +245,7 @@ impl MediaService {
             notification_service,
             credential_encryption: None,
             credential_repo: None,
+            user_preferences_repo,
         }
     }
 
@@ -233,6 +263,7 @@ impl MediaService {
         credential_encryption: Option<crate::service::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
+        let user_preferences_repo = UserPreferencesRepository::new(media_repo.pool().clone());
         Self {
             media_repo,
             playlist_repo,
@@ -241,6 +272,7 @@ impl MediaService {
             notification_service,
             credential_encryption,
             credential_repo,
+            user_preferences_repo,
         }
     }
 
@@ -317,14 +349,19 @@ impl MediaService {
             debug_assert_eq!(playlist.room_id, room_id);
         }
 
-        let bound_provider_instance =
-            normalize_provider_instance_name(request.provider_instance_name.as_deref());
+        let bound_provider_instance = self
+            .resolve_provider_instance_binding(
+                &user_id,
+                &request.source_provider,
+                request.provider_instance_name.as_deref(),
+            )
+            .await?;
 
         // Resolve the provider adapter from the declared type plus optional
         // top-level instance binding. Empty and None instance names both use
         // the default provider instance.
         let provider = self
-            .resolve_media_provider(&request.source_provider, bound_provider_instance)
+            .resolve_media_provider(&request.source_provider, bound_provider_instance.as_deref())
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
 
@@ -333,7 +370,7 @@ impl MediaService {
             &user_id,
             &room_id,
             Some(&user_id),
-            bound_provider_instance,
+            bound_provider_instance.as_deref(),
         );
 
         provider
@@ -376,7 +413,7 @@ impl MediaService {
             request.name.clone(),
             prepared_source_config,
             provider.name(), // Provider type name (e.g., "bilibili")
-            bound_provider_instance.map(str::to_string),
+            bound_provider_instance.clone(),
             position,
         );
 
@@ -392,7 +429,7 @@ impl MediaService {
             media_id = %created_media.id,
             name = %created_media.name,
             source_provider = provider.name(),
-            provider_instance_name = bound_provider_instance.unwrap_or(""),
+            provider_instance_name = bound_provider_instance.as_deref().unwrap_or(""),
             "Media added to playlist"
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
@@ -405,114 +442,6 @@ impl MediaService {
                 media_id: created_media.id,
                 title: &created_media.name,
                 url: "", // URL is generated dynamically at playback time
-                position: created_media.position,
-            },
-        ) {
-            tracing::warn!(
-                error = %e,
-                room_id = %room_id,
-                "Failed to broadcast media added event"
-            );
-        }
-
-        Ok(created_media)
-    }
-
-    /// Add media to a playlist as a global admin.
-    ///
-    /// This bypasses room membership and room-scoped permission checks, but still
-    /// validates provider binding, room ownership, and source configuration.
-    pub async fn admin_add_media(
-        &self,
-        room_id: RoomId,
-        admin_user_id: UserId,
-        actor_username: &str,
-        request: AddMediaRequest,
-    ) -> Result<Media> {
-        validate_media_name(&request.name)?;
-
-        if let Some(ref playlist_id) = request.playlist_id {
-            let playlist = self
-                .playlist_repo
-                .get_by_room_and_id(&room_id, playlist_id)
-                .await?
-                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-            debug_assert_eq!(playlist.room_id, room_id);
-        }
-
-        let bound_provider_instance =
-            normalize_provider_instance_name(request.provider_instance_name.as_deref());
-
-        let provider = self
-            .resolve_media_provider(&request.source_provider, bound_provider_instance)
-            .await?;
-        self.ensure_provider_credential_repo(provider.name())?;
-
-        let ctx = self.build_provider_context(
-            &admin_user_id,
-            &room_id,
-            Some(&admin_user_id),
-            bound_provider_instance,
-        );
-
-        provider
-            .validate_source_config(&ctx, &request.source_config)
-            .await
-            .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
-
-        let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
-        if config_size > MAX_SOURCE_CONFIG_SIZE {
-            return Err(Error::InvalidInput(format!(
-                "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
-            )));
-        }
-
-        let prepared_source_config = provider
-            .prepare_source_config(&ctx, request.source_config.clone())
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
-
-        let mut tx = self.media_repo.pool().begin().await?;
-        let position = self
-            .media_repo
-            .get_next_append_position_with_tx(&room_id, request.playlist_id.as_ref(), &mut tx)
-            .await?;
-
-        let media = Media::from_provider(
-            request.playlist_id,
-            room_id,
-            Some(admin_user_id),
-            request.name.clone(),
-            prepared_source_config,
-            provider.name(),
-            bound_provider_instance.map(str::to_string),
-            position,
-        );
-
-        let created_media = self
-            .media_repo
-            .create_with_executor(&media, &mut *tx)
-            .await?;
-
-        tx.commit().await?;
-
-        tracing::info!(
-            room_id = %room_id,
-            admin_user_id = %admin_user_id,
-            media_id = %created_media.id,
-            name = %created_media.name,
-            source_provider = provider.name(),
-            provider_instance_name = bound_provider_instance.unwrap_or(""),
-            "Media added to playlist by admin"
-        );
-        if let Err(e) = self.notification_service.notify_media_added(
-            &room_id,
-            &MediaAddedNotification {
-                user_id: &admin_user_id,
-                username: actor_username,
-                media_id: created_media.id,
-                title: &created_media.name,
-                url: "",
                 position: created_media.position,
             },
         ) {
@@ -558,14 +487,22 @@ impl MediaService {
             )));
         }
 
+        let provider_defaults = self
+            .user_preferences_repo
+            .get_or_default(&user_id)
+            .await?
+            .provider_defaults;
+
         // Validate all items before starting a transaction
         let mut validated_items = Vec::with_capacity(items.len());
         for item in items {
             validate_media_name(&item.name)?;
 
-            let bound_provider_instance =
-                normalize_provider_instance_name(item.provider_instance_name.as_deref())
-                    .map(str::to_string);
+            let bound_provider_instance = Self::provider_instance_binding_from_defaults(
+                Some(&provider_defaults),
+                &item.source_provider,
+                item.provider_instance_name.as_deref(),
+            );
 
             // Resolve provider by declared type plus optional top-level instance binding.
             let provider = self

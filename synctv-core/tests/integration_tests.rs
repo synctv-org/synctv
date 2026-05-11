@@ -288,7 +288,7 @@ fn test_id_generation_uniqueness() {
     let pid2 = PlaylistId::new();
     assert_ne!(pid1, pid2);
 
-    let room_id = RoomId::from(10_000_000);
+    let room_id = RoomId::expect_positive(10_000_000);
     assert_eq!(room_id.to_string(), "10000000");
 }
 

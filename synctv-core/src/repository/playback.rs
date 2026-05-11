@@ -264,7 +264,7 @@ mod tests {
         let (_postgres, pool) = create_test_pool().await;
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
-        let room_id = RoomId::from(90_001);
+        let room_id = RoomId::expect_positive(90_001);
         let result = playback_repo.get(&room_id).await.unwrap();
         assert!(result.is_none());
     }

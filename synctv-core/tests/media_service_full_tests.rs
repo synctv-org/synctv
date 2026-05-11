@@ -13,9 +13,12 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
+    models::{
+        PermissionBits, Playlist, ProviderInstance, User, UserId, UserPreferencesUpdate,
+        UserProviderDefaults, UserRole, UserStatus,
+    },
     provider::DynamicListQuery,
-    repository::UserRepository,
+    repository::{ProviderInstanceRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService, TestPasswordHasher},
         media::{AddMediaRequest, EditMediaRequest},
@@ -112,6 +115,46 @@ async fn register_direct_url_provider(room_service: &RoomService) {
         .create_provider("direct_url", "direct_url", &serde_json::json!({}))
         .await
         .expect("Failed to register direct_url provider");
+}
+
+async fn register_direct_url_provider_instance(
+    pool: &PgPool,
+    room_service: &RoomService,
+    instance_id: &str,
+) {
+    persist_provider_instance_row(pool, instance_id, vec!["direct_url".to_string()], true).await;
+
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("direct_url", instance_id, &serde_json::json!({}))
+        .await
+        .expect("Failed to register direct_url provider instance");
+}
+
+async fn persist_provider_instance_row(
+    pool: &PgPool,
+    instance_id: &str,
+    providers: Vec<String>,
+    enabled: bool,
+) {
+    ProviderInstanceRepository::new(pool.clone())
+        .create(&ProviderInstance {
+            name: instance_id.to_string(),
+            endpoint: "http://127.0.0.1:1".to_string(),
+            comment: Some("provider instance for test".to_string()),
+            jwt_secret: None,
+            custom_ca: None,
+            timeout: "30s".to_string(),
+            tls: false,
+            insecure_tls: false,
+            providers,
+            enabled,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .expect("Failed to persist provider instance row");
 }
 
 async fn register_bilibili_provider(room_service: &RoomService) {
@@ -223,6 +266,150 @@ async fn test_add_media_with_permission_succeeds() {
     assert!(result.is_ok(), "Creator should be able to add media");
     let media = result.unwrap();
     assert_eq!(media.name, "Good Video");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Requires Docker"]
+async fn test_add_media_uses_user_default_provider_instance_when_request_omits_binding() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("add_media_provider_default_creator"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Provider Default Media Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    register_direct_url_provider(&room_service).await;
+    register_direct_url_provider_instance(&pool, &room_service, "direct_alt").await;
+
+    room_service
+        .user_service()
+        .update_user_preferences(
+            &creator.id,
+            UserPreferencesUpdate {
+                provider_defaults: Some(
+                    UserProviderDefaults::try_from_iter([("direct_url", "direct_alt")]).unwrap(),
+                ),
+                ..UserPreferencesUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let playlist = create_top_level_playlist(&pool, &room.id).await;
+    let media = room_service
+        .media_service()
+        .add_media(
+            room.id,
+            creator.id,
+            AddMediaRequest {
+                playlist_id: Some(playlist.id),
+                name: "Default Routed Video".to_string(),
+                source_provider: "direct_url".to_string(),
+                provider_instance_name: None,
+                source_config: serde_json::json!({"url": "https://example.com/default.mp4"}),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(media.provider_instance_name.as_deref(), Some("direct_alt"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Requires Docker"]
+async fn test_user_provider_defaults_reject_missing_provider_instance() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool);
+
+    let user = user_repo
+        .create(&make_user("provider_default_missing_user"))
+        .await
+        .unwrap();
+
+    let error = room_service
+        .user_service()
+        .update_user_preferences(
+            &user.id,
+            UserPreferencesUpdate {
+                provider_defaults: Some(
+                    UserProviderDefaults::try_from_iter([("alist", "missing_instance")]).unwrap(),
+                ),
+                ..UserPreferencesUpdate::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::InvalidInput(message) if message.contains("does not exist")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore = "Requires Docker"]
+async fn test_user_provider_defaults_reject_disabled_or_unsupported_provider_instance() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let user = user_repo
+        .create(&make_user("provider_default_invalid_instance_user"))
+        .await
+        .unwrap();
+
+    persist_provider_instance_row(&pool, "emby_only_instance", vec!["emby".to_string()], true)
+        .await;
+    persist_provider_instance_row(
+        &pool,
+        "disabled_alist_instance",
+        vec!["alist".to_string()],
+        false,
+    )
+    .await;
+
+    let unsupported = room_service
+        .user_service()
+        .update_user_preferences(
+            &user.id,
+            UserPreferencesUpdate {
+                provider_defaults: Some(
+                    UserProviderDefaults::try_from_iter([("alist", "emby_only_instance")]).unwrap(),
+                ),
+                ..UserPreferencesUpdate::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(unsupported, Error::InvalidInput(message) if message.contains("does not support"))
+    );
+
+    let disabled = room_service
+        .user_service()
+        .update_user_preferences(
+            &user.id,
+            UserPreferencesUpdate {
+                provider_defaults: Some(
+                    UserProviderDefaults::try_from_iter([("alist", "disabled_alist_instance")])
+                        .unwrap(),
+                ),
+                ..UserPreferencesUpdate::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(disabled, Error::InvalidInput(message) if message.contains("disabled")));
 }
 
 #[tokio::test]

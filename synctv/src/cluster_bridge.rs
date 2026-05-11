@@ -8,7 +8,7 @@ use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager};
 
 fn system_user_id() -> synctv_core::models::UserId {
-    synctv_core::models::UserId::from(i64::MAX)
+    synctv_core::models::UserId::MAX
 }
 
 fn bridge_user_id(user_id: Option<&synctv_core::models::UserId>) -> synctv_core::models::UserId {
@@ -411,9 +411,9 @@ mod tests {
 
     fn sample_state() -> RoomPlaybackState {
         RoomPlaybackState {
-            room_id: RoomId::from(120_001),
-            playing_media_id: Some(MediaId::from(120_002)),
-            playing_playlist_id: Some(PlaylistId::from(120_003)),
+            room_id: RoomId::expect_positive(120_001),
+            playing_media_id: Some(MediaId::expect_positive(120_002)),
+            playing_playlist_id: Some(PlaylistId::expect_positive(120_003)),
             target: Vec::new(),
             is_playing: true,
             current_time: 42.0,
@@ -425,9 +425,9 @@ mod tests {
 
     fn sample_playlist(room_id: &RoomId) -> Playlist {
         Playlist {
-            id: PlaylistId::from(120_003),
+            id: PlaylistId::expect_positive(120_003),
             room_id: *room_id,
-            creator_id: Some(UserId::from(120_004)),
+            creator_id: Some(UserId::expect_positive(120_004)),
             name: "playlist".to_string(),
             parent_id: None,
             position: 0.0,
@@ -482,8 +482,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_playlist_broadcaster_keeps_origin_delivery_without_redis_publish() {
-        let room_id = RoomId::from(120_005);
-        let user_id = UserId::from(120_006);
+        let room_id = RoomId::expect_positive(120_005);
+        let user_id = UserId::expect_positive(120_006);
         let playlist = sample_playlist(&room_id);
         let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
         let cluster_manager = Arc::new(
@@ -534,8 +534,8 @@ mod tests {
             ClusterEvent::PlaylistCreated {
                 room_id, playlist, ..
             } => {
-                assert_eq!(room_id, RoomId::from(120_005));
-                assert_eq!(playlist.id, PlaylistId::from(120_003));
+                assert_eq!(room_id, RoomId::expect_positive(120_005));
+                assert_eq!(playlist.id, PlaylistId::expect_positive(120_003));
             }
             other => panic!("expected PlaylistCreated, got {other:?}"),
         }
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_room_deleted() {
-        let room_id = RoomId::from(120_007);
+        let room_id = RoomId::expect_positive(120_007);
 
         let event =
             room_event_to_cluster_event(&room_id, &synctv_core::service::RoomEvent::RoomDeleted)
@@ -559,7 +559,7 @@ mod tests {
 
         match event {
             ClusterEvent::RoomDeleted { room_id, .. } => {
-                assert_eq!(room_id, RoomId::from(120_007));
+                assert_eq!(room_id, RoomId::expect_positive(120_007));
             }
             other => panic!("expected RoomDeleted, got {other:?}"),
         }
@@ -567,8 +567,8 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_user_left() {
-        let room_id = RoomId::from(120_008);
-        let user_id = UserId::from(120_009);
+        let room_id = RoomId::expect_positive(120_008);
+        let user_id = UserId::expect_positive(120_009);
 
         let event = room_event_to_cluster_event(
             &room_id,
@@ -586,8 +586,8 @@ mod tests {
                 username,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(120_008));
-                assert_eq!(user_id, UserId::from(120_009));
+                assert_eq!(room_id, RoomId::expect_positive(120_008));
+                assert_eq!(user_id, UserId::expect_positive(120_009));
                 assert_eq!(username, "left-user");
             }
             other => panic!("expected UserLeft, got {other:?}"),
@@ -596,15 +596,15 @@ mod tests {
 
     #[test]
     fn test_room_event_to_cluster_event_maps_playlist_deleted() {
-        let room_id = RoomId::from(120_010);
-        let user_id = UserId::from(120_011);
+        let room_id = RoomId::expect_positive(120_010);
+        let user_id = UserId::expect_positive(120_011);
 
         let event = room_event_to_cluster_event(
             &room_id,
             &synctv_core::service::RoomEvent::PlaylistDeleted {
                 user_id: Some(user_id),
                 username: "tester".to_string(),
-                playlist_id: PlaylistId::from(120_012),
+                playlist_id: PlaylistId::expect_positive(120_012),
             },
         )
         .expect("PlaylistDeleted should bridge to ClusterEvent");
@@ -617,10 +617,10 @@ mod tests {
                 playlist_id,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(120_010));
-                assert_eq!(user_id, UserId::from(120_011));
+                assert_eq!(room_id, RoomId::expect_positive(120_010));
+                assert_eq!(user_id, UserId::expect_positive(120_011));
                 assert_eq!(username, "tester");
-                assert_eq!(playlist_id, PlaylistId::from(120_012));
+                assert_eq!(playlist_id, PlaylistId::expect_positive(120_012));
             }
             other => panic!("expected PlaylistDeleted, got {other:?}"),
         }

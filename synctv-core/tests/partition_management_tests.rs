@@ -144,7 +144,7 @@ async fn test_audit_logs_default_partition_routing() {
     let far_future = Utc::now() + Duration::days(365 * 2);
     let result =
         sqlx::query("INSERT INTO audit_logs (actor_id, action, created_at) VALUES ($1, $2, $3)")
-            .bind(UserId::from(1))
+            .bind(UserId::expect_positive(1))
             .bind("test_action")
             .bind(far_future)
             .execute(&pool)

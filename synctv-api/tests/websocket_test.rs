@@ -227,7 +227,7 @@ mod jwt_auth {
     #[test]
     fn test_sign_access_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_013);
+        let user_id = UserId::expect_positive(10_000_013);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         assert!(!token.is_empty());
         // JWT has 3 parts separated by dots
@@ -237,7 +237,7 @@ mod jwt_auth {
     #[test]
     fn test_sign_refresh_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_014);
+        let user_id = UserId::expect_positive(10_000_014);
         let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
         assert!(!token.is_empty());
     }
@@ -245,7 +245,7 @@ mod jwt_auth {
     #[test]
     fn test_verify_access_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_015);
+        let user_id = UserId::expect_positive(10_000_015);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         let claims = svc.verify_access_token(&token).unwrap();
@@ -257,7 +257,7 @@ mod jwt_auth {
     #[test]
     fn test_verify_refresh_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_016);
+        let user_id = UserId::expect_positive(10_000_016);
         let token = svc.sign_token(&user_id, TokenType::Refresh, 0).unwrap();
 
         let claims = svc.verify_refresh_token(&token).unwrap();
@@ -272,7 +272,7 @@ mod jwt_auth {
         let svc2 = JwtService::new("another-secret-that-is-different-and-long-enough-for-the-test")
             .unwrap();
 
-        let user_id = UserId::from(10_000_017);
+        let user_id = UserId::expect_positive(10_000_017);
         let token = svc1.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Verification with different secret should fail
@@ -295,7 +295,7 @@ mod jwt_auth {
     fn test_validator_extract_user_id_from_bearer() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from(10_000_018);
+        let user_id = UserId::expect_positive(10_000_018);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let _bearer = format!("Bearer {token}");
 
@@ -307,7 +307,7 @@ mod jwt_auth {
     fn test_validator_http_bearer_header() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from(10_000_019);
+        let user_id = UserId::expect_positive(10_000_019);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let header = format!("Bearer {token}");
 
@@ -319,7 +319,7 @@ mod jwt_auth {
     fn test_validator_rejects_missing_bearer_prefix() {
         let svc = test_jwt_service();
         let validator = test_validator();
-        let user_id = UserId::from(10_000_020);
+        let user_id = UserId::expect_positive(10_000_020);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
         // Without "Bearer " prefix
@@ -329,7 +329,7 @@ mod jwt_auth {
     #[test]
     fn test_access_token_has_jti() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_021);
+        let user_id = UserId::expect_positive(10_000_021);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
         assert!(!claims.jti.is_empty(), "JWT ID (jti) should be set");
@@ -338,7 +338,7 @@ mod jwt_auth {
     #[test]
     fn test_unique_jti_per_token() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_022);
+        let user_id = UserId::expect_positive(10_000_022);
         let token1 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let token2 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims1 = svc.verify_access_token(&token1).unwrap();
@@ -352,7 +352,7 @@ mod jwt_auth {
     #[test]
     fn test_claims_iat_is_recent() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_023);
+        let user_id = UserId::expect_positive(10_000_023);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 
@@ -366,7 +366,7 @@ mod jwt_auth {
     #[test]
     fn test_access_token_exp_is_in_future() {
         let svc = test_jwt_service();
-        let user_id = UserId::from(10_000_024);
+        let user_id = UserId::expect_positive(10_000_024);
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = svc.verify_access_token(&token).unwrap();
 

@@ -632,10 +632,10 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from(3001);
-        let media_id = MediaId::from(4001);
-        let old_user_id = UserId::from(5001);
-        let new_user_id = UserId::from(5002);
+        let room_id = RoomId::expect_positive(3001);
+        let media_id = MediaId::expect_positive(4001);
+        let old_user_id = UserId::expect_positive(5001);
+        let new_user_id = UserId::expect_positive(5002);
         let room_id_str = room_id.to_string();
         let media_id_str = media_id.to_string();
         let new_user_id_str = new_user_id.to_string();
@@ -727,10 +727,10 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from(3002);
-        let media_id = MediaId::from(4002);
-        let old_user_id = UserId::from(5003);
-        let new_user_id = UserId::from(5004);
+        let room_id = RoomId::expect_positive(3002);
+        let media_id = MediaId::expect_positive(4002);
+        let old_user_id = UserId::expect_positive(5003);
+        let new_user_id = UserId::expect_positive(5004);
         let room_id_str = room_id.to_string();
         let media_id_str = media_id.to_string();
         let new_user_id_str = new_user_id.to_string();
@@ -813,10 +813,10 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from(3003);
-        let media_id = MediaId::from(4003);
-        let old_user_id = UserId::from(5005);
-        let new_user_id = UserId::from(5006);
+        let room_id = RoomId::expect_positive(3003);
+        let media_id = MediaId::expect_positive(4003);
+        let old_user_id = UserId::expect_positive(5005);
+        let new_user_id = UserId::expect_positive(5006);
         let room_id_str = room_id.to_string();
         let media_id_str = media_id.to_string();
 
@@ -893,9 +893,9 @@ mod tests {
             "127.0.0.1:50051".to_string(),
         );
 
-        let room_id = RoomId::from(3004);
-        let media_id = MediaId::from(4004);
-        let user_id = UserId::from(5007);
+        let room_id = RoomId::expect_positive(3004);
+        let media_id = MediaId::expect_positive(4004);
+        let user_id = UserId::expect_positive(5007);
         let room_id_str = room_id.to_string();
         let media_id_str = media_id.to_string();
 

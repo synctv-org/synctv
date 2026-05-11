@@ -1039,7 +1039,7 @@ mod tests {
 
         // Fan-out should return empty results since there are no remote nodes
         let result = client
-            .fan_out_user_online_status(vec![UserId::from(1)])
+            .fan_out_user_online_status(vec![UserId::expect_positive(1)])
             .await
             .unwrap();
 
@@ -1049,7 +1049,7 @@ mod tests {
         assert!(result.is_complete());
 
         let result = client
-            .fan_out_room_connections(RoomId::from(101))
+            .fan_out_room_connections(RoomId::expect_positive(101))
             .await
             .unwrap();
 

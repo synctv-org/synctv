@@ -2,8 +2,8 @@
 // Database access layer for provider instance configuration management.
 
 use crate::models::{
-    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, UserId,
-    UserProviderCredential,
+    normalize_provider_instance_name, ProviderInstance, ProviderInstanceListQuery,
+    ProviderInstanceListSortBy, UserId, UserProviderCredential,
 };
 use crate::service::CredentialEncryption;
 use crate::Result;
@@ -13,6 +13,7 @@ use sqlx::PgPool;
 ///
 /// Encrypts sensitive fields (`jwt_secret`, `custom_ca`) using `CredentialEncryption`
 /// before storage and decrypts after read. Encryption is mandatory.
+#[derive(Clone)]
 pub struct ProviderInstanceRepository {
     pool: PgPool,
     encryption: Option<CredentialEncryption>,
@@ -73,7 +74,7 @@ impl ProviderInstanceRepository {
             builder.push_bind(tls);
         }
         if let Some(search) = &query.search {
-            let pattern = format!("%{}%", super::query_builder::escape_ilike(search));
+            let pattern = super::query_builder::escape_ilike(search);
             builder.push(" AND (name ILIKE ");
             builder.push_bind(pattern.clone());
             builder.push(" ESCAPE '\\' OR endpoint ILIKE ");
@@ -421,10 +422,7 @@ impl UserProviderCredentialRepository {
     fn normalize_provider_instance_name_for_db(
         provider_instance_name: Option<&str>,
     ) -> Option<&str> {
-        provider_instance_name.and_then(|provider_instance_name| {
-            let trimmed = provider_instance_name.trim();
-            (!trimmed.is_empty()).then_some(trimmed)
-        })
+        normalize_provider_instance_name(provider_instance_name)
     }
 
     /// Create a new repository without encryption

@@ -223,7 +223,7 @@ async fn test_token_refresh_flow() {
         .expect("Failed to verify refresh token");
 
     let new_access_token = jwt_service
-        .sign_token(&refresh_claims.user_id(), TokenType::Access, 0)
+        .sign_token(&refresh_claims.user_id().unwrap(), TokenType::Access, 0)
         .expect("Failed to sign new access token");
 
     let new_claims = jwt_service

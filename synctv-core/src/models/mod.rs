@@ -151,7 +151,8 @@ pub use playlist::{
     UpdatePlaylistRequest,
 };
 pub use provider_instance::{
-    ProviderCredential, ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    normalize_provider_instance_name, normalize_provider_instance_name_owned, ProviderCredential,
+    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
     UserProviderCredential,
 };
 pub use query::SortDirection;

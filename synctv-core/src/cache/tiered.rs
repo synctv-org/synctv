@@ -16,7 +16,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 use crate::cache::l2_backend::CacheL2Backend;
-use crate::cache::singleflight::SingleFlight;
+use crate::cache::singleflight::{CloneableError, SingleFlight};
 use crate::{Error, Result};
 
 /// Trait for cache values that support conditional updates based on freshness.
@@ -65,16 +65,13 @@ where
     /// Label used for metrics (e.g. "user", "room")
     cache_type: String,
     /// `SingleFlight` to deduplicate concurrent L2 fetches for the same key.
-    /// Uses `String` as both the key and error type: `Error` does not implement
-    /// `Clone` (due to `sqlx::Error`), so we use `String` for the error type
-    /// and convert back to `Error::Internal` at the call site.
-    singleflight: SingleFlight<String, Option<V>, String>,
+    singleflight: SingleFlight<String, Option<V>, CloneableError>,
     /// `SingleFlight` for batch L2 fetches. Keyed on a stable string derived
     /// from the sorted set of cache keys being fetched. Deduplicates concurrent
     /// `get_batch()` calls that have the same missing-key set, preventing the
     /// thundering-herd problem when many requests simultaneously miss L1 and L2
     /// for the same batch of keys.
-    batch_singleflight: SingleFlight<String, Vec<Option<String>>, String>,
+    batch_singleflight: SingleFlight<String, Vec<Option<String>>, CloneableError>,
     /// Per-key generation counters. Incremented on single-key invalidation.
     ///
     /// Before writing a `SingleFlight` result back to L1, we compare
@@ -205,12 +202,14 @@ where
                         let json = l2
                             .get_scoped(&l2_prefix, &redis_key)
                             .await
-                            .map_err(|e| format!("Failed to get {cache_type} from cache: {e}"))?;
+                            .map_err(CloneableError::from)?;
 
                         match json {
                             Some(json) => {
                                 let value: V = serde_json::from_str(&json).map_err(|e| {
-                                    format!("Failed to deserialize cached {cache_type}: {e}")
+                                    CloneableError::internal(format!(
+                                        "Failed to deserialize cached {cache_type}: {e}"
+                                    ))
                                 })?;
                                 Ok(Some(value))
                             }
@@ -223,7 +222,7 @@ where
                     super::SingleFlightError::WorkerFailed => Error::Internal(
                         "SingleFlight worker failed during L2 cache fetch".to_string(),
                     ),
-                    super::SingleFlightError::Inner(message) => Error::Internal(message),
+                    super::SingleFlightError::Inner(error) => Error::from(error),
                 })?;
 
             if let Some(ref value) = result {
@@ -462,21 +461,20 @@ where
                 .collect();
             let l2 = self.l2.clone();
             let l2_prefix = self.key_prefix.clone();
-            let cache_type = self.cache_type.clone();
 
             let jsons: Vec<Option<String>> = self
                 .batch_singleflight
                 .do_work(sf_key, async move {
                     l2.get_batch_scoped(&l2_prefix, &full_keys)
                         .await
-                        .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
+                        .map_err(CloneableError::from)
                 })
                 .await
                 .map_err(|error| match error {
                     super::SingleFlightError::WorkerFailed => Error::Internal(
                         "SingleFlight worker failed during L2 batch cache fetch".to_string(),
                     ),
-                    super::SingleFlightError::Inner(message) => Error::Internal(message),
+                    super::SingleFlightError::Inner(error) => Error::from(error),
                 })?;
 
             // Check global epoch first. If it changed, all results

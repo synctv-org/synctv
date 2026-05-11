@@ -682,7 +682,7 @@ pub struct UserAuthFactors {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserPreferences))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UserPreferences {
     #[prost(bool, tag = "1")]
     pub two_factor_enabled: bool,
@@ -722,15 +722,26 @@ pub struct UserNotificationPreferences {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Eq, Hash)]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UserProviderDefaults))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UserProviderDefaults {
-    #[prost(string, optional, tag = "1")]
-    pub alist_instance_name: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "2")]
-    pub emby_instance_name: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "3")]
-    pub bilibili_instance_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "1")]
+    pub defaults: ::prost::alloc::vec::Vec<UserProviderDefault>,
+}
+#[derive(::prost_reflect::ReflectMessage)]
+#[prost_reflect(message_name = "synctv.client.UserProviderDefault")]
+#[prost_reflect(descriptor_pool = "crate::DESCRIPTOR_POOL")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = synctv_client_UserProviderDefault))]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserProviderDefault {
+    #[prost(string, tag = "1")]
+    pub provider: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub instance_name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetUserPreferencesRequest")]
@@ -748,7 +759,7 @@ pub struct GetUserPreferencesRequest {}
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetUserPreferencesResponse))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetUserPreferencesResponse {
     #[prost(message, optional, tag = "1")]
     pub preferences: ::core::option::Option<UserPreferences>,
@@ -762,7 +773,7 @@ pub struct GetUserPreferencesResponse {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_UpdateUserPreferencesRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateUserPreferencesRequest {
     #[prost(bool, optional, tag = "1")]
     #[serde(default)]
@@ -782,7 +793,7 @@ pub struct UpdateUserPreferencesRequest {
     feature = "openapi",
     schema(as = synctv_client_UpdateUserPreferencesResponse)
 )]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateUserPreferencesResponse {
     #[prost(message, optional, tag = "1")]
     pub preferences: ::core::option::Option<UserPreferences>,

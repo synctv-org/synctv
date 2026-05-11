@@ -242,7 +242,7 @@ mod tests {
     use crate::cache::CacheInvalidationService;
 
     fn create_test_user_id(id: i64) -> UserId {
-        UserId::from(id)
+        UserId::expect_positive(id)
     }
 
     #[tokio::test]

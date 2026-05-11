@@ -25,15 +25,15 @@ fn stable_test_id(s: &str) -> i64 {
 }
 
 fn uid(s: &str) -> UserId {
-    UserId::from(stable_test_id(s))
+    UserId::expect_positive(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from(stable_test_id(s))
+    RoomId::expect_positive(stable_test_id(s))
 }
 
 fn mid(s: &str) -> MediaId {
-    MediaId::from(stable_test_id(s))
+    MediaId::expect_positive(stable_test_id(s))
 }
 
 /// Helper to create a Redis container and connection manager.
@@ -691,10 +691,10 @@ async fn test_cache_invalidation_event() {
         event_id: synctv_common::snanoid!(16),
         targets: vec![
             CacheTarget::User {
-                user_id: UserId::from(10_060_001),
+                user_id: UserId::expect_positive(10_060_001),
             },
             CacheTarget::Room {
-                room_id: RoomId::from(10_060_002),
+                room_id: RoomId::expect_positive(10_060_002),
             },
             CacheTarget::All,
         ],
@@ -721,7 +721,9 @@ async fn test_cache_invalidation_event() {
 async fn test_media_removed_batch_event() {
     let room = rid("room1");
     let user = uid("user1");
-    let media_ids: Vec<MediaId> = (0..100).map(|i| MediaId::from(100_000 + i)).collect();
+    let media_ids: Vec<MediaId> = (0..100)
+        .map(|i| MediaId::expect_positive(100_000 + i))
+        .collect();
 
     let event = ClusterEvent::MediaRemovedBatch {
         event_id: synctv_common::snanoid!(16),

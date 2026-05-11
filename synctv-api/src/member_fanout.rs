@@ -66,11 +66,11 @@ mod tests {
     use synctv_core::models::{RoomId, UserId};
 
     fn room_id() -> RoomId {
-        RoomId::from(103_001)
+        RoomId::expect_positive(103_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(103_002)
+        UserId::expect_positive(103_002)
     }
 
     #[tokio::test]
@@ -94,8 +94,8 @@ mod tests {
                 reason,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(103_001));
-                assert_eq!(user_id, UserId::from(103_002));
+                assert_eq!(room_id, RoomId::expect_positive(103_001));
+                assert_eq!(user_id, UserId::expect_positive(103_002));
                 assert_eq!(reason, "banned");
             }
             other => panic!("expected KickUserFromRoom, got {other:?}"),

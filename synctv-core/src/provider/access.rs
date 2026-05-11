@@ -777,7 +777,7 @@ mod tests {
     async fn alist_access_uses_bound_provider_instance_for_session_cache() {
         let store = Arc::new(InMemoryProviderStore::new(16));
         let service = test_service(store.clone());
-        let user_id = UserId::from(7);
+        let user_id = UserId::expect_positive(7);
         let server_id = "alist-main";
         let record = credential_record(
             AlistProvider::NAME,
@@ -850,7 +850,7 @@ mod tests {
     async fn emby_access_prefers_bound_provider_instance() {
         let store = Arc::new(InMemoryProviderStore::new(16));
         let service = test_service(store.clone());
-        let user_id = UserId::from(7);
+        let user_id = UserId::expect_positive(7);
         let server_id = "emby-main";
         let record = credential_record(
             EmbyProvider::NAME,

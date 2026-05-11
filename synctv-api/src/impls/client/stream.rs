@@ -169,9 +169,9 @@ mod tests {
     fn build_room_streams_response_applies_search_sort_and_pagination() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let media_ids = vec![
-            synctv_core::models::MediaId::from(201),
-            synctv_core::models::MediaId::from(202),
-            synctv_core::models::MediaId::from(203),
+            synctv_core::models::MediaId::expect_positive(201),
+            synctv_core::models::MediaId::expect_positive(202),
+            synctv_core::models::MediaId::expect_positive(203),
         ];
         let mut expected_ids = media_ids
             .iter()

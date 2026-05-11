@@ -42,11 +42,11 @@ fn redis_ticket_service(
 }
 
 fn user_id(id: i64) -> UserId {
-    UserId::from(id)
+    UserId::expect_positive(id)
 }
 
 fn room_id(id: i64) -> RoomId {
-    RoomId::from(id)
+    RoomId::expect_positive(id)
 }
 
 struct StaticUserValidator {

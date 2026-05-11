@@ -1431,7 +1431,7 @@ mod tests {
     #[test]
     fn build_create_websocket_ticket_request_parses_proto_validated_room_id() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let room_id = synctv_core::models::RoomId::from(123);
+        let room_id = synctv_core::models::RoomId::expect_positive(123);
         let room_public_id = codec.encode_room_id(room_id).unwrap();
         let parsed = build_create_websocket_ticket_request(
             &crate::proto::client::CreateWebSocketTicketRequest {

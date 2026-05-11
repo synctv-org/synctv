@@ -92,9 +92,10 @@ pub struct Claims {
 }
 
 impl Claims {
-    #[must_use]
-    pub fn user_id(&self) -> UserId {
-        self.sub.parse().expect("valid numeric user id claim")
+    pub fn user_id(&self) -> Result<UserId> {
+        self.sub
+            .parse()
+            .map_err(|error| Error::Authentication(format!("Invalid user id claim: {error}")))
     }
 
     #[must_use]
@@ -153,9 +154,10 @@ pub struct GuestClaims {
 
 impl GuestClaims {
     /// Parse room ID from claims
-    #[must_use]
-    pub fn room_id(&self) -> RoomId {
-        self.room_id.parse().expect("valid numeric room id claim")
+    pub fn room_id(&self) -> Result<RoomId> {
+        self.room_id
+            .parse()
+            .map_err(|error| Error::Authentication(format!("Invalid room id claim: {error}")))
     }
 
     /// Get session ID
@@ -611,7 +613,10 @@ impl JwtService {
         let token_data: TokenData<Claims> = decode(token, &self.decoding_key, &validation)
             .map_err(|e| map_jwt_error(&e, "Token"))?;
 
-        Ok(token_data.claims)
+        let claims = token_data.claims;
+        claims.user_id()?;
+
+        Ok(claims)
     }
 
     /// Verify an access token (convenience method)
@@ -729,6 +734,7 @@ impl JwtService {
         if !claims.is_guest() {
             return Err(Error::Authentication("Not a guest token".to_string()));
         }
+        claims.room_id()?;
 
         Ok(claims)
     }
@@ -822,9 +828,11 @@ impl JwtService {
 mod tests {
     use super::*;
 
+    const TEST_JWT_SECRET: &str = "test-secret-key-for-jwt-that-is-long-enough-1234567890";
+
     fn create_jwt_service() -> JwtService {
         // Use a sufficiently long secret to pass entropy validation
-        JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
+        JwtService::new(TEST_JWT_SECRET).unwrap()
     }
 
     #[test]
@@ -866,6 +874,61 @@ mod tests {
     }
 
     #[test]
+    fn test_access_token_rejects_invalid_user_id_claim() {
+        let jwt = create_jwt_service();
+        let now = Utc::now();
+        let claims = Claims {
+            sub: "not-a-user-id".to_string(),
+            typ: "access".to_string(),
+            jti: "test-jti".to_string(),
+            iat: now.timestamp(),
+            exp: (now + Duration::hours(1)).timestamp(),
+            pv: 0,
+            amr: None,
+            iss: None,
+            aud: None,
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .unwrap();
+
+        let result = jwt.verify_access_token(&token);
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+    }
+
+    #[test]
+    fn test_guest_token_rejects_invalid_room_id_claim() {
+        let jwt = create_jwt_service();
+        let now = Utc::now();
+        let claims = GuestClaims {
+            sub: "guest:not-a-room-id:session".to_string(),
+            room_id: "not-a-room-id".to_string(),
+            session_id: "session".to_string(),
+            jti: "test-jti".to_string(),
+            typ: "guest".to_string(),
+            iat: now.timestamp(),
+            exp: (now + Duration::hours(1)).timestamp(),
+            gv: 0,
+            iss: None,
+            aud: None,
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .unwrap();
+
+        let result = jwt.verify_guest_token(&token);
+
+        assert!(matches!(result, Err(Error::Authentication(_))));
+    }
+
+    #[test]
     fn test_invalid_token() {
         let jwt = create_jwt_service();
         let result = jwt.verify_token("invalid.token.here");
@@ -900,7 +963,7 @@ mod tests {
         let token = jwt.sign_guest_token(&room_id).unwrap();
         let claims = jwt.verify_guest_token(&token).unwrap();
 
-        assert_eq!(claims.room_id(), room_id);
+        assert_eq!(claims.room_id().unwrap(), room_id);
         assert!(claims.is_guest());
         assert_eq!(claims.typ, "guest");
         assert!(!claims.session_id().is_empty());
@@ -988,7 +1051,7 @@ mod tests {
         let user_id = UserId::new();
         let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims = jwt.verify_token(&token).unwrap();
-        assert_eq!(claims.user_id(), user_id);
+        assert_eq!(claims.user_id().unwrap(), user_id);
     }
 
     #[test]
@@ -1045,7 +1108,7 @@ mod tests {
         let room_id = RoomId::new();
         let token = jwt.sign_guest_token(&room_id).unwrap();
         let claims = jwt.verify_guest_token(&token).unwrap();
-        assert_eq!(claims.room_id(), room_id);
+        assert_eq!(claims.room_id().unwrap(), room_id);
     }
 
     #[test]

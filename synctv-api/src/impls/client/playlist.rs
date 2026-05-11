@@ -645,7 +645,7 @@ mod tests {
     fn build_create_playlist_request_parses_proto_validated_parent_id() {
         let codec = crate::PublicIdCodec::default_for_tests();
         let room_id = RoomId::new();
-        let parent_id = PlaylistId::from(123);
+        let parent_id = PlaylistId::expect_positive(123);
         let parent_public_id = codec.encode_playlist_id(parent_id).unwrap();
         let request = build_create_playlist_request(
             &room_id,
@@ -668,7 +668,9 @@ mod tests {
         let codec = crate::PublicIdCodec::default_for_tests();
         let error = build_update_playlist_request(
             crate::proto::client::UpdatePlaylistRequest {
-                playlist_id: codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+                playlist_id: codec
+                    .encode_playlist_id(PlaylistId::expect_positive(1))
+                    .unwrap(),
                 name: "a".repeat(256),
             },
             &codec,
@@ -688,7 +690,9 @@ mod tests {
         let codec = crate::PublicIdCodec::default_for_tests();
         let error = build_move_playlist_request(
             crate::proto::client::MovePlaylistRequest {
-                playlist_id: codec.encode_playlist_id(PlaylistId::from(1)).unwrap(),
+                playlist_id: codec
+                    .encode_playlist_id(PlaylistId::expect_positive(1))
+                    .unwrap(),
                 anchor: None,
             },
             &codec,
@@ -726,7 +730,7 @@ mod tests {
     #[test]
     fn build_delete_playlist_request_parses_playlist_id() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let playlist_id = PlaylistId::from(123);
+        let playlist_id = PlaylistId::expect_positive(123);
         let request = build_delete_playlist_request(
             crate::proto::client::DeletePlaylistRequest {
                 playlist_id: codec.encode_playlist_id(playlist_id).unwrap(),

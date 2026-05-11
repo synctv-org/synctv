@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_playback_state_new() {
-        let room_id = RoomId::from(70_001);
+        let room_id = RoomId::expect_positive(70_001);
         let state = RoomPlaybackState::new(room_id);
 
         assert_eq!(state.room_id, room_id);
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_playback_state_serialization_roundtrip() {
-        let room_id = RoomId::from(70_002);
+        let room_id = RoomId::expect_positive(70_002);
         let state = RoomPlaybackState::new(room_id);
 
         let json = serde_json::to_string(&state).expect("serialize");

@@ -12,9 +12,9 @@ use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpP
 
 fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
-        .with_user_id(UserId::from(1))
-        .with_room_id(RoomId::from(10))
-        .with_media_id(MediaId::from(100))
+        .with_user_id(UserId::expect_positive(1))
+        .with_room_id(RoomId::expect_positive(10))
+        .with_media_id(MediaId::expect_positive(100))
 }
 
 // validate_source_config should not accept external URLs

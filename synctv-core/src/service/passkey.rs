@@ -1034,7 +1034,7 @@ mod tests {
             .expect("registration should start");
 
         PasskeySession::Registration {
-            user_id: UserId::from(123_i64),
+            user_id: UserId::expect_positive(123_i64),
             credential_name: Some("Laptop".to_string()),
             state,
         }
@@ -1112,11 +1112,14 @@ mod tests {
 
     #[test]
     fn passkey_user_uuid_is_stable_standard_and_not_raw_database_id_bytes() {
-        let user_id = UserId::from(42_i64);
+        let user_id = UserId::expect_positive(42_i64);
         let user_uuid = PasskeyService::user_uuid(user_id);
 
         assert_eq!(user_uuid, PasskeyService::user_uuid(user_id));
-        assert_ne!(user_uuid, PasskeyService::user_uuid(UserId::from(43_i64)));
+        assert_ne!(
+            user_uuid,
+            PasskeyService::user_uuid(UserId::expect_positive(43_i64))
+        );
         assert_eq!(user_uuid.get_version_num(), 5);
         assert_ne!(&user_uuid.as_bytes()[8..16], &42_i64.to_be_bytes());
     }

@@ -562,17 +562,18 @@ message UserNotificationPreferences {
 }
 
 message UserProviderDefaults {
-    optional string alist_instance_name = 1 [(buf.validate.field).string = {
+    repeated UserProviderDefault defaults = 1 [(buf.validate.field).repeated = {
+        max_items: 32
+    }];
+}
+
+message UserProviderDefault {
+    string provider = 1 [(buf.validate.field).string = {
         min_len: 1,
         max_len: 64,
         pattern: "^[A-Za-z0-9_-]+$"
     }];
-    optional string emby_instance_name = 2 [(buf.validate.field).string = {
-        min_len: 1,
-        max_len: 64,
-        pattern: "^[A-Za-z0-9_-]+$"
-    }];
-    optional string bilibili_instance_name = 3 [(buf.validate.field).string = {
+    string instance_name = 2 [(buf.validate.field).string = {
         min_len: 1,
         max_len: 64,
         pattern: "^[A-Za-z0-9_-]+$"

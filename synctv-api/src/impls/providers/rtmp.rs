@@ -310,7 +310,7 @@ mod tests {
         let err = build_get_stream_info_request(
             GetStreamInfoRequest {
                 room_id: public_id_codec
-                    .encode_room_id(synctv_core::models::RoomId::from(123))
+                    .encode_room_id(synctv_core::models::RoomId::expect_positive(123))
                     .unwrap(),
                 media_id: "bad-media".to_string(),
             },
@@ -328,9 +328,9 @@ mod tests {
     fn build_get_stream_info_request_accepts_valid_request() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
         let expected_room_id = public_id_codec
-            .encode_room_id(synctv_core::models::RoomId::from(123))
+            .encode_room_id(synctv_core::models::RoomId::expect_positive(123))
             .unwrap();
-        let expected_media_id = synctv_core::models::MediaId::from(123);
+        let expected_media_id = synctv_core::models::MediaId::expect_positive(123);
         let (room_id, media_id) = build_get_stream_info_request(
             GetStreamInfoRequest {
                 room_id: expected_room_id.clone(),

@@ -21,7 +21,7 @@ pub use l2_backend::{
 pub use manager::CacheManager;
 pub use playback_cache::PlaybackStateCache;
 pub use room_cache::RoomCache;
-pub use singleflight::{SingleFlight, SingleFlightError};
+pub use singleflight::{CloneableError, SingleFlight, SingleFlightError};
 pub use tiered::{CacheKey, TieredCache, Timestamped};
 pub use user_cache::UserCache;
 pub use username_cache::UsernameCache;

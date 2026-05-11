@@ -254,7 +254,7 @@ mod tests {
             id: 1,
             provider: "github".to_string(),
             provider_user_id: "gh_user_456".to_string(),
-            user_id: UserId::from(42),
+            user_id: UserId::expect_positive(42),
             username: "ghuser".to_string(),
             email: Some("ghuser@example.com".to_string()),
             avatar_url: Some("https://avatars.example.com/ghuser.png".to_string()),
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(mapping.id, 1);
         assert_eq!(mapping.provider, "github");
         assert_eq!(mapping.provider_user_id, "gh_user_456");
-        assert_eq!(mapping.user_id, UserId::from(42));
+        assert_eq!(mapping.user_id, UserId::expect_positive(42));
         assert_eq!(mapping.username, "ghuser");
         assert_eq!(mapping.email.as_deref(), Some("ghuser@example.com"));
         assert_eq!(
@@ -284,7 +284,7 @@ mod tests {
             id: 2,
             provider: "oidc".to_string(),
             provider_user_id: "oidc_user_001".to_string(),
-            user_id: UserId::from(2),
+            user_id: UserId::expect_positive(2),
             username: "oidcuser".to_string(),
             email: None,
             avatar_url: None,
@@ -304,7 +304,7 @@ mod tests {
             id: 3,
             provider: "google".to_string(),
             provider_user_id: "goog_123".to_string(),
-            user_id: UserId::from(3),
+            user_id: UserId::expect_positive(3),
             username: "googleuser".to_string(),
             email: None,
             avatar_url: None,

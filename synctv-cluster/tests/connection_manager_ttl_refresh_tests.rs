@@ -30,11 +30,11 @@ fn stable_test_id(s: &str) -> i64 {
 }
 
 fn uid(s: &str) -> UserId {
-    UserId::from(stable_test_id(s))
+    UserId::expect_positive(stable_test_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from(stable_test_id(s))
+    RoomId::expect_positive(stable_test_id(s))
 }
 
 fn distributed_manager(

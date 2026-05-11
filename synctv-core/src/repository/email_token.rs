@@ -55,8 +55,7 @@ impl EmailTokenRepository {
             expires_at,
         )
         .fetch_one(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         Ok(t)
     }
@@ -69,7 +68,7 @@ impl EmailTokenRepository {
         token_type: EmailTokenType,
         expires_at: chrono::DateTime<Utc>,
     ) -> Result<EmailToken> {
-        let mut tx = self.pool.begin().await.map_err(Error::Database)?;
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query!(
             "SELECT pg_advisory_xact_lock(hashtext($1::text), $2)",
@@ -77,8 +76,7 @@ impl EmailTokenRepository {
             i32::from(i16::from(token_type)),
         )
         .execute(&mut *tx)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         sqlx::query!(
             r"
@@ -91,8 +89,7 @@ impl EmailTokenRepository {
             i16::from(token_type),
         )
         .execute(&mut *tx)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         let t = sqlx::query_as!(
             EmailToken,
@@ -107,10 +104,9 @@ impl EmailTokenRepository {
             expires_at,
         )
         .fetch_one(&mut *tx)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
-        tx.commit().await.map_err(Error::Database)?;
+        tx.commit().await?;
 
         Ok(t)
     }
@@ -153,8 +149,7 @@ impl EmailTokenRepository {
             token_hash,
         )
         .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         match t {
             Some(record) => Ok(record),
@@ -243,8 +238,7 @@ impl EmailTokenRepository {
             i16::from(token_type),
         )
         .execute(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         Ok(result.rows_affected())
     }
@@ -269,8 +263,7 @@ impl EmailTokenRepository {
             i16::from(token_type),
         )
         .execute(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         Ok(result.rows_affected())
     }
@@ -284,8 +277,7 @@ impl EmailTokenRepository {
             ",
         )
         .execute(&self.pool)
-        .await
-        .map_err(Error::Database)?;
+        .await?;
 
         Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
     }

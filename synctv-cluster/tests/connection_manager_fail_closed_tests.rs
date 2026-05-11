@@ -15,11 +15,11 @@ use synctv_core::SharedStateProfile;
 use synctv_core_testing::test_redis_key_prefix;
 
 fn uid(s: &str) -> UserId {
-    UserId::from(stable_id(s))
+    UserId::expect_positive(stable_id(s))
 }
 
 fn rid(s: &str) -> RoomId {
-    RoomId::from(stable_id(s))
+    RoomId::expect_positive(stable_id(s))
 }
 
 fn stable_id(s: &str) -> i64 {

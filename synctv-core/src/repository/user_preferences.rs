@@ -1,4 +1,6 @@
+use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
+use std::collections::BTreeMap;
 
 use crate::{
     models::{
@@ -19,17 +21,17 @@ impl UserPreferencesRepository {
         Self { pool }
     }
 
-    fn optional_trimmed(value: Option<&String>) -> Option<String> {
-        value.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
-    }
-
     fn preferences_from_row(
         row: &sqlx::postgres::PgRow,
         user_id: UserId,
     ) -> Result<UserPreferences> {
+        let provider_default_instance_names: Value =
+            row.try_get("provider_default_instance_names")?;
+        let provider_default_instance_names: BTreeMap<String, String> =
+            serde_json::from_value(provider_default_instance_names)?;
+        let provider_defaults = UserProviderDefaults::try_from(provider_default_instance_names)
+            .map_err(Error::InvalidInput)?;
+
         Ok(UserPreferences {
             user_id,
             two_factor_enabled: row.try_get("two_factor_enabled")?,
@@ -41,11 +43,7 @@ impl UserPreferencesRepository {
                 room_event_email: row.try_get("notify_room_event_email")?,
                 system_announcement_email: row.try_get("notify_system_announcement_email")?,
             },
-            provider_defaults: UserProviderDefaults {
-                alist_instance_name: row.try_get("default_alist_instance_name")?,
-                emby_instance_name: row.try_get("default_emby_instance_name")?,
-                bilibili_instance_name: row.try_get("default_bilibili_instance_name")?,
-            },
+            provider_defaults,
             settings: row.try_get("settings")?,
         })
     }
@@ -108,18 +106,10 @@ impl UserPreferencesRepository {
             ));
         }
 
-        let default_alist_instance_name = update
+        let provider_default_instance_names = update
             .provider_defaults
             .as_ref()
-            .and_then(|value| Self::optional_trimmed(value.alist_instance_name.as_ref()));
-        let default_emby_instance_name = update
-            .provider_defaults
-            .as_ref()
-            .and_then(|value| Self::optional_trimmed(value.emby_instance_name.as_ref()));
-        let default_bilibili_instance_name = update
-            .provider_defaults
-            .as_ref()
-            .and_then(|value| Self::optional_trimmed(value.bilibili_instance_name.as_ref()));
+            .map(|value| json!(value.instance_names()));
         let provider_defaults_present = update.provider_defaults.is_some();
 
         let row = sqlx::query(
@@ -133,9 +123,7 @@ impl UserPreferencesRepository {
                 notify_room_invitation_email,
                 notify_room_event_email,
                 notify_system_announcement_email,
-                default_alist_instance_name,
-                default_emby_instance_name,
-                default_bilibili_instance_name,
+                provider_default_instance_names,
                 settings
             )
             VALUES (
@@ -147,9 +135,7 @@ impl UserPreferencesRepository {
                 COALESCE($6, FALSE),
                 COALESCE($7, FALSE),
                 COALESCE($8, TRUE),
-                $9,
-                $10,
-                $11,
+                COALESCE($9, '{}'::jsonb),
                 '{}'::jsonb
             )
             ON CONFLICT (user_id) DO UPDATE
@@ -160,9 +146,7 @@ impl UserPreferencesRepository {
                 notify_room_invitation_email = COALESCE($6, user_preferences.notify_room_invitation_email),
                 notify_room_event_email = COALESCE($7, user_preferences.notify_room_event_email),
                 notify_system_announcement_email = COALESCE($8, user_preferences.notify_system_announcement_email),
-                default_alist_instance_name = CASE WHEN $12::BOOLEAN IS FALSE THEN user_preferences.default_alist_instance_name ELSE $9 END,
-                default_emby_instance_name = CASE WHEN $12::BOOLEAN IS FALSE THEN user_preferences.default_emby_instance_name ELSE $10 END,
-                default_bilibili_instance_name = CASE WHEN $12::BOOLEAN IS FALSE THEN user_preferences.default_bilibili_instance_name ELSE $11 END,
+                provider_default_instance_names = CASE WHEN $10::BOOLEAN IS FALSE THEN user_preferences.provider_default_instance_names ELSE COALESCE($9, '{}'::jsonb) END,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING *
             ",
@@ -175,9 +159,7 @@ impl UserPreferencesRepository {
         .bind(update.notifications.as_ref().map(|value| value.room_invitation_email))
         .bind(update.notifications.as_ref().map(|value| value.room_event_email))
         .bind(update.notifications.as_ref().map(|value| value.system_announcement_email))
-        .bind(default_alist_instance_name)
-        .bind(default_emby_instance_name)
-        .bind(default_bilibili_instance_name)
+        .bind(provider_default_instance_names)
         .bind(provider_defaults_present)
         .fetch_one(executor)
         .await

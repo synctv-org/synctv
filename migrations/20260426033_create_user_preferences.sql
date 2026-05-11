@@ -9,20 +9,14 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     notify_room_event_email BOOLEAN NOT NULL DEFAULT FALSE,
     notify_system_announcement_email BOOLEAN NOT NULL DEFAULT TRUE,
 
-    default_alist_instance_name VARCHAR(64),
-    default_emby_instance_name VARCHAR(64),
-    default_bilibili_instance_name VARCHAR(64),
+    provider_default_instance_names JSONB NOT NULL DEFAULT '{}'::jsonb,
 
     settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT user_preferences_default_alist_instance_name_nonblank
-        CHECK (default_alist_instance_name IS NULL OR length(trim(default_alist_instance_name)) > 0),
-    CONSTRAINT user_preferences_default_emby_instance_name_nonblank
-        CHECK (default_emby_instance_name IS NULL OR length(trim(default_emby_instance_name)) > 0),
-    CONSTRAINT user_preferences_default_bilibili_instance_name_nonblank
-        CHECK (default_bilibili_instance_name IS NULL OR length(trim(default_bilibili_instance_name)) > 0),
+    CONSTRAINT user_preferences_provider_defaults_object
+        CHECK (jsonb_typeof(provider_default_instance_names) = 'object'),
     CONSTRAINT user_preferences_settings_object
         CHECK (jsonb_typeof(settings) = 'object')
 );

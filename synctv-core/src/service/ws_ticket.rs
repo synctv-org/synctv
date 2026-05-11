@@ -1091,11 +1091,11 @@ mod tests {
     use async_trait::async_trait;
 
     fn create_test_user_id(id: i64) -> UserId {
-        UserId::from(id)
+        UserId::expect_positive(id)
     }
 
     fn create_test_room_id(id: i64) -> RoomId {
-        RoomId::from(id)
+        RoomId::expect_positive(id)
     }
 
     #[tokio::test]

@@ -1840,8 +1840,8 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from(130_001);
-        let room_id = RoomId::from(130_002);
+        let user_id = UserId::expect_positive(130_001);
+        let room_id = RoomId::expect_positive(130_002);
         let reservation = HandshakeReservation { room_id, user_id };
 
         manager
@@ -1902,7 +1902,7 @@ mod tests {
     async fn test_load_websocket_username_fails_closed_on_storage_error() {
         let state = crate::http::tests::test_app_state();
         state.user_service.pool().close().await;
-        let user_id = UserId::from(130_003);
+        let user_id = UserId::expect_positive(130_003);
 
         let err = load_websocket_username(&state, &user_id)
             .await
@@ -2167,8 +2167,8 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from(130_004);
-        let room_id = RoomId::from(130_005);
+        let user_id = UserId::expect_positive(130_004);
+        let room_id = RoomId::expect_positive(130_005);
         let reservation = HandshakeReservation { room_id, user_id };
 
         manager
@@ -2208,8 +2208,8 @@ mod tests {
     async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state.ws_ticket_service.clone();
-        let user_id = UserId::from(130_006);
-        let room_id = RoomId::from(130_007);
+        let user_id = UserId::expect_positive(130_006);
+        let room_id = RoomId::expect_positive(130_007);
         let reservation = HandshakeReservation { room_id, user_id };
 
         state
@@ -2270,8 +2270,8 @@ mod tests {
     async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fails() {
         let state = crate::http::tests::test_app_state();
         let ws_ticket_service = state.ws_ticket_service.clone();
-        let user_id = UserId::from(130_008);
-        let room_id = RoomId::from(130_009);
+        let user_id = UserId::expect_positive(130_008);
+        let room_id = RoomId::expect_positive(130_009);
 
         let reservation = reserve_websocket_upgrade_slots(
             state.router_config.connection_manager.as_ref(),
@@ -2328,8 +2328,8 @@ mod tests {
     async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels_commit() {
         let state = crate::http::tests::test_app_state();
         let timeout_state = state.clone();
-        let user_id = UserId::from(130_010);
-        let room_id = RoomId::from(130_011);
+        let user_id = UserId::expect_positive(130_010);
+        let room_id = RoomId::expect_positive(130_011);
         let reservation = reserve_websocket_upgrade_slots(
             state.router_config.connection_manager.as_ref(),
             &room_id,
@@ -2388,8 +2388,8 @@ mod tests {
             max_per_user: 1,
             ..ConnectionLimits::default()
         }));
-        let user_id = UserId::from(130_012);
-        let room_id = RoomId::from(130_013);
+        let user_id = UserId::expect_positive(130_012);
+        let room_id = RoomId::expect_positive(130_013);
         let reservation = HandshakeReservation { room_id, user_id };
         let connection_id = "conn-pre-join-transfer".to_string();
 
@@ -2552,7 +2552,7 @@ mod tests {
         }
 
         let connection_id = "conn-forward-failure".to_string();
-        let user_id = UserId::from(130_014);
+        let user_id = UserId::expect_positive(130_014);
         let manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         manager
             .register(connection_id.clone(), user_id)

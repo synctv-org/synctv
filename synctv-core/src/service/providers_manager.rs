@@ -5,6 +5,7 @@
 //! provider configuration.
 
 use crate::config::{LocalProviderHttpConfig, MediaProvidersConfig};
+use crate::models::normalize_provider_instance_name;
 use crate::provider::{
     AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
     MediaProvider, ProviderClientManager, RtmpProvider,
@@ -137,7 +138,7 @@ impl ProvidersManager {
         let default_client_manager = Arc::clone(&self.default_client_manager);
         // Alist factory - reads local Alist config.
         self.register_factory(
-            "alist",
+            AlistProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
                 let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     AlistProvider::with_client_manager(
@@ -161,7 +162,7 @@ impl ProvidersManager {
         // Bilibili factory - reads local Bilibili config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
         self.register_factory(
-            "bilibili",
+            BilibiliProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
                 let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     BilibiliProvider::with_client_manager(
@@ -185,7 +186,7 @@ impl ProvidersManager {
         // Emby factory - reads local Emby config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
         self.register_factory(
-            "emby",
+            EmbyProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
                 let provider = if let Some(client) = provider_http_client_from_config(config)? {
                     EmbyProvider::with_client_manager(
@@ -208,13 +209,13 @@ impl ProvidersManager {
 
         // RTMP factory
         self.register_factory(
-            "rtmp",
+            RtmpProvider::NAME,
             Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(RtmpProvider::new()))),
         );
 
         // DirectUrl factory
         self.register_factory(
-            "direct_url",
+            DirectUrlProvider::NAME,
             Box::new(|_instance_id, _config, _instance_manager| {
                 Ok(Arc::new(DirectUrlProvider::new()))
             }),
@@ -222,7 +223,7 @@ impl ProvidersManager {
 
         // LiveProxy factory
         self.register_factory(
-            "live_proxy",
+            LiveProxyProvider::NAME,
             Box::new(|_instance_id, _config, _instance_manager| {
                 Ok(Arc::new(LiveProxyProvider::new()))
             }),
@@ -295,9 +296,9 @@ impl ProvidersManager {
             }
 
             let provider_config = match provider_type.as_str() {
-                "alist" => serde_json::to_value(&config.alist),
-                "bilibili" => serde_json::to_value(&config.bilibili),
-                "emby" => serde_json::to_value(&config.emby),
+                AlistProvider::NAME => serde_json::to_value(&config.alist),
+                BilibiliProvider::NAME => serde_json::to_value(&config.bilibili),
+                EmbyProvider::NAME => serde_json::to_value(&config.emby),
                 _ => Ok(serde_json::json!({})),
             }
             .map_err(|e| {
@@ -336,9 +337,7 @@ impl ProvidersManager {
             ));
         }
 
-        let trimmed_instance = provider_instance_name
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
+        let trimmed_instance = normalize_provider_instance_name(provider_instance_name);
 
         if let Some(instance_name) = trimmed_instance {
             if let Some(provider) = self.get(instance_name).await {

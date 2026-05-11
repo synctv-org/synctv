@@ -937,8 +937,10 @@ mod start_playback_builder_tests {
         let codec = crate::PublicIdCodec::default_for_tests();
         let err = build_start_playback_request(
             crate::proto::client::StartPlaybackRequest {
-                media_id: codec.encode_media_id(MediaId::from(1)).unwrap(),
-                playlist_id: codec.encode_playlist_id(PlaylistId::from(2)).unwrap(),
+                media_id: codec.encode_media_id(MediaId::expect_positive(1)).unwrap(),
+                playlist_id: codec
+                    .encode_playlist_id(PlaylistId::expect_positive(2))
+                    .unwrap(),
                 target: Vec::new(),
             },
             &codec,
@@ -951,7 +953,7 @@ mod start_playback_builder_tests {
     #[test]
     fn test_build_start_playback_request_parses_dynamic_target() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let playlist_id = PlaylistId::from(123);
+        let playlist_id = PlaylistId::expect_positive(123);
         let playlist_public_id = codec.encode_playlist_id(playlist_id).unwrap();
         let target = br#"{"path":"/tv/ep1.mp4"}"#.to_vec();
         let parsed = build_start_playback_request(
@@ -1143,7 +1145,7 @@ mod start_playback_builder_tests {
     #[test]
     fn test_build_start_playback_request_converts_proto_validated_ids_without_reparsing() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let media_id = MediaId::from(123);
+        let media_id = MediaId::expect_positive(123);
         let target = build_start_playback_request(
             crate::proto::client::StartPlaybackRequest {
                 media_id: codec.encode_media_id(media_id).unwrap(),

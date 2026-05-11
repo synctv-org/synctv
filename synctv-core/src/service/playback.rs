@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::{CacheInvalidationRuntime, InvalidationMessage, PlaybackStateCache, SingleFlight},
+    cache::{
+        CacheInvalidationRuntime, CloneableError, InvalidationMessage, PlaybackStateCache,
+        SingleFlight,
+    },
     models::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
         UserId,
@@ -226,7 +229,7 @@ pub struct PlaybackService {
     invalidation_runtime: Arc<PlaybackInvalidationRuntime>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
     /// Uses `String` key (`room_id`) and `String` error (since `Error` is not `Clone`).
-    single_flight: SingleFlight<String, RoomPlaybackState, String>,
+    single_flight: SingleFlight<String, RoomPlaybackState, CloneableError>,
 }
 
 impl std::fmt::Debug for PlaybackService {
@@ -706,9 +709,9 @@ impl PlaybackService {
                     Ok(Some(s)) => s,
                     Ok(None) => match repo.create_or_get(&room_id_clone).await {
                         Ok(state) => state,
-                        Err(e) => return Err(e.to_string()),
+                        Err(e) => return Err(CloneableError::from(e)),
                     },
-                    Err(e) => return Err(e.to_string()),
+                    Err(e) => return Err(CloneableError::from(e)),
                 };
 
                 // Populate L1 cache
@@ -732,7 +735,7 @@ impl PlaybackService {
                 crate::cache::SingleFlightError::WorkerFailed => Error::Internal(
                     "SingleFlight worker failed during playback state fetch".to_string(),
                 ),
-                crate::cache::SingleFlightError::Inner(message) => Error::Internal(message),
+                crate::cache::SingleFlightError::Inner(error) => Error::from(error),
             })?;
 
         crate::metrics::cache::CACHE_MISSES
@@ -1922,7 +1925,7 @@ mod tests {
     async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from(10_001);
+        let room_id = RoomId::expect_positive(10_001);
         let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
@@ -1969,7 +1972,7 @@ mod tests {
     async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from(10_002);
+        let room_id = RoomId::expect_positive(10_002);
         let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
@@ -2019,7 +2022,7 @@ mod tests {
     async fn test_start_activates_invalidation_listener_after_wiring_service() {
         let (mut playback_service, invalidation_service) =
             make_playback_service_for_lifecycle_tests();
-        let room_id = RoomId::from(10_003);
+        let room_id = RoomId::expect_positive(10_003);
         let cache_key = room_id.to_string();
 
         playback_service.set_invalidation_service(invalidation_service.clone());
@@ -2085,7 +2088,7 @@ mod tests {
             "synctv:test:playback:".to_string(),
         )
         .expect("test playback L2 cache should build");
-        let room_id = RoomId::from(10_004);
+        let room_id = RoomId::expect_positive(10_004);
 
         playback_service.set_invalidation_service(invalidation_service.clone());
         playback_service
@@ -2211,7 +2214,7 @@ mod tests {
         /// Helper to create a playback state with a specific version
         fn make_state(room_id: i64, version: i64, current_time: f64) -> RoomPlaybackState {
             RoomPlaybackState {
-                room_id: RoomId::from(room_id),
+                room_id: RoomId::expect_positive(room_id),
                 playing_media_id: None,
                 playing_playlist_id: None,
                 target: Vec::new(),

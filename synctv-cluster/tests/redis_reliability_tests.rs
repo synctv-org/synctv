@@ -59,8 +59,8 @@ async fn test_redis_pubsub_no_message_loss() {
     let node_a = create_node_with_prefix(&redis.redis_url, "node_a", key_prefix.clone()).await;
     let node_b = create_node_with_prefix(&redis.redis_url, "node_b", key_prefix).await;
 
-    let room_id = RoomId::from(10_000_056);
-    let user_id = UserId::from(10_000_026);
+    let room_id = RoomId::expect_positive(10_000_056);
+    let user_id = UserId::expect_positive(10_000_026);
 
     // Subscribe on node A and establish the cross-replica subscription path first.
     let (rx, conn_id) = node_a
@@ -75,7 +75,7 @@ async fn test_redis_pubsub_no_message_loss() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_057),
+            user_id: UserId::expect_positive(10_000_057),
             username: "sender".to_string(),
             message: "baseline no-loss message".to_string(),
             timestamp: Utc::now(),
@@ -92,7 +92,7 @@ async fn test_redis_pubsub_no_message_loss() {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_057),
+            user_id: UserId::expect_positive(10_000_057),
             username: "sender".to_string(),
             message: format!("Message {i}"),
             timestamp: Utc::now(),
@@ -150,8 +150,8 @@ async fn test_redis_stream_catchup() {
     let (admin_tx, _admin_rx) = broadcast::channel::<ClusterEvent>(256);
     let dedup = Arc::new(MessageDeduplicator::with_defaults());
 
-    let room_id = RoomId::from(10_000_058);
-    let user_id = UserId::from(10_000_059);
+    let room_id = RoomId::expect_positive(10_000_058);
+    let user_id = UserId::expect_positive(10_000_059);
 
     // Subscribe a user to the room in the hub
     let mut rx = message_hub
@@ -167,7 +167,7 @@ async fn test_redis_stream_catchup() {
         let event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_060),
+            user_id: UserId::expect_positive(10_000_060),
             username: "publisher".to_string(),
             message: format!("Catchup message {i}"),
             timestamp: Utc::now(),
@@ -242,7 +242,7 @@ async fn test_redis_stream_catchup() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_060),
+            user_id: UserId::expect_positive(10_000_060),
             username: "publisher".to_string(),
             message: "Live message after subscriber connect".to_string(),
             timestamp: Utc::now(),
@@ -274,11 +274,11 @@ async fn test_room_stream_key_uses_ttl_for_inactive_room_cleanup() {
     let node =
         create_node_with_prefix(&redis.redis_url, "publisher_node", key_prefix.clone()).await;
 
-    let room_id = RoomId::from(10_000_061);
+    let room_id = RoomId::expect_positive(10_000_061);
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_060),
+        user_id: UserId::expect_positive(10_000_060),
         username: "publisher".to_string(),
         message: "ttl check".to_string(),
         timestamp: Utc::now(),
@@ -320,15 +320,15 @@ async fn test_redis_failure_and_recovery() {
         create_node_with_prefix(&redis.redis_url, "recovery_node_a", key_prefix.clone()).await;
     let node_b = create_node_with_prefix(&redis.redis_url, "recovery_node_b", key_prefix).await;
 
-    let room_id = RoomId::from(10_000_062);
+    let room_id = RoomId::expect_positive(10_000_062);
 
     // Subscribe on both nodes
     let (mut rx_a, conn_a) = node_a
-        .subscribe(room_id, UserId::from(10_000_063))
+        .subscribe(room_id, UserId::expect_positive(10_000_063))
         .await
         .expect("subscribe should succeed");
     let (mut rx_b, conn_b) = node_b
-        .subscribe(room_id, UserId::from(10_000_064))
+        .subscribe(room_id, UserId::expect_positive(10_000_064))
         .await
         .expect("subscribe should succeed");
 
@@ -340,7 +340,7 @@ async fn test_redis_failure_and_recovery() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_063),
+            user_id: UserId::expect_positive(10_000_063),
             username: "user_a".to_string(),
             message: "Normal message".to_string(),
             timestamp: Utc::now(),
@@ -367,7 +367,7 @@ async fn test_redis_failure_and_recovery() {
 
     // Subscribe a second client on node A
     let (mut rx_a2, conn_a2) = node_a
-        .subscribe(room_id, UserId::from(10_000_065))
+        .subscribe(room_id, UserId::expect_positive(10_000_065))
         .await
         .expect("subscribe should succeed");
 
@@ -384,7 +384,7 @@ async fn test_redis_failure_and_recovery() {
     let local_event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_064),
+        user_id: UserId::expect_positive(10_000_064),
         username: "user_b".to_string(),
         message: "Local broadcast test".to_string(),
         timestamp: Utc::now(),
@@ -425,7 +425,7 @@ async fn test_redis_failure_and_recovery() {
         let ordered_event = ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_063),
+            user_id: UserId::expect_positive(10_000_063),
             username: "user_a".to_string(),
             message: format!("Ordered message {i}"),
             timestamp: Utc::now(),
@@ -474,11 +474,11 @@ async fn test_redis_reconnection_event_preservation() {
         create_node_with_prefix(&redis.redis_url, "reconnect_node_a", key_prefix.clone()).await;
     let node_b = create_node_with_prefix(&redis.redis_url, "reconnect_node_b", key_prefix).await;
 
-    let room_id = RoomId::from(10_000_066);
+    let room_id = RoomId::expect_positive(10_000_066);
 
     // Subscribe on node B
     let (rx_b, conn_b) = node_b
-        .subscribe(room_id, UserId::from(10_000_067))
+        .subscribe(room_id, UserId::expect_positive(10_000_067))
         .await
         .expect("subscribe should succeed");
 
@@ -492,7 +492,7 @@ async fn test_redis_reconnection_event_preservation() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_068),
+            user_id: UserId::expect_positive(10_000_068),
             username: "sender".to_string(),
             message: "Baseline message".to_string(),
             timestamp: Utc::now(),
@@ -513,7 +513,7 @@ async fn test_redis_reconnection_event_preservation() {
         let rapid_event = ClusterEvent::ChatMessage {
             event_id,
             room_id,
-            user_id: UserId::from(10_000_068),
+            user_id: UserId::expect_positive(10_000_068),
             username: "sender".to_string(),
             message: format!("Rapid message {i}"),
             timestamp: Utc::now(),
@@ -562,8 +562,8 @@ async fn test_cross_replica_deduplication() {
 
     let node_a = create_node_with_prefix(&redis.redis_url, "node_a", key_prefix).await;
 
-    let room_id = RoomId::from(10_000_069);
-    let user_id = UserId::from(10_000_026);
+    let room_id = RoomId::expect_positive(10_000_069);
+    let user_id = UserId::expect_positive(10_000_026);
 
     let (mut room_rx, conn_id) = node_a
         .subscribe(room_id, user_id)
@@ -574,7 +574,7 @@ async fn test_cross_replica_deduplication() {
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_057),
+        user_id: UserId::expect_positive(10_000_057),
         username: "sender".to_string(),
         message: "Duplicate test".to_string(),
         timestamp: Utc::now(),

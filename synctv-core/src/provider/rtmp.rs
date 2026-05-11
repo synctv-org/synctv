@@ -214,9 +214,9 @@ mod tests {
 
     fn create_context() -> ProviderContext<'static> {
         ProviderContext::new("synctv")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100))
     }
 
     fn fake_proxy_services() -> ProxyServices {
@@ -351,9 +351,9 @@ mod tests {
         let provider = RtmpProvider::new();
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("synctv")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
         let result = provider.generate_playback(&ctx, &json!({})).await.unwrap();
@@ -395,17 +395,17 @@ mod tests {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
 
         let ctx1 = ProviderContext::new("synctv")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(store.clone());
         let first = provider.generate_playback(&ctx1, &json!({})).await.unwrap();
 
         let ctx2 = ProviderContext::new("synctv")
-            .with_user_id(UserId::from(2))
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100))
+            .with_user_id(UserId::expect_positive(2))
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(store);
         let second = provider.generate_playback(&ctx2, &json!({})).await.unwrap();
@@ -459,11 +459,11 @@ mod tests {
             version: "v1".to_string(),
             room_id: services
                 .public_id_codec
-                .encode_room_id(RoomId::from(10))
+                .encode_room_id(RoomId::expect_positive(10))
                 .expect("room id should encode"),
             user_id: services
                 .public_id_codec
-                .encode_user_id(UserId::from(1))
+                .encode_user_id(UserId::expect_positive(1))
                 .expect("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
         };
@@ -484,7 +484,7 @@ mod tests {
                 expires_at,
                 ..
             } => {
-                assert_eq!(user_id, UserId::from(1));
+                assert_eq!(user_id, UserId::expect_positive(1));
                 assert_eq!(expires_at, claims.expires_at);
             }
             other => panic!("expected LiveFlv action, got {other:?}"),

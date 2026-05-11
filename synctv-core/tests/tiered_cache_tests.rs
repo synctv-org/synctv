@@ -35,7 +35,7 @@ async fn test_tiered_cache_l2_set_and_get() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:".to_string())
         .expect("Failed to create UserCache");
 
-    let user_id = UserId::from(99_001);
+    let user_id = UserId::expect_positive(99_001);
     let user = make_cached_user(user_id, "alice");
 
     // Set in cache (populates both L1 and L2)
@@ -65,7 +65,7 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:inv:".to_string())
         .expect("Failed to create UserCache");
 
-    let user_id = UserId::from(99_002);
+    let user_id = UserId::expect_positive(99_002);
     let user = make_cached_user(user_id, "bob");
 
     cache.set(&user_id, user).await.unwrap();
@@ -98,8 +98,8 @@ async fn test_tiered_cache_clear_removes_all() {
     let cache = UserCache::new(l2, 100, 5, 300, "test:user:clr:".to_string())
         .expect("Failed to create UserCache");
 
-    let user1 = UserId::from(99_003);
-    let user2 = UserId::from(99_004);
+    let user1 = UserId::expect_positive(99_003);
+    let user2 = UserId::expect_positive(99_004);
 
     cache
         .set(&user1, make_cached_user(user1, "alice"))

@@ -352,27 +352,27 @@ impl RoomService {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        let request_id = sqlx::query_scalar!(
-            r#"
+        let request_id: RoomId = sqlx::query_scalar(
+            r"
             INSERT INTO room_creation_requests (
                 requested_by, name, description, password_hash, settings_payload, status, requested_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
             RETURNING id
-            "#,
-            requested_by.as_i64(),
-            name,
-            description,
-            password_hash,
-            settings_payload,
-            i16::from(ReviewStatus::Pending),
+            ",
         )
+        .bind(requested_by.as_i64())
+        .bind(name)
+        .bind(description)
+        .bind(password_hash)
+        .bind(settings_payload)
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(&self.pool)
         .await?;
 
         let mut room =
             Room::new_with_description(name.to_string(), description.to_string(), *requested_by);
-        room.id = RoomId::from(request_id);
+        room.id = request_id;
         Ok(room)
     }
 
@@ -1488,52 +1488,6 @@ impl RoomService {
         .await;
 
         Ok(updated_room)
-    }
-
-    /// Create a room as a global admin.
-    ///
-    /// This bypasses user-facing room creation switches while preserving the
-    /// rest of the room bootstrap lifecycle.
-    pub async fn admin_create_room(
-        &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
-    ) -> Result<(Room, RoomMember)> {
-        self.admin_create_room_with_outbox(name, description, created_by, password, settings, None)
-            .await
-    }
-
-    pub async fn admin_create_room_with_outbox(
-        &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
-        outbox_event_factory: Option<ClusterOutboxRoomEventFactory>,
-    ) -> Result<(Room, RoomMember)> {
-        let admin_user = self.user_service.get_user(&created_by).await?;
-        if !admin_user.role.is_admin_or_above() {
-            return Err(Error::Authorization(
-                "Admin role required for this operation".to_string(),
-            ));
-        }
-
-        self.do_create_room_with_policy(
-            CreateRoomCommand {
-                name,
-                description,
-                created_by,
-                password,
-                settings,
-            },
-            false,
-            outbox_event_factory,
-        )
-        .await
     }
 
     /// Join a room
@@ -5676,8 +5630,8 @@ async fn collect_target_playlist_nodes_in_tx(
 
     let playlist_ids: Vec<i64> = root_playlist_ids.iter().map(PlaylistId::as_i64).collect();
 
-    let rows = sqlx::query!(
-        r#"WITH RECURSIVE target_playlists AS (
+    let rows = sqlx::query(
+        r"WITH RECURSIVE target_playlists AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -5688,28 +5642,32 @@ async fn collect_target_playlist_nodes_in_tx(
             JOIN target_playlists tp ON p.parent_id = tp.id
             WHERE p.room_id = $1
         )
-        SELECT id AS "id!", MAX(depth) AS depth
+        SELECT id, MAX(depth) AS depth
         FROM target_playlists
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id"#,
-        room_id.as_i64(),
-        &playlist_ids,
+        ORDER BY MAX(depth) DESC, id",
     )
+    .bind(room_id.as_i64())
+    .bind(&playlist_ids)
     .fetch_all(&mut **tx)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (PlaylistId::from(row.id), row.depth.unwrap_or(0)))
-        .collect())
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        result.push((
+            row.try_get::<PlaylistId, _>("id")?,
+            row.try_get::<Option<i32>, _>("depth")?.unwrap_or(0),
+        ));
+    }
+    Ok(result)
 }
 
 async fn collect_all_room_playlist_nodes_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<Vec<(PlaylistId, i32)>> {
-    let rows = sqlx::query!(
-        r#"WITH RECURSIVE playlist_tree AS (
+    let rows = sqlx::query(
+        r"WITH RECURSIVE playlist_tree AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -5720,19 +5678,23 @@ async fn collect_all_room_playlist_nodes_in_tx(
             JOIN playlist_tree pt ON p.parent_id = pt.id
             WHERE p.room_id = $1
         )
-        SELECT id AS "id!", MAX(depth) AS depth
+        SELECT id, MAX(depth) AS depth
         FROM playlist_tree
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id"#,
-        room_id.as_i64(),
+        ORDER BY MAX(depth) DESC, id",
     )
+    .bind(room_id.as_i64())
     .fetch_all(&mut **tx)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (PlaylistId::from(row.id), row.depth.unwrap_or(0)))
-        .collect())
+    let mut result = Vec::with_capacity(rows.len());
+    for row in rows {
+        result.push((
+            row.try_get::<PlaylistId, _>("id")?,
+            row.try_get::<Option<i32>, _>("depth")?.unwrap_or(0),
+        ));
+    }
+    Ok(result)
 }
 
 async fn collect_room_root_media_ids_in_tx(
@@ -5766,8 +5728,8 @@ async fn collect_deleted_media_ids_in_tx(
     let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
     let explicit_media_id_strs: Vec<i64> = explicit_media_ids.iter().map(MediaId::as_i64).collect();
 
-    let rows = sqlx::query!(
-        r#"WITH RECURSIVE target_playlists AS (
+    let media_ids = sqlx::query_scalar(
+        r"WITH RECURSIVE target_playlists AS (
             SELECT id
             FROM playlists
             WHERE id = ANY($1)
@@ -5783,15 +5745,15 @@ async fn collect_deleted_media_ids_in_tx(
               m.id = ANY($3)
               OR m.playlist_id IN (SELECT id FROM target_playlists)
           )
-        ORDER BY m.id"#,
-        &playlist_id_strs,
-        room_id.as_i64(),
-        &explicit_media_id_strs,
+        ORDER BY m.id",
     )
+    .bind(&playlist_id_strs)
+    .bind(room_id.as_i64())
+    .bind(&explicit_media_id_strs)
     .fetch_all(&mut **tx)
     .await?;
 
-    Ok(rows.into_iter().map(|row| MediaId::from(row.id)).collect())
+    Ok(media_ids)
 }
 
 async fn plan_playback_reset_for_deleted_entries_in_tx(
@@ -6477,10 +6439,14 @@ mod tests {
     fn test_room_member_ban_sets_status_and_metadata() {
         use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
+        let mut member = RoomMember::new(
+            RoomId::expect_positive(1),
+            UserId::expect_positive(1),
+            RoomRole::Member,
+        );
         assert!(member.is_active());
 
-        let banner = UserId::from(2);
+        let banner = UserId::expect_positive(2);
         member.ban(banner, Some("spamming".to_string()));
 
         assert_eq!(member.status, MemberStatus::Left);
@@ -6494,8 +6460,12 @@ mod tests {
     fn test_room_member_unban_clears_metadata() {
         use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
-        member.ban(UserId::from(2), Some("reason".to_string()));
+        let mut member = RoomMember::new(
+            RoomId::expect_positive(1),
+            UserId::expect_positive(1),
+            RoomRole::Member,
+        );
+        member.ban(UserId::expect_positive(2), Some("reason".to_string()));
 
         member.unban();
         assert_eq!(member.status, MemberStatus::Left);
@@ -6509,13 +6479,17 @@ mod tests {
     fn test_room_member_banned_has_no_permissions() {
         use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Admin);
+        let mut member = RoomMember::new(
+            RoomId::expect_positive(1),
+            UserId::expect_positive(1),
+            RoomRole::Admin,
+        );
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
 
         // Before ban: has permissions
         assert!(member.has_permission(PermissionBits::SEND_CHAT, role_default));
 
-        member.ban(UserId::from(2), None);
+        member.ban(UserId::expect_positive(2), None);
 
         // After ban: zero permissions
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
@@ -6526,7 +6500,11 @@ mod tests {
     fn test_room_member_add_and_remove_permissions() {
         use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
-        let mut member = RoomMember::new(RoomId::from(1), UserId::from(1), RoomRole::Member);
+        let mut member = RoomMember::new(
+            RoomId::expect_positive(1),
+            UserId::expect_positive(1),
+            RoomRole::Member,
+        );
         assert_eq!(member.added_permissions, 0);
         assert_eq!(member.removed_permissions, 0);
 

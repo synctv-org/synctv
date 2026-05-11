@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS playlists (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
         OR (source_provider IS NULL AND source_config IS NULL)
         ),
+    CONSTRAINT playlists_provider_instance_requires_source_provider
+        CHECK (
+        provider_instance_name IS NULL OR source_provider IS NOT NULL
+        ),
     CONSTRAINT playlists_provider_instance_fk
         FOREIGN KEY (provider_instance_name)
         REFERENCES media_provider_instances(name)

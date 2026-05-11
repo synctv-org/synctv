@@ -10,11 +10,14 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{PermissionBits, Playlist, PlaylistId, RoomId, UserId},
-    provider::ProviderContext,
+    models::{
+        normalize_provider_instance_name_owned, PermissionBits, Playlist, PlaylistId, RoomId,
+        UserId, UserProviderDefaults,
+    },
+    provider::{provider_requires_credential_repo, ProviderContext},
     repository::cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
     repository::PlaylistRepository,
-    repository::{UserProviderCredentialRepository, UserRepository},
+    repository::{UserPreferencesRepository, UserProviderCredentialRepository, UserRepository},
     service::{permission::PermissionService, ProvidersManager},
     Error, Result,
 };
@@ -60,13 +63,6 @@ pub trait PlaylistBroadcaster: Send + Sync {
 const OPTIMISTIC_LOCK_MAX_RETRIES: u32 = 3;
 const OPTIMISTIC_LOCK_BACKOFF_BASE_MS: u64 = 5;
 
-fn provider_requires_credential_repo(provider_name: &str) -> bool {
-    matches!(
-        provider_name,
-        crate::provider::AlistProvider::NAME | crate::provider::EmbyProvider::NAME
-    )
-}
-
 fn normalize_dynamic_playlist_fields(
     source_provider: Option<String>,
     source_config: Option<JsonValue>,
@@ -80,14 +76,7 @@ fn normalize_dynamic_playlist_fields(
             Some(trimmed.to_string())
         }
     });
-    let normalized_instance = provider_instance_name.and_then(|instance| {
-        let trimmed = instance.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
+    let normalized_instance = normalize_provider_instance_name_owned(provider_instance_name);
 
     if let Some(provider) = normalized_provider {
         let source_config = source_config.ok_or_else(|| {
@@ -146,6 +135,7 @@ pub struct PlaylistService {
     providers_manager: Arc<ProvidersManager>,
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    user_preferences_repo: UserPreferencesRepository,
     cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
@@ -178,6 +168,21 @@ impl PlaylistService {
         Ok(())
     }
 
+    fn provider_instance_binding_from_defaults(
+        provider_defaults: &UserProviderDefaults,
+        source_provider: &str,
+        provider_instance_name: Option<String>,
+    ) -> Option<String> {
+        if let Some(instance_name) = normalize_provider_instance_name_owned(provider_instance_name)
+        {
+            return Some(instance_name);
+        }
+
+        provider_defaults
+            .get_instance_name(source_provider)
+            .map(str::to_string)
+    }
+
     /// Create a new playlist service
     #[must_use]
     pub fn new(
@@ -185,12 +190,14 @@ impl PlaylistService {
         permission_service: PermissionService,
         providers_manager: Arc<ProvidersManager>,
     ) -> Self {
+        let user_preferences_repo = UserPreferencesRepository::new(playlist_repo.pool().clone());
         Self {
             playlist_repo,
             permission_service,
             providers_manager,
             credential_encryption: None,
             credential_repo: None,
+            user_preferences_repo,
             cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
@@ -205,12 +212,14 @@ impl PlaylistService {
         credential_encryption: Option<crate::service::CredentialEncryption>,
         credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     ) -> Self {
+        let user_preferences_repo = UserPreferencesRepository::new(playlist_repo.pool().clone());
         Self {
             playlist_repo,
             permission_service,
             providers_manager,
             credential_encryption,
             credential_repo,
+            user_preferences_repo,
             cluster_outbox: None,
             cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
@@ -245,10 +254,7 @@ impl PlaylistService {
         provider_instance_name: Option<String>,
     ) -> Result<(String, JsonValue, Option<String>)> {
         let trimmed_provider = source_provider.trim().to_string();
-        let trimmed_instance = provider_instance_name.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then_some(trimmed.to_string())
-        });
+        let trimmed_instance = normalize_provider_instance_name_owned(provider_instance_name);
 
         let provider = self
             .providers_manager
@@ -311,28 +317,6 @@ impl PlaylistService {
             .await
     }
 
-    /// Management-only playlist creation that bypasses room membership permission checks.
-    pub async fn admin_create_playlist(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        request: CreatePlaylistRequest,
-    ) -> Result<Playlist> {
-        self.admin_create_playlist_with_outbox(room_id, actor_user_id, request, None)
-            .await
-    }
-
-    pub async fn admin_create_playlist_with_outbox(
-        &self,
-        room_id: RoomId,
-        actor_user_id: UserId,
-        request: CreatePlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
-    ) -> Result<Playlist> {
-        self.create_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
-            .await
-    }
-
     async fn create_playlist_internal(
         &self,
         room_id: RoomId,
@@ -388,6 +372,17 @@ impl PlaylistService {
         ) =
             (source_provider, source_config)
         {
+            let provider_defaults = self
+                .user_preferences_repo
+                .get_or_default(&user_id)
+                .await?
+                .provider_defaults;
+            let provider_instance_name = Self::provider_instance_binding_from_defaults(
+                &provider_defaults,
+                &source_provider,
+                provider_instance_name,
+            );
+
             let (source_provider, source_config, provider_instance_name) = self
                 .validate_dynamic_playlist_source(
                     &room_id,
@@ -1230,6 +1225,26 @@ mod tests {
         assert_eq!(source_provider.as_deref(), Some("alist"));
         assert_eq!(source_config, Some(serde_json::json!({"path": "/movies"})));
         assert!(provider_instance_name.is_none());
+    }
+
+    #[test]
+    fn test_dynamic_folder_uses_user_default_provider_instance_when_request_omits_binding() {
+        let defaults = UserProviderDefaults::try_from_iter([(" alist ", " alist_home ")]).unwrap();
+
+        assert_eq!(
+            PlaylistService::provider_instance_binding_from_defaults(&defaults, "alist", None)
+                .as_deref(),
+            Some("alist_home")
+        );
+        assert_eq!(
+            PlaylistService::provider_instance_binding_from_defaults(
+                &defaults,
+                "alist",
+                Some(" explicit_alist ".to_string()),
+            )
+            .as_deref(),
+            Some("explicit_alist")
+        );
     }
 
     #[test]

@@ -20,6 +20,11 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use crate::Error;
+
+const SERVICE_TEMPORARILY_UNAVAILABLE: &str =
+    "Service temporarily unavailable. Please try again later.";
+
 /// Error type for `SingleFlight` operations
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SingleFlightError<E> {
@@ -29,6 +34,99 @@ pub enum SingleFlightError<E> {
     /// The underlying operation failed
     #[error("{0}")]
     Inner(E),
+}
+
+/// Cloneable snapshot of [`crate::Error`] for sharing failures across waiters.
+///
+/// `SingleFlight` requires its inner error to be cloneable because all callers
+/// waiting on the same leader receive the same result. Some infrastructure
+/// errors in [`crate::Error`] are not cloneable (`sqlx::Error`, `redis::RedisError`,
+/// `serde_json::Error`), so this type preserves cloneable domain variants
+/// losslessly and normalizes non-cloneable infrastructure failures to stable
+/// public categories.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CloneableError {
+    #[error("Authentication error: {0}")]
+    Authentication(String),
+    #[error("Email not verified")]
+    EmailNotVerified,
+    #[error("Authorization error: {0}")]
+    Authorization(String),
+    #[error("Not found: {0}")]
+    NotFound(String),
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
+    #[error("Optimistic lock conflict")]
+    OptimisticLockConflict,
+    #[error("Distributed lock conflict: {0}")]
+    LockConflict(String),
+    #[error("Operation timeout: {0}")]
+    Timeout(String),
+}
+
+impl CloneableError {
+    #[must_use]
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal(message.into())
+    }
+}
+
+impl From<Error> for CloneableError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Database(error) => {
+                tracing::error!(%error, "Database error shared through SingleFlight");
+                Self::ServiceUnavailable(SERVICE_TEMPORARILY_UNAVAILABLE.to_string())
+            }
+            Error::Redis(error) => {
+                tracing::error!(%error, "Redis error shared through SingleFlight");
+                Self::ServiceUnavailable(SERVICE_TEMPORARILY_UNAVAILABLE.to_string())
+            }
+            Error::Serialization(error) => Self::Internal(format!("Serialization error: {error}")),
+            Error::Deserialization { context } => Self::Internal(format!(
+                "Deserialization error while sharing SingleFlight result: {context}"
+            )),
+            Error::Authentication(message) => Self::Authentication(message),
+            Error::EmailNotVerified => Self::EmailNotVerified,
+            Error::Authorization(message) => Self::Authorization(message),
+            Error::NotFound(message) => Self::NotFound(message),
+            Error::AlreadyExists(message) => Self::AlreadyExists(message),
+            Error::InvalidInput(message) => Self::InvalidInput(message),
+            Error::RateLimited(message) => Self::RateLimited(message),
+            Error::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
+            Error::Internal(message) => Self::Internal(message),
+            Error::OptimisticLockConflict => Self::OptimisticLockConflict,
+            Error::LockConflict(message) => Self::LockConflict(message),
+            Error::Timeout(message) => Self::Timeout(message),
+        }
+    }
+}
+
+impl From<CloneableError> for Error {
+    fn from(error: CloneableError) -> Self {
+        match error {
+            CloneableError::Authentication(message) => Self::Authentication(message),
+            CloneableError::EmailNotVerified => Self::EmailNotVerified,
+            CloneableError::Authorization(message) => Self::Authorization(message),
+            CloneableError::NotFound(message) => Self::NotFound(message),
+            CloneableError::AlreadyExists(message) => Self::AlreadyExists(message),
+            CloneableError::InvalidInput(message) => Self::InvalidInput(message),
+            CloneableError::RateLimited(message) => Self::RateLimited(message),
+            CloneableError::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
+            CloneableError::Internal(message) => Self::Internal(message),
+            CloneableError::OptimisticLockConflict => Self::OptimisticLockConflict,
+            CloneableError::LockConflict(message) => Self::LockConflict(message),
+            CloneableError::Timeout(message) => Self::Timeout(message),
+        }
+    }
 }
 
 /// `SingleFlight` prevents duplicate concurrent function executions.
@@ -338,5 +436,33 @@ mod tests {
 
         assert_eq!(success_count, 5);
         assert_eq!(fail_count, 5);
+    }
+
+    #[test]
+    fn cloneable_error_preserves_domain_error_kind() {
+        let shared = CloneableError::from(Error::InvalidInput("bad room id".to_string()));
+        let restored = Error::from(shared);
+
+        assert!(matches!(
+            restored,
+            Error::InvalidInput(message) if message == "bad room id"
+        ));
+    }
+
+    #[test]
+    fn cloneable_error_preserves_sqlx_classification() {
+        let classified = Error::from(sqlx::Error::RowNotFound);
+        let shared = CloneableError::from(classified);
+        let restored = Error::from(shared);
+
+        assert!(matches!(restored, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn cloneable_error_normalizes_non_cloneable_infrastructure_errors() {
+        let shared = CloneableError::from(Error::Database(sqlx::Error::RowNotFound));
+        let restored = Error::from(shared);
+
+        assert!(matches!(restored, Error::ServiceUnavailable(_)));
     }
 }

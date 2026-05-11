@@ -1084,22 +1084,22 @@ mod tests {
     }
 
     fn make_member(role: RoomRole) -> RoomMember {
-        RoomMember::new(RoomId::from(1), UserId::from(1), role)
+        RoomMember::new(RoomId::expect_positive(1), UserId::expect_positive(1), role)
     }
 
     #[test]
     fn test_cache_key_generation() {
-        let room_id = RoomId::from(123);
-        let user_id = UserId::from(456);
+        let room_id = RoomId::expect_positive(123);
+        let user_id = UserId::expect_positive(456);
         let key = PermissionService::cache_key(&room_id, &user_id);
         assert_eq!(key, "perm:room:123:user:456");
     }
 
     #[test]
     fn test_cache_key_different_for_different_users() {
-        let room = RoomId::from(1);
-        let u1 = UserId::from(1);
-        let u2 = UserId::from(2);
+        let room = RoomId::expect_positive(1);
+        let u1 = UserId::expect_positive(1);
+        let u2 = UserId::expect_positive(2);
         assert_ne!(
             PermissionService::cache_key(&room, &u1),
             PermissionService::cache_key(&room, &u2),
@@ -1108,9 +1108,9 @@ mod tests {
 
     #[test]
     fn test_cache_key_different_for_different_rooms() {
-        let r1 = RoomId::from(1);
-        let r2 = RoomId::from(2);
-        let user = UserId::from(1);
+        let r1 = RoomId::expect_positive(1);
+        let r2 = RoomId::expect_positive(2);
+        let user = UserId::expect_positive(1);
         assert_ne!(
             PermissionService::cache_key(&r1, &user),
             PermissionService::cache_key(&r2, &user),
@@ -1246,7 +1246,7 @@ mod tests {
     #[test]
     fn test_banned_member_has_no_permissions() {
         let mut member = make_member(RoomRole::Admin);
-        member.ban(crate::models::UserId::from(30_001), None);
+        member.ban(crate::models::UserId::expect_positive(30_001), None);
         let role_default = PermissionBits(PermissionBits::DEFAULT_ADMIN);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
         assert!(!member.has_permission(PermissionBits::DELETE_ROOM, role_default));
@@ -1439,7 +1439,7 @@ mod tests {
     fn test_banned_creator_has_no_permissions_via_has_permission() {
         // RoomMember::has_permission checks status first
         let mut member = make_member(RoomRole::Creator);
-        member.ban(crate::models::UserId::from(30_002), None);
+        member.ban(crate::models::UserId::expect_positive(30_002), None);
         let role_default = PermissionBits(PermissionBits::ALL);
         assert!(!member.has_permission(PermissionBits::SEND_CHAT, role_default));
     }
@@ -1447,7 +1447,7 @@ mod tests {
     #[test]
     fn test_banned_guest_has_no_permissions() {
         let mut member = make_member(RoomRole::Guest);
-        member.ban(crate::models::UserId::from(30_003), None);
+        member.ban(crate::models::UserId::expect_positive(30_003), None);
         let role_default = PermissionBits(PermissionBits::DEFAULT_GUEST);
         assert!(!member.has_permission(PermissionBits::VIEW_PLAYLIST, role_default));
     }
@@ -1685,8 +1685,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_degraded_mode_auto_recovers_after_timeout_and_flushes_caches() {
         let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
-        let room_id = RoomId::from(1);
-        let user_id = UserId::from(1);
+        let room_id = RoomId::expect_positive(1);
+        let user_id = UserId::expect_positive(1);
         let cache_key = PermissionService::cache_key(&room_id, &user_id);
 
         service
@@ -1838,8 +1838,8 @@ mod tests {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
 
             // Insert a value into the cache
-            let room_id = RoomId::from(1);
-            let user_id = UserId::from(1);
+            let room_id = RoomId::expect_positive(1);
+            let user_id = UserId::expect_positive(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
@@ -1872,9 +1872,9 @@ mod tests {
             let mut receiver = invalidation_service.subscribe();
 
             // Insert values into the cache for multiple users in the same room
-            let room_id = RoomId::from(1);
-            let user1_id = UserId::from(1);
-            let user2_id = UserId::from(2);
+            let room_id = RoomId::expect_positive(1);
+            let user1_id = UserId::expect_positive(1);
+            let user2_id = UserId::expect_positive(2);
 
             service
                 .cache
@@ -1936,8 +1936,8 @@ mod tests {
             let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
 
             // Insert values into the cache
-            let room_id = RoomId::from(1);
-            let user_id = UserId::from(1);
+            let room_id = RoomId::expect_positive(1);
+            let user_id = UserId::expect_positive(1);
             service
                 .cache
                 .insert(
@@ -1974,8 +1974,8 @@ mod tests {
             let service = make_service_async();
 
             // Insert a value into the cache
-            let room_id = RoomId::from(1);
-            let user_id = UserId::from(1);
+            let room_id = RoomId::expect_positive(1);
+            let user_id = UserId::expect_positive(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
@@ -2026,8 +2026,8 @@ mod tests {
             );
 
             // Insert a value into the cache
-            let room_id = RoomId::from(1);
-            let user_id = UserId::from(1);
+            let room_id = RoomId::expect_positive(1);
+            let user_id = UserId::expect_positive(1);
             let cache_key = PermissionService::cache_key(&room_id, &user_id);
             service
                 .cache
@@ -2107,7 +2107,7 @@ mod tests {
             );
 
             // Invalidate the room cache - this should broadcast via invalidation_service
-            let room_id = RoomId::from(1);
+            let room_id = RoomId::expect_positive(1);
             service.invalidate_room_cache(&room_id).await;
 
             // Try to receive the broadcast message

@@ -286,7 +286,7 @@ impl ClientApiImpl {
             .validate_with_version_async(guest_token, guest_version)
             .await
             .map_err(ApiError::from)?;
-        if claims.room_id() != room_id {
+        if claims.room_id().map_err(ApiError::from)? != room_id {
             return Err(ApiError::Authentication(
                 "Guest token is not valid for this room".to_string(),
             ));

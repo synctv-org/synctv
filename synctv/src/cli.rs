@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -7135,7 +7136,7 @@ struct HumanUserAuthFactors {
 struct HumanUserPreferences {
     two_factor_enabled: bool,
     notifications: Option<HumanUserNotificationPreferences>,
-    provider_defaults: Option<HumanUserProviderDefaults>,
+    provider_defaults: Option<BTreeMap<String, String>>,
     settings: Value,
 }
 
@@ -7147,14 +7148,6 @@ struct HumanUserNotificationPreferences {
     room_invitation_email: bool,
     room_event_email: bool,
     system_announcement_email: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[allow(clippy::struct_field_names)]
-struct HumanUserProviderDefaults {
-    alist_instance_name: Option<String>,
-    emby_instance_name: Option<String>,
-    bilibili_instance_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7956,11 +7949,11 @@ impl ToHuman for synctv_proto::client::UserPreferences {
                 }
             }),
             provider_defaults: self.provider_defaults.as_ref().map(|provider_defaults| {
-                HumanUserProviderDefaults {
-                    alist_instance_name: provider_defaults.alist_instance_name.clone(),
-                    emby_instance_name: provider_defaults.emby_instance_name.clone(),
-                    bilibili_instance_name: provider_defaults.bilibili_instance_name.clone(),
-                }
+                provider_defaults
+                    .defaults
+                    .iter()
+                    .map(|default| (default.provider.clone(), default.instance_name.clone()))
+                    .collect()
             }),
             settings: parse_json_bytes(&self.settings),
         }

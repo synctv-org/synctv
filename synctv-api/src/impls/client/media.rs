@@ -1520,7 +1520,7 @@ mod tests {
     #[test]
     fn test_build_add_media_request_parses_dynamic_payload() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let playlist_id = PlaylistId::from(123);
+        let playlist_id = PlaylistId::expect_positive(123);
         let request = build_add_media_request(
             crate::proto::client::AddMediaRequest {
                 playlist_id: Some(codec.encode_playlist_id(playlist_id).unwrap()),
@@ -1603,7 +1603,7 @@ mod tests {
     #[test]
     fn test_build_add_media_batch_request_reuses_single_item_builder_semantics() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let playlist_id = PlaylistId::from(123);
+        let playlist_id = PlaylistId::expect_positive(123);
         let result = build_add_media_batch_request(
             crate::proto::client::AddMediaBatchRequest {
                 items: vec![crate::proto::client::AddMediaRequest {
@@ -1647,8 +1647,8 @@ mod tests {
     #[test]
     fn test_build_delete_entries_request_parses_ids() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let playlist_id = PlaylistId::from(123);
-        let media_id = MediaId::from(456);
+        let playlist_id = PlaylistId::expect_positive(123);
+        let media_id = MediaId::expect_positive(456);
         let playlist_public_id = codec.encode_playlist_id(playlist_id).unwrap();
         let media_public_id = codec.encode_media_id(media_id).unwrap();
         let (request, media_id_strings, playlist_id_strings) = build_delete_entries_request(
@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn test_build_delete_media_request_maps_to_delete_entries_request() {
         let media_id = crate::PublicIdCodec::default_for_tests()
-            .encode_media_id(MediaId::from(123))
+            .encode_media_id(MediaId::expect_positive(123))
             .unwrap();
         let request = build_delete_media_request(crate::proto::client::DeleteMediaRequest {
             media_id: media_id.clone(),
@@ -1715,7 +1715,7 @@ mod tests {
     #[test]
     fn test_build_edit_media_request_parses_title_and_id() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let media_id = MediaId::from(123);
+        let media_id = MediaId::expect_positive(123);
         let request = build_edit_media_request(
             crate::proto::client::EditMediaRequest {
                 media_id: codec.encode_media_id(media_id).unwrap(),
@@ -1778,9 +1778,9 @@ mod tests {
     #[test]
     fn test_build_move_media_request_parses_ids() {
         let codec = crate::PublicIdCodec::default_for_tests();
-        let media_id = MediaId::from(123);
-        let playlist_id = PlaylistId::from(456);
-        let after_media_id = MediaId::from(789);
+        let media_id = MediaId::expect_positive(123);
+        let playlist_id = PlaylistId::expect_positive(456);
+        let after_media_id = MediaId::expect_positive(789);
         let request = build_move_media_request(
             crate::proto::client::MoveMediaRequest {
                 media_ids: vec![codec.encode_media_id(media_id).unwrap()],

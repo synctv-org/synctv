@@ -1314,8 +1314,8 @@ mod tests {
         let manager = ClusterManager::new(config, None, None).await.unwrap();
 
         // Subscribe a client
-        let room_id = RoomId::from(10_000_092);
-        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
         let (mut rx, conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -1433,8 +1433,8 @@ mod tests {
         // Send a KickPublisher event through the admin channel
         let event = ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from(10_000_092),
-            media_id: synctv_core::models::MediaId::from(10_000_093),
+            room_id: RoomId::expect_positive(10_000_092),
+            media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
             reason: "user_banned".to_string(),
             timestamp: Utc::now(),
         };
@@ -1452,8 +1452,11 @@ mod tests {
             ..
         } = &received
         {
-            assert_eq!(*room_id, RoomId::from(10_000_092));
-            assert_eq!(*media_id, synctv_core::models::MediaId::from(10_000_093));
+            assert_eq!(*room_id, RoomId::expect_positive(10_000_092));
+            assert_eq!(
+                *media_id,
+                synctv_core::models::MediaId::expect_positive(10_000_093)
+            );
             assert_eq!(reason, "user_banned");
         } else {
             panic!("Expected KickPublisher event");
@@ -1485,8 +1488,8 @@ mod tests {
         // Send event
         let event = ClusterEvent::KickPublisher {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from(10_000_092),
-            media_id: synctv_core::models::MediaId::from(10_000_093),
+            room_id: RoomId::expect_positive(10_000_092),
+            media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
             reason: "room_deleted".to_string(),
             timestamp: Utc::now(),
         };
@@ -1536,8 +1539,8 @@ mod tests {
             .expect("ClusterManager::new should succeed with cache_invalidation but no Redis");
 
         // Verify the manager operates normally in single-node mode
-        let room_id = RoomId::from(10_000_092);
-        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_092);
+        let user_id = UserId::expect_positive(10_000_010);
         let (mut rx, conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -1604,8 +1607,8 @@ mod tests {
             .expect("ClusterManager::new should succeed without cache_invalidation and Redis");
 
         // Verify normal operation
-        let room_id = RoomId::from(10_000_094);
-        let user_id = UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_094);
+        let user_id = UserId::expect_positive(10_000_095);
         let (mut rx, conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -1830,7 +1833,7 @@ mod tests {
             .try_send(PublishRequest {
                 event: ClusterEvent::KickUser {
                     event_id: synctv_common::snanoid!(16),
-                    user_id: UserId::from(10_000_096),
+                    user_id: UserId::expect_positive(10_000_096),
                     reason: "fill queue".to_string(),
                     timestamp: Utc::now(),
                 },
@@ -1845,7 +1848,7 @@ mod tests {
 
         let event = ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from(10_000_097),
+            user_id: UserId::expect_positive(10_000_097),
             reason: "must not start new retry after drain closes".to_string(),
             timestamp: Utc::now(),
         };
@@ -1929,7 +1932,7 @@ mod tests {
 
         let event = ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from(10_000_098),
+            user_id: UserId::expect_positive(10_000_098),
             reason: "must propagate during draining".to_string(),
             timestamp: Utc::now(),
         };
@@ -1965,8 +1968,8 @@ mod tests {
         };
 
         let mut manager = ClusterManager::new(config, None, None).await.unwrap();
-        let room_id = RoomId::from(10_000_099);
-        let user_id = UserId::from(10_000_098);
+        let room_id = RoomId::expect_positive(10_000_099);
+        let user_id = UserId::expect_positive(10_000_098);
         let (mut room_rx, _conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -2053,8 +2056,8 @@ mod tests {
 
         // Verify the elector was set (we can't directly check, but we can verify
         // the manager is still functional)
-        let room_id = RoomId::from(10_000_100);
-        let user_id = UserId::from(10_000_101);
+        let room_id = RoomId::expect_positive(10_000_100);
+        let user_id = UserId::expect_positive(10_000_101);
         let (_rx, conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -2100,8 +2103,8 @@ mod tests {
         let manager = ClusterManager::new(config, None, None)
             .await
             .expect("ClusterManager::new should succeed");
-        let room_id = RoomId::from(10_000_102);
-        let user_id = UserId::from(10_000_103);
+        let room_id = RoomId::expect_positive(10_000_102);
+        let user_id = UserId::expect_positive(10_000_103);
         let mut rx = manager
             .message_hub()
             .subscribe(room_id, user_id, "conn-quarantine".to_string())
@@ -2218,8 +2221,8 @@ mod tests {
             .try_send(PublishRequest {
                 event: ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
-                    room_id: RoomId::from(10_000_104),
-                    user_id: UserId::from(10_000_105),
+                    room_id: RoomId::expect_positive(10_000_104),
+                    user_id: UserId::expect_positive(10_000_105),
                     username: "buffer".to_string(),
                     message: "fill channel".to_string(),
                     timestamp: Utc::now(),
@@ -2234,7 +2237,7 @@ mod tests {
 
         let critical_event = ClusterEvent::KickUser {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from(10_000_106),
+            user_id: UserId::expect_positive(10_000_106),
             reason: "must not drop".to_string(),
             timestamp: Utc::now(),
         };
@@ -2278,8 +2281,8 @@ mod tests {
         let mut manager = ClusterManager::new(config, None, None)
             .await
             .expect("ClusterManager::new should succeed");
-        let room_id = RoomId::from(10_000_107);
-        let user_id = UserId::from(10_000_108);
+        let room_id = RoomId::expect_positive(10_000_107);
+        let user_id = UserId::expect_positive(10_000_108);
         let mut room_rx = manager
             .message_hub()
             .subscribe(room_id, user_id, "publish-only-conn".to_string())
@@ -2339,7 +2342,7 @@ mod tests {
 
         let event = ClusterEvent::UserNotification {
             event_id: synctv_common::snanoid!(16),
-            user_id: UserId::from(10_000_109),
+            user_id: UserId::expect_positive(10_000_109),
             notification_id: "notification-1".to_string(),
             title: "title".to_string(),
             content: "content".to_string(),
@@ -2388,7 +2391,7 @@ mod tests {
         let event = ClusterEvent::CacheInvalidate {
             event_id: synctv_common::snanoid!(16),
             targets: vec![CacheTarget::Room {
-                room_id: RoomId::from(10_000_110),
+                room_id: RoomId::expect_positive(10_000_110),
             }],
             timestamp: Utc::now(),
         };

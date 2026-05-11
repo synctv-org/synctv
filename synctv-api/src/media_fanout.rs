@@ -312,15 +312,15 @@ mod tests {
     }
 
     fn room_id() -> RoomId {
-        RoomId::from(106_001)
+        RoomId::expect_positive(106_001)
     }
 
     fn user_id() -> UserId {
-        UserId::from(106_002)
+        UserId::expect_positive(106_002)
     }
 
     fn media_id() -> MediaId {
-        MediaId::from(106_003)
+        MediaId::expect_positive(106_003)
     }
 
     #[tokio::test]
@@ -339,10 +339,10 @@ mod tests {
                 media_title,
                 ..
             } => {
-                assert_eq!(room_id, RoomId::from(106_001));
-                assert_eq!(user_id, UserId::from(106_002));
+                assert_eq!(room_id, RoomId::expect_positive(106_001));
+                assert_eq!(user_id, UserId::expect_positive(106_002));
                 assert_eq!(username, "tester");
-                assert_eq!(media_id, MediaId::from(106_003));
+                assert_eq!(media_id, MediaId::expect_positive(106_003));
                 assert_eq!(media_title, "demo");
             }
             other => panic!("expected MediaAdded, got {other:?}"),

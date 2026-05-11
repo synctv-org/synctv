@@ -324,7 +324,7 @@ async fn scenario_complete_authentication_flow() {
         .verify_access_token(&access_token)
         .expect("Failed to verify access token");
 
-    assert_eq!(claims.user_id(), user.id);
+    assert_eq!(claims.user_id().unwrap(), user.id);
 
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");

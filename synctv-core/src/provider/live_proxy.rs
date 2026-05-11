@@ -265,8 +265,8 @@ mod tests {
     async fn test_live_proxy_metadata_does_not_expose_source_url() {
         let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test")
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100));
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100));
 
         let source_config = json!({
             "url": "rtmp://secret-internal-server.local/live/stream-key"
@@ -305,8 +305,8 @@ mod tests {
     async fn test_live_proxy_metadata_contains_provider_tag() {
         let provider = LiveProxyProvider::new();
         let ctx = ProviderContext::new("test")
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100));
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100));
 
         let source_config = json!({
             "url": "rtmp://example.com/live/stream"
@@ -332,9 +332,9 @@ mod tests {
         let provider = LiveProxyProvider::new();
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("synctv")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
-            .with_media_id(MediaId::from(100))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
+            .with_media_id(MediaId::expect_positive(100))
             .with_signing_key(&signing_key)
             .with_store(Arc::new(InMemoryProviderStore::new(16)));
         let result = provider

@@ -68,8 +68,8 @@ async fn test_local_subscribe_and_broadcast() {
         .await
         .expect("ClusterManager::new should succeed");
 
-    let room_id = RoomId::from(10_000_009);
-    let user_id = UserId::from(10_000_010);
+    let room_id = RoomId::expect_positive(10_000_009);
+    let user_id = UserId::expect_positive(10_000_010);
 
     // Subscribe to room
     let (mut rx, conn_id) = manager
@@ -137,11 +137,11 @@ async fn test_multiple_subscribers_receive_broadcasts() {
             .expect("ClusterManager::new should succeed"),
     );
 
-    let room_id = RoomId::from(10_000_011);
+    let room_id = RoomId::expect_positive(10_000_011);
 
     let mut subscribers = Vec::new();
     for i in 0..3 {
-        let user_id = UserId::from(10_000 + i);
+        let user_id = UserId::expect_positive(10_000 + i);
         let (rx, conn_id) = manager
             .subscribe(room_id, user_id)
             .await
@@ -152,7 +152,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_012),
+        user_id: UserId::expect_positive(10_000_012),
         username: "broadcaster".to_string(),
         message: "Hello everyone!".to_string(),
         timestamp: Utc::now(),
@@ -195,7 +195,7 @@ async fn test_connection_manager_works_standalone() {
     let limits = ConnectionLimits::default();
     let conn_manager = ConnectionManager::new(limits);
 
-    let user_id = UserId::from(10_000_010);
+    let user_id = UserId::expect_positive(10_000_010);
     let conn_id = format!("conn_{}", synctv_common::snanoid!(8));
 
     // Register connection
@@ -271,8 +271,8 @@ impl Default for LocalMessageBroadcaster {
 #[tokio::test]
 async fn test_local_message_broadcaster_basic() {
     let broadcaster = LocalMessageBroadcaster::new();
-    let room_id = RoomId::from(10_000_009);
-    let user_id = UserId::from(10_000_010);
+    let room_id = RoomId::expect_positive(10_000_009);
+    let user_id = UserId::expect_positive(10_000_010);
 
     // Subscribe
     let (mut rx, conn_id) = broadcaster.subscribe(room_id, user_id).await;
@@ -280,7 +280,7 @@ async fn test_local_message_broadcaster_basic() {
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_010),
+        user_id: UserId::expect_positive(10_000_010),
         username: "user1".to_string(),
         message: "Hello from local!".to_string(),
         timestamp: Utc::now(),
@@ -311,12 +311,12 @@ async fn test_local_message_broadcaster_basic() {
 #[tokio::test]
 async fn test_local_message_broadcaster_multiple_subscribers() {
     let broadcaster = LocalMessageBroadcaster::new();
-    let room_id = RoomId::from(10_000_011);
+    let room_id = RoomId::expect_positive(10_000_011);
 
     let mut receivers = Vec::new();
     let mut conn_ids = Vec::new();
     for i in 0..3 {
-        let user_id = UserId::from(20_000 + i);
+        let user_id = UserId::expect_positive(20_000 + i);
         let (rx, conn_id) = broadcaster.subscribe(room_id, user_id).await;
         receivers.push(rx);
         conn_ids.push(conn_id);
@@ -325,7 +325,7 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
     let event = ClusterEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
-        user_id: UserId::from(10_000_012),
+        user_id: UserId::expect_positive(10_000_012),
         username: "broadcaster".to_string(),
         message: "Broadcast to all".to_string(),
         timestamp: Utc::now(),
@@ -435,8 +435,8 @@ async fn test_local_cluster_manager_supports_room_operations() {
             .expect("ClusterManager::new should succeed"),
     );
 
-    let room_id = RoomId::from(10_000_009);
-    let user_id = UserId::from(10_000_010);
+    let room_id = RoomId::expect_positive(10_000_009);
+    let user_id = UserId::expect_positive(10_000_010);
 
     // Test subscribe
     let (mut rx, conn_id) = manager

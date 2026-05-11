@@ -20,11 +20,7 @@ CREATE TABLE IF NOT EXISTS media_provider_instances (
     CONSTRAINT media_provider_instances_name_not_empty
         CHECK (length(trim(name)) > 0),
     CONSTRAINT media_provider_instances_endpoint_not_empty
-        CHECK (length(trim(endpoint)) > 0),
-    CONSTRAINT media_provider_instances_valid_jwt_secret_format
-        CHECK (jwt_secret IS NULL OR jwt_secret LIKE 'enc:%'),
-    CONSTRAINT media_provider_instances_valid_custom_ca_format
-        CHECK (custom_ca IS NULL OR custom_ca LIKE 'enc:%')
+        CHECK (length(trim(endpoint)) > 0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_provider_instances_enabled ON media_provider_instances(enabled);

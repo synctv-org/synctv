@@ -4,6 +4,7 @@ use serde_json::Value as JsonValue;
 use std::str::FromStr;
 
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
+use super::normalize_provider_instance_name_owned;
 use super::query::SortDirection;
 
 sort_field_enum! {
@@ -142,13 +143,6 @@ pub struct FromProviderParams {
 }
 
 impl Media {
-    fn normalize_provider_instance_name(provider_instance_name: Option<String>) -> Option<String> {
-        provider_instance_name.and_then(|provider_instance_name| {
-            let trimmed = provider_instance_name.trim();
-            (!trimmed.is_empty()).then_some(trimmed.to_string())
-        })
-    }
-
     /// Create media from provider instance (registry pattern)
     ///
     /// This is the preferred way to create media when using the provider registry.
@@ -187,7 +181,7 @@ impl Media {
             position,
             source_provider: provider_name.to_string(),
             source_config,
-            provider_instance_name: Self::normalize_provider_instance_name(provider_instance_name),
+            provider_instance_name: normalize_provider_instance_name_owned(provider_instance_name),
             added_at: now,
             updated_at: now,
             version: 0,
@@ -207,7 +201,7 @@ impl Media {
             position: params.position,
             source_provider: params.provider_name,
             source_config: params.source_config,
-            provider_instance_name: Self::normalize_provider_instance_name(
+            provider_instance_name: normalize_provider_instance_name_owned(
                 params.provider_instance_name,
             ),
             added_at: now,
@@ -733,8 +727,8 @@ mod tests {
         // The builder should always pick the first-inserted mode as default
         // when no explicit default_mode is set. This must be deterministic
         // across multiple runs (IndexMap preserves insertion order).
-        let playlist_id = PlaylistId::from(60_001);
-        let room_id = RoomId::from(60_002);
+        let playlist_id = PlaylistId::expect_positive(60_001);
+        let room_id = RoomId::expect_positive(60_002);
 
         for _ in 0..20 {
             let result =
@@ -763,8 +757,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_explicit_default_mode() {
-        let playlist_id = PlaylistId::from(60_003);
-        let room_id = RoomId::from(60_004);
+        let playlist_id = PlaylistId::expect_positive(60_003);
+        let room_id = RoomId::expect_positive(60_004);
 
         let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(
@@ -784,8 +778,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_empty_returns_none() {
-        let playlist_id = PlaylistId::from(60_005);
-        let room_id = RoomId::from(60_006);
+        let playlist_id = PlaylistId::expect_positive(60_005);
+        let room_id = RoomId::expect_positive(60_006);
 
         let result =
             PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0).build();
@@ -794,8 +788,8 @@ mod tests {
 
     #[test]
     fn test_playback_result_builder_invalid_default_mode_returns_none() {
-        let playlist_id = PlaylistId::from(60_007);
-        let room_id = RoomId::from(60_008);
+        let playlist_id = PlaylistId::expect_positive(60_007);
+        let room_id = RoomId::expect_positive(60_008);
 
         let result = PlaybackResult::builder(Some(playlist_id), room_id, "test".to_string(), 0.0)
             .add_mode(

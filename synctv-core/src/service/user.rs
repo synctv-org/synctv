@@ -15,12 +15,12 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     models::{
         MediaId, PlaylistId, ReviewStatus, RoomId, SignupMethod, User, UserAuthFactors, UserId,
-        UserPreferences, UserStatus,
+        UserPreferences, UserProviderDefaults, UserStatus,
     },
     repository::{
         cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
-        PasswordCredentialMaterial, RoomMemberRepository, UserOAuthProviderRepository,
-        UserPreferencesRepository, UserRepository,
+        PasswordCredentialMaterial, ProviderInstanceRepository, RoomMemberRepository,
+        UserOAuthProviderRepository, UserPreferencesRepository, UserRepository,
     },
     service::auth::{
         BruteForceProtectionService, JwtService, OpaquePasswordRecord, OpaquePasswordService,
@@ -864,6 +864,7 @@ struct UserOwnedRoomEntries {
 pub struct UserService {
     pub(crate) repository: UserRepository,
     pub(crate) user_preferences_repository: UserPreferencesRepository,
+    provider_instance_repository: ProviderInstanceRepository,
     jwt_service: JwtService,
     username_cache: UsernameCache,
     /// Optional cache invalidation service for cross-replica user cache sync
@@ -1433,8 +1434,8 @@ impl UserService {
         let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
 
-        let rows = sqlx::query!(
-            r#"WITH RECURSIVE target_playlists AS (
+        let media_ids = sqlx::query_scalar(
+            r"WITH RECURSIVE target_playlists AS (
                 SELECT id
                 FROM playlists
                 WHERE id = ANY($1)
@@ -1450,15 +1451,15 @@ impl UserService {
                   m.id = ANY($3)
                   OR m.playlist_id IN (SELECT id FROM target_playlists)
               )
-            ORDER BY m.id"#,
-            &playlist_id_strs,
-            room_id.as_i64(),
-            &media_id_strs,
+            ORDER BY m.id",
         )
+        .bind(&playlist_id_strs)
+        .bind(room_id.as_i64())
+        .bind(&media_id_strs)
         .fetch_all(&mut **tx)
         .await?;
 
-        Ok(rows.into_iter().map(|row| MediaId::from(row.id)).collect())
+        Ok(media_ids)
     }
 
     async fn delete_owned_entries_in_room_in_tx(
@@ -1902,7 +1903,8 @@ impl UserService {
 
         Self {
             repository: UserRepository::new(pool.clone()),
-            user_preferences_repository: UserPreferencesRepository::new(pool),
+            user_preferences_repository: UserPreferencesRepository::new(pool.clone()),
+            provider_instance_repository: ProviderInstanceRepository::new(pool),
             jwt_service,
             username_cache,
             cache_invalidation: runtime.cache_invalidation,
@@ -2009,8 +2011,8 @@ impl UserService {
         opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
-        let request_id = sqlx::query_scalar!(
-            r#"
+        let request_id: UserId = sqlx::query_scalar(
+            r"
             INSERT INTO user_registration_requests (
                 username, email, legacy_password_hash, opaque_record,
                 opaque_credential_identifier, opaque_ciphersuite,
@@ -2018,17 +2020,17 @@ impl UserService {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
             RETURNING id
-            "#,
-            username,
-            email,
-            legacy_password_hash,
-            &opaque_record.record,
-            &opaque_record.credential_identifier,
-            opaque_record.ciphersuite.as_str(),
-            opaque_record.server_setup_version,
-            i16::from(signup_method),
-            i16::from(ReviewStatus::Pending),
+            ",
         )
+        .bind(username)
+        .bind(email)
+        .bind(legacy_password_hash)
+        .bind(&opaque_record.record)
+        .bind(&opaque_record.credential_identifier)
+        .bind(opaque_record.ciphersuite.as_str())
+        .bind(opaque_record.server_setup_version)
+        .bind(i16::from(signup_method))
+        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(self.repository.pool())
         .await
         .map_err(|e| match e {
@@ -2047,7 +2049,7 @@ impl UserService {
             signup_method,
             UserStatus::Active,
         );
-        user.id = UserId::from(request_id);
+        user.id = request_id;
         Ok(user)
     }
 
@@ -2063,7 +2065,7 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let request_id: i64 = sqlx::query_scalar(
+        let request_id: UserId = sqlx::query_scalar(
             r"
             INSERT INTO user_registration_requests (
                 username, email, signup_method, status, requested_at,
@@ -2104,7 +2106,7 @@ impl UserService {
             _ => Error::Database(e),
         })?;
 
-        Ok(UserId::from(request_id))
+        Ok(request_id)
     }
 
     async fn load_pending_registration_request_for_update(
@@ -3604,12 +3606,44 @@ impl UserService {
             ));
         }
 
+        if let Some(provider_defaults) = update.provider_defaults.as_ref() {
+            self.validate_provider_defaults(provider_defaults).await?;
+        }
+
         let preferences = self
             .user_preferences_repository
             .update_with_executor(user_id, &update, &mut *tx)
             .await?;
         tx.commit().await?;
         Ok((preferences, auth_factors))
+    }
+
+    async fn validate_provider_defaults(&self, defaults: &UserProviderDefaults) -> Result<()> {
+        for (provider, instance_name) in defaults {
+            let instance = self
+                .provider_instance_repository
+                .get_by_name(instance_name)
+                .await?
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "Default provider instance '{instance_name}' for provider '{provider}' does not exist"
+                    ))
+                })?;
+
+            if !instance.enabled {
+                return Err(Error::InvalidInput(format!(
+                    "Default provider instance '{instance_name}' for provider '{provider}' is disabled"
+                )));
+            }
+
+            if !instance.supports_provider(provider) {
+                return Err(Error::InvalidInput(format!(
+                    "Default provider instance '{instance_name}' does not support provider '{provider}'"
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Get multiple users by IDs.

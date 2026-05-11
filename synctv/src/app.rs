@@ -1877,12 +1877,12 @@ mod tests {
             .expect("cluster mode should build shared realtime connection manager");
 
         manager
-            .register("conn-1".to_string(), UserId::from(111_001))
+            .register("conn-1".to_string(), UserId::expect_positive(111_001))
             .await
             .expect("Connection registration should succeed");
-        let room_id = RoomId::from(111_002);
+        let room_id = RoomId::expect_positive(111_002);
         manager
-            .join_room("conn-1", RoomId::from(111_002))
+            .join_room("conn-1", RoomId::expect_positive(111_002))
             .await
             .expect("Room join should succeed");
 
@@ -1923,7 +1923,7 @@ mod tests {
             .expect("cluster mode should preserve shared runtime wiring");
 
         manager
-            .register("conn-1".to_string(), UserId::from(111_001))
+            .register("conn-1".to_string(), UserId::expect_positive(111_001))
             .await
             .expect("connection registration should succeed");
 
@@ -1932,9 +1932,9 @@ mod tests {
             .expect("replacement app connection manager should be created");
         *shared_conn.write().await = replacement_conn;
 
-        let room_id = RoomId::from(111_003);
+        let room_id = RoomId::expect_positive(111_003);
         manager
-            .join_room("conn-1", RoomId::from(111_003))
+            .join_room("conn-1", RoomId::expect_positive(111_003))
             .await
             .expect("room join after shared connection swap should succeed");
 
@@ -1975,11 +1975,11 @@ mod tests {
             .expect("standalone mode should build local connection manager");
 
         manager
-            .register("conn-1".to_string(), UserId::from(111_001))
+            .register("conn-1".to_string(), UserId::expect_positive(111_001))
             .await
             .expect("Standalone registration should succeed");
         manager
-            .join_room("conn-1", RoomId::from(111_002))
+            .join_room("conn-1", RoomId::expect_positive(111_002))
             .await
             .expect("Standalone room join should succeed");
 

@@ -1426,7 +1426,7 @@ mod tests {
         let provider = provider_with_mock_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
                 &json!({
                     "type": "video",
                     "bvid": "BV1GJ411x7gL",
@@ -1447,7 +1447,7 @@ mod tests {
         let provider = provider_with_mock_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
                 &json!({
                     "type": "pgc",
                     "epid": 98765,
@@ -1468,7 +1468,7 @@ mod tests {
         let provider = provider_with_mock_bilibili_client();
         let result = provider
             .generate_playback(
-                &ProviderContext::new("test").with_user_id(UserId::from(1)),
+                &ProviderContext::new("test").with_user_id(UserId::expect_positive(1)),
                 &json!({
                     "type": "live",
                     "room_id": 12345
@@ -1516,8 +1516,8 @@ mod tests {
     async fn test_bilibili_shared_credential_dependency_uses_creator() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_credential_owner_id(UserId::from(2));
+            .with_user_id(UserId::expect_positive(1))
+            .with_credential_owner_id(UserId::expect_positive(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,
@@ -1543,7 +1543,7 @@ mod tests {
     #[tokio::test]
     async fn test_bilibili_shared_credential_dependency_requires_explicit_creator() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
-        let ctx = ProviderContext::new("test").with_user_id(UserId::from(1));
+        let ctx = ProviderContext::new("test").with_user_id(UserId::expect_positive(1));
         let err = provider
             .credential_dependencies(
                 &ctx,
@@ -1566,8 +1566,8 @@ mod tests {
     async fn test_bilibili_non_shared_credential_dependency_uses_viewer() {
         let provider = BilibiliProvider::new(fake_provider_instance_manager());
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_credential_owner_id(UserId::from(2));
+            .with_user_id(UserId::expect_positive(1))
+            .with_credential_owner_id(UserId::expect_positive(2));
         let dependencies = provider
             .credential_dependencies(
                 &ctx,

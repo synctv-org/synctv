@@ -46,7 +46,7 @@ pub use store::*;
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
 
-use crate::models::{MediaId, RoomId};
+use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
 
 pub(crate) fn subtitle_headers_for_proxy(
     playback_headers: &std::collections::HashMap<String, String>,
@@ -113,13 +113,6 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn normalized_provider_instance_name(value: Option<&str>) -> Option<&str> {
-    value.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
-    })
-}
-
 pub(crate) fn reject_source_config_provider_instance_name(
     source_config: &serde_json::Value,
     provider_name: &str,
@@ -153,7 +146,12 @@ pub(crate) fn reject_source_config_credential_ref(
 }
 
 pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> Option<&'a str> {
-    normalized_provider_instance_name(ctx.provider_instance_name())
+    normalize_provider_instance_name(ctx.provider_instance_name())
+}
+
+#[must_use]
+pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
+    matches!(provider_name, AlistProvider::NAME | EmbyProvider::NAME)
 }
 
 #[must_use]
@@ -249,7 +247,7 @@ pub fn sign_playback_urls(
     user_id: &str,
     expires_at: i64,
 ) {
-    if provider_name == "alist"
+    if provider_name == AlistProvider::NAME
         && result
             .metadata
             .get("thumbnail")
@@ -601,6 +599,14 @@ mod tests {
     }
 
     #[test]
+    fn provider_requires_credential_repo_matches_provider_capabilities() {
+        assert!(provider_requires_credential_repo(AlistProvider::NAME));
+        assert!(provider_requires_credential_repo(EmbyProvider::NAME));
+        assert!(!provider_requires_credential_repo(BilibiliProvider::NAME));
+        assert!(!provider_requires_credential_repo(DirectUrlProvider::NAME));
+    }
+
+    #[test]
     fn test_sign_playback_urls_signs_mpd_streams_with_indexed_proxy_paths() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let mut result = PlaybackResult {
@@ -724,8 +730,8 @@ mod tests {
     async fn test_finalize_versioned_playback_requires_store_for_signed_proxy() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
             .with_signing_key(&signing_key);
 
         let err = finalize_versioned_playback(
@@ -749,8 +755,8 @@ mod tests {
     async fn test_finalize_versioned_playback_fails_closed_when_mapping_persist_fails() {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
             .with_signing_key(&signing_key);
         let ctx = ctx.with_store(Arc::new(FailVersionMappingStore {
             inner: InMemoryProviderStore::new(16),
@@ -778,8 +784,8 @@ mod tests {
         let signing_key = ProxySigningKey::derive_from(b"test-jwt-secret-that-is-long-enough");
         let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
         let ctx = ProviderContext::new("test")
-            .with_user_id(UserId::from(1))
-            .with_room_id(RoomId::from(10))
+            .with_user_id(UserId::expect_positive(1))
+            .with_room_id(RoomId::expect_positive(10))
             .with_signing_key(&signing_key)
             .with_store(store.clone());
         let versioned = VersionedPlayback {

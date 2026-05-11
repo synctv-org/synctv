@@ -33,7 +33,14 @@ fn validate_id(id: i64, type_name: &str) -> Result<(), String> {
 }
 
 pub trait TypedId:
-    Copy + From<i64> + Into<i64> + fmt::Display + FromStr<Err = String> + Send + Sync + 'static
+    Copy
+    + TryFrom<i64, Error = String>
+    + Into<i64>
+    + fmt::Display
+    + FromStr<Err = String>
+    + Send
+    + Sync
+    + 'static
 {
     const TYPE_NAME: &'static str;
 
@@ -63,6 +70,12 @@ macro_rules! numeric_id_type {
             pub fn as_i64(&self) -> i64 {
                 self.0
             }
+
+            #[track_caller]
+            #[must_use]
+            pub fn expect_positive(id: i64) -> Self {
+                Self::try_from(id).expect("typed id must be positive")
+            }
         }
 
         impl Default for $name {
@@ -77,18 +90,21 @@ macro_rules! numeric_id_type {
             }
         }
 
-        impl From<i64> for $name {
-            fn from(id: i64) -> Self {
-                Self(id)
-            }
-        }
-
         impl TryFrom<u64> for $name {
             type Error = String;
 
             fn try_from(id: u64) -> Result<Self, Self::Error> {
                 let id =
                     i64::try_from(id).map_err(|_| format!("invalid {}: exceeds i64", $label))?;
+                validate_id(id, $label)?;
+                Ok(Self(id))
+            }
+        }
+
+        impl TryFrom<i64> for $name {
+            type Error = String;
+
+            fn try_from(id: i64) -> Result<Self, Self::Error> {
                 validate_id(id, $label)?;
                 Ok(Self(id))
             }
@@ -196,5 +212,12 @@ mod tests {
     fn parsed_ids_reject_non_positive_values() {
         assert!("0".parse::<UserId>().is_err());
         assert!("-1".parse::<RoomId>().is_err());
+    }
+
+    #[test]
+    fn try_from_i64_rejects_non_positive_values() {
+        assert_eq!(UserId::try_from(1_i64).unwrap().as_i64(), 1);
+        assert!(UserId::try_from(0_i64).is_err());
+        assert!(UserId::try_from(-1_i64).is_err());
     }
 }

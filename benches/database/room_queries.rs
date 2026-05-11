@@ -11,7 +11,7 @@ use std::time::Duration;
 use synctv_core::models::RoomId;
 
 fn bench_room_id(offset: i64) -> RoomId {
-    RoomId::from(2_000_000 + offset)
+    RoomId::expect_positive(2_000_000 + offset)
 }
 
 /// Benchmark: Room ID generation and hashing (in-process, no DB required)
@@ -27,7 +27,7 @@ fn bench_room_id_operations(c: &mut Criterion) {
 
     group.bench_function("room_id_from_numeric", |b| {
         b.iter(|| {
-            let id = RoomId::from(black_box(2_000_001_i64));
+            let id = RoomId::expect_positive(black_box(2_000_001_i64));
             black_box(id);
         })
     });

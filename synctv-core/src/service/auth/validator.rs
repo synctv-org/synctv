@@ -208,7 +208,7 @@ mod tests {
 
     fn create_test_token(jwt_service: &JwtService, user_id: i64) -> String {
         use super::super::jwt::TokenType;
-        let user_id = UserId::from(user_id);
+        let user_id = UserId::expect_positive(user_id);
         jwt_service
             .sign_token(&user_id, TokenType::Access, 0)
             .unwrap()

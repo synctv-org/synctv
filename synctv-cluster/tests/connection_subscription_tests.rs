@@ -38,9 +38,9 @@ async fn test_room_hub_connection_manager_state_consistency() {
     let manager = ClusterManager::new(config, None, None).await.unwrap();
     let conn_manager = ConnectionManager::new(ConnectionLimits::default());
 
-    let room_id = RoomId::from(10_000_029);
-    let user1 = UserId::from(10_000_030);
-    let user2 = UserId::from(10_000_031);
+    let room_id = RoomId::expect_positive(10_000_029);
+    let user1 = UserId::expect_positive(10_000_030);
+    let user2 = UserId::expect_positive(10_000_031);
 
     // Subscribe two users via ClusterManager (RoomMessageHub)
     let (_rx1, conn_id_1) = manager
@@ -151,11 +151,11 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
-    let room_id = RoomId::from(10_000_032);
+    let room_id = RoomId::expect_positive(10_000_032);
 
     // Rapidly subscribe and unsubscribe 100 connections
     for i in 0..100 {
-        let user = UserId::from(110_000 + i);
+        let user = UserId::expect_positive(110_000 + i);
         let (_rx, conn_id) = manager
             .subscribe(room_id, user)
             .await
@@ -186,12 +186,12 @@ async fn test_multi_replica_websocket_connections() {
     let node_b = create_node(&redis.redis_url, "ws_node_b").await;
     let node_c = create_node(&redis.redis_url, "ws_node_c").await;
 
-    let room_id = RoomId::from(10_000_033);
+    let room_id = RoomId::expect_positive(10_000_033);
 
     // Simulate 5 WebSocket clients on node A
     let mut clients_a = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from(120_000 + i);
+        let user_id = UserId::expect_positive(120_000 + i);
         let (rx, conn_id) = node_a
             .subscribe(room_id, user_id)
             .await
@@ -202,7 +202,7 @@ async fn test_multi_replica_websocket_connections() {
     // Simulate 5 WebSocket clients on node B
     let mut clients_b = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from(130_000 + i);
+        let user_id = UserId::expect_positive(130_000 + i);
         let (rx, conn_id) = node_b
             .subscribe(room_id, user_id)
             .await
@@ -213,7 +213,7 @@ async fn test_multi_replica_websocket_connections() {
     // Simulate 5 WebSocket clients on node C
     let mut clients_c = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from(140_000 + i);
+        let user_id = UserId::expect_positive(140_000 + i);
         let (rx, conn_id) = node_c
             .subscribe(room_id, user_id)
             .await
@@ -238,7 +238,7 @@ async fn test_multi_replica_websocket_connections() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_034),
+            user_id: UserId::expect_positive(10_000_034),
             username: "client_a_0".to_string(),
             message: message_from_a.to_string(),
             timestamp: Utc::now(),
@@ -255,7 +255,7 @@ async fn test_multi_replica_websocket_connections() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_034),
+            user_id: UserId::expect_positive(10_000_034),
             username: "client_a_0".to_string(),
             message: message_from_a.to_string(),
             timestamp: Utc::now(),
@@ -272,7 +272,7 @@ async fn test_multi_replica_websocket_connections() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_034),
+            user_id: UserId::expect_positive(10_000_034),
             username: "client_a_0".to_string(),
             message: message_from_a.to_string(),
             timestamp: Utc::now(),
@@ -292,7 +292,7 @@ async fn test_multi_replica_websocket_connections() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_035),
+            user_id: UserId::expect_positive(10_000_035),
             username: "client_c_2".to_string(),
             message: message_from_c.to_string(),
             timestamp: Utc::now(),
@@ -309,7 +309,7 @@ async fn test_multi_replica_websocket_connections() {
         || ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            user_id: UserId::from(10_000_035),
+            user_id: UserId::expect_positive(10_000_035),
             username: "client_c_2".to_string(),
             message: message_from_c.to_string(),
             timestamp: Utc::now(),

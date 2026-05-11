@@ -43,7 +43,7 @@ async fn test_client_api() -> (synctv_core_testing::TestContainer, super::Client
 
 fn guest_access(permissions: PermissionBits) -> super::GuestRoomAccess {
     super::GuestRoomAccess {
-        room_id: RoomId::from(1),
+        room_id: RoomId::expect_positive(1),
         guest_id: "gst_test".to_string(),
         display_name: "Guest test".to_string(),
         session_id: "guest-session".to_string(),
@@ -637,7 +637,7 @@ fn test_user_role_to_proto_roundtrip() {
 
 fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::User {
     synctv_core::models::User {
-        id: UserId::from(101),
+        id: UserId::expect_positive(101),
         username: "testuser".to_string(),
         email: Some("test@example.com".to_string()),
         password_hash: "hash".to_string(),
@@ -783,10 +783,10 @@ fn test_user_to_proto_no_email() {
 
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
     synctv_core::models::Room {
-        id: RoomId::from(201),
+        id: RoomId::expect_positive(201),
         name: "Test Room".to_string(),
         description: "A test room".to_string(),
-        created_by: UserId::from(202),
+        created_by: UserId::expect_positive(202),
         status,
         is_banned: false,
         closed_at: None,
@@ -863,8 +863,8 @@ fn test_hot_room_embedded_room_member_count_uses_total_member_count() {
 fn test_playback_state_to_proto() {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from(301),
-        playing_media_id: Some(MediaId::from(302)),
+        room_id: RoomId::expect_positive(301),
+        playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
         target: Vec::new(),
         current_time: 120.5,
@@ -898,8 +898,8 @@ fn test_playback_state_to_proto() {
 fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from(301),
-        playing_media_id: Some(MediaId::from(302)),
+        room_id: RoomId::expect_positive(301),
+        playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
         target: Vec::new(),
         current_time: 120.5,
@@ -919,9 +919,9 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() {
 fn test_playback_state_to_proto_dynamic_playlist_target() {
     let public_id_codec = test_public_id_codec();
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from(301),
+        room_id: RoomId::expect_positive(301),
         playing_media_id: None,
-        playing_playlist_id: Some(PlaylistId::from(303)),
+        playing_playlist_id: Some(PlaylistId::expect_positive(303)),
         target: br#"{"item_id":"provider-item-9"}"#.to_vec(),
         current_time: 120.5,
         speed: 1.5,
@@ -946,7 +946,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() {
 #[test]
 fn test_playback_state_to_proto_no_media() {
     let public_id_codec = test_public_id_codec();
-    let state = synctv_core::models::RoomPlaybackState::new(RoomId::from(301));
+    let state = synctv_core::models::RoomPlaybackState::new(RoomId::expect_positive(301));
     let proto = playback_state_to_proto(&state, &public_id_codec);
 
     assert_eq!(proto.playing_media_id, ""); // None -> empty string
@@ -957,10 +957,10 @@ fn test_playback_state_to_proto_no_media() {
 fn make_test_media() -> synctv_core::models::Media {
     let now = chrono::Utc::now();
     synctv_core::models::Media {
-        id: MediaId::from(302),
-        playlist_id: Some(PlaylistId::from(303)),
-        room_id: RoomId::from(301),
-        creator_id: Some(UserId::from(304)),
+        id: MediaId::expect_positive(302),
+        playlist_id: Some(PlaylistId::expect_positive(303)),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
         name: "Test Video".to_string(),
         position: 3.0,
         source_provider: "bilibili".to_string(),
@@ -999,9 +999,9 @@ fn test_media_to_proto_basic() {
 fn test_media_to_proto_direct_media_omits_default_instance_binding() {
     let public_id_codec = test_public_id_codec();
     let media = synctv_core::models::Media::from_direct_single_mode(
-        Some(PlaylistId::from(305)),
-        RoomId::from(301),
-        Some(UserId::from(304)),
+        Some(PlaylistId::expect_positive(305)),
+        RoomId::expect_positive(301),
+        Some(UserId::expect_positive(304)),
         "Direct Media".to_string(),
         "direct",
         synctv_core::models::PlaybackInfo::single_url(
@@ -1017,8 +1017,8 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() {
 
 fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
     synctv_core::models::RoomMemberWithUser {
-        room_id: RoomId::from(301),
-        user_id: UserId::from(304),
+        room_id: RoomId::expect_positive(301),
+        user_id: UserId::expect_positive(304),
         username: "alice".to_string(),
         role,
         status: MemberStatus::Active,
@@ -1087,9 +1087,9 @@ fn test_room_member_to_proto_custom_permissions() {
 fn test_playlist_to_proto() {
     let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from(303),
-        room_id: RoomId::from(301),
-        creator_id: Some(UserId::from(304)),
+        id: PlaylistId::expect_positive(303),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
         name: "My Playlist".to_string(),
         parent_id: None,
         position: 0.0,
@@ -1121,11 +1121,11 @@ fn test_playlist_to_proto() {
 fn test_playlist_to_proto_dynamic() {
     let public_id_codec = test_public_id_codec();
     let playlist = synctv_core::models::Playlist {
-        id: PlaylistId::from(306),
-        room_id: RoomId::from(301),
-        creator_id: Some(UserId::from(304)),
+        id: PlaylistId::expect_positive(306),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
         name: "Bilibili Folder".to_string(),
-        parent_id: Some(PlaylistId::from(303)),
+        parent_id: Some(PlaylistId::expect_positive(303)),
         position: 1.0,
         source_provider: Some("bilibili".to_string()),
         source_config: Some(serde_json::json!({})),
@@ -1176,19 +1176,19 @@ fn test_members_to_proto_pattern_multiple_roles() {
     let admin = {
         let mut m = make_test_member(RoomRole::Admin);
         m.username = "admin".to_string();
-        m.user_id = UserId::from(305);
+        m.user_id = UserId::expect_positive(305);
         m
     };
     let member = {
         let mut m = make_test_member(RoomRole::Member);
         m.username = "member".to_string();
-        m.user_id = UserId::from(306);
+        m.user_id = UserId::expect_positive(306);
         m
     };
     let guest = {
         let mut m = make_test_member(RoomRole::Guest);
         m.username = "guest".to_string();
-        m.user_id = UserId::from(307);
+        m.user_id = UserId::expect_positive(307);
         m
     };
 
@@ -1323,7 +1323,7 @@ fn test_playback_state_version_no_truncation() {
     // Version values above i32::MAX should not be truncated
     let large_version: i64 = i64::from(i32::MAX) + 1;
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from(401),
+        room_id: RoomId::expect_positive(401),
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),
@@ -1346,7 +1346,7 @@ fn test_playback_state_version_i32_range_still_works() {
     let public_id_codec = test_public_id_codec();
     // Normal i32-range versions should continue to work correctly
     let state = synctv_core::models::RoomPlaybackState {
-        room_id: RoomId::from(402),
+        room_id: RoomId::expect_positive(402),
         playing_media_id: None,
         playing_playlist_id: None,
         target: Vec::new(),

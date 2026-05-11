@@ -2587,8 +2587,8 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
-        let room_id = RoomId::from(112_001);
-        let media_id = MediaId::from(112_002);
+        let room_id = RoomId::expect_positive(112_001);
+        let media_id = MediaId::expect_positive(112_002);
         let room_id_string = room_id.to_string();
         let media_id_string = media_id.to_string();
         let registry = synctv_livestream::relay::local_stream_registry();
@@ -2705,11 +2705,11 @@ mod tests {
         .await
         .expect("cluster manager should be created");
 
-        let room_id = RoomId::from(112_001);
-        let other_room_id = RoomId::from(112_004);
-        let media_id = MediaId::from(112_002);
-        let other_media_id = MediaId::from(112_005);
-        let user_id = UserId::from(112_003);
+        let room_id = RoomId::expect_positive(112_001);
+        let other_room_id = RoomId::expect_positive(112_004);
+        let media_id = MediaId::expect_positive(112_002);
+        let other_media_id = MediaId::expect_positive(112_005);
+        let user_id = UserId::expect_positive(112_003);
         let room_id_string = room_id.to_string();
         let other_room_id_string = other_room_id.to_string();
         let media_id_string = media_id.to_string();

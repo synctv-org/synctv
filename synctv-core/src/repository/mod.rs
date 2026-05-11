@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod ban;
 pub mod chat;
 pub mod cluster_outbox;
 pub mod email_token;
@@ -8,6 +9,7 @@ pub mod playback;
 pub mod playlist;
 pub mod provider_instance;
 pub mod query_builder;
+pub mod review;
 pub mod room;
 pub mod room_member;
 pub mod room_settings;
@@ -20,6 +22,9 @@ pub mod webauthn_credential;
 use sha2::{Digest, Sha256};
 
 pub use audit::{AuditLogQuery, AuditLogRepository, AuditLogRow};
+pub use ban::{
+    BanRecordListQuery, BanRecordPage, BanRecordRepository, BanRecordRow, BanRecordTargetType,
+};
 pub use chat::ChatRepository;
 pub use email_token::EmailTokenRepository;
 pub use media::MediaRepository;
@@ -28,6 +33,11 @@ pub use playback::RoomPlaybackStateRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
 pub use query_builder::WhereClauseBuilder;
+pub use review::{
+    ReviewPage, ReviewRepository, RoomCreationReviewListQuery, RoomCreationReviewRecord,
+    RoomJoinReviewListQuery, RoomJoinReviewRecord, UserRegistrationReviewListQuery,
+    UserRegistrationReviewRecord,
+};
 pub use room::{JoinRoomContext, RoomRepository};
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;

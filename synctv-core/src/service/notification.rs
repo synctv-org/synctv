@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn test_room_event_serialization() {
         let event = RoomEvent::UserJoined {
-            user_id: UserId::from(123),
+            user_id: UserId::expect_positive(123),
             username: "testuser".to_string(),
         };
 
@@ -573,8 +573,8 @@ mod tests {
         let mut rx = service.subscribe();
 
         // Create test room and user
-        let room_id = RoomId::from(1);
-        let user_id = UserId::from(2);
+        let room_id = RoomId::expect_positive(1);
+        let user_id = UserId::expect_positive(2);
 
         // Broadcast user joined event
         let event = RoomEvent::UserJoined {
@@ -602,8 +602,8 @@ mod tests {
     async fn test_local_only_notification_service_keeps_in_process_subscribers_working() {
         let service = NotificationService::default();
         let mut rx = service.subscribe();
-        let room_id = RoomId::from(3);
-        let user_id = UserId::from(4);
+        let room_id = RoomId::expect_positive(3);
+        let user_id = UserId::expect_positive(4);
 
         service
             .broadcast_to_room(
@@ -658,12 +658,12 @@ mod tests {
                 playing: true,
                 position: 100.0,
                 speed: 1.0,
-                media_id: Some(MediaId::from(123)),
+                media_id: Some(MediaId::expect_positive(123)),
             },
             RoomEvent::MediaAdded {
                 user_id: UserId::new(),
                 username: "test".to_string(),
-                media_id: MediaId::from(123),
+                media_id: MediaId::expect_positive(123),
                 title: "Test Video".to_string(),
                 url: "http://example.com/video.mp4".to_string(),
                 position: 1.0,
@@ -671,24 +671,24 @@ mod tests {
             RoomEvent::MediaRemoved {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_id: MediaId::from(123),
+                media_id: MediaId::expect_positive(123),
             },
             RoomEvent::MediaUpdated {
                 user_id: UserId::new(),
                 username: "test".to_string(),
-                media_id: MediaId::from(123),
+                media_id: MediaId::expect_positive(123),
                 title: "Updated Video".to_string(),
                 position: 2.0,
             },
             RoomEvent::PlaylistReordered {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                media_ids: vec![MediaId::from(1), MediaId::from(2)],
+                media_ids: vec![MediaId::expect_positive(1), MediaId::expect_positive(2)],
             },
             RoomEvent::PlaylistDeleted {
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
-                playlist_id: PlaylistId::from(123),
+                playlist_id: PlaylistId::expect_positive(123),
             },
             RoomEvent::PermissionChanged {
                 user_id: UserId::new(),
@@ -716,11 +716,11 @@ mod tests {
             },
             RoomEvent::RoomDeleted,
             RoomEvent::StreamStarted {
-                media_id: MediaId::from(123),
+                media_id: MediaId::expect_positive(123),
                 user_id: UserId::new(),
             },
             RoomEvent::StreamStopped {
-                media_id: MediaId::from(123),
+                media_id: MediaId::expect_positive(123),
                 user_id: UserId::new(),
             },
         ];

@@ -2128,7 +2128,7 @@ mod tests {
         );
         let mut receiver = service.subscribe();
 
-        let room_id = crate::models::RoomId::from(95_001);
+        let room_id = crate::models::RoomId::expect_positive(95_001);
         service
             .invalidate_and_broadcast_room_settings(&room_id)
             .await

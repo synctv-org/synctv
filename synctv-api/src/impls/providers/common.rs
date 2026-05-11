@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use synctv_core::models::normalize_provider_instance_name;
 use synctv_core::models::UserProviderCredential;
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
@@ -63,7 +64,7 @@ pub async fn get_provider_credentials(
     provider_name: &str,
     instance_name: Option<&str>,
 ) -> Result<Vec<UserProviderCredential>, ApiError> {
-    let requested_instance_name = normalized_instance_name(instance_name);
+    let requested_instance_name = normalize_provider_instance_name(instance_name);
     let credentials = repo.get_by_user(*user_id).await.map_err(|error| {
         tracing::error!(
             user_id = %user_id,
@@ -79,7 +80,7 @@ pub async fn get_provider_credentials(
         .filter(|credential| credential.provider == provider_name)
         .filter(|credential| {
             requested_instance_name.is_none_or(|requested| {
-                normalized_instance_name(credential.provider_instance_name.as_deref())
+                normalize_provider_instance_name(credential.provider_instance_name.as_deref())
                     == Some(requested)
             })
         })
@@ -107,23 +108,12 @@ pub fn extract_instance_name(name: &str) -> Option<String> {
     }
 }
 
-fn normalized_instance_name(name: Option<&str>) -> Option<&str> {
-    name.and_then(|name| {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
-}
-
 pub(crate) fn resolve_bound_instance_name(
     requested_instance_name: Option<&str>,
     credential_instance_name: Option<&str>,
 ) -> Result<Option<String>, ProviderError> {
-    let requested = normalized_instance_name(requested_instance_name);
-    let credential = normalized_instance_name(credential_instance_name);
+    let requested = normalize_provider_instance_name(requested_instance_name);
+    let credential = normalize_provider_instance_name(credential_instance_name);
 
     match (requested, credential) {
         (Some(requested), Some(credential)) if requested != credential => Err(
@@ -396,36 +386,8 @@ impl ProviderCommonApiImpl {
             search: normalize_non_empty_filter(&req.search),
             enabled: req.enabled,
             tls: req.tls,
-            sort_by: match crate::proto::providers::common::ProviderInstanceListSortBy::try_from(
-                req.sort_by,
-            )
-            .unwrap_or(crate::proto::providers::common::ProviderInstanceListSortBy::CreatedAt)
-            {
-                crate::proto::providers::common::ProviderInstanceListSortBy::Name => {
-                    synctv_core::models::ProviderInstanceListSortBy::Name
-                }
-                crate::proto::providers::common::ProviderInstanceListSortBy::Endpoint => {
-                    synctv_core::models::ProviderInstanceListSortBy::Endpoint
-                }
-                crate::proto::providers::common::ProviderInstanceListSortBy::UpdatedAt => {
-                    synctv_core::models::ProviderInstanceListSortBy::UpdatedAt
-                }
-                crate::proto::providers::common::ProviderInstanceListSortBy::CreatedAt
-                | crate::proto::providers::common::ProviderInstanceListSortBy::Unspecified => {
-                    synctv_core::models::ProviderInstanceListSortBy::CreatedAt
-                }
-            },
-            sort_direction: match crate::proto::providers::common::SortDirection::try_from(
-                req.sort_direction,
-            )
-            .unwrap_or(crate::proto::providers::common::SortDirection::Desc)
-            {
-                crate::proto::providers::common::SortDirection::Asc => CoreSortDirection::Asc,
-                crate::proto::providers::common::SortDirection::Desc
-                | crate::proto::providers::common::SortDirection::Unspecified => {
-                    CoreSortDirection::Desc
-                }
-            },
+            sort_by: provider_instance_sort_by_from_proto(req.sort_by)?,
+            sort_direction: provider_instance_sort_direction_from_proto(req.sort_direction)?,
         };
 
         let instances = self
@@ -758,6 +720,39 @@ fn defaultable_page_size_i32_to_u32(value: i32, max: i32) -> Option<u32> {
     (value > 0).then_some(value.clamp(1, max).cast_unsigned())
 }
 
+fn provider_instance_sort_by_from_proto(
+    sort_by: i32,
+) -> Result<synctv_core::models::ProviderInstanceListSortBy, ApiError> {
+    use crate::proto::providers::common::ProviderInstanceListSortBy as ProtoSortBy;
+    use synctv_core::models::ProviderInstanceListSortBy as CoreSortBy;
+
+    match ProtoSortBy::try_from(sort_by) {
+        Ok(ProtoSortBy::Name) => Ok(CoreSortBy::Name),
+        Ok(ProtoSortBy::Endpoint) => Ok(CoreSortBy::Endpoint),
+        Ok(ProtoSortBy::UpdatedAt) => Ok(CoreSortBy::UpdatedAt),
+        Ok(ProtoSortBy::CreatedAt | ProtoSortBy::Unspecified) => Ok(CoreSortBy::CreatedAt),
+        Err(_) => Err(ApiError::InvalidInput(format!(
+            "Unknown provider instance sort field: {sort_by}"
+        ))),
+    }
+}
+
+fn provider_instance_sort_direction_from_proto(
+    sort_direction: i32,
+) -> Result<CoreSortDirection, ApiError> {
+    use crate::proto::providers::common::SortDirection as ProtoSortDirection;
+
+    match ProtoSortDirection::try_from(sort_direction) {
+        Ok(ProtoSortDirection::Asc) => Ok(CoreSortDirection::Asc),
+        Ok(ProtoSortDirection::Desc | ProtoSortDirection::Unspecified) => {
+            Ok(CoreSortDirection::Desc)
+        }
+        Err(_) => Err(ApiError::InvalidInput(format!(
+            "Unknown provider instance sort direction: {sort_direction}"
+        ))),
+    }
+}
+
 fn normalize_non_empty_filter(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
@@ -880,6 +875,30 @@ mod tests {
 
         assert_eq!(pagination.page, 1);
         assert_eq!(pagination.page_size, 20);
+    }
+
+    #[test]
+    fn provider_instance_sort_mapping_rejects_unknown_enum_values() {
+        assert!(provider_instance_sort_by_from_proto(99_999).is_err());
+        assert!(provider_instance_sort_direction_from_proto(99_999).is_err());
+    }
+
+    #[test]
+    fn provider_instance_sort_mapping_defaults_only_unspecified_values() {
+        assert_eq!(
+            provider_instance_sort_by_from_proto(
+                crate::proto::providers::common::ProviderInstanceListSortBy::Unspecified as i32,
+            )
+            .expect("unspecified sort field should map to default"),
+            synctv_core::models::ProviderInstanceListSortBy::CreatedAt
+        );
+        assert_eq!(
+            provider_instance_sort_direction_from_proto(
+                crate::proto::providers::common::SortDirection::Unspecified as i32,
+            )
+            .expect("unspecified sort direction should map to default"),
+            CoreSortDirection::Desc
+        );
     }
 
     #[tokio::test]

@@ -166,7 +166,7 @@ async fn test_valid_guest_token_passes_validation() {
     assert!(result.is_ok(), "Valid guest token should pass validation");
 
     let claims = result.unwrap();
-    assert_eq!(claims.room_id(), room_id);
+    assert_eq!(claims.room_id().unwrap(), room_id);
     assert!(claims.is_guest());
 }
 

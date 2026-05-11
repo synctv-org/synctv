@@ -1518,7 +1518,7 @@ mod auth_flow {
         // Validate
         let claims = jwt.verify_guest_token(&token).expect("guest token valid");
         assert!(claims.is_guest());
-        assert_eq!(claims.room_id(), room_id);
+        assert_eq!(claims.room_id().unwrap(), room_id);
 
         // Guest token must not pass as regular access token
         assert!(jwt.verify_access_token(&token).is_err());

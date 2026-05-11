@@ -20,13 +20,13 @@ fn stable_test_id(id: &str) -> i64 {
 /// Create a test user ID
 #[must_use]
 pub fn test_user_id(id: &str) -> UserId {
-    UserId::from(stable_test_id(id))
+    UserId::expect_positive(stable_test_id(id))
 }
 
 /// Create a test room ID
 #[must_use]
 pub fn test_room_id(id: &str) -> RoomId {
-    RoomId::from(stable_test_id(id))
+    RoomId::expect_positive(stable_test_id(id))
 }
 
 /// Generate a random user ID for testing

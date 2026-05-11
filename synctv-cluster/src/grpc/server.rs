@@ -265,7 +265,9 @@ impl ClusterService for ClusterServer {
             .user_ids
             .iter()
             .map(|uid| {
-                let user_id = UserId::from(*uid);
+                let user_id = UserId::try_from(*uid).map_err(|error| {
+                    Status::invalid_argument(format!("invalid user_id: {error}"))
+                })?;
                 let connections = cm.get_user_connections(&user_id);
                 let is_online = !connections.is_empty();
                 let room_ids: Vec<i64> = connections
@@ -273,14 +275,14 @@ impl ClusterService for ClusterServer {
                     .filter_map(|c| c.room_id.as_ref().map(RoomId::as_i64))
                     .collect();
 
-                UserOnlineStatus {
+                Ok(UserOnlineStatus {
                     user_id: *uid,
                     is_online,
                     room_ids,
                     node_id: self.node_id.clone(),
-                }
+                })
             })
-            .collect();
+            .collect::<std::result::Result<_, Status>>()?;
 
         let elapsed = start.elapsed().as_secs_f64();
         synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
@@ -312,7 +314,8 @@ impl ClusterService for ClusterServer {
             }));
         };
 
-        let room_id = RoomId::from(req.room_id);
+        let room_id = RoomId::try_from(req.room_id)
+            .map_err(|error| Status::invalid_argument(format!("invalid room_id: {error}")))?;
         let room_conns = cm.get_room_connections(&room_id);
 
         let connections: Vec<RoomConnection> = room_conns

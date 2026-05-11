@@ -232,8 +232,8 @@ mod tests {
 
         let event = crate::sync::events::ClusterEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
-            room_id: RoomId::from(10_000_092),
-            user_id: UserId::from(10_000_010),
+            room_id: RoomId::expect_positive(10_000_092),
+            user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),
@@ -252,8 +252,8 @@ mod tests {
     fn test_dedup_from_event_rejects_empty_event_id() {
         let event = crate::sync::events::ClusterEvent::ChatMessage {
             event_id: String::new(),
-            room_id: RoomId::from(10_000_092),
-            user_id: UserId::from(10_000_010),
+            room_id: RoomId::expect_positive(10_000_092),
+            user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
             timestamp: Utc::now(),

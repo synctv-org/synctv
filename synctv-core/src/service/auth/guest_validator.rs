@@ -282,7 +282,7 @@ mod tests {
         let token = jwt.sign_guest_token(&room_id).unwrap();
         let claims = validator.validate_async(&token).await.unwrap();
 
-        assert_eq!(claims.room_id(), room_id);
+        assert_eq!(claims.room_id().unwrap(), room_id);
         assert!(claims.is_guest());
     }
 
@@ -391,7 +391,7 @@ mod tests {
         let token = jwt.sign_guest_token(&room_id).unwrap();
         let claims = validator.validate(&token).unwrap();
 
-        assert_eq!(claims.room_id(), room_id);
+        assert_eq!(claims.room_id().unwrap(), room_id);
         assert!(claims.is_guest());
     }
 

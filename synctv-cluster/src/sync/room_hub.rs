@@ -1289,7 +1289,7 @@ impl RoomMessageHub {
                             return entries
                                 .into_iter()
                                 .filter_map(|(conn_id, user_id)| {
-                                    (user_id > 0).then_some((UserId::from(user_id), conn_id))
+                                    UserId::try_from(user_id).ok().map(|id| (id, conn_id))
                                 })
                                 .collect();
                         }
@@ -1300,8 +1300,12 @@ impl RoomMessageHub {
 
                     for ((conn_id, user_id), mapped_room_id) in entries.into_iter().zip(conn_rooms)
                     {
-                        if mapped_room_id == Some(room_id.get()) && user_id > 0 {
-                            subscribers.push((UserId::from(user_id), conn_id));
+                        if mapped_room_id == Some(room_id.get()) {
+                            if let Ok(user_id) = UserId::try_from(user_id) {
+                                subscribers.push((user_id, conn_id));
+                            } else {
+                                stale_connection_ids.push(conn_id);
+                            }
                         } else {
                             stale_connection_ids.push(conn_id);
                         }
@@ -1723,8 +1727,8 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_and_broadcast() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user_id = UserId::from(10_000_148);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user_id = UserId::expect_positive(10_000_148);
 
         // Subscribe
         let mut rx = hub
@@ -1758,8 +1762,8 @@ mod tests {
     #[tokio::test]
     async fn test_unsubscribe() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user_id = UserId::from(10_000_148);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user_id = UserId::expect_positive(10_000_148);
 
         // Subscribe
         let _rx = hub
@@ -1778,9 +1782,9 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_subscribers() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
 
         // Subscribe two clients
         let mut rx1 = hub
@@ -1820,9 +1824,9 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_to_specific_user() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
 
         // Subscribe two clients
         let mut rx1 = hub
@@ -1868,9 +1872,9 @@ mod tests {
         let hub = RoomMessageHub::new();
         let mut lifecycle_rx = hub.subscribe_lifecycle();
 
-        let room_id = RoomId::from(10_000_009);
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
 
         // First subscriber triggers RoomActivated
         let _rx1 = hub
@@ -1902,8 +1906,8 @@ mod tests {
         let hub = RoomMessageHub::new();
         let mut lifecycle_rx = hub.subscribe_lifecycle();
 
-        let room_id = RoomId::from(10_000_009);
-        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user_id = UserId::expect_positive(10_000_010);
 
         // Subscribe triggers RoomActivated
         let _rx = hub
@@ -1921,9 +1925,9 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_reliably_waits_for_critical_event_queue_space() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_159);
-        let deleted_by = UserId::from(10_000_027);
-        let filler_user = UserId::from(10_000_160);
+        let room_id = RoomId::expect_positive(10_000_159);
+        let deleted_by = UserId::expect_positive(10_000_027);
+        let filler_user = UserId::expect_positive(10_000_160);
 
         let mut rx = hub
             .subscribe(room_id, filler_user, "conn-critical".to_string())
@@ -1999,8 +2003,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_broadcast_waits_for_critical_event_queue_space() {
         let hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from(10_000_161);
-        let user_id = UserId::from(10_000_162);
+        let room_id = RoomId::expect_positive(10_000_161);
+        let user_id = UserId::expect_positive(10_000_162);
         let mut rx = hub
             .subscribe(room_id, user_id, "conn-critical-broadcast".to_string())
             .await
@@ -2010,7 +2014,7 @@ mod tests {
             let event = ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
                 room_id,
-                user_id: UserId::from(10_000_163),
+                user_id: UserId::expect_positive(10_000_163),
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
@@ -2024,7 +2028,7 @@ mod tests {
         let critical = ClusterEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
             room_id,
-            deleted_by: UserId::from(10_000_164),
+            deleted_by: UserId::expect_positive(10_000_164),
             timestamp: Utc::now(),
         };
 
@@ -2072,8 +2076,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout() {
         let hub = Arc::new(RoomMessageHub::new());
-        let room_id = RoomId::from(10_000_165);
-        let user_id = UserId::from(10_000_166);
+        let room_id = RoomId::expect_positive(10_000_165);
+        let user_id = UserId::expect_positive(10_000_166);
         let _rx = hub
             .subscribe(room_id, user_id, "conn-reliable-timeout".to_string())
             .await
@@ -2083,7 +2087,7 @@ mod tests {
             let event = ClusterEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
                 room_id,
-                user_id: UserId::from(10_000_163),
+                user_id: UserId::expect_positive(10_000_163),
                 username: "filler".to_string(),
                 message: "fill".to_string(),
                 timestamp: Utc::now(),
@@ -2103,7 +2107,7 @@ mod tests {
                     ClusterEvent::RoomDeleted {
                         event_id: synctv_common::snanoid!(16),
                         room_id: room_for_task,
-                        deleted_by: UserId::from(10_000_164),
+                        deleted_by: UserId::expect_positive(10_000_164),
                         timestamp: Utc::now(),
                     },
                 )
@@ -2141,8 +2145,8 @@ mod tests {
 
         runtime.block_on(async {
             let hub = RoomMessageHub::new();
-            let room_id = RoomId::from(10_000_167);
-            let user_id = UserId::from(10_000_168);
+            let room_id = RoomId::expect_positive(10_000_167);
+            let user_id = UserId::expect_positive(10_000_168);
 
             let mut rx = hub
                 .subscribe(room_id, user_id, "conn-critical-deferred".to_string())
@@ -2153,7 +2157,7 @@ mod tests {
                 let event = ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
                     room_id,
-                    user_id: UserId::from(10_000_163),
+                    user_id: UserId::expect_positive(10_000_163),
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
@@ -2170,7 +2174,7 @@ mod tests {
             let event = ClusterEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id,
-                deleted_by: UserId::from(10_000_164),
+                deleted_by: UserId::expect_positive(10_000_164),
                 timestamp: Utc::now(),
             };
             let sent = hub.broadcast(
@@ -2220,8 +2224,8 @@ mod tests {
 
         runtime.block_on(async {
             let hub = RoomMessageHub::new();
-            let room_id = RoomId::from(10_000_169);
-            let user_id = UserId::from(10_000_170);
+            let room_id = RoomId::expect_positive(10_000_169);
+            let user_id = UserId::expect_positive(10_000_170);
 
             let mut rx = hub
                 .subscribe(
@@ -2236,7 +2240,7 @@ mod tests {
                 let event = ClusterEvent::ChatMessage {
                     event_id: synctv_common::snanoid!(16),
                     room_id,
-                    user_id: UserId::from(10_000_163),
+                    user_id: UserId::expect_positive(10_000_163),
                     username: "filler".to_string(),
                     message: "fill".to_string(),
                     timestamp: Utc::now(),
@@ -2253,7 +2257,7 @@ mod tests {
             let event = ClusterEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id,
-                deleted_by: UserId::from(10_000_164),
+                deleted_by: UserId::expect_positive(10_000_164),
                 timestamp: Utc::now(),
             };
             let sent = hub.broadcast_to_user(&room_id, &user_id, &event);
@@ -2296,8 +2300,8 @@ mod tests {
         // Verify that unsubscribe properly cleans up local state (rooms + connections)
         // even when Redis is not configured. This is the baseline behavior.
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user_id = UserId::from(10_000_010);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user_id = UserId::expect_positive(10_000_010);
 
         let _rx = hub
             .subscribe(room_id, user_id, "conn1".to_string())
@@ -2318,8 +2322,10 @@ mod tests {
     async fn test_cleanup_orphaned_subscriptions_only_tracks_local_failed_cleanup() {
         let hub = RoomMessageHub::new();
 
-        hub.pending_redis_cleanup
-            .insert("conn_local".to_string(), RoomId::from(10_000_171));
+        hub.pending_redis_cleanup.insert(
+            "conn_local".to_string(),
+            RoomId::expect_positive(10_000_171),
+        );
 
         assert_eq!(hub.pending_redis_cleanup.len(), 1);
 
@@ -2336,11 +2342,13 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_clears_stale_pending_cleanup_for_reused_connection_id() {
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_172);
-        let user_id = UserId::from(10_000_173);
+        let room_id = RoomId::expect_positive(10_000_172);
+        let user_id = UserId::expect_positive(10_000_173);
 
-        hub.pending_redis_cleanup
-            .insert("conn_reuse".to_string(), RoomId::from(10_000_174));
+        hub.pending_redis_cleanup.insert(
+            "conn_reuse".to_string(),
+            RoomId::expect_positive(10_000_174),
+        );
 
         let _rx = hub
             .subscribe(room_id, user_id, "conn_reuse".to_string())
@@ -2451,9 +2459,9 @@ mod tests {
     async fn test_remove_room_cleans_connection_tracking() {
         // Verify that remove_room removes connections from the tracking map
         let hub = RoomMessageHub::new();
-        let room_id = RoomId::from(10_000_009);
-        let user1 = UserId::from(10_000_010);
-        let user2 = UserId::from(10_000_095);
+        let room_id = RoomId::expect_positive(10_000_009);
+        let user1 = UserId::expect_positive(10_000_010);
+        let user2 = UserId::expect_positive(10_000_095);
 
         let _rx1 = hub
             .subscribe(room_id, user1, "conn1".to_string())

@@ -42,6 +42,7 @@ use tonic_health::pb::HealthCheckRequest;
 const PROVIDER_PROBE_HOST: &str = "provider-test.example.com";
 const PROVIDER_PROBE_SECRET: &str = "provider-remote-e2e-secret";
 const MANAGEMENT_E2E_AUTH_TOKEN: &str = "management-e2e-secret";
+const BOOTSTRAP_ROOT_USERNAME: &str = "e2e_root";
 const TEST_CREDENTIAL_ENCRYPTION_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -254,7 +255,7 @@ fn test_config(
     config.security.opaque_server_setup_secret =
         "test-opaque-server-setup-secret-for-full-stack-e2e".to_string();
     config.bootstrap.create_root_user = true;
-    config.bootstrap.root_username = "admin".to_string();
+    config.bootstrap.root_username = BOOTSTRAP_ROOT_USERNAME.to_string();
     config.bootstrap.root_password = "StrongPwd12345!".to_string();
     config.livestream.rtmp_port = rtmp_port;
     config.webrtc.enable_builtin_stun = false;
@@ -447,15 +448,15 @@ async fn start_test_server() -> TestServer {
         let app = Box::pin(Application::build_with_options(
             config,
             ApplicationBuildOptions {
-                provider_test_address_overrides: HashMap::from([(
+                provider_address_overrides: HashMap::from([(
                     provider_probe_host,
                     provider_probe_addr,
                 )]),
-                credential_encryption_hex_key_override: Some(
+                credential_encryption_key_override: Some(
                     TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
                 ),
                 password_hasher_override: Some(Arc::new(TestPasswordHasher::new())),
-                enable_password_registration_for_tests: true,
+                allow_password_registration: true,
             },
         ))
         .await
@@ -2011,7 +2012,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         .expect("connect auth gRPC client");
     let admin_login = auth_client
         .login(LoginRequest {
-            username: "admin".to_string(),
+            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
             password: "StrongPwd12345!".to_string(),
             email: String::new(),
             email_token: String::new(),
@@ -2027,7 +2028,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "create",
             "CLI managed room",
             "--username",
-            "admin",
+            BOOTSTRAP_ROOT_USERNAME,
             "--description",
             "cli remote room lifecycle e2e",
         ],
@@ -2064,7 +2065,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--room-id",
             &room_id,
             "--username",
-            "admin",
+            BOOTSTRAP_ROOT_USERNAME,
             "--source-provider",
             "direct_url",
             "--source-config-json",
@@ -2096,7 +2097,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--room-id",
             &room_id,
             "--username",
-            "admin",
+            BOOTSTRAP_ROOT_USERNAME,
             "--name",
             "CLI E2E Media Second",
         ],
@@ -2228,7 +2229,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("connect public auth gRPC client");
     let admin_login = auth_client
         .login(LoginRequest {
-            username: "admin".to_string(),
+            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
             password: "StrongPwd12345!".to_string(),
             email: String::new(),
             email_token: String::new(),
@@ -2335,7 +2336,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .expect("connect public auth gRPC client");
     let admin_login = auth_client
         .login(LoginRequest {
-            username: "admin".to_string(),
+            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
             password: "StrongPwd12345!".to_string(),
             email: String::new(),
             email_token: String::new(),
@@ -2380,7 +2381,10 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         serde_json::from_slice(&room_ban.stdout).expect("CLI room ban output should be JSON");
     assert_eq!(room_ban_body["room"]["id"], room_id);
     assert_eq!(room_ban_body["room"]["is_banned"], true);
-    assert_eq!(room_ban_body["room"]["creator_username"], "admin");
+    assert_eq!(
+        room_ban_body["room"]["creator_username"],
+        BOOTSTRAP_ROOT_USERNAME
+    );
 
     let room_unban = run_synctv_remote_cli(&server, &["room", "unban", &room_id]).await;
     assert!(
@@ -2393,7 +2397,10 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         serde_json::from_slice(&room_unban.stdout).expect("CLI room unban output should be JSON");
     assert_eq!(room_unban_body["room"]["id"], room_id);
     assert_eq!(room_unban_body["room"]["is_banned"], false);
-    assert_eq!(room_unban_body["room"]["creator_username"], "admin");
+    assert_eq!(
+        room_unban_body["room"]["creator_username"],
+        BOOTSTRAP_ROOT_USERNAME
+    );
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -2429,7 +2436,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("connect public auth gRPC client");
     let admin_login = auth_client
         .login(LoginRequest {
-            username: "admin".to_string(),
+            username: BOOTSTRAP_ROOT_USERNAME.to_string(),
             password: "StrongPwd12345!".to_string(),
             email: String::new(),
             email_token: String::new(),
@@ -2668,8 +2675,11 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
 async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstrap_root() {
     let server = start_test_server().await;
 
-    let ban_root =
-        run_synctv_remote_cli(&server, &["user", "ban", "admin", "--reason", "e2e"]).await;
+    let ban_root = run_synctv_remote_cli(
+        &server,
+        &["user", "ban", BOOTSTRAP_ROOT_USERNAME, "--reason", "e2e"],
+    )
+    .await;
     assert!(
         ban_root.status.success(),
         "user ban via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -2683,7 +2693,8 @@ async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstr
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
-    let unban_root = run_synctv_remote_cli(&server, &["user", "unban", "admin"]).await;
+    let unban_root =
+        run_synctv_remote_cli(&server, &["user", "unban", BOOTSTRAP_ROOT_USERNAME]).await;
     assert!(
         unban_root.status.success(),
         "user unban via CLI should succeed even when the target is the only bootstrap root\nstdout:\n{}\nstderr:\n{}",
@@ -2865,7 +2876,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
             "create",
             &format!("CLI Settings Reset Room {suffix}"),
             "--username",
-            "admin",
+            BOOTSTRAP_ROOT_USERNAME,
         ],
         "create room for room settings reset",
     )
@@ -4950,9 +4961,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -5042,9 +5051,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -5139,9 +5146,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -5239,9 +5244,7 @@ async fn full_stack_cli_explicit_management_endpoint_does_not_implicitly_use_con
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -5329,9 +5332,7 @@ async fn full_stack_cli_stop_gracefully_shuts_down_server_via_management_api() {
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))
@@ -6115,9 +6116,7 @@ async fn full_stack_cli_force_stop_shuts_down_server_via_management_api() {
     let app = Box::pin(Application::build_with_options(
         config,
         ApplicationBuildOptions {
-            credential_encryption_hex_key_override: Some(
-                TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
-            ),
+            credential_encryption_key_override: Some(TEST_CREDENTIAL_ENCRYPTION_KEY.to_string()),
             ..ApplicationBuildOptions::default()
         },
     ))

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18
+    image: postgres:18.1-bookworm
     container_name: synctv-postgres
     env_file:
       - path: .env.postgres
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8
+    image: redis:8.4.0-bookworm
     container_name: synctv-redis
     ports:
       # Keep cache access local to the host; the app uses the internal Docker network.

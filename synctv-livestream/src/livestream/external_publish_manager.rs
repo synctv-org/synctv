@@ -142,9 +142,12 @@ impl ExternalPublishManager {
         // Reused across all HTTP-FLV pull streams to amortize TLS setup.
         // SSRF enforcement follows the active shared policy; with the current
         // runtime default this client does not inject a DNS resolver.
-        let http_client = synctv_common::http::SsrfSafeClientBuilder::proxy()
+        let http_client = synctv_common::http::SsrfSafeClientBuilder::new()
+            .connect_timeout(Duration::from_secs(10))
             .disable_request_timeout()
             .disable_read_timeout()
+            .pool_max_idle_per_host(100)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| {
                 crate::error::StreamError::Internal(format!(

@@ -1,9 +1,5 @@
 //! HTTP client builder with optional SSRF enforcement.
 //!
-//! Provides [`SsrfSafeClientBuilder`] with two presets:
-//! - [`SsrfSafeClientBuilder::provider()`] — for media-provider API calls
-//! - [`SsrfSafeClientBuilder::proxy()`] — for outbound media proxy fetches
-//!
 //! Clients can enforce SSRF protection through an explicit [`crate::ssrf::SsrfGuard`]
 //! stored on the builder and always disable automatic redirects.
 
@@ -30,39 +26,17 @@ pub struct SsrfSafeClientBuilder {
 }
 
 impl SsrfSafeClientBuilder {
-    /// Preset for media-provider API calls.
+    /// Create a generic HTTP client builder.
     ///
-    /// Defaults: 10 s connect, 30 s request, pool 10, no read timeout.
+    /// Defaults: 10 s connect timeout, no request/read timeout, pool 10.
     #[must_use]
-    pub fn provider() -> Self {
-        Self {
-            connect_timeout: Duration::from_secs(10),
-            request_timeout: Some(Duration::from_secs(30)),
-            read_timeout: None,
-            pool_max_idle_per_host: 10,
-            pool_idle_timeout: None,
-            user_agent: None,
-            resolves: Vec::new(),
-            ssrf_guard: None,
-        }
-    }
-
-    /// Preset for outbound media proxy fetches.
-    ///
-    /// Defaults: 10 s connect, no request/read timeout, pool 100, 30 s idle.
-    ///
-    /// Proxy clients intentionally avoid client-wide request/read timeouts so
-    /// long-lived media bodies are not cut off mid-stream. If a caller needs a
-    /// timeout, it should apply an explicit per-request budget only around
-    /// "send request + receive response headers".
-    #[must_use]
-    pub fn proxy() -> Self {
+    pub fn new() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
             request_timeout: None,
             read_timeout: None,
-            pool_max_idle_per_host: 100,
-            pool_idle_timeout: Some(Duration::from_secs(30)),
+            pool_max_idle_per_host: 10,
+            pool_idle_timeout: None,
             user_agent: None,
             resolves: Vec::new(),
             ssrf_guard: None,
@@ -181,27 +155,13 @@ impl SsrfSafeClientBuilder {
     }
 }
 
-/// Build a provider-preset client (convenience wrapper).
-///
-/// Equivalent to `SsrfSafeClientBuilder::provider().build()`.
-pub fn build_provider_client() -> Result<reqwest::Client, reqwest::Error> {
-    SsrfSafeClientBuilder::provider().build()
-}
-
-/// Build a proxy-preset client (convenience wrapper).
-///
-/// Equivalent to `SsrfSafeClientBuilder::proxy().build()`.
-pub fn build_proxy_client() -> Result<reqwest::Client, reqwest::Error> {
-    SsrfSafeClientBuilder::proxy().build()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_builder_customization() {
-        let b = SsrfSafeClientBuilder::provider()
+        let b = SsrfSafeClientBuilder::new()
             .connect_timeout(Duration::from_secs(3))
             .request_timeout(Duration::from_mins(2))
             .read_timeout(Duration::from_mins(1))
@@ -221,36 +181,33 @@ mod tests {
     #[test]
     fn test_builder_resolve_override() {
         let addr = std::net::SocketAddr::from(([203, 0, 113, 10], 443));
-        let b = SsrfSafeClientBuilder::proxy().resolve("example.com", addr);
+        let b = SsrfSafeClientBuilder::new().resolve("example.com", addr);
 
         assert_eq!(b.resolves, vec![("example.com".to_string(), addr)]);
     }
 
     #[test]
-    fn test_build_provider_client() {
-        let _client = build_provider_client().expect("provider client should build");
-    }
-
-    #[test]
-    fn test_build_proxy_client() {
-        let _client = build_proxy_client().expect("proxy client should build");
+    fn test_build_client() {
+        let _client = SsrfSafeClientBuilder::new()
+            .build()
+            .expect("HTTP client should build");
     }
 
     #[test]
     fn test_disable_ssrf_guard_is_explicit() {
-        let builder = SsrfSafeClientBuilder::provider().disable_ssrf_guard();
+        let builder = SsrfSafeClientBuilder::new().disable_ssrf_guard();
         assert!(builder.ssrf_guard.is_none());
     }
 
     #[test]
     fn test_ssrf_guard_is_opt_in() {
-        let builder = SsrfSafeClientBuilder::provider().ssrf_guard(SsrfGuard::strict_policy());
+        let builder = SsrfSafeClientBuilder::new().ssrf_guard(SsrfGuard::strict_policy());
         assert!(builder.ssrf_guard.is_some());
     }
 
     #[test]
-    fn test_proxy_preset_disables_request_and_read_timeouts() {
-        let builder = SsrfSafeClientBuilder::proxy();
+    fn test_default_disables_request_and_read_timeouts() {
+        let builder = SsrfSafeClientBuilder::new();
 
         assert_eq!(builder.request_timeout, None);
         assert_eq!(builder.read_timeout, None);
@@ -258,21 +215,25 @@ mod tests {
 
     #[test]
     fn test_build_with_user_agent() {
-        let _client = SsrfSafeClientBuilder::provider()
+        let _client = SsrfSafeClientBuilder::new()
             .user_agent("MyApp/1.0")
             .build()
-            .expect("custom provider client should build");
+            .expect("custom HTTP client should build");
     }
 
     #[test]
     fn test_disable_request_timeout() {
-        let builder = SsrfSafeClientBuilder::provider().disable_request_timeout();
+        let builder = SsrfSafeClientBuilder::new()
+            .request_timeout(Duration::from_secs(5))
+            .disable_request_timeout();
         assert_eq!(builder.request_timeout, None);
     }
 
     #[test]
     fn test_disable_read_timeout() {
-        let builder = SsrfSafeClientBuilder::proxy().disable_read_timeout();
+        let builder = SsrfSafeClientBuilder::new()
+            .read_timeout(Duration::from_secs(5))
+            .disable_read_timeout();
         assert_eq!(builder.read_timeout, None);
     }
 }

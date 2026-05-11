@@ -60,11 +60,12 @@ impl EmbyApiImpl {
         &self,
         caller_user_id: &UserId,
         server_id: &str,
+        request_context: Option<&ExecutionControl>,
     ) -> Result<(String, String, String, Option<String>), synctv_core::provider::ProviderError>
     {
         if let Some(access_service) = &self.access_service {
             let access = access_service
-                .emby_access(*caller_user_id, server_id, None, None)
+                .emby_access(*caller_user_id, server_id, None, request_context)
                 .await?;
             return Ok((
                 access.host,
@@ -247,7 +248,7 @@ impl EmbyApiImpl {
         request_context: Option<&ExecutionControl>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
         let (host, token, user_id, credential_instance_name) = self
-            .resolve_credentials(caller_user_id, &req.server_id)
+            .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
         let effective_instance_name = resolve_bound_instance_name(
             requested_instance_name,
@@ -312,7 +313,7 @@ impl EmbyApiImpl {
         request_context: Option<&ExecutionControl>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
         let (host, token, user_id, credential_instance_name) = self
-            .resolve_credentials(caller_user_id, &req.server_id)
+            .resolve_credentials(caller_user_id, &req.server_id, request_context)
             .await?;
         let effective_instance_name = resolve_bound_instance_name(
             requested_instance_name,

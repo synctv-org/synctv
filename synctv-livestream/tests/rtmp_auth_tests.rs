@@ -1,8 +1,4 @@
-//! RTMP Authentication tests for `extract_token_from_query` and related auth logic.
-//!
-//! Tests the token extraction helper used in `RtmpAuthCallbackImpl::on_publish`.
-//! The `extract_token_from_query` function is private, so we test it indirectly
-//! or test the public-facing behavior via the auth trait.
+//! RTMP authentication trait behavior tests.
 
 #![allow(clippy::unwrap_used)]
 /// Since `extract_token_from_query` is private, we replicate the logic here
@@ -93,17 +89,6 @@ fn test_extract_token_partial_match_not_confused() {
     let query = "mytoken=abc&other=def";
     let result = extract_token_from_query(query);
     assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn test_on_play_always_rejected() {
-    // Verify the documented behavior: RTMP play is always rejected.
-    // We can't easily instantiate RtmpAuthCallbackImpl without a real PublishKeyService,
-    // but we can verify the contract by testing the expected error message format.
-    let rejection_msg = "RTMP pull is disabled. Use HTTP-FLV or HLS endpoints for playback.";
-    assert!(rejection_msg.contains("disabled"));
-    assert!(rejection_msg.contains("HTTP-FLV"));
-    assert!(rejection_msg.contains("HLS"));
 }
 
 // publish fails, the Redis publisher entry is properly cleaned up.

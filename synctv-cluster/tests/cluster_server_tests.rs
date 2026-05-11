@@ -9,15 +9,12 @@ use std::sync::Arc;
 use tonic::Request;
 
 use synctv_cluster::discovery::node_registry::NodeRegistry;
-use synctv_cluster::grpc::server::{
-    ClusterServer, ClusterSliceCachePurgeResult, ClusterSliceCacheStats, SliceCacheRuntime,
-};
+use synctv_cluster::grpc::server::ClusterServer;
 
 // Import the ClusterService trait to call the gRPC methods
 use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::grpc::synctv::cluster::{
-    EvictExpiredSliceCacheRequest, GetRoomConnectionsRequest, GetSliceCacheStatsRequest,
-    GetUserOnlineStatusRequest, PurgeSliceCacheRequest,
+    GetRoomConnectionsRequest, GetUserOnlineStatusRequest,
 };
 
 /// Helper: create a `ClusterServer` with no connection query runtime.
@@ -38,47 +35,6 @@ fn make_server() -> ClusterServer {
 
 fn make_authenticated_server() -> ClusterServer {
     make_server().with_cluster_secret("cluster-test-secret".to_string())
-}
-
-struct FakeSliceCacheRuntime;
-
-#[async_trait::async_trait]
-impl SliceCacheRuntime for FakeSliceCacheRuntime {
-    fn stats(&self) -> ClusterSliceCacheStats {
-        ClusterSliceCacheStats {
-            engine_enabled: true,
-            backend: "memory".to_string(),
-            file_cache_dir: None,
-            slice_size: 1_048_576,
-            max_cache_size: 0,
-            segment_ttl_secs: 0,
-            stale_max_age_secs: 0,
-            stale_while_revalidate: false,
-            eviction_interval_secs: 0,
-            watermark_ratio: 0.0,
-            current_size_bytes: 0,
-            entry_count: 0,
-            metadata_entries: 0,
-            updating_entries: 0,
-            lock_count: 0,
-            usage_ratio: 0.0,
-        }
-    }
-
-    async fn purge_all(&self) -> ClusterSliceCachePurgeResult {
-        ClusterSliceCachePurgeResult {
-            removed_entries: 0,
-            freed_bytes: 0,
-        }
-    }
-
-    async fn evict_expired_entries(&self) -> u64 {
-        0
-    }
-}
-
-fn make_authenticated_slice_cache_server() -> ClusterServer {
-    make_authenticated_server().with_slice_cache_runtime(Arc::new(FakeSliceCacheRuntime))
 }
 
 fn with_cluster_secret<T>(mut request: Request<T>, secret: &str) -> Request<T> {
@@ -239,76 +195,6 @@ async fn test_get_user_online_status_with_connection_manager() {
         .find(|s| s.user_id == 10_000_029)
         .unwrap();
     assert!(!offline_user.is_online, "offline user should be offline");
-}
-
-#[tokio::test]
-async fn test_get_slice_cache_stats_returns_local_node_stats() {
-    let server = make_authenticated_slice_cache_server();
-    let request = with_cluster_secret(
-        Request::new(GetSliceCacheStatsRequest {}),
-        "cluster-test-secret",
-    );
-
-    let response = server
-        .get_slice_cache_stats(request)
-        .await
-        .expect("slice cache stats should succeed")
-        .into_inner();
-
-    assert_eq!(response.node_id, "test-node");
-    assert!(response.config.is_some());
-    assert_eq!(response.current_size_bytes, 0);
-    assert_eq!(response.entry_count, 0);
-}
-
-#[tokio::test]
-async fn test_purge_slice_cache_returns_node_result() {
-    let server = make_authenticated_slice_cache_server();
-    let request = with_cluster_secret(
-        Request::new(PurgeSliceCacheRequest {}),
-        "cluster-test-secret",
-    );
-
-    let response = server
-        .purge_slice_cache(request)
-        .await
-        .expect("purge should succeed")
-        .into_inner();
-
-    assert!(response.success);
-    assert_eq!(response.node_id, "test-node");
-    assert_eq!(response.removed_entries, 0);
-    assert_eq!(response.freed_bytes, 0);
-    assert_eq!(
-        response.stats.expect("purge should include stats").node_id,
-        "test-node"
-    );
-}
-
-#[tokio::test]
-async fn test_evict_expired_slice_cache_returns_node_result() {
-    let server = make_authenticated_slice_cache_server();
-    let request = with_cluster_secret(
-        Request::new(EvictExpiredSliceCacheRequest {}),
-        "cluster-test-secret",
-    );
-
-    let response = server
-        .evict_expired_slice_cache(request)
-        .await
-        .expect("evict expired should succeed")
-        .into_inner();
-
-    assert!(response.success);
-    assert_eq!(response.node_id, "test-node");
-    assert_eq!(response.removed_expired_entries, 0);
-    assert_eq!(
-        response
-            .stats
-            .expect("evict expired should include stats")
-            .node_id,
-        "test-node"
-    );
 }
 
 #[tokio::test]

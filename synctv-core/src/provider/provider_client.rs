@@ -322,7 +322,7 @@ impl ProviderClientManager {
     /// Create a new `ProviderClientManager` with default local clients.
     #[must_use]
     pub fn new() -> Self {
-        let provider_client = synctv_common::http::build_provider_client()
+        let provider_client = synctv_media_providers::build_provider_http_client()
             .expect("default provider HTTP client should build");
         Self::new_with_provider_http_client(provider_client)
     }

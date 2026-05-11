@@ -14,6 +14,18 @@ for file in "$postgres_env" "$synctv_env"; do
   fi
 done
 
+if ! command -v openssl >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+openssl is required to generate production secrets.
+
+Install OpenSSL and rerun this script, for example:
+  Debian/Ubuntu: sudo apt-get install openssl
+  Fedora/RHEL:   sudo dnf install openssl
+  macOS:         brew install openssl
+EOF
+  exit 1
+fi
+
 cp "$postgres_example" "$postgres_env"
 cp "$synctv_example" "$synctv_env"
 

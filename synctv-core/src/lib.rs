@@ -65,7 +65,6 @@ fn default_jwt_crypto_provider() -> &'static jsonwebtoken::crypto::CryptoProvide
     }
 }
 
-pub mod bench_support;
 pub mod bootstrap;
 pub mod cache;
 pub mod config;

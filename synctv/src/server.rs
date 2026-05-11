@@ -188,33 +188,11 @@ impl ManagementProxySliceCacheRuntime {
 #[async_trait]
 impl synctv_management::service::ManagementSliceCacheRuntime for ManagementProxySliceCacheRuntime {
     fn stats(&self) -> synctv_management::service::ManagementSliceCacheStats {
-        let stats = self.cache.stats();
-        synctv_management::service::ManagementSliceCacheStats {
-            engine_enabled: stats.engine_enabled,
-            backend: stats.backend,
-            file_cache_dir: stats.file_cache_dir,
-            slice_size: stats.slice_size,
-            max_cache_size: stats.max_cache_size,
-            segment_ttl_secs: stats.segment_ttl_secs,
-            stale_max_age_secs: stats.stale_max_age_secs,
-            stale_while_revalidate: stats.stale_while_revalidate,
-            eviction_interval_secs: stats.eviction_interval_secs,
-            watermark_ratio: stats.watermark_ratio,
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
-        }
+        self.cache.stats()
     }
 
     async fn purge_all(&self) -> synctv_management::service::ManagementSliceCachePurgeResult {
-        let result = self.cache.purge_all().await;
-        synctv_management::service::ManagementSliceCachePurgeResult {
-            removed_entries: result.removed_entries,
-            freed_bytes: result.freed_bytes,
-        }
+        self.cache.purge_all().await
     }
 
     async fn evict_expired_entries(&self) -> u64 {

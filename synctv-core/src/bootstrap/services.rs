@@ -117,8 +117,8 @@ pub struct Services {
 
 #[derive(Clone, Default)]
 pub struct InitServicesOptions {
-    pub provider_test_address_overrides: HashMap<String, SocketAddr>,
-    pub credential_encryption_hex_key_override: Option<String>,
+    pub provider_address_overrides: HashMap<String, SocketAddr>,
+    pub credential_encryption_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
 }
@@ -127,13 +127,13 @@ impl std::fmt::Debug for InitServicesOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InitServicesOptions")
             .field(
-                "provider_test_address_overrides",
-                &self.provider_test_address_overrides,
+                "provider_address_overrides",
+                &self.provider_address_overrides,
             )
             .field(
-                "credential_encryption_hex_key_override",
+                "credential_encryption_key_override",
                 &self
-                    .credential_encryption_hex_key_override
+                    .credential_encryption_key_override
                     .as_ref()
                     .map(|_| "<redacted>"),
             )
@@ -408,7 +408,7 @@ pub async fn init_services_with_options(
 
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption =
-        init_credential_encryption(options.credential_encryption_hex_key_override.as_deref());
+        init_credential_encryption(options.credential_encryption_key_override.as_deref());
     // Keep a clone for use by media providers (source_config cookie encryption)
     let credential_encryption_for_services = credential_encryption.clone();
 
@@ -465,7 +465,7 @@ pub async fn init_services_with_options(
     let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
         provider_instance_repo.clone(),
         Some(cache_invalidation.clone()),
-        options.provider_test_address_overrides,
+        options.provider_address_overrides,
     ));
 
     // Pre-warm cache with all enabled provider instances from database

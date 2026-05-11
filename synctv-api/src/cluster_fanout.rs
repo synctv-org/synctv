@@ -17,6 +17,10 @@ pub trait ClusterFanoutService: Send + Sync {
 }
 
 pub fn publish_best_effort(cluster_fanout: Arc<dyn ClusterFanoutService>, request: PublishRequest) {
+    if !cluster_fanout.is_distributed_enabled() {
+        return;
+    }
+
     synctv_core::spawn::spawn_monitored("cluster_fanout_best_effort_publish", async move {
         if !cluster_fanout.try_publish(request).await {
             tracing::warn!("Best-effort cluster fanout publish was not accepted");
@@ -230,9 +234,9 @@ pub fn channel_cluster_fanout_service(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_cluster_fanout_service, is_admin_channel_event};
+    use super::{default_cluster_fanout_service, is_admin_channel_event, publish_best_effort};
     use chrono::Utc;
-    use synctv_cluster::sync::{CacheTarget, ClusterEvent};
+    use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
     use synctv_core::models::RoomId;
 
     #[tokio::test]
@@ -242,6 +246,22 @@ mod tests {
         assert!(
             !service.is_distributed_enabled(),
             "fanout without an outbox must report distributed delivery as disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_best_effort_publish_skips_disabled_fanout() {
+        let service = default_cluster_fanout_service(None, false);
+
+        publish_best_effort(
+            service,
+            PublishRequest {
+                event: ClusterEvent::CacheInvalidate {
+                    event_id: "disabled-best-effort".to_string(),
+                    targets: vec![CacheTarget::All],
+                    timestamp: Utc::now(),
+                },
+            },
         );
     }
 

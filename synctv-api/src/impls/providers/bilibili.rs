@@ -78,6 +78,7 @@ impl BilibiliApiImpl {
     async fn resolve_credential(
         &self,
         caller_user_id: &UserId,
+        request_context: Option<&ExecutionControl>,
     ) -> Result<Option<ResolvedBilibiliCredential>, synctv_core::provider::ProviderError> {
         let server_id = UserProviderCredential::bilibili_server_id();
         let cred = self
@@ -108,7 +109,7 @@ impl BilibiliApiImpl {
 
         if let Some(access_service) = &self.access_service {
             let access = access_service
-                .bilibili_access(*caller_user_id, None)
+                .bilibili_access(*caller_user_id, request_context)
                 .await?;
             return Ok(access.authenticated.then_some(ResolvedBilibiliCredential {
                 cookies: access.cookies,
@@ -200,7 +201,9 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
-        let credential = self.resolve_credential(caller_user_id).await?;
+        let credential = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?;
         let effective_instance_name = Self::resolve_effective_instance_name(
             requested_instance_name,
             credential
@@ -514,7 +517,10 @@ impl BilibiliApiImpl {
         requested_instance_name: Option<&str>,
         request_context: Option<&ExecutionControl>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
-        let Some(credential) = self.resolve_credential(caller_user_id).await? else {
+        let Some(credential) = self
+            .resolve_credential(caller_user_id, request_context)
+            .await?
+        else {
             return Ok(UserInfoResponse {
                 is_login: false,
                 username: String::new(),

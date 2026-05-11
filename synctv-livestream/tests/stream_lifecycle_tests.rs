@@ -62,9 +62,7 @@ async fn test_stream_key_validation_structure() {
 #[tokio::test]
 async fn test_stream_lifecycle_states() {
     #[derive(Debug, PartialEq, Clone)]
-    #[allow(dead_code)]
     enum StreamState {
-        Idle,
         Connecting,
         Publishing,
         Stopping,

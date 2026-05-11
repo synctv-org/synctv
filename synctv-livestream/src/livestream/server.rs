@@ -780,7 +780,7 @@ impl LivestreamServer {
                 // detection during the restart window. This prevents false cleanup of
                 // publishers that are temporarily missing from Redis during the
                 // cleanup -> re-register cycle.
-                // Also checked by RtmpAuthCallbackImpl to reject new publications.
+                // Also checked by the application RTMP auth callback to reject new publications.
                 is_restarting_for_hub.store(true, Ordering::Release);
 
                 // Stop all managed pull/external-publish streams BEFORE restart.

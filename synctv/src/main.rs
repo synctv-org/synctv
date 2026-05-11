@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
 
@@ -16,43 +14,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod admin_client;
-mod app;
-mod bootstrap;
-mod cli;
-mod cluster_bridge;
-mod migrations;
-mod outbox_dispatcher;
-mod rtmp_auth;
-mod server;
-mod shutdown;
-
 use anyhow::Result;
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    Box::pin(cli::execute(clap::Parser::parse())).await
-}
-
-pub(crate) fn install_panic_hook(include_backtrace: bool) {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        default_hook(panic_info);
-
-        if include_backtrace {
-            eprintln!("Backtrace:\n{}", std::backtrace::Backtrace::force_capture());
-        }
-    }));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::install_panic_hook;
-
-    #[test]
-    fn install_panic_hook_is_repeatable_for_both_modes() {
-        install_panic_hook(false);
-        install_panic_hook(true);
-        install_panic_hook(false);
-    }
+    Box::pin(synctv::cli::execute(synctv::cli::Cli::parse())).await
 }

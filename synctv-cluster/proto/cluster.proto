@@ -23,10 +23,6 @@ service ClusterService {
     rpc GetUserOnlineStatus(GetUserOnlineStatusRequest) returns (GetUserOnlineStatusResponse);
     rpc GetRoomConnections(GetRoomConnectionsRequest) returns (GetRoomConnectionsResponse);
 
-    // Proxy slice cache management - ACTIVE endpoints for management fan-out
-    rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (SliceCacheStatsResponse);
-    rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (PurgeSliceCacheResponse);
-    rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (EvictExpiredSliceCacheResponse);
 }
 
 // Node information
@@ -72,49 +68,4 @@ message RoomConnection {
     string node_id = 2;
     int64 connected_at = 3;
     int64 last_activity = 4;
-}
-
-message GetSliceCacheStatsRequest {}
-
-message PurgeSliceCacheRequest {}
-
-message EvictExpiredSliceCacheRequest {}
-
-message SliceCacheConfigInfo {
-    bool engine_enabled = 1;
-    string backend = 3;
-    string file_cache_dir = 4;
-    uint64 slice_size = 5;
-    uint64 max_cache_size = 6;
-    uint64 segment_ttl_secs = 9;
-    uint64 stale_max_age_secs = 10;
-    bool stale_while_revalidate = 11;
-    uint64 eviction_interval_secs = 12;
-    double watermark_ratio = 13;
-}
-
-message SliceCacheStatsResponse {
-    string node_id = 1;
-    SliceCacheConfigInfo config = 2;
-    uint64 current_size_bytes = 3;
-    uint64 entry_count = 4;
-    uint64 metadata_entries = 5;
-    uint64 updating_entries = 6;
-    uint64 lock_count = 7;
-    double usage_ratio = 8;
-}
-
-message PurgeSliceCacheResponse {
-    string node_id = 1;
-    bool success = 2;
-    uint64 removed_entries = 3;
-    uint64 freed_bytes = 4;
-    SliceCacheStatsResponse stats = 5;
-}
-
-message EvictExpiredSliceCacheResponse {
-    string node_id = 1;
-    bool success = 2;
-    uint64 removed_expired_entries = 3;
-    SliceCacheStatsResponse stats = 4;
 }

@@ -69,7 +69,7 @@ fn effective_user_agent(headers: &HashMap<String, String>) -> &str {
 /// Shared HTTP client for all Alist requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
-    LazyLock::new(synctv_common::http::build_provider_client);
+    LazyLock::new(crate::build_provider_http_client);
 
 fn shared_client() -> Result<Client, AlistError> {
     SHARED_CLIENT

@@ -50,7 +50,7 @@ const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 /// Shared HTTP client for all Bilibili requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
-    synctv_common::http::SsrfSafeClientBuilder::provider()
+    crate::provider_http_client_builder()
         .user_agent(USER_AGENT)
         .build()
 });
@@ -144,7 +144,6 @@ impl BilibiliEndpoints {
         Self::join(&self.passport_base, path)
     }
 
-    #[allow(dead_code)]
     fn live_api_url(&self, path: &str) -> String {
         Self::join(&self.live_api_base, path)
     }
@@ -712,8 +711,6 @@ impl BilibiliClient {
         #[derive(Deserialize)]
         struct LoginData {
             code: u32,
-            #[allow(dead_code)]
-            message: String,
         }
 
         #[derive(Deserialize)]
@@ -1783,14 +1780,16 @@ impl BilibiliClient {
     pub async fn parse_live_page(&self, room_id: u64) -> Result<VideoPageInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
+        let room_info_url = self.endpoints.live_api_url("/room/v1/Room/get_info");
+        let master_info_url = self.endpoints.live_api_url("/live_user/v1/Master/info");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
+            let room_info_url = room_info_url.clone();
+            let master_info_url = master_info_url.clone();
             async move {
-                let mut req = client
-                    .get("https://api.live.bilibili.com/room/v1/Room/get_info")
-                    .query(&[("room_id", room_id)]);
+                let mut req = client.get(room_info_url).query(&[("room_id", room_id)]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -1811,9 +1810,7 @@ impl BilibiliClient {
                 // Fetch streamer name from master info API using uid from room info
                 let uname = {
                     let uid = data.uid;
-                    let mut master_req = client
-                        .get("https://api.live.bilibili.com/live_user/v1/Master/info")
-                        .query(&[("uid", uid)]);
+                    let mut master_req = client.get(master_info_url).query(&[("uid", uid)]);
                     master_req = master_req.header("Referer", REFERER);
                     if let Some(ref cookies) = cookie_header {
                         master_req = master_req.header("Cookie", cookies.as_str());
@@ -1863,23 +1860,25 @@ impl BilibiliClient {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let room_id_str = room_id.to_string();
+        let play_info_url = self
+            .endpoints
+            .live_api_url("/xlive/web-room/v2/index/getRoomPlayInfo");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             let room_id_str = room_id_str.clone();
+            let play_info_url = play_info_url.clone();
             async move {
-                let mut req = client
-                    .get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
-                    .query(&[
-                        ("room_id", room_id_str.as_str()),
-                        ("protocol", "0,1"),
-                        ("format", "0,1,2"),
-                        ("codec", "0,1"),
-                        ("qn", "10000"),
-                        ("platform", "web"),
-                        ("ptype", "8"),
-                    ]);
+                let mut req = client.get(play_info_url).query(&[
+                    ("room_id", room_id_str.as_str()),
+                    ("protocol", "0,1"),
+                    ("format", "0,1,2"),
+                    ("codec", "0,1"),
+                    ("qn", "10000"),
+                    ("platform", "web"),
+                    ("ptype", "8"),
+                ]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -1949,14 +1948,16 @@ impl BilibiliClient {
     pub async fn get_live_danmu_info(&self, room_id: u64) -> Result<LiveDanmuInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
+        let danmu_info_url = self
+            .endpoints
+            .live_api_url("/xlive/web-room/v1/index/getDanmuInfo");
 
         with_retry(|| {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
+            let danmu_info_url = danmu_info_url.clone();
             async move {
-                let mut req = client
-                    .get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
-                    .query(&[("id", room_id)]);
+                let mut req = client.get(danmu_info_url).query(&[("id", room_id)]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());

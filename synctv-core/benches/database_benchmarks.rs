@@ -12,6 +12,7 @@
 //! - Index lookup: < 1ms
 
 #![allow(clippy::unwrap_used)]
+use std::env;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,6 @@ use chrono::Utc;
 use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 use sqlx::PgPool;
 use synctv_core::{
-    bench_support,
     models::{
         id::PlaylistId, media::Media, playlist::Playlist, MediaId, PageParams, Room, RoomId,
         RoomListQuery, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
@@ -75,8 +75,12 @@ fn print_benchmark_list() {
     }
 }
 
+fn is_nextest_list_mode() -> bool {
+    env::args().any(|arg| arg == "--list")
+}
+
 fn main() {
-    if bench_support::is_nextest_list_mode() {
+    if is_nextest_list_mode() {
         print_benchmark_list();
         return;
     }

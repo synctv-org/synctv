@@ -43,3 +43,17 @@ pub use credential::{
     CredentialData, CredentialStorage, CredentialStorageError, FieldEncryption,
     InMemoryCredentialStorage, ProviderType, Result as CredentialResult, StoredCredential,
 };
+
+/// Build the shared HTTP client configuration used by local media-provider clients.
+#[must_use]
+pub fn provider_http_client_builder() -> synctv_common::http::SsrfSafeClientBuilder {
+    synctv_common::http::SsrfSafeClientBuilder::new()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .request_timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(10)
+}
+
+/// Build a media-provider HTTP client.
+pub fn build_provider_http_client() -> Result<reqwest::Client, reqwest::Error> {
+    provider_http_client_builder().build()
+}

@@ -34,6 +34,8 @@ If you have not chosen a deployment model yet, start with [Choose a Deployment P
 
 Download the minimum required production files into an empty directory:
 
+Before running the init script, make sure the host has Docker Compose and `openssl` available. The script uses `openssl` to generate PostgreSQL, JWT, cluster, credential-encryption, and OPAQUE secrets.
+
 <Code
   code={[
     'mkdir synctv-compose',
@@ -84,7 +86,7 @@ Open `http://localhost:8080` in a browser. The default root username is `root`; 
 
 Docker Compose loads required `.env.postgres` and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades. If either file is missing, `docker compose config` fails immediately.
 
-When upgrading, update the image tag in `docker-compose.yml` or pin the desired image in your own Compose override file.
+When upgrading, update the SyncTV image tag in `docker-compose.yml` or pin the desired image in your own Compose override file. Treat PostgreSQL and Redis image tag changes as separate data-service upgrades: back up the volumes first, review upstream release notes, and keep rollback tags available.
 
 ## Development Compose
 

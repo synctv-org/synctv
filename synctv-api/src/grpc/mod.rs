@@ -13,7 +13,6 @@ use tonic::codec::CompressionEncoding;
 
 pub mod admin_service;
 pub mod client_service;
-pub mod interceptors;
 pub mod notification_service;
 pub mod oauth2_service;
 
@@ -23,8 +22,8 @@ pub mod providers;
 
 pub use admin_service::AdminServiceImpl;
 pub use client_service::{ClientServiceConfig, ClientServiceImpl};
-pub use interceptors::ClusterAuthInterceptor;
 pub use notification_service::NotificationServiceImpl;
+pub use synctv_cluster::grpc::ClusterAuthInterceptor;
 
 /// Trait to apply gRPC message size limits to tonic service servers.
 ///
@@ -107,6 +106,7 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proxy::grpc::ProxySliceCacheServiceServer<T>);
 
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///
@@ -154,59 +154,6 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
             tonic::Status::permission_denied("You do not have permission to perform this action")
         }
     }
-}
-
-/// Map a `ProviderError` to an appropriate gRPC status code.
-///
-/// Uses typed matching on the `ProviderError` enum instead of
-/// keyword-based string heuristics.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> tonic::Status {
-    use synctv_core::provider::ProviderError;
-    let msg = err.to_string();
-    let status = match &err {
-        ProviderError::NetworkError(_) | ProviderError::ApiError(_) => {
-            tonic::Status::unavailable(msg.clone())
-        }
-        ProviderError::UpstreamHttp { status, .. } => {
-            if *status == 401 || *status == 403 {
-                tonic::Status::unauthenticated("Provider authentication failed")
-            } else if *status == 404 {
-                tonic::Status::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND)
-            } else if *status == 408 || *status == 429 {
-                tonic::Status::unavailable("Upstream provider service is temporarily unavailable.")
-            } else if (400..500).contains(status) {
-                tonic::Status::invalid_argument("Upstream provider rejected the request.")
-            } else {
-                tracing::warn!(status, "Upstream provider unavailable");
-                tonic::Status::unavailable("Upstream provider service is temporarily unavailable.")
-            }
-        }
-        ProviderError::ParseError(_)
-        | ProviderError::InvalidConfig(_)
-        | ProviderError::InvalidUrl(_)
-        | ProviderError::MissingField(_)
-        | ProviderError::InvalidCredentialType
-        | ProviderError::UnsupportedFormat(_) => tonic::Status::invalid_argument(msg.clone()),
-        ProviderError::NotFound
-        | ProviderError::InstanceNotFound(_)
-        | ProviderError::MissingInstance
-        | ProviderError::CredentialNotFound(_) => tonic::Status::not_found(msg.clone()),
-        ProviderError::AuthRequired | ProviderError::CredentialRequired => {
-            tonic::Status::unauthenticated(msg.clone())
-        }
-        ProviderError::CredentialExpired(_) => tonic::Status::unauthenticated(msg.clone()),
-        ProviderError::RouteRegistrationFailed(_)
-        | ProviderError::IoError(_)
-        | ProviderError::JsonError(_)
-        | ProviderError::EncryptionRequired(_)
-        | ProviderError::Internal(_) => {
-            tracing::error!("Provider internal error: {msg}");
-            tonic::Status::internal("Internal error")
-        }
-    };
-    drop(err);
-    status
 }
 
 /// Extract the effective client IP for gRPC requests.
@@ -291,6 +238,10 @@ const fn should_register_livestream_relay_service(
         && live_streaming_infrastructure_available
 }
 
+const fn should_register_proxy_slice_cache_service(config: &synctv_core::Config) -> bool {
+    config.cluster_runtime_enabled() && !config.server.cluster_secret.is_empty()
+}
+
 const fn should_mark_livestream_relay_serving(
     config: &synctv_core::Config,
     live_streaming_infrastructure_available: bool,
@@ -344,6 +295,7 @@ struct GrpcHealthRegistrationState {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
 }
 
@@ -360,6 +312,7 @@ struct GrpcOptionalRegistrations {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
 }
 
@@ -380,17 +333,10 @@ const fn grpc_service_registration_plan(
             oauth2_registered: optional.oauth2_registered,
             provider_services_registered: optional.provider_services_registered,
             cluster_service_registered: optional.cluster_service_registered,
+            proxy_slice_cache_registered: optional.proxy_slice_cache_registered,
             livestream_relay_registered: optional.livestream_relay_registered,
         },
     }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-const fn effective_grpc_request_timeout() -> Option<std::time::Duration> {
-    // Tonic's server-wide timeout applies to the entire RPC lifetime, which
-    // breaks long-lived streaming calls such as MessageStream. Keep it disabled
-    // at the transport level and enforce timeouts in unary business paths.
-    None
 }
 
 const fn grpc_unary_request_timeout() -> std::time::Duration {
@@ -497,6 +443,13 @@ async fn set_registered_grpc_services_serving(
             >>()
             .await;
     }
+    if state.proxy_slice_cache_registered {
+        health_reporter
+            .set_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
+                synctv_proxy::grpc::ProxySliceCacheServiceImpl,
+            >>()
+            .await;
+    }
     if state.livestream_relay_registered {
         health_reporter
             .set_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
@@ -592,6 +545,13 @@ async fn set_registered_grpc_services_not_serving(
             >>()
             .await;
     }
+    if state.proxy_slice_cache_registered {
+        health_reporter
+            .set_not_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
+                synctv_proxy::grpc::ProxySliceCacheServiceImpl,
+            >>()
+            .await;
+    }
     if state.livestream_relay_registered {
         health_reporter
             .set_not_serving::<synctv_livestream::grpc::StreamRelayServiceServer<
@@ -668,53 +628,6 @@ fn proxy_slice_cache_config_from_app_config(
             config.proxy_slice_cache.eviction_interval_seconds,
         ),
         watermark_ratio: config.proxy_slice_cache.watermark_ratio,
-    }
-}
-
-struct ProxySliceCacheRuntime {
-    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
-}
-
-impl ProxySliceCacheRuntime {
-    fn new(cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> Self {
-        Self { cache }
-    }
-}
-
-#[async_trait::async_trait]
-impl synctv_cluster::grpc::SliceCacheRuntime for ProxySliceCacheRuntime {
-    fn stats(&self) -> synctv_cluster::grpc::ClusterSliceCacheStats {
-        let stats = self.cache.stats();
-        synctv_cluster::grpc::ClusterSliceCacheStats {
-            engine_enabled: stats.engine_enabled,
-            backend: stats.backend,
-            file_cache_dir: stats.file_cache_dir,
-            slice_size: stats.slice_size,
-            max_cache_size: stats.max_cache_size,
-            segment_ttl_secs: stats.segment_ttl_secs,
-            stale_max_age_secs: stats.stale_max_age_secs,
-            stale_while_revalidate: stats.stale_while_revalidate,
-            eviction_interval_secs: stats.eviction_interval_secs,
-            watermark_ratio: stats.watermark_ratio,
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
-        }
-    }
-
-    async fn purge_all(&self) -> synctv_cluster::grpc::ClusterSliceCachePurgeResult {
-        let result = self.cache.purge_all().await;
-        synctv_cluster::grpc::ClusterSliceCachePurgeResult {
-            removed_entries: result.removed_entries,
-            freed_bytes: result.freed_bytes,
-        }
-    }
-
-    async fn evict_expired_entries(&self) -> u64 {
-        self.cache.evict_expired_entries().await
     }
 }
 
@@ -1076,6 +989,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             oauth2_registered: oauth2_service_registered,
             provider_services_registered,
             cluster_service_registered,
+            proxy_slice_cache_registered: should_register_proxy_slice_cache_service(config),
             livestream_relay_registered: should_mark_livestream_relay_serving(
                 config,
                 live_streaming_infrastructure.is_some(),
@@ -1335,10 +1249,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let cluster_server =
             synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone(), cluster_node_id.clone())
                 .with_cluster_secret(config.server.cluster_secret.clone())
-                .with_connection_runtime(connection_service.clone())
-                .with_slice_cache_runtime(Arc::new(ProxySliceCacheRuntime::new(
-                    shared_http_app_state.proxy_slice_cache.clone(),
-                )));
+                .with_connection_runtime(connection_service.clone());
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1350,6 +1261,22 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         unreachable!(
             "cluster.enabled=true without NodeRegistry must be rejected before gRPC service assembly"
         );
+    }
+
+    if grpc_registration_plan
+        .health_state
+        .proxy_slice_cache_registered
+    {
+        let service = synctv_proxy::grpc::ProxySliceCacheServiceImpl::new(
+            shared_http_app_state.proxy_slice_cache.clone(),
+            cluster_node_id.clone(),
+        )
+        .with_cluster_secret(config.server.cluster_secret.clone());
+        routes.add_service(
+            synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        tracing::info!("Proxy slice-cache gRPC service registered with shared-secret auth");
     }
 
     if grpc_registration_plan
@@ -1470,16 +1397,16 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fallback_http_app_state, cluster_node_id, effective_grpc_request_timeout,
-        extract_client_ip, grpc_service_registration_plan, grpc_unary_request_timeout,
-        map_api_error, map_provider_error, resolve_provider_proxy_runtime,
-        set_registered_grpc_services_not_serving, set_registered_grpc_services_serving,
-        should_mark_cluster_service_serving, should_mark_email_service_serving,
-        should_mark_livestream_relay_serving, should_mark_notification_service_serving,
-        should_mark_oauth2_service_serving, should_mark_provider_services_serving,
-        should_register_cluster_grpc_service, should_register_email_service,
-        should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
-        FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
+        build_fallback_http_app_state, cluster_node_id, extract_client_ip,
+        grpc_service_registration_plan, grpc_unary_request_timeout, map_api_error,
+        resolve_provider_proxy_runtime, set_registered_grpc_services_not_serving,
+        set_registered_grpc_services_serving, should_mark_cluster_service_serving,
+        should_mark_email_service_serving, should_mark_livestream_relay_serving,
+        should_mark_notification_service_serving, should_mark_oauth2_service_serving,
+        should_mark_provider_services_serving, should_register_cluster_grpc_service,
+        should_register_email_service, should_register_livestream_relay_service,
+        validate_cluster_grpc_runtime_requirements, FallbackHttpAppStateDeps,
+        GrpcHealthRegistrationState,
     };
     use crate::runtime::{
         RealtimeConnectionService, RealtimeDeliveryOutcome, RealtimeDeliveryRequirement,
@@ -2270,6 +2197,7 @@ mod tests {
                 oauth2_registered: true,
                 provider_services_registered: false,
                 cluster_service_registered: true,
+                proxy_slice_cache_registered: true,
                 livestream_relay_registered: false,
             },
         );
@@ -2284,6 +2212,7 @@ mod tests {
         assert!(plan.health_state.oauth2_registered);
         assert!(!plan.health_state.provider_services_registered);
         assert!(plan.health_state.cluster_service_registered);
+        assert!(plan.health_state.proxy_slice_cache_registered);
         assert!(!plan.health_state.livestream_relay_registered);
     }
 
@@ -2312,15 +2241,6 @@ mod tests {
             },
         )
         .satisfies(requirement));
-    }
-
-    #[test]
-    fn test_effective_grpc_request_timeout_is_disabled_for_streaming_rpcs() {
-        assert_eq!(
-            effective_grpc_request_timeout(),
-            None,
-            "server-wide tonic timeout must stay disabled because it aborts long-lived streaming RPCs"
-        );
     }
 
     #[test]
@@ -2362,6 +2282,7 @@ mod tests {
             oauth2_registered: false,
             provider_services_registered: false,
             cluster_service_registered: false,
+            proxy_slice_cache_registered: false,
             livestream_relay_registered: false,
         };
 
@@ -2437,73 +2358,6 @@ mod tests {
             )
             .await,
             Ok(ServingStatus::NotServing),
-        );
-    }
-
-    #[test]
-    fn test_map_provider_error_sanitizes_upstream_http_url() {
-        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
-            status: 503,
-            url: "https://provider.example/internal/path?token=secret".to_string(),
-        });
-
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(
-            status.message(),
-            "Upstream provider service is temporarily unavailable."
-        );
-    }
-
-    #[test]
-    fn test_map_provider_error_maps_upstream_http_400_to_invalid_argument() {
-        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
-            status: 400,
-            url: "https://provider.example/internal/path?token=secret".to_string(),
-        });
-
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
-        assert_eq!(status.message(), "Upstream provider rejected the request.");
-    }
-
-    #[test]
-    fn test_map_provider_error_maps_upstream_http_404_to_not_found() {
-        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
-            status: 404,
-            url: "https://provider.example/internal/path?token=secret".to_string(),
-        });
-
-        assert_eq!(status.code(), tonic::Code::NotFound);
-        assert_eq!(
-            status.message(),
-            synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND
-        );
-    }
-
-    #[test]
-    fn test_map_provider_error_maps_upstream_http_408_to_unavailable() {
-        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
-            status: 408,
-            url: "https://provider.example/internal/path?token=secret".to_string(),
-        });
-
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(
-            status.message(),
-            "Upstream provider service is temporarily unavailable."
-        );
-    }
-
-    #[test]
-    fn test_map_provider_error_maps_upstream_http_429_to_unavailable() {
-        let status = map_provider_error(synctv_core::provider::ProviderError::UpstreamHttp {
-            status: 429,
-            url: "https://provider.example/internal/path?token=secret".to_string(),
-        });
-
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert_eq!(
-            status.message(),
-            "Upstream provider service is temporarily unavailable."
         );
     }
 }

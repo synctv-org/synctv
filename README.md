@@ -43,6 +43,7 @@ docker compose -f docker-compose.dev.yml up -d
 Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets:
 
 ```bash
+# Requires Docker Compose and openssl.
 ./scripts/init-compose-env.sh
 
 # Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting.

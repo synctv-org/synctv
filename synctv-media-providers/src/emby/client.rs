@@ -63,7 +63,7 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
 /// Shared HTTP client for all Emby requests (connection pooling).
 /// SSRF-safe: uses the common DNS resolver and disables redirects.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
-    LazyLock::new(synctv_common::http::build_provider_client);
+    LazyLock::new(crate::build_provider_http_client);
 
 static API_PREFIX_CACHE: LazyLock<moka::future::Cache<String, String>> = LazyLock::new(|| {
     moka::future::Cache::builder()

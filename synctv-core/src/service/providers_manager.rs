@@ -36,7 +36,7 @@ fn provider_http_client_from_config(
     let connect_timeout_seconds = connect_timeout_seconds
         .unwrap_or_else(|| LocalProviderHttpConfig::default().connect_timeout_seconds);
 
-    let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+    let client = synctv_media_providers::provider_http_client_builder()
         .request_timeout(std::time::Duration::from_secs(request_timeout_seconds))
         .read_timeout(std::time::Duration::from_secs(request_timeout_seconds))
         .connect_timeout(std::time::Duration::from_secs(connect_timeout_seconds))
@@ -100,7 +100,7 @@ impl ProvidersManager {
     /// Create a new `ProvidersManager`
     #[must_use]
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
-        let default_provider_http_client = synctv_common::http::build_provider_client()
+        let default_provider_http_client = synctv_media_providers::build_provider_http_client()
             .expect("default provider HTTP client should build");
         Self::new_with_provider_http_client(instance_manager, default_provider_http_client)
     }
@@ -572,7 +572,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        let client = synctv_media_providers::provider_http_client_builder()
             .connect_timeout(std::time::Duration::from_secs(4))
             .request_timeout(std::time::Duration::from_secs(12))
             .build()
@@ -590,7 +590,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        let client = synctv_media_providers::provider_http_client_builder()
             .connect_timeout(std::time::Duration::from_secs(4))
             .request_timeout(std::time::Duration::from_secs(12))
             .build()
@@ -622,7 +622,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_common::http::SsrfSafeClientBuilder::provider()
+        let client = synctv_media_providers::provider_http_client_builder()
             .connect_timeout(std::time::Duration::from_secs(4))
             .request_timeout(std::time::Duration::from_secs(12))
             .build()

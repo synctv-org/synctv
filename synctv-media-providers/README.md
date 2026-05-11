@@ -55,6 +55,12 @@ This separation provides several benefits:
 
 ## Usage
 
+This crate exposes the internal remote-provider wire protocol under the
+`synctv.media.*` protobuf packages in `synctv-media-providers/proto/`. That
+protocol is used by `media-provider-server` and SyncTV remote provider
+instances. It is separate from the public SyncTV provider API in
+`synctv-proto/proto/providers`, which is exposed by the main SyncTV API server.
+
 ### As Library
 
 ```rust
@@ -85,24 +91,27 @@ PROVIDER_LISTEN_ADDR="0.0.0.0:50051" \
 | Provider | HTTP Client | gRPC Server | Features |
 |----------|-------------|-------------|----------|
 | **Alist** | Complete | Complete | Network storage, video preview |
-| **Bilibili** | Complete | Stub | Video/anime metadata and playback helpers |
-| **Emby** | Complete | Stub | Media server playback helpers |
+| **Bilibili** | Complete | Complete | Video/anime metadata, playback helpers, login, subtitles, and live-stream helpers |
+| **Emby** | Complete | Complete | Media server browsing, playback, session, and playback-report helpers |
 
 ### Implementation Details
 
 **Alist**:
-- HTTP client with login, fs_get, fs_list, fs_other
-- gRPC server wrapping HTTP client
+- HTTP client with login, me, fs_get, fs_list, fs_other, and fs_search
+- gRPC server wrapping HTTP client with request validation
 - Remote gRPC client calls in ProviderClient
-- Me and FsSearch endpoints are stubbed
 
 **Bilibili**:
-- HTTP client with BVID extraction and video info
-- gRPC server methods are stubbed
+- HTTP client with login, video/anime parsing, playback URLs, DASH metadata,
+  subtitles, user info, URL matching, live streams, and live danmu info
+- gRPC server wrapping HTTP client with request validation and provider-specific
+  error mapping
 
 **Emby**:
-- HTTP client with authentication and playback info
-- gRPC server methods are stubbed
+- HTTP client with authentication, item browsing, playback info, logout,
+  session cleanup, and playback reporting
+- gRPC server wrapping HTTP client with request validation and provider-specific
+  error mapping
 
 ## Deployment Patterns
 
@@ -185,9 +194,9 @@ Mix of local and remote providers:
 }
 ```
 
-## Benefits vs Go Version
+## Design Benefits
 
-Compared to `/Users/zjr/workspace/go/synctv/vendors`:
+Compared to earlier provider implementations:
 
 1. **Type Safety**: Rust's type system catches errors at compile time
 2. **Zero-Cost Abstractions**: No runtime overhead from trait usage

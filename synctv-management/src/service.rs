@@ -1,9 +1,12 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use tonic::metadata::MetadataValue;
+use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
 
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
@@ -59,6 +62,12 @@ use synctv_proto::{
     },
 };
 
+type ProxySliceCacheClient =
+    synctv_proxy::grpc::ProxySliceCacheServiceClient<tonic::transport::Channel>;
+
+const SLICE_CACHE_REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SLICE_CACHE_REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
 struct ValidatedManagementUser {
     user_id: UserId,
     role: CoreUserRole,
@@ -69,31 +78,8 @@ struct BatchUserResolution {
     failures: Vec<admin_proto::BatchResultItem>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ManagementSliceCacheStats {
-    pub engine_enabled: bool,
-    pub backend: String,
-    pub file_cache_dir: Option<String>,
-    pub slice_size: u64,
-    pub max_cache_size: u64,
-    pub segment_ttl_secs: u64,
-    pub stale_max_age_secs: u64,
-    pub stale_while_revalidate: bool,
-    pub eviction_interval_secs: u64,
-    pub watermark_ratio: f64,
-    pub current_size_bytes: u64,
-    pub entry_count: u64,
-    pub metadata_entries: u64,
-    pub updating_entries: u64,
-    pub lock_count: u64,
-    pub usage_ratio: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ManagementSliceCachePurgeResult {
-    pub removed_entries: u64,
-    pub freed_bytes: u64,
-}
+pub type ManagementSliceCacheStats = synctv_proxy::slice_cache::SliceCacheStats;
+pub type ManagementSliceCachePurgeResult = synctv_proxy::slice_cache::SliceCachePurgeResult;
 
 #[tonic::async_trait]
 pub trait ManagementSliceCacheRuntime: Send + Sync {
@@ -715,8 +701,8 @@ impl ManagementServiceImpl {
         SliceCacheNodeFailure { node_id, error }
     }
 
-    fn cluster_slice_cache_stats_to_management(
-        stats: synctv_cluster::grpc::synctv::cluster::SliceCacheStatsResponse,
+    fn proxy_slice_cache_stats_to_management(
+        stats: synctv_proxy::grpc::proto::SliceCacheStatsResponse,
     ) -> SliceCacheStatsResponse {
         SliceCacheStatsResponse {
             config: stats.config.map(|config| SliceCacheConfigInfo {
@@ -741,6 +727,67 @@ impl ManagementServiceImpl {
         }
     }
 
+    fn proxy_slice_cache_uri(address: &str) -> String {
+        if address.starts_with("http://") || address.starts_with("https://") {
+            address.to_string()
+        } else {
+            format!("http://{address}")
+        }
+    }
+
+    async fn proxy_slice_cache_client(
+        &self,
+        address: &str,
+    ) -> Result<ProxySliceCacheClient, Status> {
+        let endpoint = Endpoint::from_shared(Self::proxy_slice_cache_uri(address))
+            .map_err(|error| Status::unavailable(format!("invalid node address: {error}")))?
+            .connect_timeout(SLICE_CACHE_REMOTE_CONNECT_TIMEOUT)
+            .timeout(SLICE_CACHE_REMOTE_REQUEST_TIMEOUT);
+        let channel: Channel = endpoint.connect().await.map_err(|error| {
+            Status::unavailable(format!("failed to connect to {address}: {error}"))
+        })?;
+        Ok(
+            synctv_proxy::grpc::ProxySliceCacheServiceClient::new(channel)
+                .max_decoding_message_size(self.config.server.grpc_max_message_size_bytes)
+                .max_encoding_message_size(self.config.server.grpc_max_message_size_bytes),
+        )
+    }
+
+    fn attach_cluster_secret<T>(&self, request: &mut Request<T>) -> Result<(), Status> {
+        if self.config.server.cluster_secret.is_empty() {
+            return Err(Status::failed_precondition(
+                "cluster secret is required for remote slice cache operations",
+            ));
+        }
+        let value = self
+            .config
+            .server
+            .cluster_secret
+            .parse::<MetadataValue<tonic::metadata::Ascii>>()
+            .map_err(|_| Status::failed_precondition("invalid cluster secret configuration"))?;
+        request.metadata_mut().insert("x-cluster-secret", value);
+        Ok(())
+    }
+
+    async fn remote_slice_cache_stats(
+        &self,
+        node: &synctv_cluster::discovery::NodeInfo,
+    ) -> Result<SliceCacheStatsResponse, Status> {
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut request = Request::new(synctv_proxy::grpc::proto::GetSliceCacheStatsRequest {});
+        self.attach_cluster_secret(&mut request)?;
+        client
+            .get_slice_cache_stats(request)
+            .await
+            .map(|response| Self::proxy_slice_cache_stats_to_management(response.into_inner()))
+            .map_err(|error| {
+                Status::unavailable(format!(
+                    "slice cache stats RPC failed for node '{}': {error}",
+                    node.node_id
+                ))
+            })
+    }
+
     async fn slice_cache_stats_for_target(
         &self,
         target_node_id: &str,
@@ -749,11 +796,11 @@ impl ManagementServiceImpl {
             return Ok(self.slice_cache_stats_response());
         }
         let cluster_client = self.require_cluster_client(target_node_id)?;
-        cluster_client
-            .get_slice_cache_stats_node(target_node_id)
+        let node = cluster_client
+            .resolve_routable_node(target_node_id)
             .await
-            .map(Self::cluster_slice_cache_stats_to_management)
-            .map_err(|error| Status::unavailable(error.to_string()))
+            .map_err(|error| Status::unavailable(error.to_string()))?;
+        self.remote_slice_cache_stats(&node).await
     }
 
     async fn collect_slice_cache_stats(
@@ -765,22 +812,29 @@ impl ManagementServiceImpl {
             let mut nodes = vec![self.slice_cache_stats_response()];
             let mut failures = Vec::new();
             if let Some(cluster_client) = &self.cluster_client {
-                let remote = cluster_client
-                    .fan_out_slice_cache_stats()
+                let remote_nodes = cluster_client
+                    .remote_routable_nodes()
                     .await
                     .map_err(|error| Status::unavailable(error.to_string()))?;
-                nodes.extend(
-                    remote
-                        .data
-                        .into_iter()
-                        .map(Self::cluster_slice_cache_stats_to_management),
-                );
-                failures.extend(
-                    remote
-                        .failures
-                        .into_iter()
-                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
-                );
+                let mut futures = futures::stream::FuturesUnordered::new();
+                for node in remote_nodes {
+                    let service = self.clone();
+                    futures.push(async move {
+                        let node_id = node.node_id.clone();
+                        service
+                            .remote_slice_cache_stats(&node)
+                            .await
+                            .map_err(|error| (node_id, error.to_string()))
+                    });
+                }
+                while let Some(result) = futures.next().await {
+                    match result {
+                        Ok(response) => nodes.push(response),
+                        Err((node_id, error)) => {
+                            failures.push(Self::cluster_failure(node_id, error));
+                        }
+                    }
+                }
             }
             return Ok(GetSliceCacheStatsResponse { nodes, failures });
         }
@@ -806,8 +860,8 @@ impl ManagementServiceImpl {
         })
     }
 
-    fn cluster_purge_to_management(
-        response: synctv_cluster::grpc::synctv::cluster::PurgeSliceCacheResponse,
+    fn proxy_purge_to_management(
+        response: synctv_proxy::grpc::proto::PurgeSliceCacheResponse,
     ) -> PurgeSliceCacheNodeResult {
         PurgeSliceCacheNodeResult {
             node_id: response.node_id,
@@ -816,8 +870,27 @@ impl ManagementServiceImpl {
             freed_bytes: response.freed_bytes,
             stats: response
                 .stats
-                .map(Self::cluster_slice_cache_stats_to_management),
+                .map(Self::proxy_slice_cache_stats_to_management),
         }
+    }
+
+    async fn remote_purge_slice_cache(
+        &self,
+        node: &synctv_cluster::discovery::NodeInfo,
+    ) -> Result<PurgeSliceCacheNodeResult, Status> {
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut request = Request::new(synctv_proxy::grpc::proto::PurgeSliceCacheRequest {});
+        self.attach_cluster_secret(&mut request)?;
+        client
+            .purge_slice_cache(request)
+            .await
+            .map(|response| Self::proxy_purge_to_management(response.into_inner()))
+            .map_err(|error| {
+                Status::unavailable(format!(
+                    "slice cache purge RPC failed for node '{}': {error}",
+                    node.node_id
+                ))
+            })
     }
 
     fn purge_response_from_nodes(
@@ -846,22 +919,29 @@ impl ManagementServiceImpl {
             let mut nodes = vec![self.purge_local_slice_cache().await?];
             let mut failures = Vec::new();
             if let Some(cluster_client) = &self.cluster_client {
-                let remote = cluster_client
-                    .fan_out_purge_slice_cache()
+                let remote_nodes = cluster_client
+                    .remote_routable_nodes()
                     .await
                     .map_err(|error| Status::unavailable(error.to_string()))?;
-                nodes.extend(
-                    remote
-                        .data
-                        .into_iter()
-                        .map(Self::cluster_purge_to_management),
-                );
-                failures.extend(
-                    remote
-                        .failures
-                        .into_iter()
-                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
-                );
+                let mut futures = futures::stream::FuturesUnordered::new();
+                for node in remote_nodes {
+                    let service = self.clone();
+                    futures.push(async move {
+                        let node_id = node.node_id.clone();
+                        service
+                            .remote_purge_slice_cache(&node)
+                            .await
+                            .map_err(|error| (node_id, error.to_string()))
+                    });
+                }
+                while let Some(result) = futures.next().await {
+                    match result {
+                        Ok(response) => nodes.push(response),
+                        Err((node_id, error)) => {
+                            failures.push(Self::cluster_failure(node_id, error));
+                        }
+                    }
+                }
             }
             return Ok(Self::purge_response_from_nodes(nodes, failures));
         }
@@ -869,11 +949,11 @@ impl ManagementServiceImpl {
         let node = match target_node_id {
             Some(node_id) if node_id != self.node_id => {
                 let cluster_client = self.require_cluster_client(&node_id)?;
-                cluster_client
-                    .purge_slice_cache_node(&node_id)
+                let node = cluster_client
+                    .resolve_routable_node(&node_id)
                     .await
-                    .map(Self::cluster_purge_to_management)
-                    .map_err(|error| Status::unavailable(error.to_string()))?
+                    .map_err(|error| Status::unavailable(error.to_string()))?;
+                self.remote_purge_slice_cache(&node).await?
             }
             Some(_) | None => self.purge_local_slice_cache().await?,
         };
@@ -892,8 +972,8 @@ impl ManagementServiceImpl {
         })
     }
 
-    fn cluster_evict_expired_to_management(
-        response: synctv_cluster::grpc::synctv::cluster::EvictExpiredSliceCacheResponse,
+    fn proxy_evict_expired_to_management(
+        response: synctv_proxy::grpc::proto::EvictExpiredSliceCacheResponse,
     ) -> EvictExpiredSliceCacheNodeResult {
         EvictExpiredSliceCacheNodeResult {
             node_id: response.node_id,
@@ -901,8 +981,27 @@ impl ManagementServiceImpl {
             removed_expired_entries: response.removed_expired_entries,
             stats: response
                 .stats
-                .map(Self::cluster_slice_cache_stats_to_management),
+                .map(Self::proxy_slice_cache_stats_to_management),
         }
+    }
+
+    async fn remote_evict_expired_slice_cache(
+        &self,
+        node: &synctv_cluster::discovery::NodeInfo,
+    ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
+        let mut request = Request::new(synctv_proxy::grpc::proto::EvictExpiredSliceCacheRequest {});
+        self.attach_cluster_secret(&mut request)?;
+        client
+            .evict_expired_slice_cache(request)
+            .await
+            .map(|response| Self::proxy_evict_expired_to_management(response.into_inner()))
+            .map_err(|error| {
+                Status::unavailable(format!(
+                    "slice cache evict-expired RPC failed for node '{}': {error}",
+                    node.node_id
+                ))
+            })
     }
 
     fn evict_expired_response_from_nodes(
@@ -929,22 +1028,29 @@ impl ManagementServiceImpl {
             let mut nodes = vec![self.evict_expired_local_slice_cache().await?];
             let mut failures = Vec::new();
             if let Some(cluster_client) = &self.cluster_client {
-                let remote = cluster_client
-                    .fan_out_evict_expired_slice_cache()
+                let remote_nodes = cluster_client
+                    .remote_routable_nodes()
                     .await
                     .map_err(|error| Status::unavailable(error.to_string()))?;
-                nodes.extend(
-                    remote
-                        .data
-                        .into_iter()
-                        .map(Self::cluster_evict_expired_to_management),
-                );
-                failures.extend(
-                    remote
-                        .failures
-                        .into_iter()
-                        .map(|(node_id, error)| Self::cluster_failure(node_id, error)),
-                );
+                let mut futures = futures::stream::FuturesUnordered::new();
+                for node in remote_nodes {
+                    let service = self.clone();
+                    futures.push(async move {
+                        let node_id = node.node_id.clone();
+                        service
+                            .remote_evict_expired_slice_cache(&node)
+                            .await
+                            .map_err(|error| (node_id, error.to_string()))
+                    });
+                }
+                while let Some(result) = futures.next().await {
+                    match result {
+                        Ok(response) => nodes.push(response),
+                        Err((node_id, error)) => {
+                            failures.push(Self::cluster_failure(node_id, error));
+                        }
+                    }
+                }
             }
             return Ok(Self::evict_expired_response_from_nodes(nodes, failures));
         }
@@ -952,11 +1058,11 @@ impl ManagementServiceImpl {
         let node = match target_node_id {
             Some(node_id) if node_id != self.node_id => {
                 let cluster_client = self.require_cluster_client(&node_id)?;
-                cluster_client
-                    .evict_expired_slice_cache_node(&node_id)
+                let node = cluster_client
+                    .resolve_routable_node(&node_id)
                     .await
-                    .map(Self::cluster_evict_expired_to_management)
-                    .map_err(|error| Status::unavailable(error.to_string()))?
+                    .map_err(|error| Status::unavailable(error.to_string()))?;
+                self.remote_evict_expired_slice_cache(&node).await?
             }
             Some(_) | None => self.evict_expired_local_slice_cache().await?,
         };

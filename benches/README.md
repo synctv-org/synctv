@@ -1,6 +1,7 @@
 # Performance Benchmarks
 
-This directory contains performance benchmarks for the SyncTV Rust implementation.
+This directory records workspace benchmark conventions for the SyncTV Rust implementation.
+Registered benchmark code lives under the crate that owns the measured code.
 
 ## Running Benchmarks
 
@@ -19,12 +20,6 @@ cargo bench -p synctv-core --bench database_benchmarks
 
 ```
 benches/
-├── database/
-│   └── room_queries.rs     # Historical room query Criterion benchmark
-├── cache/
-│   └── user_cache.rs       # Historical user cache Criterion benchmark
-├── service/
-│   └── auth_service.rs     # Stub; moved to synctv-core/benches/auth_service.rs
 └── README.md
 
 synctv-core/benches/
@@ -33,8 +28,7 @@ synctv-core/benches/
 ```
 
 The workspace currently registers `synctv-core` benchmarks through
-`synctv-core/Cargo.toml`. The files under the repository-level `benches/`
-directory are not registered by the virtual workspace manifest.
+`synctv-core/Cargo.toml`.
 
 ## Understanding Results
 

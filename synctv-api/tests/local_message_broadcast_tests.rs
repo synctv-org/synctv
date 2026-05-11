@@ -219,8 +219,6 @@ async fn test_connection_manager_works_standalone() {
 /// the same interface as ClusterManager for local operations.
 pub struct LocalMessageBroadcaster {
     message_hub: Arc<synctv_cluster::sync::RoomMessageHub>,
-    #[allow(dead_code)]
-    connection_manager: ConnectionManager,
 }
 
 impl LocalMessageBroadcaster {
@@ -229,7 +227,6 @@ impl LocalMessageBroadcaster {
     pub fn new() -> Self {
         Self {
             message_hub: Arc::new(synctv_cluster::sync::RoomMessageHub::new()),
-            connection_manager: ConnectionManager::new(ConnectionLimits::default()),
         }
     }
 

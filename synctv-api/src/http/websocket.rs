@@ -946,10 +946,8 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// Example:
 /// - Native clients: `ws://host/ws/rooms/{room_id}` with `Authorization: Bearer <token>`
 /// - Browser clients: `ws://host/ws/rooms/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
-#[allow(dead_code)]
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
+#[cfg(feature = "openapi")]
+#[utoipa::path(
         get,
         path = "/ws/rooms/{room_id}",
         tag = "WebSocket",
@@ -970,9 +968,11 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
             (status = 429, description = "Rate limited or connection limit exceeded", body = crate::openapi::ErrorResponseDoc),
             (status = 503, description = "Realtime runtime or ticket backend unavailable", body = crate::openapi::ErrorResponseDoc)
         )
-    )
 )]
 pub(crate) const fn websocket_room_connect_doc() {}
+
+#[cfg(feature = "openapi")]
+const _: fn() = websocket_room_connect_doc;
 
 pub async fn websocket_handler(
     State(state): State<AppState>,

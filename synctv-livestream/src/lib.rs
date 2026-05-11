@@ -32,7 +32,6 @@ pub use livestream::{
 };
 pub use protocols::hls::{CustomHlsRemuxer, StreamRegistry};
 pub use protocols::httpflv::HttpFlvSession;
-pub use protocols::rtmp::RtmpAuthCallbackImpl;
 pub use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 
 /// Re-export auth types for use in downstream crates (e.g., `synctv/src/rtmp_auth`)

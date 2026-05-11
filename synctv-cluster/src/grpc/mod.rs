@@ -12,9 +12,7 @@ pub mod synctv {
 }
 
 pub use client::{ClusterClient, ClusterClientConfig, FanOutResult};
-pub use server::{
-    ClusterServer, ClusterSliceCachePurgeResult, ClusterSliceCacheStats, SliceCacheRuntime,
-};
+pub use server::ClusterServer;
 pub use synctv::cluster::cluster_service_server::ClusterServiceServer;
 
 use subtle::ConstantTimeEq;

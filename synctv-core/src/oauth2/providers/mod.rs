@@ -66,8 +66,10 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
 
 #[cfg(test)]
 fn build_ssrf_safe_provider_client(timeout: Duration) -> Result<reqwest::Client, Error> {
-    synctv_common::http::SsrfSafeClientBuilder::provider()
+    synctv_common::http::SsrfSafeClientBuilder::new()
+        .connect_timeout(Duration::from_secs(10))
         .request_timeout(timeout)
+        .pool_max_idle_per_host(10)
         .build()
         .internal_with_err("Failed to build HTTP client")
 }
@@ -125,8 +127,10 @@ pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Err
 
 pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
     Ok(Arc::new(
-        synctv_common::http::SsrfSafeClientBuilder::provider()
+        synctv_common::http::SsrfSafeClientBuilder::new()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .disable_request_timeout()
+            .pool_max_idle_per_host(10)
             .build()
             .internal_with_err("Failed to build HTTP client")?,
     ))
@@ -143,8 +147,10 @@ pub(super) fn build_oauth2_http_client_with_timeout(
 
 pub(super) fn build_oauth2_http_client() -> Result<Arc<OAuth2HttpClient>, Error> {
     Ok(Arc::new(
-        synctv_common::http::SsrfSafeClientBuilder::provider()
+        synctv_common::http::SsrfSafeClientBuilder::new()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .disable_request_timeout()
+            .pool_max_idle_per_host(10)
             .build()
             .internal_with_err("Failed to build OAuth2 HTTP client")
             .map(OAuth2HttpClient::new)?,

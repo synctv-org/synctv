@@ -8,6 +8,7 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
 
+pub mod grpc;
 pub mod slice_cache;
 
 use std::collections::HashMap;
@@ -72,7 +73,13 @@ const MAX_REDIRECTS: usize = 10;
 /// Callers are expected to build this once during startup and inject it into
 /// the proxy/cache layers rather than relying on hidden process-global state.
 pub fn build_proxy_http_client() -> Result<reqwest::Client, anyhow::Error> {
-    synctv_common::http::build_proxy_client()
+    synctv_common::http::SsrfSafeClientBuilder::new()
+        .connect_timeout(Duration::from_secs(10))
+        .disable_request_timeout()
+        .disable_read_timeout()
+        .pool_max_idle_per_host(100)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .build()
         .map_err(|e| anyhow::anyhow!("failed to build proxy HTTP client: {e}"))
 }
 

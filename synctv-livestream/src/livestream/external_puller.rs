@@ -928,9 +928,12 @@ fn build_http_flv_client(
         }
     }
 
-    let mut builder = synctv_common::http::SsrfSafeClientBuilder::proxy()
+    let mut builder = synctv_common::http::SsrfSafeClientBuilder::new()
+        .connect_timeout(std::time::Duration::from_secs(10))
         .disable_request_timeout()
-        .disable_read_timeout();
+        .disable_read_timeout()
+        .pool_max_idle_per_host(100)
+        .pool_idle_timeout(std::time::Duration::from_secs(30));
 
     if host.parse::<std::net::IpAddr>().is_err() {
         builder = builder.resolve(host.to_string(), resolved_addr);

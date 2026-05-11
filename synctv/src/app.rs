@@ -124,23 +124,23 @@ pub struct Application {
 
 #[derive(Clone, Default)]
 pub struct ApplicationBuildOptions {
-    pub provider_test_address_overrides: HashMap<String, SocketAddr>,
-    pub credential_encryption_hex_key_override: Option<String>,
+    pub provider_address_overrides: HashMap<String, SocketAddr>,
+    pub credential_encryption_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn PasswordHasherService>>,
-    pub enable_password_registration_for_tests: bool,
+    pub allow_password_registration: bool,
 }
 
 impl std::fmt::Debug for ApplicationBuildOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApplicationBuildOptions")
             .field(
-                "provider_test_address_overrides",
-                &self.provider_test_address_overrides,
+                "provider_address_overrides",
+                &self.provider_address_overrides,
             )
             .field(
-                "credential_encryption_hex_key_override",
+                "credential_encryption_key_override",
                 &self
-                    .credential_encryption_hex_key_override
+                    .credential_encryption_key_override
                     .as_ref()
                     .map(|_| "<redacted>"),
             )
@@ -149,8 +149,8 @@ impl std::fmt::Debug for ApplicationBuildOptions {
                 &self.password_hasher_override.as_ref().map(|_| "<injected>"),
             )
             .field(
-                "enable_password_registration_for_tests",
-                &self.enable_password_registration_for_tests,
+                "allow_password_registration",
+                &self.allow_password_registration,
             )
             .finish()
     }
@@ -477,7 +477,7 @@ impl Application {
                 return Err(e);
             }
         };
-        if options.enable_password_registration_for_tests {
+        if options.allow_password_registration {
             core.services
                 .settings_registry
                 .enable_password_signup
@@ -535,11 +535,6 @@ impl Application {
     ///
     /// This provides a deterministic shutdown mechanism for integration tests
     /// without changing the production startup path.
-    ///
-    /// Note: This method is intentionally kept even though it's only used by
-    /// E2E tests in the `synctv/tests/` directory. The `#[allow(dead_code)]`
-    /// attribute prevents warnings since tests are compiled separately.
-    #[allow(dead_code)]
     pub async fn run_with_shutdown_signal<F>(self, shutdown_signal: F) -> Result<()>
     where
         F: Future<Output = ()> + Send,
@@ -682,8 +677,8 @@ impl Application {
         }
 
         // Initialize core services
-        let credential_encryption_hex_key_override = options
-            .credential_encryption_hex_key_override
+        let credential_encryption_key_override = options
+            .credential_encryption_key_override
             .clone()
             .or_else(|| {
                 (!infra.config.security.credential_encryption_key.is_empty())
@@ -699,8 +694,8 @@ impl Application {
             cache_invalidation.clone(),
             cache_invalidation_listener_task,
             InitServicesOptions {
-                provider_test_address_overrides: options.provider_test_address_overrides.clone(),
-                credential_encryption_hex_key_override,
+                provider_address_overrides: options.provider_address_overrides.clone(),
+                credential_encryption_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
                 cluster_outbox: cluster_outbox.clone(),
             },

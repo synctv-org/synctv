@@ -8,9 +8,8 @@ use tonic::{Request, Response, Status};
 use super::synctv::cluster::cluster_service_server::ClusterService;
 use super::synctv::cluster::{
     GetNodesRequest, GetNodesResponse, GetRoomConnectionsRequest, GetRoomConnectionsResponse,
-    GetSliceCacheStatsRequest, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, NodeInfo,
-    PurgeSliceCacheRequest, PurgeSliceCacheResponse, RoomConnection, SliceCacheConfigInfo,
-    SliceCacheStatsResponse, UserOnlineStatus,
+    GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, NodeInfo, RoomConnection,
+    UserOnlineStatus,
 };
 use super::ClusterAuthInterceptor;
 use crate::discovery::{ClusterNodeDirectory, NodeInfo as DiscoveryNodeInfo};
@@ -19,44 +18,6 @@ use synctv_core::models::{RoomId, UserId};
 
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-/// Operational snapshot of a node-local proxy slice cache.
-#[derive(Debug, Clone)]
-pub struct ClusterSliceCacheStats {
-    pub engine_enabled: bool,
-    pub backend: String,
-    pub file_cache_dir: Option<String>,
-    pub slice_size: u64,
-    pub max_cache_size: u64,
-    pub segment_ttl_secs: u64,
-    pub stale_max_age_secs: u64,
-    pub stale_while_revalidate: bool,
-    pub eviction_interval_secs: u64,
-    pub watermark_ratio: f64,
-    pub current_size_bytes: u64,
-    pub entry_count: u64,
-    pub metadata_entries: u64,
-    pub updating_entries: u64,
-    pub lock_count: u64,
-    pub usage_ratio: f64,
-}
-
-/// Result of purging every slice-cache entry on a node.
-#[derive(Debug, Clone, Copy)]
-pub struct ClusterSliceCachePurgeResult {
-    pub removed_entries: u64,
-    pub freed_bytes: u64,
-}
-
-/// Runtime boundary for node-local proxy slice-cache management.
-#[async_trait::async_trait]
-pub trait SliceCacheRuntime: Send + Sync {
-    fn stats(&self) -> ClusterSliceCacheStats;
-
-    async fn purge_all(&self) -> ClusterSliceCachePurgeResult;
-
-    async fn evict_expired_entries(&self) -> u64;
 }
 
 /// Cluster gRPC service
@@ -81,7 +42,6 @@ pub trait SliceCacheRuntime: Send + Sync {
 pub struct ClusterServer {
     node_registry: Arc<dyn ClusterNodeDirectory>,
     connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
-    slice_cache_runtime: Option<Arc<dyn SliceCacheRuntime>>,
     node_id: String,
     auth: Option<ClusterAuthInterceptor>,
 }
@@ -102,7 +62,6 @@ impl ClusterServer {
         Self {
             node_registry,
             connection_runtime: None,
-            slice_cache_runtime: None,
             node_id,
             auth: None,
         }
@@ -115,16 +74,6 @@ impl ClusterServer {
         connection_runtime: Arc<dyn ConnectionRuntime>,
     ) -> Self {
         self.connection_runtime = Some(connection_runtime);
-        self
-    }
-
-    /// Set the local slice cache runtime for cluster-level management queries.
-    #[must_use]
-    pub fn with_slice_cache_runtime(
-        mut self,
-        slice_cache_runtime: Arc<dyn SliceCacheRuntime>,
-    ) -> Self {
-        self.slice_cache_runtime = Some(slice_cache_runtime);
         self
     }
 
@@ -163,35 +112,6 @@ impl ClusterServer {
         };
 
         auth.validate_metadata(request.metadata())
-    }
-
-    fn slice_cache_stats_response(&self) -> std::result::Result<SliceCacheStatsResponse, Status> {
-        let cache = self
-            .slice_cache_runtime
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
-        let stats = cache.stats();
-        Ok(SliceCacheStatsResponse {
-            node_id: self.node_id.clone(),
-            config: Some(SliceCacheConfigInfo {
-                engine_enabled: stats.engine_enabled,
-                backend: stats.backend,
-                file_cache_dir: stats.file_cache_dir.unwrap_or_default(),
-                slice_size: stats.slice_size,
-                max_cache_size: stats.max_cache_size,
-                segment_ttl_secs: stats.segment_ttl_secs,
-                stale_max_age_secs: stats.stale_max_age_secs,
-                stale_while_revalidate: stats.stale_while_revalidate,
-                eviction_interval_secs: stats.eviction_interval_secs,
-                watermark_ratio: stats.watermark_ratio,
-            }),
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
-        })
     }
 }
 
@@ -348,53 +268,5 @@ impl ClusterService for ClusterServer {
             .inc();
 
         Ok(Response::new(GetRoomConnectionsResponse { connections }))
-    }
-
-    async fn get_slice_cache_stats(
-        &self,
-        request: Request<GetSliceCacheStatsRequest>,
-    ) -> std::result::Result<Response<SliceCacheStatsResponse>, Status> {
-        self.authorize(&request)?;
-        Ok(Response::new(self.slice_cache_stats_response()?))
-    }
-
-    async fn purge_slice_cache(
-        &self,
-        request: Request<PurgeSliceCacheRequest>,
-    ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
-        self.authorize(&request)?;
-        let cache = self
-            .slice_cache_runtime
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
-        let result = cache.purge_all().await;
-        Ok(Response::new(PurgeSliceCacheResponse {
-            node_id: self.node_id.clone(),
-            success: true,
-            removed_entries: result.removed_entries,
-            freed_bytes: result.freed_bytes,
-            stats: Some(self.slice_cache_stats_response()?),
-        }))
-    }
-
-    async fn evict_expired_slice_cache(
-        &self,
-        request: Request<super::synctv::cluster::EvictExpiredSliceCacheRequest>,
-    ) -> std::result::Result<Response<super::synctv::cluster::EvictExpiredSliceCacheResponse>, Status>
-    {
-        self.authorize(&request)?;
-        let cache = self
-            .slice_cache_runtime
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("Slice cache runtime is unavailable"))?;
-        let removed_expired_entries = cache.evict_expired_entries().await;
-        Ok(Response::new(
-            super::synctv::cluster::EvictExpiredSliceCacheResponse {
-                node_id: self.node_id.clone(),
-                success: true,
-                removed_expired_entries,
-                stats: Some(self.slice_cache_stats_response()?),
-            },
-        ))
     }
 }

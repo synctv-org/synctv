@@ -58,6 +58,7 @@ tracing.workspace = true
 synctv-api = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false }
+synctv-proxy = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false }
 
 [build-dependencies]

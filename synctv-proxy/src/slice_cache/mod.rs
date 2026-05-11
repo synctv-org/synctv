@@ -62,4 +62,4 @@ pub use range::{
     ContentRange,
 };
 pub use status::CacheStatus;
-pub use store::SliceCache;
+pub use store::{SliceCache, SliceCachePurgeResult, SliceCacheStats};

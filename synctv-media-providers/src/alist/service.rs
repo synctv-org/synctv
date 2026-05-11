@@ -46,7 +46,7 @@ pub struct AlistService {
 impl AlistService {
     pub fn new() -> Self {
         Self {
-            client: synctv_common::http::build_provider_client()
+            client: crate::build_provider_http_client()
                 .expect("default provider HTTP client should build"),
         }
     }

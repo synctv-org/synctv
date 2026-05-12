@@ -15,7 +15,6 @@
 pub mod access;
 pub mod context;
 pub mod credential_resolver;
-pub mod crypto_utils;
 pub mod error;
 pub mod playback_profile;
 pub mod provider_client;
@@ -215,19 +214,6 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     );
     headers
 }
-
-/// Credential field names that must never be included in API responses.
-///
-/// These fields are stripped from `source_config` before serialization to
-/// clients, preventing exposure of API keys, tokens, passwords, and cookies.
-const CREDENTIAL_FIELDS: &[&str] = &[
-    "token",
-    "api_key",
-    "password",
-    "cookies",
-    "secret",
-    "access_token",
-];
 
 /// Rewrite playback URLs in a `PlaybackResult` to use signed proxy URLs.
 ///
@@ -500,35 +486,6 @@ pub async fn finalize_versioned_playback(
         versioned.expires_at,
         ctx,
     ))
-}
-
-/// Strip credential fields from a `source_config` value before sending to clients.
-///
-/// Returns a sanitized copy with sensitive fields replaced by `"[REDACTED]"`.
-/// Recursively processes nested objects and arrays.
-/// Non-object/non-array values are returned unchanged.
-#[must_use]
-pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> serde_json::Value {
-    match source_config {
-        serde_json::Value::Object(map) => {
-            let mut sanitized = serde_json::Map::with_capacity(map.len());
-            for (key, value) in map {
-                if CREDENTIAL_FIELDS.contains(&key.as_str()) {
-                    sanitized.insert(
-                        key.clone(),
-                        serde_json::Value::String("[REDACTED]".to_string()),
-                    );
-                } else {
-                    sanitized.insert(key.clone(), strip_source_config_credentials(value));
-                }
-            }
-            serde_json::Value::Object(sanitized)
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(strip_source_config_credentials).collect())
-        }
-        other => other.clone(),
-    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
 use super::convert::{
-    media_to_proto, member_status_to_proto, members_to_proto, playback_state_to_proto,
+    media_to_proto_for_viewer, member_status_to_proto, members_to_proto, playback_state_to_proto,
     resource_availability_enum_to_proto, room_role_to_proto, room_to_proto_basic,
     room_to_proto_with_availability,
 };
@@ -219,7 +219,7 @@ impl ClientApiImpl {
             .get_playing_media(&rid)
             .await
             .map_err(ApiError::from)?;
-        Ok(media.map(|m| media_to_proto(&m, &self.public_id_codec)))
+        Ok(media.map(|m| media_to_proto_for_viewer(&m, true, Some(uid), &self.public_id_codec)))
     }
 
     pub async fn list_rooms(
@@ -523,7 +523,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 password,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -641,7 +641,7 @@ impl ClientApiImpl {
             .membership_event_fanout
             .prepare_user_left_outbox_fanout();
         self.room_service
-            .leave_room_with_outbox(rid, uid, prepared_membership_fanout.outbox_factory())
+            .leave_room_with_outbox(rid, uid, Some(prepared_membership_fanout.outbox_factory()))
             .await
             .map_err(ApiError::from)?;
 
@@ -933,7 +933,7 @@ impl ClientApiImpl {
                 rid,
                 current_owner_id,
                 new_owner_id,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(Self::map_room_access_error)?;

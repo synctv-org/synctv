@@ -4275,7 +4275,7 @@ async fn execute_db(db_command: DbCommand) -> Result<()> {
         }
         DbSubcommand::Status(args) => {
             let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
-            sqlx::query("SELECT 1").execute(&pool).await?;
+            sqlx::query!("SELECT 1 AS ok").fetch_one(&pool).await?;
             let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
             let output = DatabaseStatusCliOutput::new(&config, &migrations_status);
             print_database_status_output(args.output, &output)?;
@@ -6998,11 +6998,14 @@ struct HumanPlaylist {
     parent_id: String,
     position: f64,
     is_dynamic: bool,
+    source_provider: String,
+    provider_instance_name: String,
     item_count: i32,
     created_at: String,
     updated_at: String,
     availability: String,
     version: i64,
+    source_config: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7836,12 +7839,15 @@ impl ToHuman for synctv_proto::client::Playlist {
             parent_id: self.parent_id.clone(),
             position: self.position,
             is_dynamic: self.is_dynamic,
+            source_provider: self.source_provider.clone(),
+            provider_instance_name: self.provider_instance_name.clone(),
             item_count: self.item_count,
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
+            source_config: parse_json_bytes(&self.source_config),
         }
     }
 }
@@ -8671,11 +8677,9 @@ fn humanize_permission_bits(bits: u64) -> Vec<String> {
         (PermissionBits::DELETE_MEDIA_SELF, "delete_media_self"),
         (PermissionBits::DELETE_MEDIA_ANY, "delete_media_any"),
         (PermissionBits::EDIT_MEDIA_SELF, "edit_media_self"),
-        (PermissionBits::EDIT_MEDIA_ANY, "edit_media_any"),
         (PermissionBits::REORDER_PLAYLIST, "reorder_playlist"),
         (PermissionBits::CLEAR_PLAYLIST, "clear_playlist"),
         (PermissionBits::START_LIVE, "start_live"),
-        (PermissionBits::RESERVED_9, "reserved_9"),
         (PermissionBits::PLAY_CONTROL, "play_control"),
         (PermissionBits::CHANGE_CURRENT_MEDIA, "change_current_media"),
         (PermissionBits::CHANGE_PLAYBACK_RATE, "change_playback_rate"),
@@ -13230,11 +13234,14 @@ mod tests {
             parent_id: String::new(),
             position: 1.0,
             is_dynamic: false,
+            source_provider: String::new(),
+            provider_instance_name: String::new(),
             item_count: 1,
             created_at: 1_775_144_583_i64,
             updated_at: 1_775_291_071_i64,
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 34,
+            source_config: br#"{"path":"/shows"}"#.to_vec(),
         })
         .expect("playlist human output should render");
 
@@ -13242,6 +13249,10 @@ mod tests {
         assert_eq!(rendered_playlist["availability"], "available");
         assert_eq!(rendered_media["version"], 12);
         assert_eq!(rendered_playlist["version"], 34);
+        assert_eq!(
+            rendered_playlist["source_config"],
+            serde_json::json!({"path":"/shows"})
+        );
     }
 
     #[test]
@@ -13254,11 +13265,14 @@ mod tests {
                 parent_id: String::new(),
                 position: 1.0,
                 is_dynamic: false,
+                source_provider: String::new(),
+                provider_instance_name: String::new(),
                 item_count: 0,
                 created_at: 1,
                 updated_at: 2,
                 availability: synctv_proto::client::ResourceAvailability::Available as i32,
                 version: 10,
+                source_config: Vec::new(),
             }],
             media: vec![synctv_proto::client::Media {
                 id: "media-1".into(),

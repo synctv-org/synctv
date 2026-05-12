@@ -29,7 +29,7 @@ fn create_lazy_pool() -> PgPool {
         .expect("lazy pool construction should not connect")
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_config = PasswordComplexityConfig::default();
@@ -76,7 +76,7 @@ async fn create_test_users(service: &UserService, count: usize, prefix: &str) ->
 #[ignore = "Requires Docker"]
 async fn batch_delete_users_succeeds() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let user_ids = create_test_users(&service, 5, "batch_del").await;
     // Delete all 5 users
@@ -92,7 +92,7 @@ async fn batch_delete_users_succeeds() {
 
 #[tokio::test]
 async fn batch_delete_users_exceeds_limit_fails() {
-    let service = create_user_service(create_lazy_pool());
+    let service = create_user_service(&create_lazy_pool());
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
@@ -109,7 +109,7 @@ async fn batch_delete_users_exceeds_limit_fails() {
 
 #[tokio::test]
 async fn batch_delete_users_empty_list_fails() {
-    let service = create_user_service(create_lazy_pool());
+    let service = create_user_service(&create_lazy_pool());
 
     let result = service.batch_delete_users(&[]).await;
     assert!(result.is_err(), "Batch delete should fail with empty list");

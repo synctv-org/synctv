@@ -45,33 +45,31 @@ impl PreparedPermissionChangedFanout {
     }
 
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxPermissionChangedEventFactory> {
+    pub fn outbox_factory(&self) -> RealtimeOutboxPermissionChangedEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(
-            move |snapshot: &PermissionChangedOutboxSnapshot| {
-                let event = RealtimeEvent::PermissionChanged {
-                    event_id: synctv_common::snanoid!(16),
-                    room_id: snapshot.room_id,
-                    target_user_id: snapshot.target_user_id,
-                    target_username: snapshot.target_username.clone(),
-                    changed_by: snapshot.changed_by,
-                    changed_by_username: snapshot.changed_by_username.clone(),
-                    new_permissions: snapshot.new_permissions,
-                    role: snapshot.role,
-                    added_permissions: snapshot.added_permissions,
-                    removed_permissions: snapshot.removed_permissions,
-                    admin_added_permissions: snapshot.admin_added_permissions,
-                    admin_removed_permissions: snapshot.admin_removed_permissions,
-                    timestamp: chrono::Utc::now(),
-                };
-                prepared
-                    .events
-                    .lock()
-                    .expect("membership fanout event mutex should not be poisoned")
-                    .push(event.clone());
-                prepared.realtime_fanout.outbox_event(&event)
-            },
-        ))
+        Arc::new(move |snapshot: &PermissionChangedOutboxSnapshot| {
+            let event = RealtimeEvent::PermissionChanged {
+                event_id: synctv_common::snanoid!(16),
+                room_id: snapshot.room_id,
+                target_user_id: snapshot.target_user_id,
+                target_username: snapshot.target_username.clone(),
+                changed_by: snapshot.changed_by,
+                changed_by_username: snapshot.changed_by_username.clone(),
+                new_permissions: snapshot.new_permissions,
+                role: snapshot.role,
+                added_permissions: snapshot.added_permissions,
+                removed_permissions: snapshot.removed_permissions,
+                admin_added_permissions: snapshot.admin_added_permissions,
+                admin_removed_permissions: snapshot.admin_removed_permissions,
+                timestamp: chrono::Utc::now(),
+            };
+            prepared
+                .events
+                .lock()
+                .expect("membership fanout event mutex should not be poisoned")
+                .push(event.clone());
+            prepared.realtime_fanout.outbox_event(&event)
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -84,11 +82,10 @@ impl PreparedPermissionChangedFanout {
         for event in events {
             if self.realtime_fanout.is_distributed_enabled() {
                 self.realtime_fanout.publish_after_outbox_commit(event);
-            } else {
-                if let (Some(event_service), Some(room_id)) = (&self.event_service, event.room_id())
-                {
-                    event_service.broadcast_local(room_id, &event);
-                }
+            } else if let (Some(event_service), Some(room_id)) =
+                (&self.event_service, event.room_id())
+            {
+                event_service.broadcast_local(room_id, &event);
             }
         }
     }
@@ -111,9 +108,9 @@ impl PreparedUserLeftFanout {
     }
 
     #[must_use]
-    pub fn outbox_factory(&self) -> Option<RealtimeOutboxUserLeftEventFactory> {
+    pub fn outbox_factory(&self) -> RealtimeOutboxUserLeftEventFactory {
         let prepared = self.clone();
-        Some(Arc::new(move |snapshot: &UserLeftOutboxSnapshot| {
+        Arc::new(move |snapshot: &UserLeftOutboxSnapshot| {
             let event = RealtimeEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: snapshot.room_id,
@@ -127,7 +124,7 @@ impl PreparedUserLeftFanout {
                 .expect("membership fanout event mutex should not be poisoned") =
                 Some(event.clone());
             prepared.realtime_fanout.outbox_event(&event)
-        }))
+        })
     }
 
     pub fn publish_after_outbox_commit(&self) {
@@ -339,7 +336,7 @@ mod tests {
                     .connect_lazy("postgresql://127.0.0.1:1/synctv")
                     .unwrap(),
                 UserService::new(
-                    sqlx::postgres::PgPoolOptions::new()
+                    &sqlx::postgres::PgPoolOptions::new()
                         .connect_lazy("postgresql://127.0.0.1:1/synctv")
                         .unwrap(),
                     JwtService::new("membership-fanout-test-secret-key-minimum-32-chars")
@@ -352,7 +349,7 @@ mod tests {
                 ),
             )),
             Arc::new(UserService::new(
-                sqlx::postgres::PgPoolOptions::new()
+                &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://127.0.0.1:1/synctv")
                     .unwrap(),
                 JwtService::new("membership-fanout-test-secret-key-minimum-32-chars").expect("jwt"),
@@ -366,7 +363,7 @@ mod tests {
         );
         let user = user_id("self-joiner");
         let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
-        let factory = prepared.outbox_factory().expect("factory");
+        let factory = prepared.outbox_factory();
 
         assert!(factory(&permission_snapshot(user, user)).is_none());
         prepared.publish_after_outbox_commit();
@@ -386,7 +383,7 @@ mod tests {
             user_id("target"),
             user_id("actor"),
         );
-        let factory = prepared.outbox_factory().expect("factory");
+        let factory = prepared.outbox_factory();
         assert!(factory(&permission_snapshot(user_id("target"), user_id("actor"))).is_none());
         prepared.publish_after_outbox_commit();
         let event = rx.recv().await.expect("prepared event should publish");
@@ -400,7 +397,7 @@ mod tests {
     async fn test_user_left_publishes_same_prepared_event_after_commit() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedUserLeftFanout::new(channel_realtime_fanout_service(tx));
-        let factory = prepared.outbox_factory().expect("factory");
+        let factory = prepared.outbox_factory();
         assert!(factory(&UserLeftOutboxSnapshot {
             room_id: room_id(),
             user_id: user_id("target"),

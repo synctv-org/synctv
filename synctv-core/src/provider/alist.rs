@@ -1544,21 +1544,18 @@ impl DynamicFolder for AlistProvider {
                 .iter()
                 .find(|item| item.item_type == ItemType::Media && item.target == target)
             {
-                return Ok(Some(
-                    NextPlayItem {
-                        name: item.name.clone(),
-                        item_type: item.item_type,
-                        source_config: build_next_source_config(&build_full_path(&relative_path)),
-                        metadata: json!({
-                            "size": item.size,
-                            "thumbnail": item.thumbnail,
-                            "modified_at": item.modified_at
-                        }),
-                        provider_data: json!({}),
-                        target: item.target.clone(),
-                    }
-                    .strip_credentials(),
-                ));
+                return Ok(Some(NextPlayItem {
+                    name: item.name.clone(),
+                    item_type: item.item_type,
+                    source_config: build_next_source_config(&build_full_path(&relative_path)),
+                    metadata: json!({
+                        "size": item.size,
+                        "thumbnail": item.thumbnail,
+                        "modified_at": item.modified_at
+                    }),
+                    provider_data: json!({}),
+                    target: item.target.clone(),
+                }));
             }
 
             if page_items.len() < LIST_PAGE_SIZE {
@@ -1642,13 +1639,16 @@ impl DynamicFolder for AlistProvider {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
                                 source_config: build_next_source_config(&build_full_path(
-                                    &Self::decode_target(Some(&next.target))?
-                                        .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                                    &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                        ProviderError::InvalidConfig(
+                                            "Missing Alist item target".to_string(),
+                                        )
+                                    })?,
                                 )),
                                 metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
                                 provider_data: json!({}),
                                 target: next.target.clone(),
-                            }.strip_credentials()));
+                            }));
                         }
                     } else if let Some(idx) =
                         page_items.iter().position(|item| item.target == target)
@@ -1663,13 +1663,16 @@ impl DynamicFolder for AlistProvider {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
                                 source_config: build_next_source_config(&build_full_path(
-                                    &Self::decode_target(Some(&next.target))?
-                                        .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                                    &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                        ProviderError::InvalidConfig(
+                                            "Missing Alist item target".to_string(),
+                                        )
+                                    })?,
                                 )),
                                 metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
                                 provider_data: json!({}),
                                 target: next.target.clone(),
-                            }.strip_credentials()));
+                            }));
                         }
                     }
 
@@ -1705,13 +1708,16 @@ impl DynamicFolder for AlistProvider {
                             name: first.name.clone(),
                             item_type: first.item_type,
                             source_config: build_next_source_config(&build_full_path(
-                                &Self::decode_target(Some(&first.target))?
-                                    .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                                &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
+                                    ProviderError::InvalidConfig(
+                                        "Missing Alist item target".to_string(),
+                                    )
+                                })?,
                             )),
                             metadata: json!({"size": first.size, "thumbnail": first.thumbnail, "modified_at": first.modified_at}),
                             provider_data: json!({}),
                             target: first.target.clone(),
-                        }.strip_credentials()));
+                        }));
                     }
                 }
 
@@ -1763,13 +1769,14 @@ impl DynamicFolder for AlistProvider {
                     name: random_item.name.clone(),
                     item_type: random_item.item_type,
                     source_config: build_next_source_config(&build_full_path(
-                        &Self::decode_target(Some(&random_item.target))?
-                            .ok_or_else(|| ProviderError::InvalidConfig("Missing Alist item target".to_string()))?,
+                        &Self::decode_target(Some(&random_item.target))?.ok_or_else(|| {
+                            ProviderError::InvalidConfig("Missing Alist item target".to_string())
+                        })?,
                     )),
                     metadata: json!({"size": random_item.size, "thumbnail": random_item.thumbnail, "modified_at": random_item.modified_at}),
                     provider_data: json!({}),
                     target: random_item.target.clone(),
-                }.strip_credentials()))
+                }))
             }
         }
     }

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 use crate::{Error, Result};
 
@@ -71,29 +71,6 @@ pub struct RealtimeOutboxEvent {
     pub last_error: Option<String>,
 }
 
-impl RealtimeOutboxEvent {
-    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self> {
-        let status: String = row.try_get("status")?;
-        Ok(Self {
-            id: row.try_get("id")?,
-            aggregate_type: row.try_get("aggregate_type")?,
-            aggregate_id: row.try_get("aggregate_id")?,
-            event_type: row.try_get("event_type")?,
-            event_version: row.try_get("event_version")?,
-            aggregate_version: row.try_get("aggregate_version")?,
-            payload: row.try_get("payload")?,
-            status: RealtimeOutboxStatus::parse(&status)?,
-            attempts: row.try_get("attempts")?,
-            next_retry_at: row.try_get("next_retry_at")?,
-            locked_by: row.try_get("locked_by")?,
-            locked_at: row.try_get("locked_at")?,
-            created_at: row.try_get("created_at")?,
-            dispatched_at: row.try_get("dispatched_at")?,
-            last_error: row.try_get("last_error")?,
-        })
-    }
-}
-
 #[derive(Clone)]
 pub struct RealtimeOutboxRepository {
     pool: PgPool,
@@ -122,7 +99,7 @@ impl RealtimeOutboxRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        sqlx::query(
+        sqlx::query!(
             r"
             INSERT INTO realtime_outbox (
                 id,
@@ -135,14 +112,14 @@ impl RealtimeOutboxRepository {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ",
+            &event.id,
+            &event.aggregate_type,
+            &event.aggregate_id,
+            &event.event_type,
+            event.event_version,
+            event.aggregate_version,
+            &event.payload
         )
-        .bind(&event.id)
-        .bind(&event.aggregate_type)
-        .bind(&event.aggregate_id)
-        .bind(&event.event_type)
-        .bind(event.event_version)
-        .bind(event.aggregate_version)
-        .bind(&event.payload)
         .execute(executor)
         .await?;
         Ok(())
@@ -153,8 +130,8 @@ impl RealtimeOutboxRepository {
         worker_id: &str,
         limit: i64,
     ) -> Result<Vec<RealtimeOutboxEvent>> {
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query!(
+            r#"
             WITH picked AS (
                 SELECT id
                 FROM realtime_outbox
@@ -186,18 +163,38 @@ impl RealtimeOutboxRepository {
                 o.created_at,
                 o.dispatched_at,
                 o.last_error
-            ",
+            "#,
+            limit,
+            worker_id
         )
-        .bind(limit)
-        .bind(worker_id)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(RealtimeOutboxEvent::from_row).collect()
+        rows.into_iter()
+            .map(|row| {
+                Ok(RealtimeOutboxEvent {
+                    id: row.id,
+                    aggregate_type: row.aggregate_type,
+                    aggregate_id: row.aggregate_id,
+                    event_type: row.event_type,
+                    event_version: row.event_version,
+                    aggregate_version: row.aggregate_version,
+                    payload: row.payload,
+                    status: RealtimeOutboxStatus::parse(&row.status)?,
+                    attempts: row.attempts,
+                    next_retry_at: row.next_retry_at,
+                    locked_by: row.locked_by,
+                    locked_at: row.locked_at,
+                    created_at: row.created_at,
+                    dispatched_at: row.dispatched_at,
+                    last_error: row.last_error,
+                })
+            })
+            .collect()
     }
 
     pub async fn mark_sent(&self, id: &str) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = 'sent',
@@ -207,8 +204,8 @@ impl RealtimeOutboxRepository {
                 last_error = NULL
             WHERE id = $1
             ",
+            id
         )
-        .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -223,30 +220,30 @@ impl RealtimeOutboxRepository {
             RealtimeOutboxStatus::Pending
         };
 
-        sqlx::query(
+        sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = $2,
                 attempts = $3,
-                next_retry_at = NOW() + ($4::TEXT || ' seconds')::INTERVAL,
+                next_retry_at = NOW() + ($4::BIGINT::TEXT || ' seconds')::INTERVAL,
                 locked_by = NULL,
                 locked_at = NULL,
                 last_error = $5
             WHERE id = $1
             ",
+            id,
+            status.as_str(),
+            next_attempt,
+            delay_seconds,
+            error
         )
-        .bind(id)
-        .bind(status.as_str())
-        .bind(next_attempt)
-        .bind(delay_seconds)
-        .bind(error)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn requeue_stale_processing(&self, stale_after_seconds: i64) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE realtime_outbox
             SET status = 'pending',
@@ -254,18 +251,17 @@ impl RealtimeOutboxRepository {
                 locked_at = NULL,
                 next_retry_at = NOW()
             WHERE status = 'processing'
-              AND locked_at < NOW() - ($1::TEXT || ' seconds')::INTERVAL
+              AND locked_at < NOW() - ($1::BIGINT::TEXT || ' seconds')::INTERVAL
             ",
+            stale_after_seconds
         )
-        .bind(stale_after_seconds)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
 
     pub async fn notify_dispatchers(&self) -> Result<()> {
-        sqlx::query("SELECT pg_notify($1, '')")
-            .bind(REALTIME_OUTBOX_CHANNEL)
+        sqlx::query!("SELECT pg_notify($1, '')", REALTIME_OUTBOX_CHANNEL)
             .execute(&self.pool)
             .await?;
         Ok(())

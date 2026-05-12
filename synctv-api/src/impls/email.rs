@@ -745,7 +745,7 @@ mod tests {
         let jwt_service =
             JwtService::new("test-secret-key-for-email-api-tests-minimum-32-chars").unwrap();
         let mut user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             synctv_core::config::PasswordComplexityConfig::default(),

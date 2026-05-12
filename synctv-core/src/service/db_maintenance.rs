@@ -91,13 +91,13 @@ impl DatabaseMaintenanceService {
             return Ok(());
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            self.expired_token_retention_days()
         )
-        .bind(self.expired_token_retention_days())
         .execute(&self.pool)
         .await?;
 
@@ -111,14 +111,14 @@ impl DatabaseMaintenanceService {
     /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
         let read_deleted = if self.config.notification_retention_days > 0 {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 DELETE FROM notifications
                 WHERE is_read = TRUE
                   AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
                 ",
+                self.notification_retention_days()
             )
-            .bind(self.notification_retention_days())
             .execute(&self.pool)
             .await?
             .rows_affected()
@@ -127,13 +127,13 @@ impl DatabaseMaintenanceService {
         };
 
         let expired_deleted = if self.config.notification_max_retention_days > 0 {
-            sqlx::query(
+            sqlx::query!(
                 r"
                 DELETE FROM notifications
                 WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
                 ",
+                self.notification_max_retention_days()
             )
-            .bind(self.notification_max_retention_days())
             .execute(&self.pool)
             .await?
             .rows_affected()
@@ -185,14 +185,14 @@ impl DatabaseMaintenanceService {
             return Ok(());
         }
 
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM user_media_provider_credentials
             WHERE expires_at IS NOT NULL
               AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
             ",
+            self.expired_credential_buffer_hours()
         )
-        .bind(self.expired_credential_buffer_hours())
         .execute(&self.pool)
         .await?;
 

@@ -212,6 +212,7 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             client::CreatePlaylistRequest,
             client::CreatePlaylistResponse,
             client::GetPlaylistResponse,
+            client::Playlist,
             client::Media,
             client::AddMediaRequest,
             client::AddMediaResponse,
@@ -501,6 +502,21 @@ mod tests {
             Some(true),
             "mark-all-as-read should not document its request body as required"
         );
+    }
+
+    #[test]
+    fn openapi_documents_playlist_source_fields() {
+        let doc = openapi_json();
+        let playlist = doc
+            .pointer("/components/schemas/synctv_client_Playlist/properties")
+            .expect("Playlist schema properties should exist");
+
+        for field in ["source_config", "source_provider", "provider_instance_name"] {
+            assert!(
+                playlist.get(field).is_some(),
+                "Playlist schema should document {field}: {playlist:?}"
+            );
+        }
     }
 
     #[test]

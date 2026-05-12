@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE media\n            SET name = $2, position = $3, source_config = $4,\n                provider_instance_name = $5\n             WHERE id = $1\n             RETURNING id AS \"id: MediaId\",\n                       playlist_id AS \"playlist_id?: PlaylistId\",\n                       room_id AS \"room_id: RoomId\",\n                       creator_id AS \"creator_id?: crate::models::UserId\",\n                       name,\n                       position,\n                       source_provider,\n                       source_config AS \"source_config!: serde_json::Value\",\n                       NULLIF(provider_instance_name, '') AS provider_instance_name,\n                       added_at, updated_at, version\n            ",
+  "query": "\n            UPDATE media\n            SET name = $2, position = $3\n             WHERE id = $1\n             RETURNING id AS \"id: MediaId\",\n                       playlist_id AS \"playlist_id?: PlaylistId\",\n                       room_id AS \"room_id: RoomId\",\n                       creator_id AS \"creator_id?: crate::models::UserId\",\n                       name,\n                       position,\n                       source_provider,\n                       source_config AS \"source_config!: serde_json::Value\",\n                       NULLIF(provider_instance_name, '') AS provider_instance_name,\n                       added_at, updated_at, version\n            ",
   "describe": {
     "columns": [
       {
@@ -68,9 +68,7 @@
       "Left": [
         "Int8",
         "Varchar",
-        "Float8",
-        "Jsonb",
-        "Varchar"
+        "Float8"
       ]
     },
     "nullable": [
@@ -88,5 +86,5 @@
       false
     ]
   },
-  "hash": "519017fde087d0cc49ea4eb36c476884eac63b93713fa1d70741fb99b8f23b1a"
+  "hash": "6c07f8c5e8e760e908a4429b63ae6746ed2a825bdc1b1603557ac687d8009780"
 }

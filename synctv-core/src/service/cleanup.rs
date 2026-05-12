@@ -411,13 +411,13 @@ impl CleanupService {
     /// Delete email tokens that expired beyond the retention period
     async fn delete_expired_tokens(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.expired_token_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM auth_email_tokens
             WHERE expires_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete expired tokens")?;
@@ -428,14 +428,14 @@ impl CleanupService {
     /// Delete expired media provider credentials with buffer to prevent race conditions.
     async fn delete_expired_credentials(&self) -> Result<u64> {
         let buffer_hours = Self::u32_to_i32_saturating(self.config.expired_credential_buffer_hours);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM user_media_provider_credentials
             WHERE expires_at IS NOT NULL
               AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
             ",
+            buffer_hours
         )
-        .bind(buffer_hours)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete expired credentials")?;
@@ -446,14 +446,14 @@ impl CleanupService {
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.notification_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE is_read = TRUE
               AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete old notifications")?;
@@ -467,13 +467,13 @@ impl CleanupService {
     /// acknowledged by users.
     async fn delete_expired_notifications(&self) -> Result<u64> {
         let days = Self::u32_to_i32_saturating(self.config.notification_max_retention_days);
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM notifications
             WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
             ",
+            days
         )
-        .bind(days)
         .execute(&self.pool)
         .await
         .internal_with_err("Failed to delete expired notifications")?;
@@ -486,14 +486,14 @@ impl CleanupService {
     /// Deletes expired token blacklist rows directly in PostgreSQL.
     async fn cleanup_token_blacklist(&self) -> Result<u64> {
         let deleted_count = sqlx::query_scalar::<_, i64>(
-            r#"
+            r"
             WITH deleted AS (
                 DELETE FROM auth_token_blacklist
                 WHERE expires_at < CURRENT_TIMESTAMP
                 RETURNING 1
             )
             SELECT COUNT(*)::BIGINT
-            "#,
+            ",
         )
         .fetch_one(&self.pool)
         .await

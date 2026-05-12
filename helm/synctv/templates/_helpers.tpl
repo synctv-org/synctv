@@ -123,14 +123,22 @@ Return the metrics TLS server name used by scrape clients
 PostgreSQL deployment mode
 */}}
 {{- define "synctv.postgresql.mode" -}}
-{{- .Values.postgresql.mode | default "standard" -}}
+{{- $mode := .Values.postgresql.mode | default "standard" -}}
+{{- if not (has $mode (list "standard" "kubeblocks" "external")) -}}
+{{- fail "postgresql.mode must be one of: standard, kubeblocks, external" -}}
+{{- end -}}
+{{- $mode -}}
 {{- end }}
 
 {{/*
 Redis deployment mode
 */}}
 {{- define "synctv.redis.mode" -}}
-{{- .Values.redis.mode | default "standard" -}}
+{{- $mode := .Values.redis.mode | default "standard" -}}
+{{- if not (has $mode (list "standard" "kubeblocks" "external")) -}}
+{{- fail "redis.mode must be one of: standard, kubeblocks, external" -}}
+{{- end -}}
+{{- $mode -}}
 {{- end }}
 
 {{/*
@@ -167,6 +175,8 @@ PostgreSQL connection host for SyncTV
 {{- define "synctv.postgresql.host" -}}
 {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
 {{- printf "%s-postgresql-postgresql" (include "synctv.postgresql.kubeblocks.clusterName" .) -}}
+{{- else if eq (include "synctv.postgresql.mode" .) "external" -}}
+{{- required "postgresql.external.host is required when postgresql.mode=external" .Values.postgresql.external.host -}}
 {{- else -}}
 {{ include "synctv.postgresql.fullname" . }}
 {{- end -}}
@@ -178,6 +188,8 @@ PostgreSQL connection port for SyncTV
 {{- define "synctv.postgresql.port" -}}
 {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
 5432
+{{- else if eq (include "synctv.postgresql.mode" .) "external" -}}
+{{- .Values.postgresql.external.port | default 5432 -}}
 {{- else -}}
 {{- .Values.postgresql.standard.service.port | default 5432 -}}
 {{- end -}}
@@ -189,6 +201,8 @@ Redis connection host for SyncTV
 {{- define "synctv.redis.host" -}}
 {{- if eq (include "synctv.redis.mode" .) "kubeblocks" -}}
 {{- printf "%s-redis-redis" (include "synctv.redis.kubeblocks.clusterName" .) -}}
+{{- else if eq (include "synctv.redis.mode" .) "external" -}}
+{{- required "redis.external.host is required when redis.mode=external" .Values.redis.external.host -}}
 {{- else -}}
 {{ include "synctv.redis.fullname" . }}
 {{- end -}}
@@ -200,6 +214,8 @@ Redis connection port for SyncTV
 {{- define "synctv.redis.port" -}}
 {{- if eq (include "synctv.redis.mode" .) "kubeblocks" -}}
 6379
+{{- else if eq (include "synctv.redis.mode" .) "external" -}}
+{{- .Values.redis.external.port | default 6379 -}}
 {{- else -}}
 {{- .Values.redis.standard.service.port | default 6379 -}}
 {{- end -}}
@@ -209,7 +225,11 @@ Redis connection port for SyncTV
 PostgreSQL app username for SyncTV
 */}}
 {{- define "synctv.postgresql.appUsername" -}}
+{{- if eq (include "synctv.postgresql.mode" .) "external" -}}
+{{- .Values.postgresql.external.username | default "synctv" -}}
+{{- else -}}
 {{- .Values.postgresql.standard.auth.username | default "synctv" -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -218,6 +238,8 @@ PostgreSQL app database name for SyncTV
 {{- define "synctv.postgresql.database" -}}
 {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
 postgres
+{{- else if eq (include "synctv.postgresql.mode" .) "external" -}}
+{{- .Values.postgresql.external.database | default "synctv" -}}
 {{- else -}}
 {{- .Values.postgresql.standard.auth.database | default "synctv" -}}
 {{- end -}}
@@ -227,14 +249,22 @@ postgres
 Redis username for SyncTV when statically configured
 */}}
 {{- define "synctv.redis.username" -}}
+{{- if eq (include "synctv.redis.mode" .) "external" -}}
+{{- .Values.redis.external.username | default "" -}}
+{{- else -}}
 {{- .Values.redis.standard.auth.username | default "" -}}
+{{- end -}}
 {{- end }}
 
 {{/*
 Redis logical database index for SyncTV
 */}}
 {{- define "synctv.redis.database" -}}
+{{- if eq (include "synctv.redis.mode" .) "external" -}}
+{{- .Values.redis.external.database | default 0 -}}
+{{- else -}}
 {{- .Values.redis.standard.auth.database | default 0 -}}
+{{- end -}}
 {{- end }}
 
 {{/*

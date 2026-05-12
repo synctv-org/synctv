@@ -190,8 +190,9 @@ fn test_permission_bitmask_operations() {
 
 #[test]
 fn test_check_permission_pattern() {
-    // This tests the pattern used in ClientApiImpl::create_playlist
-    // The actual check is: room_service.check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
+    // This tests the pattern used by playlist creation, movement, and deletion.
+    // Playlist rename is creator-owned and only requires VIEW_PLAYLIST plus a
+    // matching playlist creator.
 
     // Simulate the check:
     let member_default = PermissionBits(PermissionBits::DEFAULT_MEMBER);
@@ -229,10 +230,11 @@ fn test_check_permission_pattern() {
 fn test_document_playlist_permission_requirements() {
     // Document what permissions are required for each playlist operation:
 
+    // Create: REORDER_PLAYLIST
     let create_req = PermissionBits::REORDER_PLAYLIST;
 
-    // Update: REORDER_PLAYLIST
-    let update_req = PermissionBits::REORDER_PLAYLIST;
+    // Rename/update: VIEW_PLAYLIST plus playlist creator ownership
+    let update_req = PermissionBits::VIEW_PLAYLIST;
 
     // Delete: REORDER_PLAYLIST
     let delete_req = PermissionBits::REORDER_PLAYLIST;
@@ -240,13 +242,12 @@ fn test_document_playlist_permission_requirements() {
     // Get: Membership only (VIEW_PLAYLIST implied by membership)
     // List: Membership only (VIEW_PLAYLIST implied by membership)
 
-    // All mutation operations require the same permission
     assert_eq!(
-        create_req, update_req,
-        "Create and Update should require same permission"
+        create_req, delete_req,
+        "Create and Delete should require the playlist-structure permission"
     );
-    assert_eq!(
+    assert_ne!(
         update_req, delete_req,
-        "Update and Delete should require same permission"
+        "Rename should not require REORDER_PLAYLIST; it is creator-owned"
     );
 }

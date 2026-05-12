@@ -409,7 +409,7 @@ pub async fn init_services_with_options(
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption =
         init_credential_encryption(options.credential_encryption_key_override.as_deref());
-    // Keep a clone for use by media providers (source_config cookie encryption)
+    // Keep a clone for provider credential resolution during media playback.
     let credential_encryption_for_services = credential_encryption.clone();
 
     // Initialize ProviderInstanceRepository (with optional encryption for jwt_secret/custom_ca)
@@ -577,7 +577,7 @@ pub async fn init_services_with_options(
     info!("OAuth2 service initialized");
 
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
-        pool.clone(),
+        &pool,
         crate::service::user::UserServiceDependencies {
             jwt_service: jwt_service.clone(),
             username_cache: username_cache.clone(),
@@ -1237,7 +1237,7 @@ mod tests {
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
         let user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             Config::default().password_complexity,
@@ -1316,7 +1316,7 @@ mod tests {
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
         let user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             Config::default().password_complexity,
@@ -1414,7 +1414,7 @@ mod tests {
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
         let user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             Config::default().password_complexity,
@@ -1478,7 +1478,7 @@ mod tests {
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
         let user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             Config::default().password_complexity,
@@ -1537,7 +1537,7 @@ mod tests {
             crate::service::InMemoryTokenBlacklistStore::new(100, 60, 60),
         );
         let user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service,
             username_cache,
             Config::default().password_complexity,

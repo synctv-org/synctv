@@ -794,7 +794,7 @@ mod tests {
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
-            pool.clone(),
+            &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )
@@ -908,7 +908,7 @@ mod tests {
         )
         .expect("jwt");
         let user_service = Arc::new(UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),

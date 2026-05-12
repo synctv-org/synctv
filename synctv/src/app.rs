@@ -1610,7 +1610,7 @@ mod tests {
         }
     }
 
-    fn make_test_user_service(pool: PgPool) -> UserService {
+    fn make_test_user_service(pool: &PgPool) -> UserService {
         let jwt_service =
             synctv_core::service::JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
                 .expect("jwt service");
@@ -1841,7 +1841,7 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let room_service = Arc::new(synctv_core::service::RoomService::new(
             pool.clone(),
-            make_test_user_service(pool),
+            make_test_user_service(&pool),
         ));
         let realtime_manager = Arc::new(
             RealtimeManager::new(RealtimeConfig {

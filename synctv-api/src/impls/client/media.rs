@@ -21,9 +21,8 @@ use synctv_core::service::room::{
 use synctv_core::service::MediaService;
 
 use super::convert::{
-    media_list_to_proto, media_list_to_proto_with_availability, media_to_proto,
-    media_to_proto_with_availability, playlist_list_to_proto, playlist_path_node_to_proto,
-    playlist_to_proto_with_availability,
+    media_list_to_proto_with_availability, media_to_proto_for_viewer, playlist_list_to_proto,
+    playlist_path_node_to_proto, playlist_to_proto_for_viewer,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
@@ -638,7 +637,12 @@ impl ClientApiImpl {
         prepared_outbox_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::AddMediaResponse {
-            media: Some(media_to_proto(&media, &self.public_id_codec)),
+            media: Some(media_to_proto_for_viewer(
+                &media,
+                true,
+                Some(uid),
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -742,7 +746,12 @@ impl ClientApiImpl {
         self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(crate::proto::client::EditMediaResponse {
-            media: Some(media_to_proto(&media, &self.public_id_codec)),
+            media: Some(media_to_proto_for_viewer(
+                &media,
+                true,
+                Some(uid),
+                &self.public_id_codec,
+            )),
         })
     }
 
@@ -872,7 +881,12 @@ impl ClientApiImpl {
         let results = media_list
             .into_iter()
             .map(|media| crate::proto::client::AddMediaResponse {
-                media: Some(media_to_proto(&media, &self.public_id_codec)),
+                media: Some(media_to_proto_for_viewer(
+                    &media,
+                    true,
+                    Some(uid),
+                    &self.public_id_codec,
+                )),
             })
             .collect();
 
@@ -929,7 +943,9 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::MoveMediaResponse {
             moved_count: usize_to_i32_saturating(media.len()),
-            media: media_list_to_proto(&media, &self.public_id_codec),
+            media: media_list_to_proto_with_availability(&media, |media| {
+                media_to_proto_for_viewer(media, true, Some(uid), &self.public_id_codec)
+            }),
         })
     }
 
@@ -969,6 +985,7 @@ impl ClientApiImpl {
         self.require_room_permission(actor, PermissionBits::VIEW_PLAYLIST)
             .await?;
         let rid = actor.room_id();
+        let viewer_id = actor.user_id();
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
             None
         } else {
@@ -1070,17 +1087,19 @@ impl ClientApiImpl {
             let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
                 let item_count =
                     i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-                playlist_to_proto_with_availability(
+                playlist_to_proto_for_viewer(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
+                    viewer_id,
                     &self.public_id_codec,
                 )
             });
             let proto_media = media_list_to_proto_with_availability(&media, |entry| {
-                media_to_proto_with_availability(
+                media_to_proto_for_viewer(
                     &entry.media,
                     entry.is_available,
+                    viewer_id,
                     &self.public_id_codec,
                 )
             });
@@ -1334,17 +1353,19 @@ impl ClientApiImpl {
         let proto_playlists = playlist_list_to_proto(&playlists, |entry| {
             let item_count =
                 i64_to_i32_saturating(counts.get(&entry.playlist.id).copied().unwrap_or(0));
-            playlist_to_proto_with_availability(
+            playlist_to_proto_for_viewer(
                 &entry.playlist,
                 item_count,
                 entry.is_available,
+                viewer_id,
                 &self.public_id_codec,
             )
         });
         let proto_media = media_list_to_proto_with_availability(&media, |entry| {
-            media_to_proto_with_availability(
+            media_to_proto_for_viewer(
                 &entry.media,
                 entry.is_available,
+                viewer_id,
                 &self.public_id_codec,
             )
         });
@@ -1407,9 +1428,10 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(media_to_proto_with_availability(
+        Ok(media_to_proto_for_viewer(
             &media,
             availability.is_available(),
+            actor.user_id(),
             &self.public_id_codec,
         ))
     }

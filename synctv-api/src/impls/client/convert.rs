@@ -1,20 +1,8 @@
-//! Proto conversion helper functions
 use rayon::prelude::*;
-use serde::ser::{SerializeMap, SerializeSeq};
-use serde::Serialize;
 
 use synctv_core::service::room::ClientResourceAvailability;
 
 const PARALLEL_PROTO_MAP_THRESHOLD: usize = 128;
-const REDACTED_SOURCE_CONFIG_VALUE: &str = "[REDACTED]";
-const SOURCE_CONFIG_CREDENTIAL_FIELDS: &[&str] = &[
-    "token",
-    "api_key",
-    "password",
-    "cookies",
-    "secret",
-    "access_token",
-];
 
 fn usize_to_i32_saturating(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
@@ -33,43 +21,48 @@ where
         .collect()
 }
 
-struct SanitizedSourceConfig<'a>(&'a serde_json::Value);
+fn can_view_media_source_config(
+    media: &synctv_core::models::Media,
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> bool {
+    media
+        .creator_id
+        .is_some_and(|creator_id| Some(creator_id) == viewer_id)
+}
 
-impl Serialize for SanitizedSourceConfig<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self.0 {
-            serde_json::Value::Null => serializer.serialize_unit(),
-            serde_json::Value::Bool(value) => serializer.serialize_bool(*value),
-            serde_json::Value::Number(value) => value.serialize(serializer),
-            serde_json::Value::String(value) => serializer.serialize_str(value),
-            serde_json::Value::Array(values) => {
-                let mut seq = serializer.serialize_seq(Some(values.len()))?;
-                for value in values {
-                    seq.serialize_element(&SanitizedSourceConfig(value))?;
-                }
-                seq.end()
-            }
-            serde_json::Value::Object(values) => {
-                let mut map = serializer.serialize_map(Some(values.len()))?;
-                for (key, value) in values {
-                    map.serialize_key(key)?;
-                    if SOURCE_CONFIG_CREDENTIAL_FIELDS.contains(&key.as_str()) {
-                        map.serialize_value(REDACTED_SOURCE_CONFIG_VALUE)?;
-                    } else {
-                        map.serialize_value(&SanitizedSourceConfig(value))?;
-                    }
-                }
-                map.end()
-            }
-        }
+fn serialize_source_config_for_viewer(
+    media: &synctv_core::models::Media,
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> Vec<u8> {
+    if can_view_media_source_config(media, viewer_id) {
+        serde_json::to_vec(&media.source_config).unwrap_or_default()
+    } else {
+        Vec::new()
     }
 }
 
-fn serialize_sanitized_source_config(source_config: &serde_json::Value) -> Vec<u8> {
-    serde_json::to_vec(&SanitizedSourceConfig(source_config)).unwrap_or_default()
+fn can_view_playlist_source_config(
+    playlist: &synctv_core::models::Playlist,
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> bool {
+    playlist
+        .creator_id
+        .is_some_and(|creator_id| Some(creator_id) == viewer_id)
+}
+
+fn serialize_playlist_source_config_for_viewer(
+    playlist: &synctv_core::models::Playlist,
+    viewer_id: Option<synctv_core::models::UserId>,
+) -> Vec<u8> {
+    if can_view_playlist_source_config(playlist, viewer_id) {
+        playlist
+            .source_config
+            .as_ref()
+            .and_then(|source_config| serde_json::to_vec(source_config).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    }
 }
 
 pub(super) fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
@@ -343,7 +336,7 @@ pub fn media_to_proto(
     media: &synctv_core::models::Media,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Media {
-    media_to_proto_with_availability(media, true, public_id_codec)
+    media_to_proto_for_viewer(media, true, None, public_id_codec)
 }
 
 pub fn media_to_proto_with_availability(
@@ -351,12 +344,24 @@ pub fn media_to_proto_with_availability(
     is_available: bool,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Media {
-    // Extract metadata from source_config if present (any provider may store it)
-    let metadata_bytes = media
-        .source_config
-        .get("metadata")
-        .map(|m| serde_json::to_vec(m).unwrap_or_default())
-        .unwrap_or_default();
+    media_to_proto_for_viewer(media, is_available, None, public_id_codec)
+}
+
+pub fn media_to_proto_for_viewer(
+    media: &synctv_core::models::Media,
+    is_available: bool,
+    viewer_id: Option<synctv_core::models::UserId>,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Media {
+    let metadata_bytes = if can_view_media_source_config(media, viewer_id) {
+        media
+            .source_config
+            .get("metadata")
+            .map(|m| serde_json::to_vec(m).unwrap_or_default())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     crate::proto::client::Media {
         id: public_id_codec
@@ -376,7 +381,7 @@ pub fn media_to_proto_with_availability(
                 .expect("positive user ID must encode")
         }),
         provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
-        source_config: serialize_sanitized_source_config(&media.source_config),
+        source_config: serialize_source_config_for_viewer(media, viewer_id),
         availability: resource_availability_to_proto(is_available),
         version: i64::from(media.version),
     }
@@ -394,6 +399,16 @@ pub(crate) fn playlist_to_proto_with_availability(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
     is_available: bool,
+    public_id_codec: &crate::PublicIdCodec,
+) -> crate::proto::client::Playlist {
+    playlist_to_proto_for_viewer(playlist, item_count, is_available, None, public_id_codec)
+}
+
+pub(crate) fn playlist_to_proto_for_viewer(
+    playlist: &synctv_core::models::Playlist,
+    item_count: i32,
+    is_available: bool,
+    viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &crate::PublicIdCodec,
 ) -> crate::proto::client::Playlist {
     crate::proto::client::Playlist {
@@ -416,6 +431,9 @@ pub(crate) fn playlist_to_proto_with_availability(
         updated_at: playlist.updated_at.timestamp(),
         availability: resource_availability_to_proto(is_available),
         version: i64::from(playlist.version),
+        source_config: serialize_playlist_source_config_for_viewer(playlist, viewer_id),
+        source_provider: playlist.source_provider.clone().unwrap_or_default(),
+        provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
     }
 }
 
@@ -872,9 +890,9 @@ fn danmaku_to_proto(
 mod tests {
     use super::{
         bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-        media_to_proto, normalize_created_room_settings, playback_client_profile_from_proto,
-        playlist_to_proto, provider_playback_info_to_model, room_to_proto_basic,
-        sign_local_bilibili_danmaku_urls, REDACTED_SOURCE_CONFIG_VALUE,
+        media_to_proto, media_to_proto_for_viewer, normalize_created_room_settings,
+        playback_client_profile_from_proto, playlist_to_proto, playlist_to_proto_for_viewer,
+        provider_playback_info_to_model, room_to_proto_basic, sign_local_bilibili_danmaku_urls,
     };
     use std::collections::HashMap;
     use synctv_core::models::{Media, MediaId, PlaylistId, Room, RoomId, UserId};
@@ -1260,13 +1278,14 @@ mod tests {
     }
 
     #[test]
-    fn media_to_proto_redacts_nested_credentials_without_cloning_sanitized_value() {
+    fn media_to_proto_only_includes_source_config_for_creator_viewer() {
         let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let creator_id = UserId::expect_positive(103);
         let media = Media {
             id: MediaId::expect_positive(104),
             playlist_id: None,
             room_id: RoomId::expect_positive(102),
-            creator_id: Some(UserId::expect_positive(103)),
+            creator_id: Some(creator_id),
             name: "Secret Media".to_string(),
             position: 1.0,
             source_provider: "alist".to_string(),
@@ -1294,23 +1313,63 @@ mod tests {
         };
 
         let proto = media_to_proto(&media, &public_id_codec);
+        assert!(
+            proto.source_config.is_empty(),
+            "default media conversion must not expose source_config"
+        );
+        assert!(
+            proto.metadata.is_empty(),
+            "default media conversion must not expose metadata extracted from source_config"
+        );
+
+        let proto = media_to_proto_for_viewer(
+            &media,
+            true,
+            Some(UserId::expect_positive(999)),
+            &public_id_codec,
+        );
+        assert!(
+            proto.source_config.is_empty(),
+            "non-creator viewers must not receive source_config"
+        );
+        assert!(
+            proto.metadata.is_empty(),
+            "non-creator viewers must not receive metadata extracted from source_config"
+        );
+
+        let mut unowned_media = media.clone();
+        unowned_media.creator_id = None;
+        let proto = media_to_proto_for_viewer(&unowned_media, true, None, &public_id_codec);
+        assert!(
+            proto.source_config.is_empty(),
+            "media without a creator must not expose source_config"
+        );
+        assert!(
+            proto.metadata.is_empty(),
+            "media without a creator must not expose metadata extracted from source_config"
+        );
+
+        let proto = media_to_proto_for_viewer(&media, true, Some(creator_id), &public_id_codec);
         let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
             .expect("proto source config should be JSON");
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&proto.metadata).expect("proto metadata should be JSON");
 
-        assert_eq!(source_config["token"], REDACTED_SOURCE_CONFIG_VALUE);
+        assert_eq!(source_config["token"], serde_json::json!("top-level-token"));
         assert_eq!(
             source_config["nested"]["password"],
-            REDACTED_SOURCE_CONFIG_VALUE
+            serde_json::json!("nested-password")
         );
         assert_eq!(
             source_config["items"][0]["api_key"],
-            REDACTED_SOURCE_CONFIG_VALUE
+            serde_json::json!("nested-api-key")
         );
         assert_eq!(source_config["nested"]["safe"], serde_json::json!(true));
         assert_eq!(
             source_config["metadata"]["title"],
             serde_json::json!("Secret Media")
         );
+        assert_eq!(metadata["title"], serde_json::json!("Secret Media"));
     }
 
     #[test]
@@ -1333,6 +1392,71 @@ mod tests {
 
         let proto = playlist_to_proto(&playlist, 3, &public_id_codec);
         assert_eq!(proto.version, 7);
+    }
+
+    #[test]
+    fn playlist_to_proto_only_includes_source_config_for_creator_viewer() {
+        let public_id_codec = crate::PublicIdCodec::default_for_tests();
+        let creator_id = UserId::expect_positive(103);
+        let playlist = synctv_core::models::Playlist {
+            id: PlaylistId::expect_positive(106),
+            room_id: RoomId::expect_positive(102),
+            creator_id: Some(creator_id),
+            name: "Secret Playlist".to_string(),
+            parent_id: None,
+            position: 1.0,
+            source_provider: Some("alist".to_string()),
+            source_config: Some(serde_json::json!({
+                "path": "/secret",
+                "token": "playlist-token",
+                "nested": {
+                    "password": "nested-password"
+                }
+            })),
+            provider_instance_name: Some("alist-main".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        let proto = playlist_to_proto(&playlist, 3, &public_id_codec);
+        assert!(
+            proto.source_config.is_empty(),
+            "default playlist conversion must not expose source_config"
+        );
+        assert_eq!(proto.source_provider, "alist");
+        assert_eq!(proto.provider_instance_name, "alist-main");
+
+        let proto = playlist_to_proto_for_viewer(
+            &playlist,
+            3,
+            true,
+            Some(UserId::expect_positive(999)),
+            &public_id_codec,
+        );
+        assert!(
+            proto.source_config.is_empty(),
+            "non-creator viewers must not receive playlist source_config"
+        );
+
+        let mut unowned_playlist = playlist.clone();
+        unowned_playlist.creator_id = None;
+        let proto =
+            playlist_to_proto_for_viewer(&unowned_playlist, 3, true, None, &public_id_codec);
+        assert!(
+            proto.source_config.is_empty(),
+            "playlist without a creator must not expose source_config"
+        );
+
+        let proto =
+            playlist_to_proto_for_viewer(&playlist, 3, true, Some(creator_id), &public_id_codec);
+        let source_config: serde_json::Value = serde_json::from_slice(&proto.source_config)
+            .expect("proto source config should be JSON");
+        assert_eq!(source_config["token"], serde_json::json!("playlist-token"));
+        assert_eq!(
+            source_config["nested"]["password"],
+            serde_json::json!("nested-password")
+        );
     }
 
     #[test]

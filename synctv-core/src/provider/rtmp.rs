@@ -234,7 +234,7 @@ mod tests {
         let key_builder = crate::cache::KeyBuilder::new("test");
         let brute_force = crate::service::auth::BruteForceProtection::in_memory("test".to_string());
         let user_service = crate::service::UserService::new(
-            pool.clone(),
+            &pool,
             jwt,
             username_cache,
             crate::config::PasswordComplexityConfig::default(),

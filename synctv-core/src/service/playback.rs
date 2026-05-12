@@ -1812,7 +1812,7 @@ mod tests {
         }
     }
 
-    fn make_user_service(pool: PgPool) -> UserService {
+    fn make_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
         let password_complexity = PasswordComplexityConfig::default();
@@ -1853,7 +1853,7 @@ mod tests {
             providers_manager,
             NotificationService::default(),
         );
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let playback_service = PlaybackService::new(
             RoomPlaybackStateRepository::new(pool.clone()),
             permission_service,

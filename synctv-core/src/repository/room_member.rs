@@ -18,6 +18,23 @@ pub struct RoomMemberRepository {
     pool: PgPool,
 }
 
+struct RoomMemberWithUserRow {
+    room_id: RoomId,
+    user_id: UserId,
+    username: String,
+    role: RoomRole,
+    added_permissions: i64,
+    removed_permissions: i64,
+    admin_added_permissions: i64,
+    admin_removed_permissions: i64,
+    joined_at: chrono::DateTime<chrono::Utc>,
+    left_at: Option<chrono::DateTime<chrono::Utc>>,
+    is_banned: bool,
+    is_active: bool,
+    banned_at: Option<chrono::DateTime<chrono::Utc>>,
+    banned_reason: Option<String>,
+}
+
 const ACCESSIBLE_ROOM_CREATOR_CONDITION: &str =
     "EXISTS (SELECT 1 FROM users u WHERE u.id = r.created_by AND u.deleted_at IS NULL
         AND NOT EXISTS (
@@ -623,13 +640,18 @@ impl RoomMemberRepository {
 
     /// List all active members in a room
     pub async fn list_by_room(&self, room_id: &RoomId) -> Result<Vec<RoomMemberWithUser>> {
-        let rows = sqlx::query(
-            "SELECT
-                rm.room_id, rm.user_id, rm.role,
+        let rows = sqlx::query_as!(
+            RoomMemberWithUserRow,
+            r#"SELECT
+                rm.room_id AS "room_id: RoomId",
+                rm.user_id AS "user_id: UserId",
+                rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at, rm.left_at,
-                FALSE AS is_banned,
+                FALSE AS "is_banned!",
+                TRUE AS "is_active!",
+                NULL::timestamptz AS "banned_at?",
                 NULL::text AS banned_reason,
                 u.username
              FROM room_members rm
@@ -643,14 +665,14 @@ impl RoomMemberRepository {
                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
                )
                AND u.deleted_at IS NULL
-             ORDER BY rm.joined_at ASC",
+             ORDER BY rm.joined_at ASC"#,
+            room_id.as_i64()
         )
-        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
-            .map(|row| Self::row_to_member_with_user(&row))
+            .map(Self::typed_row_to_member_with_user)
             .collect()
     }
 
@@ -803,13 +825,18 @@ impl RoomMemberRepository {
         room_id: &RoomId,
         online_user_ids: &[UserId],
     ) -> Result<Vec<RoomMemberWithUser>> {
-        let rows = sqlx::query(
-            "SELECT
-                rm.room_id, rm.user_id, rm.role,
+        let rows = sqlx::query_as!(
+            RoomMemberWithUserRow,
+            r#"SELECT
+                rm.room_id AS "room_id: RoomId",
+                rm.user_id AS "user_id: UserId",
+                rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at, rm.left_at,
-                FALSE AS is_banned,
+                FALSE AS "is_banned!",
+                TRUE AS "is_active!",
+                NULL::timestamptz AS "banned_at?",
                 NULL::text AS banned_reason,
                 u.username
              FROM room_members rm
@@ -823,9 +850,9 @@ impl RoomMemberRepository {
                      AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
                )
                AND u.deleted_at IS NULL
-             ORDER BY rm.joined_at ASC",
+             ORDER BY rm.joined_at ASC"#,
+            room_id.as_i64()
         )
-        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -836,7 +863,7 @@ impl RoomMemberRepository {
 
         rows.into_iter()
             .map(|row| {
-                let mut member = Self::row_to_member_with_user(&row)?;
+                let mut member = Self::typed_row_to_member_with_user(row)?;
                 member.is_online = online_set.contains(&member.user_id.as_i64());
                 Ok(member)
             })
@@ -1806,9 +1833,12 @@ impl RoomMemberRepository {
 
     /// List all members including inactive (left) (admin view)
     pub async fn list_by_room_all(&self, room_id: &RoomId) -> Result<Vec<RoomMemberWithUser>> {
-        let rows = sqlx::query(
-            "SELECT
-                rm.room_id, rm.user_id, rm.role,
+        let rows = sqlx::query_as!(
+            RoomMemberWithUserRow,
+            r#"SELECT
+                rm.room_id AS "room_id: RoomId",
+                rm.user_id AS "user_id: UserId",
+                rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at, rm.left_at,
@@ -1818,7 +1848,8 @@ impl RoomMemberRepository {
                       AND rmb.user_id = rm.user_id
                       AND rmb.revoked_at IS NULL
                       AND (rmb.ends_at IS NULL OR rmb.ends_at > CURRENT_TIMESTAMP)
-                ) AS is_banned,
+                ) AS "is_banned!",
+                NULL::timestamptz AS "banned_at?",
                 (
                     SELECT rmb.reason FROM room_member_bans rmb
                     WHERE rmb.room_id = rm.room_id
@@ -1828,26 +1859,19 @@ impl RoomMemberRepository {
                     ORDER BY rmb.starts_at DESC
                     LIMIT 1
                 ) AS banned_reason,
-                rm.version,
                 u.username,
-                CASE WHEN rm.left_at IS NULL THEN true ELSE false END as is_active
+                (rm.left_at IS NULL) AS "is_active!"
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = $1 AND u.deleted_at IS NULL
-             ORDER BY rm.joined_at ASC",
+             ORDER BY rm.joined_at ASC"#,
+            room_id.as_i64()
         )
-        .bind(room_id)
         .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
-            .map(|row| {
-                let is_active: bool = row.try_get("is_active")?;
-                let mut member = Self::row_to_member_with_user(&row)?;
-                member.is_active = is_active;
-                // is_online stays false — this method doesn't have WebSocket status info
-                Ok(member)
-            })
+            .map(Self::typed_row_to_member_with_user)
             .collect()
     }
 
@@ -2033,6 +2057,46 @@ impl RoomMemberRepository {
                 ))
             }
         }
+    }
+
+    /// Convert database row to `RoomMemberWithUser`
+    fn typed_row_to_member_with_user(row: RoomMemberWithUserRow) -> Result<RoomMemberWithUser> {
+        let status = if row.left_at.is_some() {
+            MemberStatus::Left
+        } else {
+            MemberStatus::Active
+        };
+
+        Ok(RoomMemberWithUser {
+            room_id: row.room_id,
+            user_id: row.user_id,
+            username: row.username,
+            role: row.role,
+            status,
+            added_permissions: db_permission_i64_to_u64(
+                row.added_permissions,
+                "added_permissions",
+            )?,
+            removed_permissions: db_permission_i64_to_u64(
+                row.removed_permissions,
+                "removed_permissions",
+            )?,
+            admin_added_permissions: db_permission_i64_to_u64(
+                row.admin_added_permissions,
+                "admin_added_permissions",
+            )?,
+            admin_removed_permissions: db_permission_i64_to_u64(
+                row.admin_removed_permissions,
+                "admin_removed_permissions",
+            )?,
+            joined_at: row.joined_at,
+            left_at: row.left_at,
+            is_online: false,
+            is_active: row.is_active,
+            is_banned: row.is_banned,
+            banned_at: row.banned_at,
+            banned_reason: row.banned_reason,
+        })
     }
 
     /// Convert database row to `RoomMemberWithUser`

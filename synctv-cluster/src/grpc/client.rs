@@ -9,17 +9,9 @@ use std::sync::Arc;
 use crate::discovery::{ClusterNodeDirectory, NodeInfo};
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClusterClientConfig {
     pub self_node_id: String,
-}
-
-impl Default for ClusterClientConfig {
-    fn default() -> Self {
-        Self {
-            self_node_id: String::new(),
-        }
-    }
 }
 
 pub struct ClusterClient {

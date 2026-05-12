@@ -68,7 +68,7 @@ impl EmbeddedMigrationsStatus {
 async fn run_migrate_with_connection(
     conn: &mut sqlx::pool::PoolConnection<Postgres>,
 ) -> Result<()> {
-    sqlx::query("SET statement_timeout = 0")
+    sqlx::query!("SET statement_timeout = 0")
         .execute(&mut **conn)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for migrations: {e}"))?;
@@ -102,8 +102,8 @@ fn describe_migration_error(err: &sqlx::migrate::MigrateError) -> String {
 async fn inspect_embedded_migrations_with_connection(
     conn: &mut sqlx::pool::PoolConnection<Postgres>,
 ) -> Result<EmbeddedMigrationsStatus> {
-    let dirty_version: Option<i64> = match sqlx::query_scalar(
-        "SELECT version FROM _sqlx_migrations WHERE success = false ORDER BY version LIMIT 1",
+    let dirty_version: Option<i64> = match sqlx::query_scalar!(
+        "SELECT version FROM _sqlx_migrations WHERE success = false ORDER BY version LIMIT 1"
     )
     .fetch_optional(&mut **conn)
     .await
@@ -126,13 +126,16 @@ async fn inspect_embedded_migrations_with_connection(
     }
 
     let migrator = sqlx::migrate!("../migrations");
-    let applied: Vec<(i64, Vec<u8>)> = match sqlx::query_as(
-        "SELECT version, checksum FROM _sqlx_migrations WHERE success = true ORDER BY version",
+    let applied = match sqlx::query!(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE success = true ORDER BY version"
     )
     .fetch_all(&mut **conn)
     .await
     {
-        Ok(rows) => rows,
+        Ok(rows) => rows
+            .into_iter()
+            .map(|row| (row.version, row.checksum))
+            .collect::<Vec<_>>(),
         Err(err) if is_missing_migrations_table(&err) => {
             return Ok(EmbeddedMigrationsStatus::Pending);
         }
@@ -287,7 +290,7 @@ mod tests {
             .expect("should read statement_timeout");
         let timeout: String = row
             .try_get(0)
-            .expect("SHOW statement_timeout should return a string value");
+            .expect("statement_timeout should be returned");
 
         assert_eq!(
             timeout, "0",

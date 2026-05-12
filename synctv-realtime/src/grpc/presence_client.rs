@@ -281,7 +281,7 @@ impl RealtimePresenceClient {
         client
             .get_user_online_status(request)
             .await
-            .map(|response| response.into_inner())
+            .map(tonic::Response::into_inner)
             .map_err(|error| {
                 Error::Rpc(format!(
                     "Realtime GetUserOnlineStatus RPC failed for {address}: {error}"
@@ -319,7 +319,7 @@ impl RealtimePresenceClient {
         client
             .get_room_connections(request)
             .await
-            .map(|response| response.into_inner())
+            .map(tonic::Response::into_inner)
             .map_err(|error| {
                 Error::Rpc(format!(
                     "Realtime GetRoomConnections RPC failed for {address}: {error}"
@@ -342,7 +342,7 @@ impl RealtimePresenceClient {
                     existing.room_ids.sort_unstable();
                     if !status.node_id.is_empty() {
                         if existing.node_id.is_empty() {
-                            existing.node_id = status.node_id.clone();
+                            existing.node_id.clone_from(&status.node_id);
                         } else if !existing.node_id.split(',').any(|id| id == status.node_id) {
                             existing.node_id.push(',');
                             existing.node_id.push_str(&status.node_id);

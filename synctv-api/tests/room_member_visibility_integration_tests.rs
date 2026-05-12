@@ -43,7 +43,7 @@ fn make_user(username: &str) -> User {
     }
 }
 
-fn make_user_service(pool: sqlx::PgPool) -> UserService {
+fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
@@ -85,7 +85,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
     let client_api = make_client_api(user_service, room_service.clone());
 
@@ -157,7 +157,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
     let client_api = make_client_api(user_service, room_service.clone());
 
@@ -280,7 +280,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
     let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
     let client_api = make_client_api(user_service, room_service.clone());
 

@@ -1779,7 +1779,7 @@ mod tests {
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
 
-    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("test-jwt-secret-key-for-testing-minimum-length").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 64, 60);
@@ -1803,7 +1803,7 @@ mod tests {
         let config = Arc::new(Config::default());
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
         let shared_runtime = SharedProviderPlaybackRuntime::new(&config, None);
-        let user_service = Arc::new(test_user_service(pool.clone()));
+        let user_service = Arc::new(test_user_service(&pool));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
         let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
             ProviderInstanceRepository::new(pool.clone()),
@@ -2125,14 +2125,14 @@ mod tests {
 
         assert_eq!(slice_cache_config.slice_size, 4 * 1024 * 1024);
         assert_eq!(slice_cache_config.max_cache_size, 1024 * 1024 * 1024);
-        assert_eq!(slice_cache_config.segment_ttl, Duration::from_secs(600));
-        assert_eq!(slice_cache_config.stale_max_age, Duration::from_secs(120));
+        assert_eq!(slice_cache_config.segment_ttl, Duration::from_mins(10));
+        assert_eq!(slice_cache_config.stale_max_age, Duration::from_mins(2));
         assert!(!slice_cache_config.stale_while_revalidate);
         assert_eq!(
             slice_cache_config.eviction_interval,
             Duration::from_secs(30)
         );
-        assert_eq!(slice_cache_config.watermark_ratio, 0.75);
+        assert!((slice_cache_config.watermark_ratio - 0.75).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

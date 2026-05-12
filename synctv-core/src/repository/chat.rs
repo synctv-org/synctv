@@ -205,17 +205,17 @@ impl ChatRepository {
         message_id: i64,
         created_at: DateTime<Utc>,
     ) -> Result<bool> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             DELETE FROM chat_messages
             WHERE room_id = $1
               AND id = $2
               AND created_at = $3
             ",
+            room_id.as_i64(),
+            message_id,
+            created_at
         )
-        .bind(room_id.as_i64())
-        .bind(message_id)
-        .bind(created_at)
         .execute(&self.pool)
         .await?;
 

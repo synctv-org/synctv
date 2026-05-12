@@ -92,7 +92,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | --- | --- | --- | --- |
 | `server.host` | IP/listen address | `0.0.0.0` | Main API listen address |
 | `server.port` | port | `8080` | HTTP REST, public gRPC, and health-check port |
-| `server.enable_reflection` | boolean | `true` | Enable public gRPC reflection |
+| `server.enable_reflection` | boolean | `false` | Enable public gRPC reflection |
 | `server.trusted_proxies` | string array | `[]` | Trusted reverse proxy IPs/CIDRs |
 | `server.cors_allowed_origins` | string array | `[]` | Frontend origins allowed by startup CORS |
 | `server.cluster_secret` | secret string | `""` | Authentication secret for internal cluster gRPC |

@@ -1820,9 +1820,9 @@ mod tests {
                 joined_at, left_at, version
              ) VALUES ($1, $2, $3, 0, 0, 0, 0, $4, $5, 0)",
         )
-        .bind(room.id)
-        .bind(rejected.id)
-        .bind(RoomRole::Member)
+        .bind(room.id.as_i64())
+        .bind(rejected.id.as_i64())
+        .bind(i16::try_from(i32::from(RoomRole::Member)).unwrap())
         .bind(Utc::now())
         .bind(Some(Utc::now()))
         .execute(&pool)

@@ -42,7 +42,7 @@ fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn make_user_service(pool: PgPool) -> UserService {
+fn make_user_service(pool: &PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -66,7 +66,7 @@ fn make_user_service(pool: PgPool) -> UserService {
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut svc = RoomService::new(pool, user_service);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
@@ -5946,7 +5946,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
 async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(&pool);
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -6007,7 +6007,7 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
 async fn test_admin_delete_orphaned_room_requires_admin_role() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(&pool);
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -6154,7 +6154,7 @@ async fn test_admin_delete_orphaned_room_rejects_active_creator() {
 async fn test_admin_delete_orphaned_room_rejects_non_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(&pool);
     let room_service = make_room_service(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
@@ -6205,7 +6205,7 @@ async fn test_admin_delete_orphaned_room_rejects_non_admin() {
 async fn test_admin_delete_orphaned_room_already_deleted_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let _user_service = make_user_service(pool.clone());
+    let _user_service = make_user_service(&pool);
     let room_service = make_room_service(pool.clone());
 
     let creator = user_repo

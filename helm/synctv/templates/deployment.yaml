@@ -12,6 +12,9 @@
 {{- if and (eq $hlsBackend "shared_file") (not .Values.persistence.hls.existingClaim) -}}
 {{- fail "config.livestream.hlsStorageBackend=shared_file requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
 {{- end -}}
+{{- if and (eq (include "synctv.postgresql.mode" .) "external") (not .Values.existingSecret) (not .Values.secrets.database.password) -}}
+{{- fail "postgresql.mode=external requires existingSecret with SYNCTV_DATABASE_PASSWORD or secrets.database.password" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -144,6 +147,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "synctv.redis.kubeblocks.secretName" . }}
                   key: password
+            {{- else if eq (include "synctv.redis.mode" .) "standard" }}
+            {{- $redisUsername := include "synctv.redis.username" . | trim }}
+            {{- if $redisUsername }}
+            - name: SYNCTV_REDIS_USER
+              value: {{ $redisUsername | quote }}
+            {{- end }}
+            - name: SYNCTV_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_REDIS_PASSWORD
             {{- else }}
             {{- $redisUsername := include "synctv.redis.username" . | trim }}
             {{- if $redisUsername }}
@@ -155,6 +169,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_REDIS_PASSWORD
+                  optional: true
             {{- end }}
             - name: SYNCTV_JWT_SECRET
               valueFrom:

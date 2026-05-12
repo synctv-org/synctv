@@ -105,7 +105,6 @@ const NAMED_PERMISSIONS: &[(&str, u64)] = &[
     ("delete_media_self", PermissionBits::DELETE_MEDIA_SELF),
     ("delete_media_any", PermissionBits::DELETE_MEDIA_ANY),
     ("edit_media_self", PermissionBits::EDIT_MEDIA_SELF),
-    ("edit_media_any", PermissionBits::EDIT_MEDIA_ANY),
     ("reorder_playlist", PermissionBits::REORDER_PLAYLIST),
     ("clear_playlist", PermissionBits::CLEAR_PLAYLIST),
     ("start_live", PermissionBits::START_LIVE),

@@ -37,9 +37,9 @@ HTTP REST、公开 gRPC 和健康检查使用这个端口。Helm 会把 HTTP 和
 
 ### `server.enable_reflection`
 
-默认值：`true`。
+默认值：`false`。
 
-开启公开 gRPC reflection。本地开发和受控内网调试可以开启；公网生产环境关闭。
+开启公开 gRPC reflection。默认关闭；本地开发和受控内网调试可以显式开启，公网生产环境应保持关闭。
 
 ### `server.grpc_max_message_size_bytes`
 

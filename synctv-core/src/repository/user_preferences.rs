@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 use crate::{
     models::{
@@ -13,48 +13,65 @@ pub struct UserPreferencesRepository {
     pool: PgPool,
 }
 
+struct UserPreferencesRow {
+    user_id: UserId,
+    two_factor_enabled: bool,
+    notify_room_invitation_in_app: bool,
+    notify_room_event_in_app: bool,
+    notify_system_announcement_in_app: bool,
+    notify_room_invitation_email: bool,
+    notify_room_event_email: bool,
+    notify_system_announcement_email: bool,
+    settings: serde_json::Value,
+}
+
 impl UserPreferencesRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
-    fn preferences_from_row(
-        row: &sqlx::postgres::PgRow,
-        user_id: UserId,
-    ) -> Result<UserPreferences> {
-        Ok(UserPreferences {
-            user_id,
-            two_factor_enabled: row.try_get("two_factor_enabled")?,
+    fn preferences_from_row(row: UserPreferencesRow) -> UserPreferences {
+        UserPreferences {
+            user_id: row.user_id,
+            two_factor_enabled: row.two_factor_enabled,
             notifications: UserNotificationPreferences {
-                room_invitation_in_app: row.try_get("notify_room_invitation_in_app")?,
-                room_event_in_app: row.try_get("notify_room_event_in_app")?,
-                system_announcement_in_app: row.try_get("notify_system_announcement_in_app")?,
-                room_invitation_email: row.try_get("notify_room_invitation_email")?,
-                room_event_email: row.try_get("notify_room_event_email")?,
-                system_announcement_email: row.try_get("notify_system_announcement_email")?,
+                room_invitation_in_app: row.notify_room_invitation_in_app,
+                room_event_in_app: row.notify_room_event_in_app,
+                system_announcement_in_app: row.notify_system_announcement_in_app,
+                room_invitation_email: row.notify_room_invitation_email,
+                room_event_email: row.notify_room_event_email,
+                system_announcement_email: row.notify_system_announcement_email,
             },
-            settings: row.try_get("settings")?,
-        })
+            settings: row.settings,
+        }
     }
 
     pub async fn get_or_default(&self, user_id: &UserId) -> Result<UserPreferences> {
-        let row = sqlx::query(
-            r"
-            SELECT *
+        let row = sqlx::query_as!(
+            UserPreferencesRow,
+            r#"
+            SELECT user_id AS "user_id: UserId",
+                   two_factor_enabled,
+                   notify_room_invitation_in_app,
+                   notify_room_event_in_app,
+                   notify_system_announcement_in_app,
+                   notify_room_invitation_email,
+                   notify_room_event_email,
+                   notify_system_announcement_email,
+                   settings
             FROM user_preferences
             WHERE user_id = $1
-            ",
+            "#,
+            user_id.as_i64()
         )
-        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        row.map(|row| Self::preferences_from_row(&row, *user_id))
-            .transpose()
-            .map(|preferences| {
-                preferences.unwrap_or_else(|| UserPreferences::default_for_user(*user_id))
-            })
+        Ok(row.map_or_else(
+            || UserPreferences::default_for_user(*user_id),
+            Self::preferences_from_row,
+        ))
     }
 
     pub async fn set_two_factor_enabled_with_executor<'e, E>(
@@ -96,8 +113,9 @@ impl UserPreferencesRepository {
             ));
         }
 
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            UserPreferencesRow,
+            r#"
             INSERT INTO user_preferences (
                 user_id,
                 two_factor_enabled,
@@ -129,17 +147,43 @@ impl UserPreferencesRepository {
                 notify_room_event_email = COALESCE($7, user_preferences.notify_room_event_email),
                 notify_system_announcement_email = COALESCE($8, user_preferences.notify_system_announcement_email),
                 updated_at = CURRENT_TIMESTAMP
-            RETURNING *
-            ",
+            RETURNING user_id AS "user_id: UserId",
+                      two_factor_enabled,
+                      notify_room_invitation_in_app,
+                      notify_room_event_in_app,
+                      notify_system_announcement_in_app,
+                      notify_room_invitation_email,
+                      notify_room_event_email,
+                      notify_system_announcement_email,
+                      settings
+            "#,
+            user_id.as_i64(),
+            update.two_factor_enabled,
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.room_invitation_in_app),
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.room_event_in_app),
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.system_announcement_in_app),
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.room_invitation_email),
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.room_event_email),
+            update
+                .notifications
+                .as_ref()
+                .map(|value| value.system_announcement_email)
         )
-        .bind(user_id)
-        .bind(update.two_factor_enabled)
-        .bind(update.notifications.as_ref().map(|value| value.room_invitation_in_app))
-        .bind(update.notifications.as_ref().map(|value| value.room_event_in_app))
-        .bind(update.notifications.as_ref().map(|value| value.system_announcement_in_app))
-        .bind(update.notifications.as_ref().map(|value| value.room_invitation_email))
-        .bind(update.notifications.as_ref().map(|value| value.room_event_email))
-        .bind(update.notifications.as_ref().map(|value| value.system_announcement_email))
         .fetch_one(executor)
         .await
         .map_err(|error| match error {
@@ -151,7 +195,7 @@ impl UserPreferencesRepository {
             other => Error::Database(other),
         })?;
 
-        Self::preferences_from_row(&row, *user_id)
+        Ok(Self::preferences_from_row(row))
     }
 
     pub async fn auth_factors(&self, user_id: &UserId) -> Result<UserAuthFactors> {
@@ -168,38 +212,38 @@ impl UserPreferencesRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query!(
+            r#"
             SELECT
                 EXISTS (
                     SELECT 1
                     FROM auth_password_credentials
                     WHERE user_id = $1
                       AND legacy_password_hash IS NOT NULL
-                ) AS password,
+                ) AS "password!",
                 EXISTS (
                     SELECT 1
                     FROM auth_webauthn_credentials
                     WHERE user_id = $1
                       AND ($2::bytea IS NULL OR credential_id <> $2)
-                ) AS webauthn,
+                ) AS "webauthn!",
                 EXISTS (
                     SELECT 1
                     FROM auth_email_identities
                     WHERE user_id = $1
                       AND email_verified = TRUE
-                ) AS email
-            ",
+                ) AS "email!"
+            "#,
+            user_id.as_i64(),
+            excluded_credential_id
         )
-        .bind(user_id)
-        .bind(excluded_credential_id)
         .fetch_one(executor)
         .await?;
 
         Ok(UserAuthFactors {
-            password: row.try_get("password")?,
-            webauthn: row.try_get("webauthn")?,
-            email: row.try_get("email")?,
+            password: row.password,
+            webauthn: row.webauthn,
+            email: row.email,
         })
     }
 
@@ -211,15 +255,15 @@ impl UserPreferencesRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let enabled = sqlx::query_scalar::<_, bool>(
-            r"
+        let enabled = sqlx::query_scalar!(
+            r#"
             SELECT COALESCE(
                 (SELECT two_factor_enabled FROM user_preferences WHERE user_id = $1),
                 FALSE
-            )
-            ",
+            ) AS "enabled!"
+            "#,
+            user_id.as_i64()
         )
-        .bind(user_id)
         .fetch_one(executor)
         .await?;
 

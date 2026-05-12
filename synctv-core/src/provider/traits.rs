@@ -311,11 +311,11 @@ pub trait MediaProvider: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Prepare `source_config` for storage by encrypting sensitive fields.
+    /// Prepare `source_config` for storage.
     ///
     /// Called after validation, before the `source_config` is persisted to the database.
-    /// Providers that store sensitive data (cookies, tokens) in `source_config` should
-    /// override this to encrypt those fields using `ctx.credential_encryption`.
+    /// Providers may override this to normalize provider-specific fields or reject
+    /// deprecated payload shapes before persistence.
     ///
     /// The default implementation returns the `source_config` unchanged.
     async fn prepare_source_config(
@@ -481,10 +481,14 @@ pub struct DynamicBrowsePathSegment {
     pub target: Vec<u8>,
 }
 
-/// Next play item for auto-play
+/// Next play item for dynamic playback and auto-play.
 ///
-/// Contains all information needed to play the next item in a playlist.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Contains server-side provider data needed to resolve playback for a dynamic
+/// playlist item. `source_config` may contain provider credentials and must not
+/// be serialized into client-facing API responses. If a future API needs to
+/// expose it, the owner is the dynamic playlist creator and the caller must be
+/// that creator.
+#[derive(Debug, Clone)]
 pub struct NextPlayItem {
     /// Item name
     pub name: String,
@@ -500,21 +504,8 @@ pub struct NextPlayItem {
 
     /// Provider-specific data for `next()` calls
     /// e.g., Emby playlist index, Alist folder current path
-    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub provider_data: serde_json::Value,
 
     /// Provider-facing target payload for this playable item
     pub target: Vec<u8>,
-}
-
-impl NextPlayItem {
-    /// Return a copy with credentials stripped from `source_config`.
-    ///
-    /// This **must** be called before serializing the item to any client-facing
-    /// API response so that tokens, passwords, cookies, etc. are never leaked.
-    #[must_use]
-    pub fn strip_credentials(mut self) -> Self {
-        self.source_config = super::strip_source_config_credentials(&self.source_config);
-        self
-    }
 }

@@ -54,29 +54,19 @@ fn required_delete_permission(creator_id: Option<&UserId>, requester_id: &UserId
     }
 }
 
-/// Determines which permission is needed for `edit_media` based on ownership.
-fn required_edit_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
-    if creator_id == Some(requester_id) {
-        "EDIT_MEDIA_SELF"
-    } else {
-        "EDIT_MEDIA_ANY"
-    }
+/// Determines whether a requester may use the member-facing edit path.
+fn can_edit_media_as_creator(creator_id: Option<&UserId>, requester_id: &UserId) -> bool {
+    creator_id == Some(requester_id)
 }
 
 #[test]
-fn test_edit_media_owner_vs_non_owner_permission() {
+fn test_edit_media_requires_matching_creator() {
     let owner = UserId::expect_positive(10_000_001);
     let other = UserId::expect_positive(10_000_002);
 
-    assert_eq!(
-        required_edit_permission(Some(&owner), &owner),
-        "EDIT_MEDIA_SELF"
-    );
-    assert_eq!(
-        required_edit_permission(Some(&owner), &other),
-        "EDIT_MEDIA_ANY"
-    );
-    assert_eq!(required_edit_permission(None, &other), "EDIT_MEDIA_ANY");
+    assert!(can_edit_media_as_creator(Some(&owner), &owner));
+    assert!(!can_edit_media_as_creator(Some(&owner), &other));
+    assert!(!can_edit_media_as_creator(None, &other));
 }
 
 #[test]

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT EXISTS(\n                        SELECT 1\n                        FROM user_registration_requests\n                        WHERE reviewed_at IS NULL\n                          AND status = $1\n                          AND email = $2\n                    ) AS \"exists!\"\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "04f01390d1b49f0a1327cb2de5437a3ee1da636e2a6a51772ecaacd63343acd6"
+}

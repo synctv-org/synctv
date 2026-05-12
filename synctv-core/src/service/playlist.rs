@@ -117,6 +117,16 @@ pub struct SetPlaylistRequest {
     pub name: Option<String>,
 }
 
+fn ensure_playlist_creator_can_edit(playlist: &Playlist, user_id: &UserId) -> Result<()> {
+    if playlist.creator_id.as_ref() == Some(user_id) {
+        Ok(())
+    } else {
+        Err(Error::Authorization(
+            "Only the playlist creator can edit playlists".to_string(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MovePlaylistRequest {
     pub playlist_id: PlaylistId,
@@ -277,7 +287,9 @@ impl PlaylistService {
             trimmed_instance.as_deref(),
         )
         .await?;
-        let provider = if bound_instance != trimmed_instance {
+        let provider = if bound_instance == trimmed_instance {
+            provider
+        } else {
             let provider = self
                 .providers_manager
                 .resolve_provider(&trimmed_provider, bound_instance.as_deref())
@@ -287,8 +299,6 @@ impl PlaylistService {
                     "Provider {trimmed_provider} does not support dynamic folders"
                 )));
             }
-            provider
-        } else {
             provider
         };
 
@@ -624,22 +634,23 @@ impl PlaylistService {
         bypass_room_permissions: bool,
         outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
-        if !bypass_room_permissions {
-            // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
-            // not ADD_MEDIA. Users who can only add media should not be able to rename or
-            // reorder items they do not own. REORDER_PLAYLIST is an admin-level permission.
-            self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
-                .await?;
-        }
-
         for attempt in 0..OPTIMISTIC_LOCK_MAX_RETRIES {
+            if !bypass_room_permissions {
+                self.permission_service
+                    .check_permission_no_cache(&room_id, &user_id, PermissionBits::VIEW_PLAYLIST)
+                    .await?;
+            }
+
             // Get existing playlist (re-fetch on each retry to get latest version)
             let mut playlist = self
                 .playlist_repo
                 .get_by_room_and_id(&room_id, &request.playlist_id)
                 .await?
                 .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+            if !bypass_room_permissions {
+                ensure_playlist_creator_can_edit(&playlist, &user_id)?;
+            }
 
             // Store original version for optimistic locking
             let expected_version = playlist.version;
@@ -1066,6 +1077,40 @@ mod tests {
         };
 
         assert_eq!(request.name, Some("New Name".to_string()));
+    }
+
+    #[test]
+    fn test_playlist_edit_requires_matching_creator() {
+        let creator_id = UserId::expect_positive(20);
+        let playlist = Playlist {
+            id: PlaylistId::expect_positive(21),
+            room_id: RoomId::expect_positive(22),
+            creator_id: Some(creator_id),
+            name: "Owned".to_string(),
+            parent_id: None,
+            position: 1.0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        assert!(ensure_playlist_creator_can_edit(&playlist, &creator_id).is_ok());
+
+        let other_user_id = UserId::expect_positive(23);
+        assert!(matches!(
+            ensure_playlist_creator_can_edit(&playlist, &other_user_id),
+            Err(Error::Authorization(_))
+        ));
+
+        let mut unowned_playlist = playlist;
+        unowned_playlist.creator_id = None;
+        assert!(matches!(
+            ensure_playlist_creator_can_edit(&unowned_playlist, &creator_id),
+            Err(Error::Authorization(_))
+        ));
     }
 
     #[test]

@@ -19,9 +19,10 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{DynamicListQuery, ExecutionControl};
 use synctv_core::service::{
-    AuditService, AuthorizedAdminActor, BanRecordListQuery, BanRecordRow, BanRecordService,
-    BanRecordTargetType, EmailService, RemoteProviderManager, ReviewService,
-    RoomCreationReviewListQuery, RoomCreationReviewRecord, RoomJoinReviewListQuery,
+    AdminAddMemberWithOutboxRequest, AdminBanMemberWithOutboxRequest,
+    AdminRejectJoinRequestWithOutbox, AuditService, AuthorizedAdminActor, BanRecordListQuery,
+    BanRecordRow, BanRecordService, BanRecordTargetType, EmailService, RemoteProviderManager,
+    ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord, RoomJoinReviewListQuery,
     RoomJoinReviewRecord, RoomService, SettingsRegistry, SettingsService,
     UserRegistrationReviewListQuery, UserRegistrationReviewRecord, UserService,
 };
@@ -1847,15 +1848,15 @@ impl AdminApiImpl {
             .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         let member = self
             .room_service
-            .admin_add_member_with_outbox(
-                rid,
-                *admin_user_id,
-                &actor.username,
-                target_uid,
+            .admin_add_member_with_outbox(AdminAddMemberWithOutboxRequest {
+                room_id: rid,
+                actor_id: *admin_user_id,
+                actor_username: &actor.username,
+                target_user_id: target_uid,
                 role,
                 notify,
-                prepared_membership_fanout.outbox_factory(),
-            )
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
@@ -1932,7 +1933,7 @@ impl AdminApiImpl {
                 (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
                 request_id,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -2005,15 +2006,16 @@ impl AdminApiImpl {
 
         let target_uid = self
             .room_service
-            .admin_reject_join_request_with_outbox(
-                rid,
-                *admin_user_id,
-                (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
-                &actor.username,
+            .admin_reject_join_request_with_outbox(AdminRejectJoinRequestWithOutbox {
+                room_id: rid,
+                actor_id: *admin_user_id,
+                reviewed_by: (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
+                    .then_some(admin_user_id),
+                actor_username: &actor.username,
                 request_id,
-                reason_for_service,
-                prepared_membership_fanout.outbox_factory(),
-            )
+                reason: reason_for_service,
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
@@ -2094,7 +2096,7 @@ impl AdminApiImpl {
                     admin_added_permissions,
                     admin_removed_permissions,
                 },
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -2188,7 +2190,7 @@ impl AdminApiImpl {
                 rid,
                 *admin_user_id,
                 target_uid,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
                 lifecycle_outbox_event,
             )
             .await
@@ -2264,15 +2266,15 @@ impl AdminApiImpl {
         };
         let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
         self.room_service
-            .admin_ban_member_with_outbox(
-                rid,
-                *admin_user_id,
-                target_uid,
+            .admin_ban_member_with_outbox(AdminBanMemberWithOutboxRequest {
+                room_id: rid,
+                actor_id: *admin_user_id,
+                target_user_id: target_uid,
                 persisted_banned_by,
-                reason.clone(),
-                prepared_membership_fanout.outbox_factory(),
+                reason: reason.clone(),
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
                 lifecycle_outbox_event,
-            )
+            })
             .await
             .map_err(ApiError::from)?;
         drop(admin_username);
@@ -2330,7 +2332,7 @@ impl AdminApiImpl {
                 rid,
                 *admin_user_id,
                 target_uid,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -2461,7 +2463,7 @@ impl AdminApiImpl {
                 two_factor_enabled: req.two_factor_enabled,
                 notifications: req.notifications,
             },
-        )?;
+        );
         if update.is_empty() {
             return Err(ApiError::InvalidInput(
                 "No valid user preference fields provided".to_string(),
@@ -6141,7 +6143,7 @@ mod tests {
         );
     }
 
-    fn make_user_service(pool: sqlx::PgPool) -> UserService {
+    fn make_user_service(pool: &sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
@@ -6165,7 +6167,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_validate_admin_auth_rejects_banned_user() {
         let (_postgres, pool) = create_test_pool().await;
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let user_repo = UserRepository::new(pool);
 
         let banned_admin = synctv_core::models::User {
@@ -6214,7 +6216,7 @@ mod tests {
         AdminApiImpl,
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
-        let user_service = Arc::new(make_user_service(pool.clone()));
+        let user_service = Arc::new(make_user_service(&pool));
         let mut room_service =
             synctv_core::service::RoomService::new(pool.clone(), (*user_service).clone());
         let settings_service = Arc::new(SettingsService::new(
@@ -6281,7 +6283,7 @@ mod tests {
         Arc<LiveStreamingInfrastructure>,
         tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
-        let user_service = Arc::new(make_user_service(pool.clone()));
+        let user_service = Arc::new(make_user_service(&pool));
         let room_service = Arc::new(synctv_core::service::RoomService::new(
             pool.clone(),
             (*user_service).clone(),
@@ -6875,7 +6877,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_load_room_creator_status_maps_missing_creator_to_banned() {
         let (_postgres, pool) = create_test_pool().await;
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let room = make_test_room(RoomStatus::Active);
 
         let status = load_room_creator_status(&user_service, &room)
@@ -6890,7 +6892,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_load_room_creator_status_propagates_backend_failures() {
         let (_postgres, pool) = create_test_pool().await;
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let room = make_test_room(RoomStatus::Active);
 
         pool.close().await;

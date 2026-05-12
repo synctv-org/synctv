@@ -182,7 +182,7 @@ existingSecret: "my-external-synctv-secret"
 需要提供这些 key：
 
 - `SYNCTV_DATABASE_PASSWORD`，除非 PostgreSQL 使用 KubeBlocks 模式。
-- `SYNCTV_REDIS_PASSWORD`，除非 Redis 使用 KubeBlocks 模式。
+- `SYNCTV_REDIS_PASSWORD`，Redis 使用 standard 模式时必需；external 模式只在外部 Redis 需要密码时提供；KubeBlocks 模式不需要提供。
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_SERVER_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
@@ -223,6 +223,32 @@ redis:
 KubeBlocks 模式下，数据库账号密码来自 KubeBlocks 生成的 Secret。
 
 注意：KubeBlocks Redis Sentinel 组件属于数据库 Operator 的内部拓扑，不等同于把 SyncTV 配置成 `redis.deployment_mode=sentinel`。Helm 默认仍向 SyncTV 注入稳定 Redis Service endpoint；SyncTV 集群模式不能与 SyncTV Sentinel mode 同时使用。
+
+### external
+
+如果 PostgreSQL 或 Redis 由云厂商、平台团队或其他 Operator 管理，使用 external 模式。Chart 不会创建对应的 StatefulSet、Service 或 KubeBlocks Cluster，只会把连接参数注入 SyncTV。
+
+```yaml
+postgresql:
+  mode: external
+  external:
+    host: "postgres.example.internal"
+    port: 5432
+    username: "synctv"
+    database: "synctv"
+
+redis:
+  mode: external
+  external:
+    host: "redis.example.internal"
+    port: 6379
+    username: ""
+    database: 0
+```
+
+external PostgreSQL 必须通过 `existingSecret` 的 `SYNCTV_DATABASE_PASSWORD` 或 `secrets.database.password` 提供密码。external Redis 的 `SYNCTV_REDIS_PASSWORD` 是可选的：只有外部 Redis 启用了密码认证时才需要提供。
+
+如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 的 egress 不再匹配 Chart 内部 Pod label；默认允许对应端口访问 `0.0.0.0/0`。生产环境建议通过 `networkPolicy.externalPostgresqlCIDRs` 和 `networkPolicy.externalRedisCIDRs` 收紧到实际数据库网段。
 
 Redis 连接管理相关的 Helm 值：
 

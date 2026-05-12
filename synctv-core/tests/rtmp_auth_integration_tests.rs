@@ -54,7 +54,7 @@ fn create_jwt_service() -> JwtService {
         .expect("Failed to create JWT service")
 }
 
-fn create_user_service(pool: sqlx::PgPool) -> UserService {
+fn create_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_complexity = PasswordComplexityConfig::default();
@@ -76,7 +76,7 @@ fn create_user_service(pool: sqlx::PgPool) -> UserService {
 }
 
 fn create_room_service(pool: sqlx::PgPool) -> RoomService {
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let mut svc = RoomService::new(pool, user_service);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
@@ -262,7 +262,7 @@ async fn rtmp_auth_test_banned_user_validation() {
         .expect("Token validation should succeed (user status check is separate)");
 
     // But RTMP auth should reject based on user status
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let updated_user = user_service
         .get_user(&user.id)
         .await
@@ -306,7 +306,7 @@ async fn rtmp_auth_test_deleted_user_validation() {
     // But RTMP auth should reject based on deleted_at:
     // get_user filters out soft-deleted users (WHERE deleted_at IS NULL),
     // so the deleted user should not be found.
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let result = user_service.get_user(&user.id).await;
     assert!(
         result.is_err(),

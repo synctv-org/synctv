@@ -59,6 +59,12 @@ impl std::fmt::Display for ProviderInstanceBindingMismatch {
 
 impl std::error::Error for ProviderInstanceBindingMismatch {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialProviderInstanceName<'a> {
+    NotCredentialBacked,
+    CredentialBacked(Option<&'a str>),
+}
+
 /// Resolve the effective provider instance for a credential-backed request.
 ///
 /// If no credential is involved, the explicit request binding is used. If a
@@ -67,11 +73,12 @@ impl std::error::Error for ProviderInstanceBindingMismatch {}
 /// rejected.
 pub fn resolve_provider_instance_binding(
     requested_instance_name: Option<&str>,
-    credential_instance_name: Option<Option<&str>>,
+    credential_instance_name: CredentialProviderInstanceName<'_>,
 ) -> Result<Option<String>, ProviderInstanceBindingMismatch> {
     let requested = normalize_provider_instance_name(requested_instance_name).map(str::to_string);
-    let Some(credential_instance_name) = credential_instance_name else {
-        return Ok(requested);
+    let credential_instance_name = match credential_instance_name {
+        CredentialProviderInstanceName::NotCredentialBacked => return Ok(requested),
+        CredentialProviderInstanceName::CredentialBacked(value) => value,
     };
 
     let credential_instance =
@@ -705,23 +712,31 @@ mod tests {
     #[test]
     fn provider_instance_binding_uses_credential_when_request_omits_instance() {
         assert_eq!(
-            resolve_provider_instance_binding(None, Some(Some(" alist_remote ")))
-                .expect("credential binding should resolve")
-                .as_deref(),
+            resolve_provider_instance_binding(
+                None,
+                CredentialProviderInstanceName::CredentialBacked(Some(" alist_remote ")),
+            )
+            .expect("credential binding should resolve")
+            .as_deref(),
             Some("alist_remote")
         );
     }
 
     #[test]
     fn provider_instance_binding_rejects_explicit_conflict() {
-        assert!(
-            resolve_provider_instance_binding(Some("alist_other"), Some(Some("alist_remote")),)
-                .is_err()
-        );
+        assert!(resolve_provider_instance_binding(
+            Some("alist_other"),
+            CredentialProviderInstanceName::CredentialBacked(Some("alist_remote")),
+        )
+        .is_err());
     }
 
     #[test]
     fn provider_instance_binding_rejects_explicit_instance_for_unbound_credential() {
-        assert!(resolve_provider_instance_binding(Some("alist_remote"), Some(None)).is_err());
+        assert!(resolve_provider_instance_binding(
+            Some("alist_remote"),
+            CredentialProviderInstanceName::CredentialBacked(None),
+        )
+        .is_err());
     }
 }

@@ -10,7 +10,7 @@ use synctv_core::service::playlist::{
     MovePlaylistRequest as CoreMovePlaylistRequest, SetPlaylistRequest as CoreSetPlaylistRequest,
 };
 
-use super::convert::playlist_to_proto_with_availability;
+use super::convert::playlist_to_proto_for_viewer;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::ApiError;
 
@@ -200,10 +200,11 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::CreatePlaylistResponse {
-            playlist: Some(playlist_to_proto_with_availability(
+            playlist: Some(playlist_to_proto_for_viewer(
                 &playlist,
                 item_count,
                 true,
+                Some(uid),
                 &self.public_id_codec,
             )),
         })
@@ -219,11 +220,6 @@ impl ClientApiImpl {
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
 
-        // Check membership and playlist management permission
-        self.room_service
-            .check_permission(&rid, &uid, PermissionBits::REORDER_PLAYLIST)
-            .await
-            .map_err(Self::map_room_access_error)?;
         let service_req = build_update_playlist_request(req, &self.public_id_codec)?;
         let actor_username = self
             .user_service
@@ -262,10 +258,11 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::UpdatePlaylistResponse {
-            playlist: Some(playlist_to_proto_with_availability(
+            playlist: Some(playlist_to_proto_for_viewer(
                 &playlist,
                 item_count,
                 true,
+                Some(uid),
                 &self.public_id_codec,
             )),
         })
@@ -322,10 +319,11 @@ impl ClientApiImpl {
         let item_count = i64_to_i32_api(item_count, "playlist item count")?;
 
         Ok(crate::proto::client::MovePlaylistResponse {
-            playlist: Some(playlist_to_proto_with_availability(
+            playlist: Some(playlist_to_proto_for_viewer(
                 &playlist,
                 item_count,
                 true,
+                Some(uid),
                 &self.public_id_codec,
             )),
         })
@@ -419,10 +417,11 @@ impl ClientApiImpl {
         let media_count = i64_to_i32_api(media_count, "playlist media count")?;
 
         Ok(crate::proto::client::GetPlaylistResponse {
-            playlist: Some(playlist_to_proto_with_availability(
+            playlist: Some(playlist_to_proto_for_viewer(
                 &playlist,
                 media_count,
                 playlist_availability.is_available(),
+                actor.user_id(),
                 &self.public_id_codec,
             )),
             child_folder_count,
@@ -562,10 +561,11 @@ impl ClientApiImpl {
                     counts.get(&entry.playlist.id).copied().unwrap_or(0),
                     "playlist item count",
                 )?;
-                Ok(playlist_to_proto_with_availability(
+                Ok(playlist_to_proto_for_viewer(
                     &entry.playlist,
                     item_count,
                     entry.is_available,
+                    actor.user_id(),
                     &self.public_id_codec,
                 ))
             })

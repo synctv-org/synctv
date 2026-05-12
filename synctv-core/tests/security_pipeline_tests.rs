@@ -29,7 +29,7 @@ fn create_jwt_service() -> JwtService {
         .expect("Failed to create JWT service")
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let jwt_service = create_jwt_service();
     let username_cache = cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
@@ -136,7 +136,7 @@ fn make_claims(user_id: &UserId, pv: i32) -> Claims {
 async fn test_cache_miss_falls_through_to_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     // Use permissive mode for tests without blacklist store
     let pipeline = SecurityPipeline::new(user_service)
@@ -154,7 +154,7 @@ async fn test_db_error_propagates_not_swallowed() {
     // When get_user returns a non-NotFound error, it should propagate instead
     // of being swallowed as Authentication("User not found").
     let (_container, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
@@ -178,7 +178,7 @@ async fn test_db_error_propagates_not_swallowed() {
     // Using a closed real pool fails immediately and avoids slow network
     // connection timeouts from an invalid DSN.
     pool.close().await;
-    let user_service2 = Arc::new(create_user_service(pool.clone()));
+    let user_service2 = Arc::new(create_user_service(&pool));
     let pipeline2 = SecurityPipeline::new(user_service2)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
@@ -199,7 +199,7 @@ async fn test_db_error_propagates_not_swallowed() {
 async fn test_banned_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_banned_user(&pool, 0).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
@@ -214,7 +214,7 @@ async fn test_banned_user_rejected_via_db() {
 async fn test_banned_user_rejected_via_db_second_path() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_banned_user(&pool, 0).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
@@ -236,7 +236,7 @@ async fn test_deleted_user_rejected() {
         .execute(&pool)
         .await
         .expect("Failed to soft-delete user");
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
@@ -253,7 +253,7 @@ async fn test_deleted_user_rejected() {
 async fn test_cache_hit_active_user_passes() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -284,7 +284,7 @@ async fn test_cache_hit_active_user_passes() {
 async fn test_cache_hit_outdated_password_version_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 5)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -321,7 +321,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
 async fn test_cache_hit_banned_user_rejected_from_status_cache() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_banned_user(&pool, 0).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -354,7 +354,7 @@ async fn test_cache_hit_banned_user_rejected_from_status_cache() {
 async fn test_banned_user_rejected_via_db_again() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_banned_user(&pool, 0).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
@@ -372,7 +372,7 @@ async fn test_banned_user_rejected_via_db_again() {
 async fn test_cache_hit_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_banned_user(&pool, 0).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -407,7 +407,7 @@ async fn test_cache_hit_banned_user_rejected() {
 async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -446,7 +446,7 @@ async fn test_cache_hit_stale_active_status_does_not_bypass_ban() {
 async fn test_cache_hit_stale_password_version_does_not_bypass_password_change() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -491,7 +491,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     // UserRepository::create doesn't insert password_version (DB defaults to 0),
     // so we insert the user first and then update password_version via raw SQL.
     let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -537,7 +537,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
 async fn test_cache_populated_then_subsequent_check_fails_closed_when_db_unavailable() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
 
     let user_cache = Arc::new(UserCache::local_only(100, 5, 0, "test:user:".to_string()).unwrap());
 
@@ -580,7 +580,7 @@ async fn test_blacklisted_access_token_rejected() {
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let user_service = Arc::new(create_user_service_with_blacklist(
-        pool,
+        &pool,
         token_blacklist.clone(),
         key_builder.clone(),
     ));
@@ -623,7 +623,7 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let user_service = Arc::new(create_user_service_with_blacklist(
-        pool,
+        &pool,
         token_blacklist.clone(),
         key_builder.clone(),
     ));
@@ -678,7 +678,7 @@ async fn test_non_blacklisted_access_token_allowed() {
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let user_service = Arc::new(create_user_service_with_blacklist(
-        pool,
+        &pool,
         token_blacklist.clone(),
         key_builder.clone(),
     ));
@@ -700,7 +700,7 @@ async fn test_non_blacklisted_access_token_allowed() {
 async fn test_require_blacklist_true_rejects_without_store() {
     let (_container, pool) = create_test_pool().await;
     let _user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     // Try to build a pipeline with require_blacklist=true but no blacklist store
     let result = SecurityPipelineBuilder::new(user_service)
@@ -725,7 +725,7 @@ async fn test_require_blacklist_true_rejects_without_store() {
 async fn test_require_blacklist_false_allows_without_store() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     // Build pipeline with require_blacklist=false and no blacklist store
     let pipeline = SecurityPipeline::new(user_service)
@@ -743,7 +743,7 @@ async fn test_require_blacklist_false_allows_without_store() {
 
 // Helper function to create UserService with custom blacklist store
 fn create_user_service_with_blacklist(
-    pool: PgPool,
+    pool: &PgPool,
     token_blacklist: Arc<InMemoryTokenBlacklistStore>,
     key_builder: KeyBuilder,
 ) -> UserService {
@@ -763,7 +763,7 @@ fn create_user_service_with_blacklist(
 }
 
 fn create_user_service_with_dyn_blacklist(
-    pool: PgPool,
+    pool: &PgPool,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
     key_builder: KeyBuilder,
 ) -> UserService {
@@ -836,7 +836,7 @@ async fn test_blacklist_store_error_rejects_request_fail_closed() {
     let erroring_store: Arc<dyn TokenBlacklistStore> = Arc::new(ErroringBlacklistStore);
     let key_builder = KeyBuilder::new("test");
     let user_service = Arc::new(create_user_service_with_dyn_blacklist(
-        pool,
+        &pool,
         erroring_store.clone(),
         key_builder.clone(),
     ));
@@ -871,7 +871,7 @@ async fn test_in_memory_blacklist_store_is_blacklisted_checked_ok() {
     let store = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let user_service = Arc::new(create_user_service_with_blacklist(
-        pool,
+        &pool,
         store.clone(),
         key_builder.clone(),
     ));

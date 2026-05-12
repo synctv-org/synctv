@@ -49,7 +49,7 @@ fn create_jwt_service() -> JwtService {
 }
 
 fn create_user_service_with_components(
-    pool: PgPool,
+    pool: &PgPool,
     username_cache: UsernameCache,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
 ) -> UserService {
@@ -72,14 +72,14 @@ fn create_user_service_with_components(
 }
 
 fn create_user_service_with_blacklist(
-    pool: PgPool,
+    pool: &PgPool,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
 ) -> UserService {
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     create_user_service_with_blacklist(pool, token_blacklist)
@@ -229,7 +229,7 @@ impl CacheL2Backend for FailingCacheL2 {
     }
 }
 
-fn create_user_service_with_failing_username_cache(pool: PgPool) -> UserService {
+fn create_user_service_with_failing_username_cache(pool: &PgPool) -> UserService {
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let username_cache = UsernameCache::new(
@@ -241,7 +241,7 @@ fn create_user_service_with_failing_username_cache(pool: PgPool) -> UserService 
     create_user_service_with_components(pool, username_cache, token_blacklist)
 }
 
-fn create_user_service_with_email_verification(pool: PgPool) -> UserService {
+fn create_user_service_with_email_verification(pool: &PgPool) -> UserService {
     let mut service = create_user_service(pool);
     service.set_email_verification_required(true);
     service
@@ -503,7 +503,7 @@ async fn load_password_credential_row(pool: &PgPool, user_id: UserId) -> sqlx::p
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_happy_path() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register a user
     let (user, Some(access_token), Some(refresh_token)) = service
@@ -548,7 +548,7 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+    let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
@@ -594,7 +594,7 @@ async fn test_refresh_token_fails_closed_when_family_revocation_read_fails() {
         Arc::new(FamilyRevocationReadFailingStore {
             inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
         });
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
@@ -625,7 +625,7 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+    let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
@@ -671,7 +671,7 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_password_version_mismatch_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register a user
     let (_user, _access, Some(refresh_token)) = service
@@ -714,7 +714,7 @@ async fn test_refresh_token_password_version_mismatch_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register a user and get refresh token
     let (user, _access, Some(refresh_token)) = service
@@ -748,7 +748,7 @@ async fn test_refresh_token_banned_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register a user
     let (user, _access, Some(refresh_token)) = service
@@ -788,7 +788,7 @@ async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+    let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
     let (_user, _access, Some(refresh_token_1)) = service
@@ -839,7 +839,7 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
         Arc::new(FamilyRevocationReadFailingStore {
             inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
         });
-    let service = create_user_service_with_blacklist(pool, token_blacklist);
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
     let (_user, _access, Some(refresh_token)) = service
         .register(
@@ -871,7 +871,7 @@ async fn test_refresh_token_fails_closed_when_family_revocation_lookup_errors() 
 #[ignore = "Requires Docker"]
 async fn test_login_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let username = format!("banned_login_{}", synctv_common::snanoid!(6));
@@ -904,7 +904,7 @@ async fn test_login_banned_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_login_pending_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(pool.clone());
+    let mut service = create_user_service(&pool);
     service.set_email_verification_required(true);
 
     let username = format!("pending_login_{}", synctv_common::snanoid!(6));
@@ -942,7 +942,7 @@ async fn test_login_pending_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_login_rejected_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let username = format!("rejected_login_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1004,7 +1004,7 @@ async fn test_login_rejected_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_login_soft_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let username = format!("deleted_login_{}", synctv_common::snanoid!(6));
@@ -1042,7 +1042,7 @@ async fn test_login_soft_deleted_user_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_login_unverified_email_blocked_when_verification_required() {
     let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(pool.clone());
+    let mut service = create_user_service(&pool);
     // First register without email verification to get the user created
     let username = format!("unverified_{}", synctv_common::snanoid!(6));
     let email = format!("unverified_{}@test.com", synctv_common::snanoid!(6));
@@ -1080,7 +1080,7 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
 #[ignore = "Requires Docker"]
 async fn test_login_unverified_email_allowed_when_not_required() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register (no email verification required)
     let username = format!("norev_{}", synctv_common::snanoid!(6));
@@ -1116,7 +1116,7 @@ async fn test_login_unverified_email_allowed_when_not_required() {
 #[ignore = "Requires Docker"]
 async fn test_login_accepts_email_identifier_with_password() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let username = format!("email_login_user_{}", synctv_common::snanoid!(6));
     let email = format!("{username}@example.com");
@@ -1150,7 +1150,7 @@ async fn test_login_accepts_email_identifier_with_password() {
 #[ignore = "Requires Docker"]
 async fn test_login_email_identifier_uses_same_brute_force_bucket_for_failures_and_checks() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let username = format!("email_lockout_user_{}", synctv_common::snanoid!(6));
     let email = format!("{username}@example.com");
@@ -1209,7 +1209,7 @@ async fn test_login_email_identifier_uses_same_brute_force_bucket_for_failures_a
 #[ignore = "Requires Docker"]
 async fn test_login_email_verification_no_account_enumeration() {
     let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(pool.clone());
+    let mut service = create_user_service(&pool);
     service.set_email_verification_required(true);
 
     let email_user = format!("email_user_{}", synctv_common::snanoid!(6));
@@ -1268,7 +1268,7 @@ async fn test_login_email_verification_no_account_enumeration() {
 #[ignore = "Requires Docker"]
 async fn test_login_no_verification_required_both_user_types_allowed() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     // email_verification_required is false by default
 
     let email_user = format!("email_allowed_{}", synctv_common::snanoid!(6));
@@ -1320,7 +1320,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
 #[ignore = "Requires Docker"]
 async fn test_delete_user_already_deleted_guard() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let (user, _, _) = service
@@ -1357,7 +1357,7 @@ async fn test_delete_user_already_deleted_guard() {
 #[ignore = "Requires Docker"]
 async fn test_delete_user_transaction_atomicity_with_oauth2() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let (user, _, _) = service
@@ -1395,7 +1395,7 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
 #[ignore = "Requires Docker"]
 async fn test_change_password_wrong_old_password_rejected() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let (user, _, _) = service
@@ -1423,7 +1423,7 @@ async fn test_change_password_wrong_old_password_rejected() {
 #[ignore = "Requires Docker"]
 async fn test_change_password_bumps_password_version() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let (user, _, _) = service
@@ -1455,7 +1455,7 @@ async fn test_change_password_bumps_password_version() {
 #[ignore = "Requires Docker"]
 async fn test_set_password_bumps_password_version() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register
     let (user, _, _) = service
@@ -1487,7 +1487,7 @@ async fn test_set_password_bumps_password_version() {
 #[ignore = "Requires Docker"]
 async fn test_opaque_registration_creates_opaque_only_password_credential() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_reg_{}", synctv_common::snanoid!(6));
     let (user, access_token, refresh_token) = opaque_register(
@@ -1546,7 +1546,7 @@ async fn test_opaque_registration_creates_opaque_only_password_credential() {
 #[ignore = "Requires Docker"]
 async fn test_opaque_only_password_is_not_plaintext_mfa_factor() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
     let username = format!("opaque_mfa_{}", synctv_common::snanoid!(6));
     let email = format!("opaque_mfa_{}@test.com", synctv_common::snanoid!(6));
     let (user, _, _) = opaque_register(&service, username, Some(email), "StrongPass1")
@@ -1582,7 +1582,7 @@ async fn test_opaque_only_password_is_not_plaintext_mfa_factor() {
 #[ignore = "Requires Docker"]
 async fn test_opaque_password_update_clears_legacy_password_credential() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_update_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1656,7 +1656,7 @@ async fn test_opaque_password_update_clears_legacy_password_credential() {
 #[ignore = "Requires Docker"]
 async fn test_opaque_password_update_requires_current_credential_proof() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_update_proof_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1732,7 +1732,7 @@ async fn test_opaque_password_update_requires_current_credential_proof() {
 #[ignore = "Requires Docker"]
 async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey_session() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_passkey_update_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1813,7 +1813,7 @@ async fn test_opaque_password_update_requires_passkey_finish_for_pending_passkey
 #[ignore = "Requires Docker"]
 async fn test_opaque_password_update_accepts_plain_old_password_and_clears_legacy_credential() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_plain_update_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1879,7 +1879,7 @@ async fn test_opaque_password_update_accepts_plain_old_password_and_clears_legac
 #[ignore = "Requires Docker"]
 async fn test_opaque_password_update_rejects_wrong_plain_old_password() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
 
     let username = format!("opaque_plain_reject_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1923,7 +1923,7 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
     let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
         inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
     });
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
     let username = format!("setpw_fail_{}", synctv_common::snanoid!(6));
     let (user, _, _) = service
@@ -1966,7 +1966,7 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
 #[ignore = "Requires Docker"]
 async fn test_update_profile_updates_username_and_password_atomically() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let old_username = format!("profile_atomic_{}", synctv_common::snanoid!(6));
     let new_username = format!("profile_atomic_new_{}", synctv_common::snanoid!(6));
@@ -2021,7 +2021,7 @@ async fn test_update_profile_updates_username_and_password_atomically() {
 #[ignore = "Requires Docker"]
 async fn test_update_profile_rolls_back_username_when_password_verification_fails() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     let old_username = format!("profile_rollback_{}", synctv_common::snanoid!(6));
     let new_username = format!("profile_rollback_new_{}", synctv_common::snanoid!(6));
@@ -2085,7 +2085,7 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
     let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(FamilyRevocationFailingStore {
         inner: InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
     });
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist);
+    let service = create_user_service_with_blacklist(&pool, token_blacklist);
 
     let old_username = format!("profile_revoke_{}", synctv_common::snanoid!(6));
     let new_username = format!("profile_revoke_new_{}", synctv_common::snanoid!(6));
@@ -2143,7 +2143,7 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
 #[ignore = "Requires Docker"]
 async fn test_register_succeeds_when_username_cache_write_fails() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service_with_failing_username_cache(pool.clone());
+    let service = create_user_service_with_failing_username_cache(&pool);
 
     let username = format!("cache_fail_register_{}", synctv_common::snanoid!(6));
     let (user, access_token, refresh_token) = service
@@ -2174,7 +2174,7 @@ async fn test_register_succeeds_when_username_cache_write_fails() {
 #[ignore = "Requires Docker"]
 async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service_with_failing_username_cache(pool.clone());
+    let service = create_user_service_with_failing_username_cache(&pool);
 
     let user = service
         .register_with_executor(
@@ -2204,7 +2204,7 @@ async fn test_finalize_registration_succeeds_when_username_cache_write_fails() {
 #[ignore = "Requires Docker"]
 async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service_with_failing_username_cache(pool.clone());
+    let service = create_user_service_with_failing_username_cache(&pool);
 
     let created = service
         .create_user_with_role(
@@ -2231,7 +2231,7 @@ async fn test_create_user_with_role_succeeds_when_username_cache_write_fails() {
 #[ignore = "Requires Docker"]
 async fn test_create_user_with_initial_banned_status_persists_ban_record() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let reviewer = service
         .create_user_with_role_and_status(
             format!("initial_banned_reviewer_{}", synctv_common::snanoid!(6)),
@@ -2277,7 +2277,7 @@ async fn test_create_user_with_initial_banned_status_persists_ban_record() {
 #[ignore = "Requires Docker"]
 async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service_with_failing_username_cache(pool.clone());
+    let service = create_user_service_with_failing_username_cache(&pool);
 
     let (user, _, _) = service
         .register(
@@ -2306,7 +2306,7 @@ async fn test_get_username_falls_back_to_database_when_cache_read_fails() {
 #[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_username_sanitization() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Username with special chars that should be stripped
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
@@ -2349,7 +2349,7 @@ async fn test_create_or_load_by_oauth2_username_sanitization() {
 #[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_collision_retry() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
 
     let user1 = service
@@ -2379,7 +2379,7 @@ async fn test_create_or_load_by_oauth2_collision_retry() {
 #[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
 
     let _user1 = service
@@ -2413,7 +2413,7 @@ async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
 #[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
 
     // Empty username after sanitization should use provider_user_id
@@ -2433,7 +2433,7 @@ async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_oauth2_users() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
@@ -2527,7 +2527,7 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pending_request() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
@@ -2601,7 +2601,7 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
@@ -2690,7 +2690,7 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collision() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
@@ -2762,7 +2762,7 @@ async fn test_refresh_token_email_verification_recheck() {
     let (_container, pool) = create_test_pool().await;
 
     // Register without email verification (get tokens)
-    let service_no_verify = create_user_service(pool.clone());
+    let service_no_verify = create_user_service(&pool);
     let (user, _access, Some(refresh_token)) = service_no_verify
         .register(
             format!("email_recheck_{}", synctv_common::snanoid!(6)),
@@ -2786,7 +2786,7 @@ async fn test_refresh_token_email_verification_recheck() {
         .await
         .expect("Failed to un-verify email");
 
-    let service_verify = create_user_service_with_email_verification(pool.clone());
+    let service_verify = create_user_service_with_email_verification(&pool);
 
     // Now try to refresh -- should fail because email is not verified
     let result = service_verify.refresh_token(refresh_token).await;
@@ -2812,7 +2812,7 @@ async fn test_refresh_token_email_verification_recheck() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_rate_limiting_per_user() {
     let (_container, pool) = create_test_pool().await;
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register and get initial tokens
     let (_user, _access, Some(refresh_token)) = service
@@ -2898,7 +2898,7 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+    let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
@@ -2974,7 +2974,7 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
-    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+    let service = create_user_service_with_blacklist(&pool, token_blacklist.clone());
 
     // Register and get tokens
     let (_user, _access, Some(refresh_token)) = service
@@ -3028,7 +3028,7 @@ async fn test_refresh_token_concurrent_refresh_family_revocation() {
 #[ignore = "Requires Docker"]
 async fn test_refresh_token_rate_limit_recovers() {
     let (_container, pool) = create_test_pool().await;
-    let mut service = create_user_service(pool.clone());
+    let mut service = create_user_service(&pool);
     service.set_refresh_rate_limiter_for_tests(RateLimiter::local_only(
         "test-refresh-recover-short-window:".to_string(),
     ));

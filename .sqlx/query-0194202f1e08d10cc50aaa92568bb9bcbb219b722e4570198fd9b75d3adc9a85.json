@@ -1,20 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT cleanup_expired_auth_email_tokens()",
+  "query": "SELECT pg_notify($1, '')",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "cleanup_expired_auth_email_tokens",
+        "name": "pg_notify",
         "type_info": "Void"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       null
     ]
   },
-  "hash": "4c18257113e6962e269f1566284c04832eab56c22314c6b6523a6bac9b38b3e2"
+  "hash": "0194202f1e08d10cc50aaa92568bb9bcbb219b722e4570198fd9b75d3adc9a85"
 }

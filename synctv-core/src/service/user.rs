@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::IpAddr;
@@ -108,6 +108,22 @@ struct PendingRegistrationRequest {
     oauth2_avatar_url: Option<String>,
     oauth2_email_verified: bool,
     signup_method: SignupMethod,
+}
+
+struct PendingRegistrationRequestRow {
+    username: String,
+    email: Option<String>,
+    legacy_password_hash: Option<String>,
+    opaque_record: Option<Vec<u8>>,
+    opaque_credential_identifier: Option<Vec<u8>>,
+    opaque_ciphersuite: Option<String>,
+    opaque_server_setup_version: Option<i32>,
+    signup_method: SignupMethod,
+    oauth2_provider: Option<String>,
+    oauth2_provider_user_id: Option<String>,
+    oauth2_provider_username: Option<String>,
+    oauth2_avatar_url: Option<String>,
+    oauth2_email_verified: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1433,8 +1449,8 @@ impl UserService {
         let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
         let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
 
-        let media_ids = sqlx::query_scalar(
-            r"WITH RECURSIVE target_playlists AS (
+        let media_ids = sqlx::query_scalar!(
+            r#"WITH RECURSIVE target_playlists AS (
                 SELECT id
                 FROM playlists
                 WHERE id = ANY($1)
@@ -1443,18 +1459,18 @@ impl UserService {
                 FROM playlists p
                 JOIN target_playlists tp ON p.parent_id = tp.id
             )
-            SELECT DISTINCT m.id
+            SELECT DISTINCT m.id AS "id: MediaId"
             FROM media m
             WHERE m.room_id = $2
               AND (
                   m.id = ANY($3)
                   OR m.playlist_id IN (SELECT id FROM target_playlists)
               )
-            ORDER BY m.id",
+            ORDER BY m.id"#,
+            &playlist_id_strs,
+            room_id.as_i64(),
+            &media_id_strs
         )
-        .bind(&playlist_id_strs)
-        .bind(room_id.as_i64())
-        .bind(&media_id_strs)
         .fetch_all(&mut **tx)
         .await?;
 
@@ -1836,7 +1852,7 @@ impl UserService {
 
     #[must_use]
     pub fn new(
-        pool: PgPool,
+        pool: &PgPool,
         jwt_service: JwtService,
         username_cache: UsernameCache,
         password_complexity: PasswordComplexityConfig,
@@ -1857,7 +1873,7 @@ impl UserService {
 
     #[must_use]
     pub fn new_with_brute_force_service(
-        pool: PgPool,
+        pool: &PgPool,
         jwt_service: JwtService,
         username_cache: UsernameCache,
         password_complexity: PasswordComplexityConfig,
@@ -1881,7 +1897,7 @@ impl UserService {
 
     #[must_use]
     pub fn new_with_brute_force_service_and_runtime(
-        pool: PgPool,
+        pool: &PgPool,
         dependencies: UserServiceDependencies,
         runtime: UserServiceRuntimeOptions,
     ) -> Self {
@@ -2009,26 +2025,26 @@ impl UserService {
         opaque_record: &OpaquePasswordRecord,
         signup_method: SignupMethod,
     ) -> Result<User> {
-        let request_id: UserId = sqlx::query_scalar(
-            r"
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO user_registration_requests (
                 username, email, legacy_password_hash, opaque_record,
                 opaque_credential_identifier, opaque_ciphersuite,
                 opaque_server_setup_version, signup_method, status, requested_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-            RETURNING id
-            ",
+            RETURNING id AS "id: UserId"
+            "#,
+            username,
+            email,
+            legacy_password_hash,
+            &opaque_record.record,
+            &opaque_record.credential_identifier,
+            opaque_record.ciphersuite.as_str(),
+            opaque_record.server_setup_version,
+            i16::from(signup_method),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(username)
-        .bind(email)
-        .bind(legacy_password_hash)
-        .bind(&opaque_record.record)
-        .bind(&opaque_record.credential_identifier)
-        .bind(opaque_record.ciphersuite.as_str())
-        .bind(opaque_record.server_setup_version)
-        .bind(i16::from(signup_method))
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(self.repository.pool())
         .await
         .map_err(|e| match e {
@@ -2063,26 +2079,26 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let request_id: UserId = sqlx::query_scalar(
-            r"
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO user_registration_requests (
                 username, email, signup_method, status, requested_at,
                 oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
                 oauth2_avatar_url, oauth2_email_verified
             )
             VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6, $7, $8, $9)
-            RETURNING id
-            ",
+            RETURNING id AS "id: UserId"
+            "#,
+            username,
+            email,
+            i16::from(SignupMethod::OAuth2),
+            i16::from(ReviewStatus::Pending),
+            provider.as_str(),
+            provider_user_id,
+            user_info.username.as_str(),
+            user_info.avatar.as_deref(),
+            user_info.email_verified
         )
-        .bind(username)
-        .bind(email)
-        .bind(i16::from(SignupMethod::OAuth2))
-        .bind(i16::from(ReviewStatus::Pending))
-        .bind(provider.as_str())
-        .bind(provider_user_id)
-        .bind(user_info.username.as_str())
-        .bind(user_info.avatar.as_deref())
-        .bind(user_info.email_verified)
         .fetch_one(executor)
         .await
         .map_err(|e| match e {
@@ -2111,30 +2127,34 @@ impl UserService {
         request_id: &UserId,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<PendingRegistrationRequest>> {
-        let row = sqlx::query(
-            r"
-            SELECT username, email, legacy_password_hash, opaque_record,
-                   opaque_credential_identifier, opaque_ciphersuite,
-                   opaque_server_setup_version, signup_method,
-                   oauth2_provider, oauth2_provider_user_id, oauth2_provider_username,
-                   oauth2_avatar_url, oauth2_email_verified
+        let row = sqlx::query_as!(
+            PendingRegistrationRequestRow,
+            r#"SELECT username,
+                   email,
+                   legacy_password_hash,
+                   opaque_record,
+                   opaque_credential_identifier,
+                   opaque_ciphersuite,
+                   opaque_server_setup_version,
+                   signup_method AS "signup_method: SignupMethod",
+                   oauth2_provider,
+                   oauth2_provider_user_id,
+                   oauth2_provider_username,
+                   oauth2_avatar_url,
+                   oauth2_email_verified
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
             FOR UPDATE
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id.as_i64())
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_optional(&mut **tx)
         .await?;
 
         row.map(|row| {
-            let signup_method = SignupMethod::try_from(row.try_get::<i16, _>("signup_method")?)
-                .map_err(|err| {
-                    Error::InvalidInput(format!("Invalid signup method in request: {err}"))
-                })?;
             let oauth2_provider = row
-                .try_get::<Option<String>, _>("oauth2_provider")?
+                .oauth2_provider
                 .map(|provider| {
                     OAuth2Provider::from_str_name(&provider).ok_or_else(|| {
                         Error::InvalidInput(format!(
@@ -2144,19 +2164,19 @@ impl UserService {
                 })
                 .transpose()?;
             Ok(PendingRegistrationRequest {
-                username: row.try_get("username")?,
-                email: row.try_get("email")?,
-                legacy_password_hash: row.try_get("legacy_password_hash")?,
-                opaque_record: row.try_get("opaque_record")?,
-                opaque_credential_identifier: row.try_get("opaque_credential_identifier")?,
-                opaque_ciphersuite: row.try_get("opaque_ciphersuite")?,
-                opaque_server_setup_version: row.try_get("opaque_server_setup_version")?,
+                username: row.username,
+                email: row.email,
+                legacy_password_hash: row.legacy_password_hash,
+                opaque_record: row.opaque_record,
+                opaque_credential_identifier: row.opaque_credential_identifier,
+                opaque_ciphersuite: row.opaque_ciphersuite,
+                opaque_server_setup_version: row.opaque_server_setup_version,
                 oauth2_provider,
-                oauth2_provider_user_id: row.try_get("oauth2_provider_user_id")?,
-                oauth2_provider_username: row.try_get("oauth2_provider_username")?,
-                oauth2_avatar_url: row.try_get("oauth2_avatar_url")?,
-                oauth2_email_verified: row.try_get("oauth2_email_verified")?,
-                signup_method,
+                oauth2_provider_user_id: row.oauth2_provider_user_id,
+                oauth2_provider_username: row.oauth2_provider_username,
+                oauth2_avatar_url: row.oauth2_avatar_url,
+                oauth2_email_verified: row.oauth2_email_verified.unwrap_or(false),
+                signup_method: row.signup_method,
             })
         })
         .transpose()
@@ -2313,18 +2333,18 @@ impl UserService {
         reviewed_by: Option<&UserId>,
         reason: &str,
     ) -> Result<()> {
-        let result = sqlx::query(
-            r"
+        let result = sqlx::query!(
+            r#"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
-            ",
+            "#,
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            reviewed_by.map(UserId::as_i64),
+            reason,
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Rejected)
-        .bind(reviewed_by.copied())
-        .bind(reason)
-        .bind(ReviewStatus::Pending)
         .execute(self.repository.pool())
         .await?;
 
@@ -4937,7 +4957,7 @@ mod tests {
         let brute_force = crate::service::BruteForceProtection::in_memory("test:".to_string());
 
         let mut user_service = UserService::new(
-            pool,
+            &pool,
             jwt_service,
             username_cache,
             crate::config::PasswordComplexityConfig::default(),
@@ -4976,7 +4996,7 @@ mod tests {
         let brute_force = BruteForceProtection::in_memory("test".to_string());
 
         let mut user_service = super::UserService::new(
-            pool,
+            &pool,
             jwt_service,
             username_cache,
             PasswordComplexityConfig::default(),

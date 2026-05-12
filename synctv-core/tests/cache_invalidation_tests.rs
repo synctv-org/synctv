@@ -709,7 +709,7 @@ async fn test_cache_invalidation_after_commit() {
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     let user_service = UserService::new(
-        pool.clone(),
+        &pool,
         jwt_service,
         username_cache,
         password_complexity,
@@ -874,7 +874,7 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     let user_service = UserService::new(
-        pool.clone(),
+        &pool,
         jwt_service,
         username_cache,
         password_complexity,

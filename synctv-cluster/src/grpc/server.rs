@@ -21,16 +21,15 @@ pub struct ClusterServer {
 #[allow(clippy::result_large_err)]
 impl ClusterServer {
     #[must_use]
-    pub fn new<N>(node_registry: Arc<N>, node_id: String) -> Self
+    pub fn new<N>(node_registry: Arc<N>) -> Self
     where
         N: ClusterNodeDirectory + 'static,
     {
-        Self::from_runtime(node_registry, node_id)
+        Self::from_runtime(node_registry)
     }
 
     #[must_use]
-    pub fn from_runtime(node_registry: Arc<dyn ClusterNodeDirectory>, node_id: String) -> Self {
-        let _ = node_id;
+    pub fn from_runtime(node_registry: Arc<dyn ClusterNodeDirectory>) -> Self {
         Self {
             node_registry,
             auth: None,

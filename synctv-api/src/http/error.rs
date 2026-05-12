@@ -259,7 +259,9 @@ impl From<synctv_core::provider::ProviderError> for AppError {
             ProviderError::AuthRequired => {
                 Self::unauthorized(synctv_common::messages::AUTHENTICATION_REQUIRED)
             }
-            ProviderError::Authentication(msg) => Self::unauthorized(msg),
+            ProviderError::Authentication(msg) | ProviderError::CredentialExpired(msg) => {
+                Self::unauthorized(msg)
+            }
             ProviderError::CredentialRequired => Self::unauthorized("Credential required"),
             ProviderError::InvalidCredentialType => Self::bad_request("Invalid credential type"),
             ProviderError::RouteRegistrationFailed(msg) => {
@@ -278,7 +280,6 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                 tracing::error!("Provider encryption required: {}", msg);
                 Self::internal_server_error("Credential encryption not configured")
             }
-            ProviderError::CredentialExpired(msg) => Self::unauthorized(msg),
             ProviderError::Internal(msg) => {
                 tracing::error!("Provider internal error: {}", msg);
                 Self::internal("Provider internal error")

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(\n                (SELECT two_factor_enabled FROM user_preferences WHERE user_id = $1),\n                FALSE\n            ) AS \"enabled!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "enabled!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "13063c1fa38b54f02cefabcc218020eeea5203c2b431bb5ae6493f3178046176"
+}

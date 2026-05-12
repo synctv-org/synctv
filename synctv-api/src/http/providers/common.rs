@@ -374,7 +374,7 @@ mod tests {
     use synctv_core_testing::create_test_pool;
     use synctv_proto::providers::common::ListProviderBackendsRequest;
 
-    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
         UserService::new(
             pool,
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
@@ -421,7 +421,7 @@ mod tests {
         let (audit_service, _flush_handle) = AuditService::new(pool.clone());
         let api = crate::impls::ProviderCommonApiImpl::new(
             provider_instance_manager,
-            Arc::new(test_user_service(pool.clone())),
+            Arc::new(test_user_service(&pool)),
             Arc::new(audit_service),
         )
         .with_providers_manager(Some(providers_manager));

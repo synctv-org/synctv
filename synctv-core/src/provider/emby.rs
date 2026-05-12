@@ -1279,17 +1279,14 @@ impl DynamicFolder for EmbyProvider {
             return Ok(None);
         }
 
-        Ok(Some(
-            NextPlayItem {
-                name: item.name,
-                item_type,
-                source_config: Self::build_next_source_config(&base_config, &item_id),
-                metadata: json!({}),
-                provider_data: json!({}),
-                target: Self::encode_target(&item_id)?,
-            }
-            .strip_credentials(),
-        ))
+        Ok(Some(NextPlayItem {
+            name: item.name,
+            item_type,
+            source_config: Self::build_next_source_config(&base_config, &item_id),
+            metadata: json!({}),
+            provider_data: json!({}),
+            target: Self::encode_target(&item_id)?,
+        }))
     }
 
     async fn next(
@@ -1350,26 +1347,21 @@ impl DynamicFolder for EmbyProvider {
                             .iter()
                             .find(|item| item.item_type == ItemType::Media)
                         {
-                            return Ok(Some(
-                                NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config: Self::build_next_source_config(
-                                        &base_config,
-                                        &Self::decode_target(Some(&next.target))?.ok_or_else(
-                                            || {
-                                                ProviderError::InvalidConfig(
-                                                    "Missing Emby item target".to_string(),
-                                                )
-                                            },
-                                        )?,
-                                    ),
-                                    metadata: json!({}),
-                                    provider_data: json!({}),
-                                    target: next.target.clone(),
-                                }
-                                .strip_credentials(),
-                            ));
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config: Self::build_next_source_config(
+                                    &base_config,
+                                    &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                        ProviderError::InvalidConfig(
+                                            "Missing Emby item target".to_string(),
+                                        )
+                                    })?,
+                                ),
+                                metadata: json!({}),
+                                provider_data: json!({}),
+                                target: next.target.clone(),
+                            }));
                         }
                     } else if let Some(idx) =
                         page_items.iter().position(|item| item.target == target)
@@ -1380,26 +1372,21 @@ impl DynamicFolder for EmbyProvider {
                             .skip(idx + 1)
                             .find(|item| item.item_type == ItemType::Media)
                         {
-                            return Ok(Some(
-                                NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config: Self::build_next_source_config(
-                                        &base_config,
-                                        &Self::decode_target(Some(&next.target))?.ok_or_else(
-                                            || {
-                                                ProviderError::InvalidConfig(
-                                                    "Missing Emby item target".to_string(),
-                                                )
-                                            },
-                                        )?,
-                                    ),
-                                    metadata: json!({}),
-                                    provider_data: json!({}),
-                                    target: next.target.clone(),
-                                }
-                                .strip_credentials(),
-                            ));
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config: Self::build_next_source_config(
+                                    &base_config,
+                                    &Self::decode_target(Some(&next.target))?.ok_or_else(|| {
+                                        ProviderError::InvalidConfig(
+                                            "Missing Emby item target".to_string(),
+                                        )
+                                    })?,
+                                ),
+                                metadata: json!({}),
+                                provider_data: json!({}),
+                                target: next.target.clone(),
+                            }));
                         }
                     }
 
@@ -1427,26 +1414,21 @@ impl DynamicFolder for EmbyProvider {
                         .iter()
                         .find(|item| item.item_type == ItemType::Media)
                     {
-                        return Ok(Some(
-                            NextPlayItem {
-                                name: first.name.clone(),
-                                item_type: first.item_type,
-                                source_config: Self::build_next_source_config(
-                                    &base_config,
-                                    &Self::decode_target(Some(&first.target))?.ok_or_else(
-                                        || {
-                                            ProviderError::InvalidConfig(
-                                                "Missing Emby item target".to_string(),
-                                            )
-                                        },
-                                    )?,
-                                ),
-                                metadata: json!({}),
-                                provider_data: json!({}),
-                                target: first.target.clone(),
-                            }
-                            .strip_credentials(),
-                        ));
+                        return Ok(Some(NextPlayItem {
+                            name: first.name.clone(),
+                            item_type: first.item_type,
+                            source_config: Self::build_next_source_config(
+                                &base_config,
+                                &Self::decode_target(Some(&first.target))?.ok_or_else(|| {
+                                    ProviderError::InvalidConfig(
+                                        "Missing Emby item target".to_string(),
+                                    )
+                                })?,
+                            ),
+                            metadata: json!({}),
+                            provider_data: json!({}),
+                            target: first.target.clone(),
+                        }));
                     }
                 }
 
@@ -1500,24 +1482,19 @@ impl DynamicFolder for EmbyProvider {
                 };
 
                 if let Some(random) = random_item {
-                    Ok(Some(
-                        NextPlayItem {
-                            name: random.name.clone(),
-                            item_type: random.item_type,
-                            source_config: Self::build_next_source_config(
-                                &base_config,
-                                &Self::decode_target(Some(&random.target))?.ok_or_else(|| {
-                                    ProviderError::InvalidConfig(
-                                        "Missing Emby item target".to_string(),
-                                    )
-                                })?,
-                            ),
-                            metadata: json!({}),
-                            provider_data: json!({}),
-                            target: random.target.clone(),
-                        }
-                        .strip_credentials(),
-                    ))
+                    Ok(Some(NextPlayItem {
+                        name: random.name.clone(),
+                        item_type: random.item_type,
+                        source_config: Self::build_next_source_config(
+                            &base_config,
+                            &Self::decode_target(Some(&random.target))?.ok_or_else(|| {
+                                ProviderError::InvalidConfig("Missing Emby item target".to_string())
+                            })?,
+                        ),
+                        metadata: json!({}),
+                        provider_data: json!({}),
+                        target: random.target.clone(),
+                    }))
                 } else {
                     Ok(None)
                 }

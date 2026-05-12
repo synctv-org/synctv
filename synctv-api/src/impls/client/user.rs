@@ -52,8 +52,8 @@ pub(crate) fn user_notification_preferences_to_proto(
 
 pub(crate) fn user_preferences_update_from_proto(
     req: crate::proto::client::UpdateUserPreferencesRequest,
-) -> Result<synctv_core::models::UserPreferencesUpdate, ApiError> {
-    Ok(synctv_core::models::UserPreferencesUpdate {
+) -> synctv_core::models::UserPreferencesUpdate {
+    synctv_core::models::UserPreferencesUpdate {
         two_factor_enabled: req.two_factor_enabled,
         notifications: req.notifications.map(|value| {
             synctv_core::models::UserNotificationPreferences {
@@ -65,7 +65,7 @@ pub(crate) fn user_preferences_update_from_proto(
                 system_announcement_email: value.system_announcement_email,
             }
         }),
-    })
+    }
 }
 
 async fn list_owned_room_ids(
@@ -227,7 +227,7 @@ impl ClientApiImpl {
         req: crate::proto::client::UpdateUserPreferencesRequest,
     ) -> Result<crate::proto::client::UpdateUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let update = user_preferences_update_from_proto(req)?;
+        let update = user_preferences_update_from_proto(req);
         if update.is_empty() {
             return Err(ApiError::InvalidInput(
                 "No valid user preference fields provided".to_string(),

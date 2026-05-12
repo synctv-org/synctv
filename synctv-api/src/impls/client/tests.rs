@@ -120,7 +120,7 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
     let runtime: Arc<dyn RedisConnectionRuntime> = Arc::new(FakeRedisRuntime);
     let api = super::ClientApiImpl::new(
         Arc::new(synctv_core::service::UserService::new(
-            sqlx::postgres::PgPoolOptions::new()
+            &sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
             synctv_core::service::JwtService::new(
@@ -142,7 +142,7 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
             synctv_core::service::UserService::new(
-                sqlx::postgres::PgPoolOptions::new()
+                &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
                 synctv_core::service::JwtService::new(
@@ -240,7 +240,7 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
     });
     let api = super::ClientApiImpl::new(
         Arc::new(synctv_core::service::UserService::new(
-            sqlx::postgres::PgPoolOptions::new()
+            &sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
             synctv_core::service::JwtService::new(
@@ -262,7 +262,7 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                 .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                 .expect("lazy pool"),
             synctv_core::service::UserService::new(
-                sqlx::postgres::PgPoolOptions::new()
+                &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
                 synctv_core::service::JwtService::new(
@@ -985,6 +985,7 @@ fn test_media_to_proto_basic() {
     );
     assert_eq!(proto.source_provider, "bilibili");
     assert_eq!(proto.name, "Test Video");
+    assert!(proto.source_config.is_empty());
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(
         proto.creator_id,
@@ -1144,6 +1145,8 @@ fn test_playlist_to_proto_dynamic() {
             .unwrap()
     );
     assert!(proto.is_dynamic);
+    assert_eq!(proto.source_provider, "bilibili");
+    assert_eq!(proto.provider_instance_name, "");
 }
 
 #[test]

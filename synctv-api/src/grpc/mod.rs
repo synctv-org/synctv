@@ -139,7 +139,25 @@ pub fn map_api_error_ref(err: &crate::impls::ApiError) -> tonic::Status {
 }
 
 pub fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
-    map_api_error_ref(&err)
+    use crate::impls::ApiError;
+
+    match err {
+        ApiError::NotFound(msg) => tonic::Status::not_found(msg),
+        ApiError::Authentication(msg) => tonic::Status::unauthenticated(msg),
+        ApiError::Authorization(msg) => tonic::Status::permission_denied(msg),
+        ApiError::AlreadyExists(msg) => tonic::Status::already_exists(msg),
+        ApiError::Conflict(msg) => tonic::Status::aborted(msg),
+        ApiError::InvalidInput(msg) => tonic::Status::invalid_argument(msg),
+        ApiError::RateLimited(msg) | ApiError::RateLimitedWithRetry { message: msg, .. } => {
+            tonic::Status::resource_exhausted(msg)
+        }
+        ApiError::ServiceUnavailable(msg) => tonic::Status::unavailable(msg),
+        ApiError::Timeout(msg) => tonic::Status::deadline_exceeded(msg),
+        ApiError::Internal(msg) => {
+            tracing::error!("API internal error: {msg}");
+            tonic::Status::internal("Internal error")
+        }
+    }
 }
 
 #[must_use]
@@ -696,7 +714,7 @@ pub struct GrpcServerConfig<'a> {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// Credential encryption for protecting sensitive data in `source_config`
+    /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Pre-bound TCP listener for the gRPC server.
     /// When provided, the server will use this listener instead of binding internally.
@@ -1270,9 +1288,8 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         let nr = node_registry
             .as_ref()
             .expect("node_registry presence checked by should_register_cluster_grpc_service");
-        let cluster_server =
-            synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone(), cluster_node_id.clone())
-                .with_cluster_secret(config.server.cluster_secret.clone());
+        let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
+            .with_cluster_secret(config.server.cluster_secret.clone());
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1557,7 +1574,7 @@ mod tests {
             JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars").expect("jwt");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service.clone(),
             username_cache,
             synctv_core::config::PasswordComplexityConfig::default(),
@@ -1982,9 +1999,11 @@ mod tests {
             ),
             "fallback HTTP state must preserve eviction interval"
         );
-        assert_eq!(
-            http_state.proxy_slice_cache.config().watermark_ratio,
-            fallback_config.proxy_slice_cache.watermark_ratio,
+        assert!(
+            (http_state.proxy_slice_cache.config().watermark_ratio
+                - fallback_config.proxy_slice_cache.watermark_ratio)
+                .abs()
+                < f64::EPSILON,
             "fallback HTTP state must preserve cache watermark"
         );
     }

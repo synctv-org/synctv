@@ -182,7 +182,7 @@ existingSecret: "my-external-synctv-secret"
 Required keys include:
 
 - `SYNCTV_DATABASE_PASSWORD`, unless PostgreSQL uses KubeBlocks mode.
-- `SYNCTV_REDIS_PASSWORD`, unless Redis uses KubeBlocks mode.
+- `SYNCTV_REDIS_PASSWORD`, required for Redis standard mode; provide it in external mode only when the external Redis requires password authentication; not needed for KubeBlocks mode.
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_SERVER_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
@@ -219,6 +219,30 @@ redis:
 In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
 
 Note: the KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically configure SyncTV as a `redis.deployment_mode=sentinel` client. The chart still injects a stable Redis Service endpoint into SyncTV, and SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
+
+`external` mode connects SyncTV to PostgreSQL or Redis managed by a cloud provider, platform team, or another operator. The chart does not render the corresponding StatefulSet, Service, or KubeBlocks Cluster.
+
+```yaml
+postgresql:
+  mode: external
+  external:
+    host: "postgres.example.internal"
+    port: 5432
+    username: "synctv"
+    database: "synctv"
+
+redis:
+  mode: external
+  external:
+    host: "redis.example.internal"
+    port: 6379
+    username: ""
+    database: 0
+```
+
+External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
+
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis egress does not target chart-managed Pod labels. It defaults to `0.0.0.0/0` for the matching ports so external mode keeps working; production deployments should restrict it with `networkPolicy.externalPostgresqlCIDRs` and `networkPolicy.externalRedisCIDRs`.
 
 Redis connection-manager values:
 

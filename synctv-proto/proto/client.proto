@@ -204,7 +204,7 @@ message Media {
     int64 added_at = 8;
     string creator_id = 9; // Public ID of the user who added the media
     string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
-    bytes source_config = 11; // JSON source config (replaces url for flexibility)
+    bytes source_config = 11; // JSON source config, only returned to the media creator
     ResourceAvailability availability = 12; // Availability derived from creator state
     int64 version = 13; // Resource version from database
 }
@@ -221,6 +221,9 @@ message Playlist {
     int64 updated_at = 9;
     ResourceAvailability availability = 10; // Availability derived from creator state
     int64 version = 11; // Resource version from database
+    bytes source_config = 12; // JSON source config, only returned to the playlist creator
+    string source_provider = 13; // Source provider for dynamic playlists
+    string provider_instance_name = 14; // Provider instance for dynamic playlists
 }
 
 enum ResourceAvailability {

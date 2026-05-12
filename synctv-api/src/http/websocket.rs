@@ -1451,7 +1451,7 @@ mod tests {
         }
     }
 
-    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
         let jwt_service =
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").expect("jwt service");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -1470,7 +1470,7 @@ mod tests {
         service
     }
 
-    fn test_room_service(pool: sqlx::PgPool) -> RoomService {
+    fn test_room_service(pool: &sqlx::PgPool) -> RoomService {
         RoomService::new(pool.clone(), test_user_service(pool))
     }
 
@@ -1973,7 +1973,7 @@ mod tests {
     #[ignore = "Requires Docker"]
     async fn test_validate_websocket_room_membership_rejects_room_with_inactive_creator() {
         let (_container, pool) = synctv_core_testing::create_test_pool().await;
-        let room_service = test_room_service(pool.clone());
+        let room_service = test_room_service(&pool);
         let user_service = room_service.user_service().clone();
 
         let owner = user_service

@@ -274,7 +274,7 @@ mod permissions {
             Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
 
         let mut user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),

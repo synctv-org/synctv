@@ -1135,19 +1135,19 @@ impl OAuth2Service {
         let user_email = user_info.email.clone();
 
         if signup_policy.signup_need_review {
-            let existing_pending_identity: Option<UserId> = sqlx::query_scalar(
-                r"
-                SELECT id
+            let existing_pending_identity = sqlx::query_scalar!(
+                r#"
+                SELECT id AS "id: UserId"
                 FROM user_registration_requests
                 WHERE reviewed_at IS NULL
                   AND status = $1
                   AND oauth2_provider = $2
                   AND oauth2_provider_user_id = $3
-                ",
+                "#,
+                i16::from(ReviewStatus::Pending),
+                provider.as_str(),
+                user_info.provider_user_id.as_str()
             )
-            .bind(i16::from(ReviewStatus::Pending))
-            .bind(provider.as_str())
-            .bind(user_info.provider_user_id.as_str())
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(request_id) = existing_pending_identity {
@@ -1164,19 +1164,19 @@ impl OAuth2Service {
                         synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
                     ));
                 }
-                let pending_email_exists: bool = sqlx::query_scalar(
-                    r"
+                let pending_email_exists = sqlx::query_scalar!(
+                    r#"
                     SELECT EXISTS(
                         SELECT 1
                         FROM user_registration_requests
                         WHERE reviewed_at IS NULL
                           AND status = $1
                           AND email = $2
-                    )
-                    ",
+                    ) AS "exists!"
+                    "#,
+                    i16::from(ReviewStatus::Pending),
+                    email
                 )
-                .bind(i16::from(ReviewStatus::Pending))
-                .bind(email)
                 .fetch_one(&mut *tx)
                 .await?;
                 if pending_email_exists {
@@ -1189,17 +1189,17 @@ impl OAuth2Service {
 
             let mut pending_request_id = None;
             for (attempt, candidate) in candidates.iter().enumerate() {
-                let username_in_use: bool = sqlx::query_scalar(
-                    r"
+                let username_in_use = sqlx::query_scalar!(
+                    r#"
                     SELECT EXISTS(
                         SELECT 1
                         FROM users
                         WHERE username = $1
                           AND deleted_at IS NULL
-                    )
-                    ",
+                    ) AS "exists!"
+                    "#,
+                    candidate
                 )
-                .bind(candidate)
                 .fetch_one(&mut *tx)
                 .await?;
                 if username_in_use {
@@ -1241,19 +1241,19 @@ impl OAuth2Service {
                         match message.as_str() {
                             PENDING_REGISTRATION_USERNAME_ALREADY_EXISTS => {}
                             PENDING_OAUTH2_IDENTITY_ALREADY_EXISTS => {
-                                let request_id: Option<UserId> = sqlx::query_scalar(
-                                    r"
-                                    SELECT id
+                                let request_id = sqlx::query_scalar!(
+                                    r#"
+                                    SELECT id AS "id: UserId"
                                     FROM user_registration_requests
                                     WHERE reviewed_at IS NULL
                                       AND status = $1
                                       AND oauth2_provider = $2
                                       AND oauth2_provider_user_id = $3
-                                    ",
+                                    "#,
+                                    i16::from(ReviewStatus::Pending),
+                                    provider.as_str(),
+                                    user_info.provider_user_id.as_str()
                                 )
-                                .bind(i16::from(ReviewStatus::Pending))
-                                .bind(provider.as_str())
-                                .bind(user_info.provider_user_id.as_str())
                                 .fetch_optional(&mut *tx)
                                 .await?;
                                 if let Some(request_id) = request_id {

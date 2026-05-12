@@ -66,7 +66,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use rand::RngExt;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -155,6 +155,36 @@ pub struct UserLeftOutboxSnapshot {
     pub room_id: RoomId,
     pub user_id: UserId,
     pub username: String,
+}
+
+pub struct AdminAddMemberWithOutboxRequest<'a> {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub actor_username: &'a str,
+    pub target_user_id: UserId,
+    pub role: RoomRole,
+    pub notify: bool,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+pub struct AdminRejectJoinRequestWithOutbox<'a> {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub reviewed_by: Option<&'a UserId>,
+    pub actor_username: &'a str,
+    pub request_id: ReviewRequestId,
+    pub reason: Option<&'a str>,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+pub struct AdminBanMemberWithOutboxRequest {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub target_user_id: UserId,
+    pub persisted_banned_by: Option<UserId>,
+    pub reason: Option<String>,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+    pub lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -379,21 +409,21 @@ impl RoomService {
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
-        let request_id: RoomId = sqlx::query_scalar(
-            r"
+        let request_id = sqlx::query_scalar!(
+            r#"
             INSERT INTO room_creation_requests (
                 requested_by, name, description, password_hash, settings_payload, status, requested_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-            RETURNING id
-            ",
+            RETURNING id AS "id: RoomId"
+            "#,
+            requested_by.as_i64(),
+            name,
+            description,
+            password_hash,
+            settings_payload,
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(requested_by.as_i64())
-        .bind(name)
-        .bind(description)
-        .bind(password_hash)
-        .bind(settings_payload)
-        .bind(i16::from(ReviewStatus::Pending))
         .fetch_one(&self.pool)
         .await?;
 
@@ -2533,28 +2563,31 @@ impl RoomService {
         role: RoomRole,
         notify: bool,
     ) -> Result<RoomMember> {
-        self.admin_add_member_with_outbox(
+        self.admin_add_member_with_outbox(AdminAddMemberWithOutboxRequest {
             room_id,
             actor_id,
             actor_username,
             target_user_id,
             role,
             notify,
-            None,
-        )
+            outbox_event_factory: None,
+        })
         .await
     }
 
     pub async fn admin_add_member_with_outbox(
         &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        actor_username: &str,
-        target_user_id: UserId,
-        role: RoomRole,
-        notify: bool,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        request: AdminAddMemberWithOutboxRequest<'_>,
     ) -> Result<RoomMember> {
+        let AdminAddMemberWithOutboxRequest {
+            room_id,
+            actor_id,
+            actor_username,
+            target_user_id,
+            role,
+            notify,
+            outbox_event_factory,
+        } = request;
         let room = self
             .room_repo
             .get_by_id(&room_id)
@@ -2717,28 +2750,31 @@ impl RoomService {
         request_id: ReviewRequestId,
         reason: Option<&str>,
     ) -> Result<UserId> {
-        self.admin_reject_join_request_with_outbox(
+        self.admin_reject_join_request_with_outbox(AdminRejectJoinRequestWithOutbox {
             room_id,
             actor_id,
             reviewed_by,
             actor_username,
             request_id,
             reason,
-            None,
-        )
+            outbox_event_factory: None,
+        })
         .await
     }
 
     pub async fn admin_reject_join_request_with_outbox(
         &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        reviewed_by: Option<&UserId>,
-        actor_username: &str,
-        request_id: ReviewRequestId,
-        reason: Option<&str>,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        request: AdminRejectJoinRequestWithOutbox<'_>,
     ) -> Result<UserId> {
+        let AdminRejectJoinRequestWithOutbox {
+            room_id,
+            actor_id,
+            reviewed_by,
+            actor_username,
+            request_id,
+            reason,
+            outbox_event_factory,
+        } = request;
         let room = self
             .room_repo
             .get_by_id(&room_id)
@@ -4943,14 +4979,17 @@ impl RoomService {
 
     pub async fn admin_ban_member_with_outbox(
         &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        target_user_id: UserId,
-        persisted_banned_by: Option<UserId>,
-        reason: Option<String>,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
-        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
+        request: AdminBanMemberWithOutboxRequest,
     ) -> Result<()> {
+        let AdminBanMemberWithOutboxRequest {
+            room_id,
+            actor_id,
+            target_user_id,
+            persisted_banned_by,
+            reason,
+            outbox_event_factory,
+            lifecycle_outbox_event,
+        } = request;
         if actor_id == target_user_id {
             return Err(Error::InvalidInput("Cannot ban yourself".to_string()));
         }
@@ -5615,9 +5654,9 @@ impl RoomService {
     pub async fn clear_playlist(
         &self,
         room_id: RoomId,
-        _user_id: UserId,
+        user_id: UserId,
     ) -> Result<ClearPlaylistResult> {
-        self.clear_playlist_with_outbox(room_id, _user_id, None)
+        self.clear_playlist_with_outbox(room_id, user_id, None)
             .await
     }
 
@@ -6693,14 +6732,14 @@ async fn has_room_permission_in_tx(
     user_id: &UserId,
     permission: u64,
 ) -> Result<bool> {
-    let row = sqlx::query(
-        r"
+    let row = sqlx::query!(
+        r#"
         SELECT rm.role,
                rm.added_permissions,
                rm.removed_permissions,
                rm.admin_added_permissions,
                rm.admin_removed_permissions,
-               rs.value AS settings_value
+               rs.value AS "settings_value?"
         FROM room_members rm
         LEFT JOIN room_settings rs
           ON rs.room_id = rm.room_id
@@ -6709,10 +6748,10 @@ async fn has_room_permission_in_tx(
           AND rm.user_id = $2
           AND rm.left_at IS NULL
         FOR UPDATE OF rm
-        ",
+        "#,
+        room_id.as_i64(),
+        user_id.as_i64()
     )
-    .bind(room_id.as_i64())
-    .bind(user_id.as_i64())
     .fetch_optional(&mut **tx)
     .await?;
 
@@ -6720,24 +6759,23 @@ async fn has_room_permission_in_tx(
         return Ok(false);
     };
 
-    let role = row.try_get::<RoomRole, _>("role")?;
+    let role = RoomRole::try_from(i32::from(row.role))
+        .map_err(|error| Error::Internal(format!("Invalid room member role: {error}")))?;
     if role == RoomRole::Creator {
         return Ok(true);
     }
 
-    let settings = match row.try_get::<Option<String>, _>("settings_value")? {
+    let settings = match row.settings_value {
         Some(value) => serde_json::from_str::<RoomSettings>(&value).map_err(|error| {
             Error::Internal(format!("Failed to deserialize room settings: {error}"))
         })?,
         None => RoomSettings::default(),
     };
 
-    let added = permission_bits_from_signed(row.try_get::<i64, _>("added_permissions")?);
-    let removed = permission_bits_from_signed(row.try_get::<i64, _>("removed_permissions")?);
-    let admin_added =
-        permission_bits_from_signed(row.try_get::<i64, _>("admin_added_permissions")?);
-    let admin_removed =
-        permission_bits_from_signed(row.try_get::<i64, _>("admin_removed_permissions")?);
+    let added = permission_bits_from_signed(row.added_permissions);
+    let removed = permission_bits_from_signed(row.removed_permissions);
+    let admin_added = permission_bits_from_signed(row.admin_added_permissions);
+    let admin_removed = permission_bits_from_signed(row.admin_removed_permissions);
 
     let permissions = match role {
         RoomRole::Creator => PermissionBits::ALL,
@@ -6785,8 +6823,8 @@ async fn collect_target_playlist_nodes_in_tx(
 
     let playlist_ids: Vec<i64> = root_playlist_ids.iter().map(PlaylistId::as_i64).collect();
 
-    let rows = sqlx::query(
-        r"WITH RECURSIVE target_playlists AS (
+    let rows = sqlx::query!(
+        r#"WITH RECURSIVE target_playlists AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -6797,22 +6835,19 @@ async fn collect_target_playlist_nodes_in_tx(
             JOIN target_playlists tp ON p.parent_id = tp.id
             WHERE p.room_id = $1
         )
-        SELECT id, MAX(depth) AS depth
+        SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
         FROM target_playlists
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id",
+        ORDER BY MAX(depth) DESC, id"#,
+        room_id.as_i64(),
+        &playlist_ids
     )
-    .bind(room_id.as_i64())
-    .bind(&playlist_ids)
     .fetch_all(&mut **tx)
     .await?;
 
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        result.push((
-            row.try_get::<PlaylistId, _>("id")?,
-            row.try_get::<Option<i32>, _>("depth")?.unwrap_or(0),
-        ));
+        result.push((row.id, row.depth.unwrap_or(0)));
     }
     Ok(result)
 }
@@ -6821,8 +6856,8 @@ async fn collect_all_room_playlist_nodes_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<Vec<(PlaylistId, i32)>> {
-    let rows = sqlx::query(
-        r"WITH RECURSIVE playlist_tree AS (
+    let rows = sqlx::query!(
+        r#"WITH RECURSIVE playlist_tree AS (
             SELECT id, 0 AS depth
             FROM playlists
             WHERE room_id = $1
@@ -6833,21 +6868,18 @@ async fn collect_all_room_playlist_nodes_in_tx(
             JOIN playlist_tree pt ON p.parent_id = pt.id
             WHERE p.room_id = $1
         )
-        SELECT id, MAX(depth) AS depth
+        SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
         FROM playlist_tree
         GROUP BY id
-        ORDER BY MAX(depth) DESC, id",
+        ORDER BY MAX(depth) DESC, id"#,
+        room_id.as_i64()
     )
-    .bind(room_id.as_i64())
     .fetch_all(&mut **tx)
     .await?;
 
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        result.push((
-            row.try_get::<PlaylistId, _>("id")?,
-            row.try_get::<Option<i32>, _>("depth")?.unwrap_or(0),
-        ));
+        result.push((row.id, row.depth.unwrap_or(0)));
     }
     Ok(result)
 }
@@ -6883,8 +6915,8 @@ async fn collect_deleted_media_ids_in_tx(
     let playlist_id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
     let explicit_media_id_strs: Vec<i64> = explicit_media_ids.iter().map(MediaId::as_i64).collect();
 
-    let media_ids = sqlx::query_scalar(
-        r"WITH RECURSIVE target_playlists AS (
+    let media_ids = sqlx::query_scalar!(
+        r#"WITH RECURSIVE target_playlists AS (
             SELECT id
             FROM playlists
             WHERE id = ANY($1)
@@ -6893,18 +6925,18 @@ async fn collect_deleted_media_ids_in_tx(
             FROM playlists p
             JOIN target_playlists tp ON p.parent_id = tp.id
         )
-        SELECT DISTINCT m.id
+        SELECT DISTINCT m.id AS "id: MediaId"
         FROM media m
         WHERE m.room_id = $2
           AND (
               m.id = ANY($3)
               OR m.playlist_id IN (SELECT id FROM target_playlists)
           )
-        ORDER BY m.id",
+        ORDER BY m.id"#,
+        &playlist_id_strs,
+        room_id.as_i64(),
+        &explicit_media_id_strs
     )
-    .bind(&playlist_id_strs)
-    .bind(room_id.as_i64())
-    .bind(&explicit_media_id_strs)
     .fetch_all(&mut **tx)
     .await?;
 
@@ -7307,7 +7339,7 @@ mod tests {
         );
     }
 
-    fn make_user_service(pool: PgPool) -> UserService {
+    fn make_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::new("room-service-test-secret-key-32bytes!!").unwrap();
         let username_cache =
             UsernameCache::local_only("room-service:test:username:".to_string(), 128, 60);
@@ -7328,7 +7360,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_cache_invalidation_wires_permission_service_for_room_service_new() {
         let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let mut room_service = RoomService::new(pool, user_service);
 
         assert!(
@@ -7365,7 +7397,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_room_uses_injected_coordination_lock_trait_object() {
         let pool = PgPool::connect_lazy("postgresql://unused:unused@127.0.0.1:1/unused").unwrap();
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let mut room_service = RoomService::new(pool, user_service);
         room_service.set_distributed_lock(Arc::new(FailingCoordinationLock));
 

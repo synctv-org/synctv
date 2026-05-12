@@ -1195,7 +1195,7 @@ mod tests {
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
                 UserService::new(
-                    sqlx::postgres::PgPoolOptions::new()
+                    &sqlx::postgres::PgPoolOptions::new()
                         .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                         .expect("lazy pool"),
                     synctv_core::service::JwtService::new(
@@ -1216,7 +1216,7 @@ mod tests {
                 ),
             )),
             Arc::new(UserService::new(
-                sqlx::postgres::PgPoolOptions::new()
+                &sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
                     .expect("lazy pool"),
                 synctv_core::service::JwtService::new(
@@ -1561,7 +1561,7 @@ mod tests {
         };
         let make_user_service = || {
             UserService::new(
-                lazy_pool(),
+                &lazy_pool(),
                 synctv_core::service::JwtService::new(
                     "test-secret-key-for-http-router-tests-minimum-32-chars",
                 )

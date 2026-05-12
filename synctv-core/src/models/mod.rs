@@ -153,9 +153,9 @@ pub use playlist::{
 pub use provider_instance::{
     is_valid_provider_instance_name, normalize_provider_instance_name,
     normalize_provider_instance_name_owned, resolve_provider_instance_binding,
-    validate_provider_instance_name, NewProviderInstance, ProviderCredential, ProviderInstance,
-    ProviderInstanceBindingMismatch, ProviderInstanceListQuery, ProviderInstanceListSortBy,
-    UserProviderCredential,
+    validate_provider_instance_name, CredentialProviderInstanceName, NewProviderInstance,
+    ProviderCredential, ProviderInstance, ProviderInstanceBindingMismatch,
+    ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
 };
 pub use query::SortDirection;
 pub use review::ReviewStatus;

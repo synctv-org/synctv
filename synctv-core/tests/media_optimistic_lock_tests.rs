@@ -239,7 +239,7 @@ async fn test_concurrent_updates_detect_conflict() {
     // Client 1 updates first with version 0 -> succeeds, version becomes 1
     let mut c1_update = client1_media.clone();
     c1_update.name = "client1_update.mp4".to_string();
-    c1_update.source_config = json!({"url": "https://example.com/c1.mp4"});
+    c1_update.position = 1.0;
     let c1_result = media_repo
         .update_with_version(&c1_update, 0)
         .await
@@ -251,7 +251,7 @@ async fn test_concurrent_updates_detect_conflict() {
     // because version is now 1
     let mut c2_update = client2_media.clone();
     c2_update.name = "client2_update.mp4".to_string();
-    c2_update.source_config = json!({"url": "https://example.com/c2.mp4"});
+    c2_update.position = 2.0;
     let c2_result = media_repo
         .update_with_version(&c2_update, 0) // Stale version!
         .await
@@ -265,7 +265,11 @@ async fn test_concurrent_updates_detect_conflict() {
     // Verify only client1's changes persisted
     let current = media_repo.get_by_id(&media.id).await.unwrap().unwrap();
     assert_eq!(current.name, "client1_update.mp4");
-    assert_eq!(current.source_config["url"], "https://example.com/c1.mp4");
+    assert!((current.position - 1.0).abs() < f64::EPSILON);
+    assert_eq!(
+        current.source_config["url"], "https://example.com/video.mp4",
+        "source_config is immutable after media creation"
+    );
     assert_eq!(current.version, 1);
 }
 
@@ -330,10 +334,10 @@ async fn test_sequential_updates_increment_version() {
     assert_eq!(media.version, 4);
 }
 
-/// Test: `update_with_version` on `source_config` changes
+/// Test: `update_with_version` does not mutate `source_config`
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_source_config_with_version() {
+async fn test_update_with_version_preserves_source_config() {
     let ctx = setup_test_context("v5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
@@ -347,8 +351,10 @@ async fn test_update_source_config_with_version() {
         .await
         .unwrap();
 
-    // Update source_config with correct version
+    // Attempting to alter source_config through optimistic updates should not
+    // persist because source_config is creation-time provider state.
     let mut updated = media.clone();
+    updated.name = "config_test_updated.mp4".to_string();
     updated.source_config = json!({
         "playback_infos": {
             "direct": {
@@ -362,19 +368,19 @@ async fn test_update_source_config_with_version() {
         .update_with_version(&updated, 0)
         .await
         .unwrap()
-        .expect("Source config update should succeed");
+        .expect("metadata update should succeed");
 
     assert_eq!(result.version, 1);
-    assert!(result.source_config.get("playback_infos").is_some());
+    assert_eq!(result.name, "config_test_updated.mp4");
+    assert_eq!(result.source_config["url"], "https://example.com/video.mp4");
+    assert!(result.source_config.get("playback_infos").is_none());
 
     // Concurrent update with old version should fail
     let mut stale = media.clone();
+    stale.name = "stale_config_test.mp4".to_string();
     stale.source_config = json!({"stale": true});
     let stale_result = media_repo.update_with_version(&stale, 0).await.unwrap();
-    assert!(
-        stale_result.is_none(),
-        "Stale source_config update should fail"
-    );
+    assert!(stale_result.is_none(), "Stale metadata update should fail");
 }
 
 /// Test: Non-existent media returns None

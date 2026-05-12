@@ -179,7 +179,7 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// Credential encryption for protecting sensitive data in `source_config`
+    /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
@@ -1331,7 +1331,7 @@ mod tests {
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
-            pool.clone(),
+            &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )
@@ -1541,7 +1541,7 @@ mod tests {
             .expect("lazy pool");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
         let user_service = Arc::new(UserService::new(
-            pool.clone(),
+            &pool,
             synctv_core::service::JwtService::new(
                 "test-secret-key-for-http-router-tests-minimum-32-chars",
             )

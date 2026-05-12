@@ -609,7 +609,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
-            enable_reflection: true,
+            enable_reflection: false,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
             cluster_secret: String::new(),
@@ -4528,6 +4528,13 @@ mod tests {
     }
 
     #[test]
+    fn test_grpc_reflection_defaults_disabled() {
+        let config = Config::default();
+        assert!(!config.server.enable_reflection);
+        assert!(!config.management.enable_reflection);
+    }
+
+    #[test]
     fn test_api_address() {
         let config = Config {
             server: ServerConfig {
@@ -5404,7 +5411,7 @@ livestream:
             expected_data_dir.join("proxy-cache")
         );
         assert_eq!(config.proxy_slice_cache.eviction_interval_seconds, 30);
-        assert_eq!(config.proxy_slice_cache.watermark_ratio, 0.75);
+        assert!((config.proxy_slice_cache.watermark_ratio - 0.75).abs() < f64::EPSILON);
         assert_eq!(
             Path::new(&config.livestream.hls_storage_path),
             expected_data_dir.join("hls")
@@ -5549,7 +5556,7 @@ management:
             expected_data_dir.join("cache").join("proxy-slice")
         );
         assert_eq!(config.proxy_slice_cache.eviction_interval_seconds, 30);
-        assert_eq!(config.proxy_slice_cache.watermark_ratio, 0.75);
+        assert!((config.proxy_slice_cache.watermark_ratio - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -12,6 +12,9 @@ use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 use crate::realtime_fanout::{publish_best_effort, RealtimeFanoutService};
 use crate::runtime::RealtimeEventService;
 
+type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
+type MediaIdsEventsBuilder = Arc<dyn Fn(&[MediaId]) -> Vec<RealtimeEvent> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct PreparedMediaRemovedFanout {
     pub event: RealtimeEvent,
@@ -65,7 +68,7 @@ impl PreparedMediaOutboxFanout {
 #[derive(Clone)]
 pub struct PreparedMediaBatchOutboxFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    events_builder: Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>,
+    events_builder: MediaBatchEventsBuilder,
     events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
 }
 
@@ -107,7 +110,7 @@ impl PreparedMediaBatchOutboxFanout {
 #[derive(Clone)]
 pub struct PreparedMediaIdsOutboxFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    events_builder: Arc<dyn Fn(&[MediaId]) -> Vec<RealtimeEvent> + Send + Sync>,
+    events_builder: MediaIdsEventsBuilder,
     events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
 }
 

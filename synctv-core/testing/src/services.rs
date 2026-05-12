@@ -121,7 +121,7 @@ pub fn create_test_token_blacklist_store_service() -> Arc<dyn TokenBlacklistStor
 #[must_use]
 pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
     let mut service = UserService::new(
-        pool,
+        &pool,
         create_test_jwt_service(),
         UsernameCache::local_only("test:username:".to_string(), 128, 60),
         PasswordComplexityConfig::default(),

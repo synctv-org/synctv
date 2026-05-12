@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT user_id AS \"user_id: UserId\",\n                   two_factor_enabled,\n                   notify_room_invitation_in_app,\n                   notify_room_event_in_app,\n                   notify_system_announcement_in_app,\n                   notify_room_invitation_email,\n                   notify_room_event_email,\n                   notify_system_announcement_email,\n                   settings\n            FROM user_preferences\n            WHERE user_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id: UserId",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "two_factor_enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "notify_room_invitation_in_app",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "notify_room_event_in_app",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "notify_system_announcement_in_app",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "notify_room_invitation_email",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "notify_room_event_email",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "notify_system_announcement_email",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "settings",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8925de07cec3928cd429fa98b6de8b72306cb91f4f3701ecef9a3f66c1701619"
+}

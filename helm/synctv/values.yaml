@@ -17,6 +17,7 @@ global:
 ## mode:
 ## - standard: chart-managed StatefulSet/Service
 ## - kubeblocks: chart-managed KubeBlocks Cluster resources
+## - external: connect to an existing PostgreSQL service; no PostgreSQL resources rendered
 ## These database services are internal-only. Access them from outside the cluster
 ## only via temporary kubectl port-forward when needed.
 postgresql:
@@ -54,6 +55,11 @@ postgresql:
       limits:
         cpu: 500m
         memory: 512Mi
+  external:
+    host: ""
+    port: 5432
+    username: "synctv"
+    database: "synctv"
 
 redis:
   mode: standard
@@ -102,6 +108,11 @@ redis:
         limits:
           cpu: 500m
           memory: 512Mi
+  external:
+    host: ""
+    port: 6379
+    username: ""
+    database: 0
 
 ## Name Overrides
 nameOverride: ""
@@ -721,6 +732,11 @@ networkPolicy:
   # rtmpSourceCIDRs:
   #   - "10.0.0.0/8"
   #   - "192.168.0.0/16"
+  ## CIDR ranges allowed for external PostgreSQL/Redis egress when the matching
+  ## dependency mode is "external". Defaults to 0.0.0.0/0 so external mode keeps
+  ## working when NetworkPolicy is enabled; restrict these ranges in production.
+  externalPostgresqlCIDRs: []
+  externalRedisCIDRs: []
 
 ## Extra Environment Variables
 extraEnvVars: []

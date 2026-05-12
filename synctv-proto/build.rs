@@ -309,6 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.Room.settings",
         ".synctv.client.Media.metadata",
         ".synctv.client.Media.source_config",
+        ".synctv.client.Playlist.source_config",
         ".synctv.client.PlaybackState.target",
         ".synctv.client.UpdateRoomSettingsRequest.settings",
         ".synctv.client.GetRoomSettingsResponse.settings",

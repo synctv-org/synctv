@@ -762,7 +762,7 @@ mod tests {
         service.shutdown().await;
     }
 
-    fn make_user_service(pool: PgPool) -> UserService {
+    fn make_user_service(pool: &PgPool) -> UserService {
         let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
             .expect("jwt service should build");
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -810,7 +810,7 @@ mod tests {
     async fn test_get_with_version_returns_cached_snapshot_version() {
         let (_container, pool) = create_test_pool().await;
         let user_repo = UserRepository::new(pool.clone());
-        let user_service = make_user_service(pool.clone());
+        let user_service = make_user_service(&pool);
         let room_service = crate::service::RoomService::new(pool.clone(), user_service);
         let owner = user_repo
             .create(&make_user("room_settings_version_owner"))

@@ -14,7 +14,7 @@ use synctv_core::{
     },
 };
 
-pub fn make_user_service(pool: PgPool) -> UserService {
+pub fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -37,7 +37,7 @@ pub fn make_user_service(pool: PgPool) -> UserService {
 }
 
 pub fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut svc = RoomService::new(pool, user_service);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc

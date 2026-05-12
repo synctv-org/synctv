@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM realtime_outbox\n                WHERE status = 'pending'\n                  AND next_retry_at <= NOW()\n                ORDER BY created_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE realtime_outbox o\n            SET status = 'processing',\n                locked_by = $2,\n                locked_at = NOW()\n            FROM picked\n            WHERE o.id = picked.id\n            RETURNING\n                o.id,\n                o.aggregate_type,\n                o.aggregate_id,\n                o.event_type,\n                o.event_version,\n                o.aggregate_version,\n                o.payload,\n                o.status,\n                o.attempts,\n                o.next_retry_at,\n                o.locked_by,\n                o.locked_at,\n                o.created_at,\n                o.dispatched_at,\n                o.last_error\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "aggregate_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "aggregate_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "aggregate_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "next_retry_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "locked_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "locked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "dispatched_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "last_error",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "80d79d9425044a3c35071fc80b8534885af4ac954dbd56910329b528beeef7aa"
+}

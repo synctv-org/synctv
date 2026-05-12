@@ -39,7 +39,7 @@ fn create_jwt_service() -> JwtService {
         .expect("Failed to create JWT service")
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let jwt_service = create_jwt_service();
     let username_cache = cache::UsernameCache::local_only("test:username:".to_string(), 1000, 0);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
@@ -77,7 +77,7 @@ fn expect_complete_login(login: AuthenticatedLogin) -> (synctv_core::models::Use
 
 async fn scenario_password_change_invalidates_old_tokens() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let jwt_service = create_jwt_service();
 
     let username = format!("user_{}", synctv_common::snanoid!(8));
@@ -156,7 +156,7 @@ async fn scenario_password_change_invalidates_old_tokens() {
 
 async fn scenario_ban_user_invalidates_tokens() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let jwt_service = create_jwt_service();
 
     let username = format!("banned_user_{}", synctv_common::snanoid!(8));
@@ -211,7 +211,7 @@ async fn scenario_ban_user_invalidates_tokens() {
 
 async fn scenario_blacklisted_access_token_rejected() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let jwt_service = create_jwt_service();
 
     let username = format!("blacklist_user_{}", synctv_common::snanoid!(8));
@@ -259,7 +259,7 @@ async fn scenario_blacklisted_access_token_rejected() {
 
 async fn scenario_refresh_token_validation() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     // Register and login user
     let username = format!("refresh_user_{}", synctv_common::snanoid!(8));
@@ -295,7 +295,7 @@ async fn scenario_refresh_token_validation() {
 
 async fn scenario_complete_authentication_flow() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
     let jwt_service = create_jwt_service();
 
     let username = format!("e2e_user_{}", synctv_common::snanoid!(8));
@@ -357,7 +357,7 @@ async fn scenario_complete_authentication_flow() {
 
 async fn scenario_login_wrong_password_fails() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool));
+    let user_service = Arc::new(create_user_service(&pool));
 
     // Register user
     let username = format!("wrong_pwd_user_{}", synctv_common::snanoid!(8));
@@ -381,7 +381,7 @@ async fn scenario_login_wrong_password_fails() {
 
 async fn scenario_deleted_user_cannot_authenticate() {
     let (_postgres, pool) = create_test_pool().await;
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let jwt_service = create_jwt_service();
 
     // Register and login user

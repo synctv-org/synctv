@@ -87,7 +87,7 @@ fn fake_proxy_services() -> ProxyServices {
     let brute_force =
         synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
     let user_service = synctv_core::service::UserService::new(
-        pool.clone(),
+        &pool,
         jwt,
         username_cache,
         synctv_core::config::PasswordComplexityConfig::default(),

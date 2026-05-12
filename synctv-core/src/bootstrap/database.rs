@@ -194,7 +194,6 @@ fn mask_database_url(url: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::LoggingConfig;
-    use sqlx::postgres::PgRow;
     use sqlx::Row;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
@@ -234,13 +233,13 @@ mod tests {
             .await
             .expect("should acquire dedicated ddl connection");
 
-        let row: PgRow = sqlx::query("SHOW statement_timeout")
+        let row = sqlx::query("SHOW statement_timeout")
             .fetch_one(&mut *conn)
             .await
             .expect("should query session statement timeout");
         let timeout: String = row
             .try_get(0)
-            .expect("SHOW statement_timeout should return a string");
+            .expect("statement_timeout should be returned");
 
         assert_eq!(
             timeout, "0",
@@ -277,7 +276,7 @@ mod tests {
                 .await
                 .expect("should acquire dedicated ddl connection");
             sqlx::query("SELECT 1")
-                .execute(&mut *conn)
+                .fetch_one(&mut *conn)
                 .await
                 .expect("ddl connection should stay usable");
         }
@@ -286,13 +285,13 @@ mod tests {
             .acquire()
             .await
             .expect("should reacquire pooled connection");
-        let row: PgRow = sqlx::query("SHOW statement_timeout")
+        let row = sqlx::query("SHOW statement_timeout")
             .fetch_one(&mut *conn)
             .await
             .expect("should query reset statement timeout");
         let timeout: String = row
             .try_get(0)
-            .expect("SHOW statement_timeout should return a string");
+            .expect("statement_timeout should be returned");
 
         assert_ne!(
             timeout, "0",
@@ -334,13 +333,13 @@ mod tests {
             .acquire()
             .await
             .expect("should acquire pooled connection");
-        let row: PgRow = sqlx::query("SHOW client_min_messages")
+        let row = sqlx::query("SHOW client_min_messages")
             .fetch_one(&mut *conn)
             .await
             .expect("should query session client_min_messages");
         let level: String = row
             .try_get(0)
-            .expect("SHOW client_min_messages should return a string");
+            .expect("client_min_messages should be returned");
 
         assert_eq!(
             level, "warning",
@@ -392,13 +391,13 @@ mod tests {
             .acquire()
             .await
             .expect("should reacquire pooled connection");
-        let row: PgRow = sqlx::query("SHOW client_min_messages")
+        let row = sqlx::query("SHOW client_min_messages")
             .fetch_one(&mut *conn)
             .await
             .expect("should query reset client_min_messages");
         let level: String = row
             .try_get(0)
-            .expect("SHOW client_min_messages should return a string");
+            .expect("client_min_messages should be returned");
 
         assert_eq!(
             level, "warning",

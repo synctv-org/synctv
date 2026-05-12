@@ -92,7 +92,7 @@ curl -fsS http://localhost:8080/health/ready
 | --- | --- | --- | --- |
 | `server.host` | IP/监听地址 | `0.0.0.0` | 主 API 监听地址 |
 | `server.port` | 端口 | `8080` | HTTP REST、公开 gRPC、健康检查端口 |
-| `server.enable_reflection` | 布尔值 | `true` | 是否开启公开 gRPC reflection |
+| `server.enable_reflection` | 布尔值 | `false` | 是否开启公开 gRPC reflection |
 | `server.trusted_proxies` | 字符串数组 | `[]` | 可信反向代理 IP/CIDR |
 | `server.cors_allowed_origins` | 字符串数组 | `[]` | 允许跨域访问的前端 origin |
 | `server.cluster_secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |

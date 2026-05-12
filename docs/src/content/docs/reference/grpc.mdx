@@ -9,7 +9,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 SyncTV 的公开 gRPC 和 HTTP REST 共用 `server.port`，默认是 `8080`。
 
-默认配置中 `server.enable_reflection=true`，开发环境可以直接用 `grpcurl` 探索服务。生产环境建议显式关闭 reflection，改用仓库内 protobuf 文件调试。
+默认配置中 `server.enable_reflection=false`。开发环境可以显式开启后用 `grpcurl` 探索服务；生产环境建议保持关闭，改用仓库内 protobuf 文件调试。
 
 <Aside type="caution">
 gRPC reflection 会暴露服务和消息结构。它适合开发、内网调试和预发布环境，不建议在公网生产环境长期开启。

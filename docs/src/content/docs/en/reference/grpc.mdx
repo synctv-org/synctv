@@ -9,7 +9,7 @@ import { Aside, TabItem, Tabs } from '@astrojs/starlight/components';
 
 SyncTV public gRPC and HTTP REST share `server.port`, default `8080`.
 
-`server.enable_reflection=true` by default, so development environments can explore services with `grpcurl`. Production should usually disable reflection and use checked-in protobuf files.
+`server.enable_reflection=false` by default. Development environments can enable it explicitly to explore services with `grpcurl`; production should usually keep reflection disabled and use checked-in protobuf files.
 
 <Aside type="caution">
 gRPC reflection exposes service and message structure. It is useful for development, internal debugging, and staging, but should not be left enabled on public production endpoints.

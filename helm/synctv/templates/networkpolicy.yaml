@@ -83,6 +83,17 @@ spec:
           port: 53
     # Allow PostgreSQL
     - to:
+        {{- if eq (include "synctv.postgresql.mode" .) "external" }}
+        {{- if .Values.networkPolicy.externalPostgresqlCIDRs }}
+        {{- range .Values.networkPolicy.externalPostgresqlCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- else }}
         - podSelector:
             matchLabels:
               {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
@@ -94,11 +105,23 @@ spec:
               app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
               app.kubernetes.io/component: "postgresql"
               {{- end }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ include "synctv.postgresql.port" . }}
     # Allow Redis
     - to:
+        {{- if eq (include "synctv.redis.mode" .) "external" }}
+        {{- if .Values.networkPolicy.externalRedisCIDRs }}
+        {{- range .Values.networkPolicy.externalRedisCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        {{- end }}
+        {{- else }}
         - podSelector:
             matchLabels:
               {{- if eq (include "synctv.redis.mode" .) "kubeblocks" }}
@@ -109,6 +132,7 @@ spec:
               app.kubernetes.io/name: {{ include "synctv.name" . | quote }}
               app.kubernetes.io/component: "redis"
               {{- end }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ include "synctv.redis.port" . }}

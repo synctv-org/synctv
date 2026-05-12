@@ -25,6 +25,12 @@ pub struct SsrfSafeClientBuilder {
     ssrf_guard: Option<SsrfGuard>,
 }
 
+impl Default for SsrfSafeClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SsrfSafeClientBuilder {
     /// Create a generic HTTP client builder.
     ///

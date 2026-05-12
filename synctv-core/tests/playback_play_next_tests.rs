@@ -37,7 +37,7 @@ use synctv_core::{
     service::{ProvidersManager, RemoteProviderManager},
 };
 use synctv_core_testing::create_test_pool;
-fn make_user_service(pool: PgPool) -> UserService {
+fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -60,7 +60,7 @@ fn make_user_service(pool: PgPool) -> UserService {
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut svc = RoomService::new(pool, user_service);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
@@ -70,7 +70,7 @@ fn make_room_service_with_providers(
     pool: PgPool,
     providers_manager: Arc<ProvidersManager>,
 ) -> RoomService {
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut svc = RoomService::new_with_providers(pool, user_service, providers_manager);
     svc.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     svc
@@ -1409,7 +1409,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
     let providers_manager = Arc::new(providers_manager);
     let room_service = RoomService::new_with_providers_and_options(
         pool.clone(),
-        make_user_service(pool.clone()),
+        make_user_service(&pool),
         providers_manager,
         RoomServiceOptions {
             credential_encryption: Some(

@@ -12,8 +12,8 @@ use crate::proto::providers::bilibili::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use synctv_core::models::{
-    normalize_provider_instance_name, resolve_provider_instance_binding, ProviderCredential,
-    UserId, UserProviderCredential,
+    normalize_provider_instance_name, resolve_provider_instance_binding,
+    CredentialProviderInstanceName, ProviderCredential, UserId, UserProviderCredential,
 };
 use synctv_core::provider::{BilibiliProvider, ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
@@ -68,7 +68,7 @@ impl BilibiliApiImpl {
 
     fn resolve_effective_instance_name(
         requested_instance_name: Option<&str>,
-        credential_instance_name: Option<Option<&str>>,
+        credential_instance_name: CredentialProviderInstanceName<'_>,
     ) -> Result<Option<String>, synctv_core::provider::ProviderError> {
         resolve_provider_instance_binding(requested_instance_name, credential_instance_name)
             .map_err(|error| synctv_core::provider::ProviderError::InvalidConfig(error.to_string()))
@@ -206,9 +206,14 @@ impl BilibiliApiImpl {
             .await?;
         let effective_instance_name = Self::resolve_effective_instance_name(
             requested_instance_name,
-            credential
-                .as_ref()
-                .map(|credential| credential.provider_instance_name.as_deref()),
+            credential.as_ref().map_or(
+                CredentialProviderInstanceName::NotCredentialBacked,
+                |credential| {
+                    CredentialProviderInstanceName::CredentialBacked(
+                        credential.provider_instance_name.as_deref(),
+                    )
+                },
+            ),
         )?;
         let cookies = credential
             .as_ref()
@@ -530,7 +535,9 @@ impl BilibiliApiImpl {
         };
         let effective_instance_name = Self::resolve_effective_instance_name(
             requested_instance_name,
-            Some(credential.provider_instance_name.as_deref()),
+            CredentialProviderInstanceName::CredentialBacked(
+                credential.provider_instance_name.as_deref(),
+            ),
         )?;
 
         let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq {
@@ -636,7 +643,9 @@ mod tests {
     use super::BilibiliApiImpl;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use synctv_core::models::{NewProviderInstance, SignupMethod, User};
+    use synctv_core::models::{
+        CredentialProviderInstanceName, NewProviderInstance, SignupMethod, User,
+    };
     use synctv_core::provider::BilibiliProvider;
     use synctv_core::repository::{
         ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository,
@@ -686,9 +695,11 @@ mod tests {
 
     #[test]
     fn effective_instance_uses_credential_binding_when_request_omits_instance() {
-        let resolved =
-            BilibiliApiImpl::resolve_effective_instance_name(None, Some(Some(" bilibili_remote ")))
-                .expect("credential binding should be authoritative");
+        let resolved = BilibiliApiImpl::resolve_effective_instance_name(
+            None,
+            CredentialProviderInstanceName::CredentialBacked(Some(" bilibili_remote ")),
+        )
+        .expect("credential binding should be authoritative");
 
         assert_eq!(resolved.as_deref(), Some("bilibili_remote"));
     }
@@ -697,7 +708,7 @@ mod tests {
     fn effective_instance_rejects_explicit_request_conflicting_with_credential_binding() {
         let err = BilibiliApiImpl::resolve_effective_instance_name(
             Some("bilibili_other"),
-            Some(Some("bilibili_remote")),
+            CredentialProviderInstanceName::CredentialBacked(Some("bilibili_remote")),
         )
         .expect_err("explicit conflicting instance should be rejected");
 
@@ -709,9 +720,11 @@ mod tests {
 
     #[test]
     fn effective_instance_rejects_explicit_instance_for_unbound_credential() {
-        let err =
-            BilibiliApiImpl::resolve_effective_instance_name(Some("bilibili_remote"), Some(None))
-                .expect_err("unbound credential cannot satisfy an explicit instance request");
+        let err = BilibiliApiImpl::resolve_effective_instance_name(
+            Some("bilibili_remote"),
+            CredentialProviderInstanceName::CredentialBacked(None),
+        )
+        .expect_err("unbound credential cannot satisfy an explicit instance request");
 
         assert!(matches!(
             err,

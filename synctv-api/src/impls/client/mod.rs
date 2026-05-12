@@ -199,7 +199,7 @@ pub struct ClientApiImpl {
     /// built-in STUN server started successfully with a valid external address.
     /// When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// Credential encryption for protecting sensitive data in `source_config`
+    /// Credential encryption for provider credential resolution
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Credential repository for resolving stored provider credentials
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
@@ -621,7 +621,7 @@ impl ClientApiImpl {
         self
     }
 
-    /// Set credential encryption for protecting sensitive data in `source_config`
+    /// Set credential encryption for provider credential resolution
     #[must_use]
     pub fn with_credential_encryption(
         mut self,

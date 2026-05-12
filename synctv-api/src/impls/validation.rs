@@ -29,7 +29,7 @@ fn sanitize_string(input: &str) -> Cow<'_, str> {
 
 fn map_core_validation_error(
     field: &'static str,
-    error: synctv_core::validation::ValidationError,
+    error: &synctv_core::validation::ValidationError,
 ) -> InputValidationError {
     InputValidationError::Core {
         field,
@@ -41,7 +41,7 @@ pub fn validate_email(email: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(email);
     synctv_core::validation::EmailValidator::new()
         .validate(&sanitized)
-        .map_err(|error| map_core_validation_error("email", error))?;
+        .map_err(|error| map_core_validation_error("email", &error))?;
     Ok(sanitized.into_owned())
 }
 
@@ -49,7 +49,7 @@ pub fn validate_username(username: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(username);
     synctv_core::validation::UsernameValidator::new()
         .validate(&sanitized)
-        .map_err(|error| map_core_validation_error("username", error))?;
+        .map_err(|error| map_core_validation_error("username", &error))?;
     Ok(sanitized.into_owned())
 }
 
@@ -57,7 +57,7 @@ pub fn validate_room_name(name: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(name);
     synctv_core::validation::RoomNameValidator::new()
         .validate(&sanitized)
-        .map_err(|error| map_core_validation_error("room_name", error))?;
+        .map_err(|error| map_core_validation_error("room_name", &error))?;
 
     if HTML_TAGS.is_match(&sanitized) {
         return Err(InputValidationError::SecurityRisk);
@@ -89,7 +89,7 @@ pub fn validate_room_description(description: &str) -> InputValidationResult<Str
 pub fn validate_media_name(name: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(name);
     synctv_core::validation::validate_media_name(&sanitized)
-        .map_err(|error| map_core_validation_error("media_name", error))?;
+        .map_err(|error| map_core_validation_error("media_name", &error))?;
 
     if HTML_TAGS.is_match(&sanitized) {
         return Err(InputValidationError::SecurityRisk);

@@ -571,7 +571,7 @@ mod tests {
         }
     }
 
-    fn create_user_service(pool: PgPool) -> Arc<UserService> {
+    fn create_user_service(pool: &PgPool) -> Arc<UserService> {
         let jwt_service =
             JwtService::new("test-secret-key-for-security-pipeline-unit-tests-min-32")
                 .expect("failed to create jwt service");
@@ -610,7 +610,7 @@ mod tests {
     async fn blacklist_storage_error_is_service_unavailable() {
         let pool = PgPool::connect_lazy("postgres://localhost/synctv")
             .expect("lazy pool should build without network");
-        let pipeline = SecurityPipeline::new(create_user_service(pool))
+        let pipeline = SecurityPipeline::new(create_user_service(&pool))
             .with_token_blacklist(Arc::new(FailingBlacklistStore), KeyBuilder::new("test"))
             .with_blacklist_enforcement(BlacklistEnforcement::new());
 

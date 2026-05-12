@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use synctv_core::models::{
-    normalize_provider_instance_name, NewProviderInstance, ProviderInstance, UserProviderCredential,
+    normalize_provider_instance_name, validate_provider_instance_name, NewProviderInstance,
+    ProviderInstance, UserProviderCredential,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ExecutionControl;
@@ -102,19 +103,17 @@ pub async fn get_provider_binds(
 
 #[must_use]
 pub fn extract_instance_name(name: &str) -> Option<String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    normalize_provider_instance_name(Some(name)).map(str::to_owned)
 }
 
 pub fn provider_instance_name_from_query(
     query: &ProviderInstanceQuery,
 ) -> Result<Option<&str>, ApiError> {
-    crate::impls::validate_proto_request(query)?;
-    Ok((!query.instance_name.is_empty()).then_some(query.instance_name.as_str()))
+    let Some(instance_name) = normalize_provider_instance_name(Some(&query.instance_name)) else {
+        return Ok(None);
+    };
+    validate_provider_instance_name(instance_name).map_err(ApiError::InvalidInput)?;
+    Ok(Some(instance_name))
 }
 
 pub(crate) fn resolve_bound_instance_name(
@@ -831,7 +830,24 @@ mod tests {
     };
     use synctv_core_testing::create_test_pool;
 
-    fn test_user_service(pool: sqlx::PgPool) -> UserService {
+    #[test]
+    fn provider_instance_name_helpers_use_core_normalization() {
+        assert_eq!(
+            extract_instance_name("  emby-main  "),
+            Some("emby-main".to_string())
+        );
+        assert_eq!(extract_instance_name("   "), None);
+
+        let query = ProviderInstanceQuery {
+            instance_name: "  alist-main  ".to_string(),
+        };
+        assert_eq!(
+            provider_instance_name_from_query(&query).expect("query should validate"),
+            Some("alist-main")
+        );
+    }
+
+    fn test_user_service(pool: &sqlx::PgPool) -> UserService {
         UserService::new(
             pool,
             JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
@@ -849,7 +865,7 @@ mod tests {
         provider_instance_manager: Arc<RemoteProviderManager>,
         providers_manager: Option<Arc<ProvidersManager>>,
     ) -> ProviderCommonApiImpl {
-        let user_service = Arc::new(test_user_service(pool.clone()));
+        let user_service = Arc::new(test_user_service(&pool));
         let (audit_service, _flush_handle) = AuditService::new(pool);
         ProviderCommonApiImpl::new(
             provider_instance_manager,

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT rm.role,\n               rm.added_permissions,\n               rm.removed_permissions,\n               rm.admin_added_permissions,\n               rm.admin_removed_permissions,\n               rs.value AS \"settings_value?\"\n        FROM room_members rm\n        LEFT JOIN room_settings rs\n          ON rs.room_id = rm.room_id\n         AND rs.key = '_settings'\n        WHERE rm.room_id = $1\n          AND rm.user_id = $2\n          AND rm.left_at IS NULL\n        FOR UPDATE OF rm\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 1,
+        "name": "added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "admin_added_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "settings_value?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "93079ff6bb331ba961be8c8bd00a0f49f1cafb43541de068949fd333b0624e78"
+}

@@ -82,6 +82,16 @@ pub struct EditMediaRequest {
     pub name: Option<String>,
 }
 
+fn ensure_media_creator_can_edit(media: &Media, user_id: &UserId) -> Result<()> {
+    if media.creator_id.as_ref() == Some(user_id) {
+        Ok(())
+    } else {
+        Err(Error::Authorization(
+            "Only the media creator can edit media".to_string(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MoveMediaRequest {
     pub media_ids: Vec<MediaId>,
@@ -107,7 +117,7 @@ pub struct MediaService {
     providers_manager: Arc<ProvidersManager>,
     /// Local room event bus for media/domain notifications
     notification_service: NotificationService,
-    /// Optional credential encryption for protecting sensitive data in `source_config`
+    /// Optional credential encryption for provider credential resolution
     credential_encryption: Option<crate::service::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
@@ -369,14 +379,14 @@ impl MediaService {
             explicit_provider_instance.as_deref(),
         )
         .await?;
-        let provider = if bound_provider_instance != explicit_provider_instance {
+        let provider = if bound_provider_instance == explicit_provider_instance {
+            provider
+        } else {
             self.resolve_media_provider(
                 &request.source_provider,
                 bound_provider_instance.as_deref(),
             )
             .await?
-        } else {
-            provider
         };
 
         // Validate source_config using provider trait method
@@ -401,7 +411,7 @@ impl MediaService {
             )));
         }
 
-        // Prepare source_config for storage (encrypt sensitive fields if applicable)
+        // Prepare source_config for storage (provider-owned normalization)
         let prepared_source_config = provider
             .prepare_source_config(&ctx, request.source_config.clone())
             .await
@@ -563,14 +573,14 @@ impl MediaService {
                 explicit_provider_instance.as_deref(),
             )
             .await?;
-            let provider = if bound_provider_instance != explicit_provider_instance {
+            let provider = if bound_provider_instance == explicit_provider_instance {
+                provider
+            } else {
                 self.resolve_media_provider(
                     &item.source_provider,
                     bound_provider_instance.as_deref(),
                 )
                 .await?
-            } else {
-                provider
             };
 
             let ctx = self.build_provider_context(
@@ -590,7 +600,7 @@ impl MediaService {
                     ))
                 })?;
 
-            // Prepare source_config for storage (encrypt sensitive fields if applicable)
+            // Prepare source_config for storage (provider-owned normalization)
             let prepared_source_config = provider
                 .prepare_source_config(&ctx, item.source_config.clone())
                 .await
@@ -719,20 +729,19 @@ impl MediaService {
                 .await?
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
-            // Check permission: EDIT_MEDIA_SELF if user owns the media, EDIT_MEDIA_ANY otherwise
+            ensure_media_creator_can_edit(&media, &user_id)?;
+
+            // Check permission: client media edits are creator-owned. Global
+            // administrators use admin_edit_media_with_outbox instead of this
+            // member-facing path.
             // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
             // This prevents a race condition where:
             // 1. Permission is granted and cached on first attempt
             // 2. Permission is revoked by admin before retry
             // 3. Retry would succeed with stale cached permission
             // By bypassing cache, we ensure each retry checks current permission state.
-            let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
-                PermissionBits::EDIT_MEDIA_SELF
-            } else {
-                PermissionBits::EDIT_MEDIA_ANY
-            };
             self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, required_permission)
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::EDIT_MEDIA_SELF)
                 .await?;
 
             // Capture the version before applying changes to detect concurrent edits
@@ -1753,6 +1762,40 @@ mod tests {
         };
 
         assert_eq!(request.name, Some("New Name".to_string()));
+    }
+
+    #[test]
+    fn test_media_edit_requires_matching_creator() {
+        let creator_id = UserId::expect_positive(10);
+        let media = Media {
+            id: MediaId::expect_positive(11),
+            playlist_id: None,
+            room_id: RoomId::expect_positive(12),
+            creator_id: Some(creator_id),
+            name: "Owned".to_string(),
+            position: 1.0,
+            source_provider: "direct_url".to_string(),
+            provider_instance_name: None,
+            source_config: serde_json::json!({}),
+            added_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            version: 1,
+        };
+
+        assert!(ensure_media_creator_can_edit(&media, &creator_id).is_ok());
+
+        let other_user_id = UserId::expect_positive(13);
+        assert!(matches!(
+            ensure_media_creator_can_edit(&media, &other_user_id),
+            Err(Error::Authorization(_))
+        ));
+
+        let mut unowned_media = media;
+        unowned_media.creator_id = None;
+        assert!(matches!(
+            ensure_media_creator_can_edit(&unowned_media, &creator_id),
+            Err(Error::Authorization(_))
+        ));
     }
 
     #[test]

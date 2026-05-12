@@ -435,14 +435,11 @@ impl MediaRepository {
 
     /// Update media
     pub async fn update(&self, media: &Media) -> Result<Media> {
-        let source_config_json = serde_json::to_value(&media.source_config)?;
-
         let row = sqlx::query_as!(
             MediaRow,
             r#"
             UPDATE media
-            SET name = $2, position = $3, source_config = $4,
-                provider_instance_name = $5
+            SET name = $2, position = $3
              WHERE id = $1
              RETURNING id AS "id: MediaId",
                        playlist_id AS "playlist_id?: PlaylistId",
@@ -458,8 +455,6 @@ impl MediaRepository {
             media.id.as_i64(),
             &media.name,
             media.position,
-            &source_config_json,
-            Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref()),
         )
         .fetch_one(&self.pool)
         .await?;
@@ -500,15 +495,12 @@ impl MediaRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let source_config_json = serde_json::to_value(&media.source_config)?;
-
         let row = sqlx::query_as!(
             MediaRow,
             r#"
             UPDATE media
-            SET name = $2, position = $3, source_config = $4,
-                provider_instance_name = $5, version = version + 1
-             WHERE id = $1 AND version = $6
+            SET name = $2, position = $3, version = version + 1
+             WHERE id = $1 AND version = $4
              RETURNING id AS "id: MediaId",
                        playlist_id AS "playlist_id?: PlaylistId",
                        room_id AS "room_id: RoomId",
@@ -523,8 +515,6 @@ impl MediaRepository {
             media.id.as_i64(),
             &media.name,
             media.position,
-            &source_config_json,
-            Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref()),
             expected_version,
         )
         .fetch_optional(executor)
@@ -1719,9 +1709,9 @@ impl MediaRepository {
     /// Count all media items.
     pub async fn count_all(&self) -> Result<i64> {
         let count = sqlx::query_scalar::<_, i64>(
-            r#"
+            r"
             SELECT COUNT(*) FROM media
-            "#,
+            ",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -2116,10 +2106,17 @@ mod tests {
         let mut updated = created.clone();
         updated.name = "Updated Name".to_string();
         updated.position = 5.0;
+        updated.source_config = serde_json::json!({"url": "https://example.com/changed.mp4"});
+        updated.provider_instance_name = Some("changed-instance".to_string());
 
         let result = media_repo.update(&updated).await.unwrap();
         assert_eq!(result.name, "Updated Name");
         assert!((result.position - 5.0).abs() < f64::EPSILON);
+        assert_eq!(result.source_config, created.source_config);
+        assert_eq!(
+            result.provider_instance_name,
+            created.provider_instance_name
+        );
     }
 
     /// Integration test: Delete media

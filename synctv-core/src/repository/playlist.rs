@@ -850,14 +850,12 @@ impl PlaylistRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let source_provider_str = playlist.source_provider.as_deref();
         let row = sqlx::query_as!(
             PlaylistRow,
             r#"
             UPDATE playlists
-            SET name = $2, position = $3, source_provider = $4, source_config = $5,
-                provider_instance_name = $6, version = version + 1
-            WHERE id = $1 AND version = $7
+            SET name = $2, position = $3, version = version + 1
+            WHERE id = $1 AND version = $4
             RETURNING id AS "id: PlaylistId",
                       room_id AS "room_id: RoomId",
                       creator_id AS "creator_id?: crate::models::UserId",
@@ -872,11 +870,6 @@ impl PlaylistRepository {
             playlist.id.as_i64(),
             &playlist.name,
             playlist.position,
-            source_provider_str,
-            playlist.source_config.as_ref(),
-            Self::normalize_provider_instance_name_for_db(
-                playlist.provider_instance_name.as_deref(),
-            ),
             expected_version,
         )
         .fetch_optional(executor)
@@ -1066,8 +1059,8 @@ impl PlaylistRepository {
             return Ok(false);
         };
 
-        let rows = sqlx::query(
-            r"WITH RECURSIVE playlist_tree AS (
+        let rows = sqlx::query!(
+            r#"WITH RECURSIVE playlist_tree AS (
                 SELECT id, 0 AS depth
                 FROM playlists
                 WHERE id = $1
@@ -1077,21 +1070,21 @@ impl PlaylistRepository {
                 JOIN playlist_tree pt ON p.parent_id = pt.id
                 WHERE p.room_id = $2
             )
-            SELECT id, MAX(depth) AS depth
+            SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
             FROM playlist_tree
             GROUP BY id
-            ORDER BY MAX(depth) DESC, id",
+            ORDER BY MAX(depth) DESC, id"#,
+            id.as_i64(),
+            room_id.as_i64()
         )
-        .bind(id.as_i64())
-        .bind(room_id.as_i64())
         .fetch_all(&mut *tx)
         .await?;
 
         let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = row.try_get::<PlaylistId, _>("id")?;
-            let depth = row.try_get::<Option<i32>, _>("depth")?.unwrap_or_default();
+            let playlist_id = row.id;
+            let depth = row.depth.unwrap_or_default();
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
@@ -1122,19 +1115,19 @@ impl PlaylistRepository {
     pub async fn delete_in_room(&self, room_id: &RoomId, id: &PlaylistId) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM playlists WHERE room_id = $1 AND id = $2)",
+        let exists = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM playlists WHERE room_id = $1 AND id = $2) AS "exists!""#,
+            room_id.as_i64(),
+            id.as_i64()
         )
-        .bind(room_id.as_i64())
-        .bind(id.as_i64())
         .fetch_one(&mut *tx)
         .await?;
         if !exists {
             return Ok(false);
         }
 
-        let rows = sqlx::query(
-            r"WITH RECURSIVE playlist_tree AS (
+        let rows = sqlx::query!(
+            r#"WITH RECURSIVE playlist_tree AS (
                 SELECT id, 0 AS depth
                 FROM playlists
                 WHERE room_id = $1 AND id = $2
@@ -1144,41 +1137,45 @@ impl PlaylistRepository {
                 JOIN playlist_tree pt ON p.parent_id = pt.id
                 WHERE p.room_id = $1
             )
-            SELECT id, MAX(depth) AS depth
+            SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
             FROM playlist_tree
             GROUP BY id
-            ORDER BY MAX(depth) DESC, id",
+            ORDER BY MAX(depth) DESC, id"#,
+            room_id.as_i64(),
+            id.as_i64()
         )
-        .bind(room_id.as_i64())
-        .bind(id.as_i64())
         .fetch_all(&mut *tx)
         .await?;
 
         let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
         let mut playlist_ids = Vec::with_capacity(rows.len());
         for row in rows {
-            let playlist_id = row.try_get::<PlaylistId, _>("id")?;
-            let depth = row.try_get::<i32, _>("depth")?;
+            let playlist_id = row.id;
+            let depth = row.depth.unwrap_or_default();
             playlist_ids.push(playlist_id);
             ids_by_depth.entry(depth).or_default().push(playlist_id);
         }
 
         if !playlist_ids.is_empty() {
             let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query("DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)")
-                .bind(room_id.as_i64())
-                .bind(&playlist_ids_raw)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)",
+                room_id.as_i64(),
+                &playlist_ids_raw
+            )
+            .execute(&mut *tx)
+            .await?;
         }
 
         for (_depth, ids) in ids_by_depth.into_iter().rev() {
             let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query("DELETE FROM playlists WHERE room_id = $1 AND id = ANY($2)")
-                .bind(room_id.as_i64())
-                .bind(&ids_raw)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "DELETE FROM playlists WHERE room_id = $1 AND id = ANY($2)",
+                room_id.as_i64(),
+                &ids_raw
+            )
+            .execute(&mut *tx)
+            .await?;
         }
 
         tx.commit().await?;
@@ -1547,12 +1544,13 @@ mod tests {
         let created = playlist_repo.create(&playlist).await.unwrap();
         assert!(created.provider_instance_name.is_none());
 
-        let stored: Option<String> =
-            sqlx::query_scalar("SELECT provider_instance_name FROM playlists WHERE id = $1")
-                .bind(created.id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let stored = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT provider_instance_name FROM playlists WHERE id = $1",
+        )
+        .bind(created.id.as_i64())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(stored.is_none());
 
         let fetched = playlist_repo.get_by_id(&created.id).await.unwrap().unwrap();
@@ -1725,6 +1723,9 @@ mod tests {
         let mut updated = created.clone();
         updated.name = "Updated Name".to_string();
         updated.position = 5.0;
+        updated.source_provider = Some("alist".to_string());
+        updated.source_config = Some(serde_json::json!({"path": "/changed"}));
+        updated.provider_instance_name = Some("changed-instance".to_string());
 
         let result = playlist_repo
             .update_with_version(&updated, created.version)
@@ -1732,6 +1733,12 @@ mod tests {
             .unwrap();
         assert_eq!(result.name, "Updated Name");
         assert_position_eq(result.position, 5.0);
+        assert_eq!(result.source_provider, created.source_provider);
+        assert_eq!(result.source_config, created.source_config);
+        assert_eq!(
+            result.provider_instance_name,
+            created.provider_instance_name
+        );
         assert!(result.version > created.version); // Version should increment
     }
 

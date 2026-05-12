@@ -46,7 +46,7 @@ fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-admin-error-tests-long-enough-1234567890").unwrap()
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_config = PasswordComplexityConfig::default();
@@ -96,7 +96,7 @@ fn get_authentication_error_message(
 #[ignore = "Requires Docker"]
 async fn test_user_not_found_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
+    let user_service = create_user_service(&pool);
 
     // Use a non-existent user ID
     let non_existent_user_id = UserId::expect_positive(10_000_007);
@@ -120,7 +120,7 @@ async fn test_user_not_found_returns_unified_error_message() {
 #[ignore = "Requires Docker"]
 async fn test_banned_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
+    let user_service = create_user_service(&pool);
 
     let (user, _, _) = user_service
         .register(
@@ -157,7 +157,7 @@ async fn test_banned_user_returns_unified_error_message() {
 #[ignore = "Requires Docker"]
 async fn test_deleted_user_returns_unified_error_message() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
+    let user_service = create_user_service(&pool);
 
     let (user, _, _) = user_service
         .register(
@@ -195,7 +195,7 @@ async fn test_deleted_user_returns_unified_error_message() {
 #[ignore = "Requires Docker"]
 async fn test_active_user_passes_auth() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
+    let user_service = create_user_service(&pool);
 
     let (user, _, _) = user_service
         .register(
@@ -226,7 +226,7 @@ async fn test_active_user_passes_auth() {
 #[ignore = "Requires Docker"]
 async fn test_all_failure_scenarios_return_identical_error_messages() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool);
+    let user_service = create_user_service(&pool);
 
     let mut error_messages: Vec<String> = Vec::new();
 

@@ -33,8 +33,8 @@ impl PermissionBits {
     /// Edit own media metadata
     pub const EDIT_MEDIA_SELF: u64 = 1 << 4;
 
-    /// Edit any media metadata
-    pub const EDIT_MEDIA_ANY: u64 = 1 << 5;
+    /// Reserved for future content management use (bit 5)
+    pub const RESERVED_5: u64 = 1 << 5;
 
     /// Reorder playlist
     pub const REORDER_PLAYLIST: u64 = 1 << 6;
@@ -83,11 +83,6 @@ impl PermissionBits {
 
     /// Permissions that can be delegated within a room to non-creator members.
     ///
-    /// Room deletion is a lifecycle operation owned by the room creator or the
-    /// global management plane, not a room-scoped capability that should be
-    /// granted through role overrides or member permission editing.
-    pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::DELETE_ROOM;
-
     /// View playlist
     pub const VIEW_PLAYLIST: u64 = 1 << 40;
 
@@ -100,10 +95,19 @@ impl PermissionBits {
     /// Use WebRTC (voice/video)
     pub const USE_WEBRTC: u64 = 1 << 50;
 
-    // Reserved for future use
-
     /// All permissions (for Creator)
     pub const ALL: u64 = u64::MAX;
+
+    /// Bits that are defined but cannot be delegated through room role/member
+    /// permission overrides.
+    pub const NON_ASSIGNABLE_IN_ROOM: u64 = Self::RESERVED_5 | Self::RESERVED_9 | Self::DELETE_ROOM;
+
+    /// Permissions that can be delegated within a room to non-creator members.
+    ///
+    /// Room deletion is a lifecycle operation owned by the room creator or the
+    /// global management plane. Reserved bits are intentionally excluded so raw
+    /// bitmask update paths cannot grant draft or retired capabilities.
+    pub const ASSIGNABLE_IN_ROOM: u64 = Self::ALL & !Self::NON_ASSIGNABLE_IN_ROOM;
 
     /// Default member permissions
     pub const DEFAULT_MEMBER: u64 = Self::SEND_CHAT
@@ -118,7 +122,6 @@ impl PermissionBits {
     /// Default admin permissions
     pub const DEFAULT_ADMIN: u64 = Self::DEFAULT_MEMBER
         | Self::DELETE_MEDIA_ANY
-        | Self::EDIT_MEDIA_ANY
         | Self::REORDER_PLAYLIST
         | Self::CLEAR_PLAYLIST
         | Self::START_LIVE
@@ -517,6 +520,22 @@ mod tests {
         assigned |= media;
         assigned &= !chat;
         assert_eq!(assigned.bits(), PermissionBits::ADD_MEDIA);
+    }
+
+    #[test]
+    fn test_room_assignable_permissions_reject_reserved_and_lifecycle_bits() {
+        assert!(PermissionBits::includes_only_assignable_in_room(
+            PermissionBits::SEND_CHAT | PermissionBits::EDIT_MEDIA_SELF
+        ));
+        assert!(!PermissionBits::includes_only_assignable_in_room(
+            PermissionBits::RESERVED_5
+        ));
+        assert!(!PermissionBits::includes_only_assignable_in_room(
+            PermissionBits::RESERVED_9
+        ));
+        assert!(!PermissionBits::includes_only_assignable_in_room(
+            PermissionBits::DELETE_ROOM
+        ));
     }
 
     #[test]

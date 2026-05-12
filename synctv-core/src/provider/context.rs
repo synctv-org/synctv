@@ -49,7 +49,7 @@ pub struct ProviderContext<'a> {
     /// Database connection pool (optional)
     pub db: Option<&'a PgPool>,
 
-    /// Credential encryption for protecting sensitive data in `source_config` (optional)
+    /// Credential encryption for provider credential resolution (optional)
     pub credential_encryption: Option<&'a CredentialEncryption>,
 
     /// Provider store for caching and distributed locking (optional)
@@ -159,7 +159,7 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set credential encryption for protecting sensitive data in `source_config`
+    /// Set credential encryption for provider credential resolution
     #[must_use]
     pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
         self.credential_encryption = Some(enc);

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM chat_messages\n            WHERE room_id = $1\n              AND id = $2\n              AND created_at = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4eee689db8a5e766c22d810dde0e4ddacf48d9f775c90203dfe30edd704d9cc"
+}

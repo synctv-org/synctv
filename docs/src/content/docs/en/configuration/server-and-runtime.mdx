@@ -39,9 +39,9 @@ HTTP REST API, public gRPC API, and health checks use this port. In Helm, HTTP a
 
 ### `server.enable_reflection`
 
-Default: `true`.
+Default: `false`.
 
-Enables public gRPC reflection. Keep it on for local development and controlled internal debugging. Disable it in public production environments.
+Enables public gRPC reflection. It is disabled by default; enable it explicitly for local development or controlled internal debugging, and keep it disabled on public production endpoints.
 
 ### `server.grpc_max_message_size_bytes`
 

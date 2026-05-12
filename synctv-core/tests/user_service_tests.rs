@@ -35,7 +35,7 @@ fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-user-service-tests-long-enough-1234567890").unwrap()
 }
 
-fn create_user_service(pool: PgPool) -> UserService {
+fn create_user_service(pool: &PgPool) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let password_config = PasswordComplexityConfig::default();
@@ -59,7 +59,7 @@ fn create_user_service(pool: PgPool) -> UserService {
 }
 
 fn create_user_service_with_security_pipeline(
-    pool: PgPool,
+    pool: &PgPool,
 ) -> (Arc<UserService>, JwtService, SecurityPipeline) {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -344,7 +344,7 @@ async fn assert_delete_user_already_deleted_returns_error(service: &UserService)
 
 /// Test that concurrent `delete_user` calls maintain atomicity - only one should succeed
 async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
 
     // Register a user
     let (user, _, _) = service
@@ -404,7 +404,7 @@ async fn assert_delete_user_concurrent_deletion_atomicity(pool: PgPool) {
 }
 
 async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool: PgPool) {
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_member_repo = RoomMemberRepository::new(pool.clone());
@@ -769,7 +769,7 @@ async fn assert_register_username_taken_no_brute_force_lockout(service: &UserSer
 #[ignore = "Requires Docker"]
 async fn test_ban_user_cleans_up_owned_room_memberships() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(pool.clone());
+    let user_service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_member_repo = RoomMemberRepository::new(pool.clone());
@@ -869,7 +869,7 @@ async fn assert_register_validation_errors_trigger_brute_force_lockout(service: 
 }
 
 async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPool) {
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool);
 
     let created = user_repo
@@ -917,7 +917,7 @@ async fn assert_email_signup_user_cannot_unbind_email_but_can_rebind(pool: PgPoo
 }
 
 async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
-    let service = create_user_service(pool.clone());
+    let service = create_user_service(&pool);
     let user_repo = UserRepository::new(pool.clone());
 
     let password_only = user_repo
@@ -948,7 +948,7 @@ async fn assert_two_factor_requires_two_usable_methods(pool: PgPool) {
 }
 
 async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
-    let user_service = Arc::new(create_user_service(pool.clone()));
+    let user_service = Arc::new(create_user_service(&pool));
     let user_repo = UserRepository::new(pool.clone());
     let user = user_repo
         .create(&make_user_without_email("two_factor_passkey_user"))
@@ -974,7 +974,7 @@ async fn assert_two_factor_blocks_deleting_required_passkey(pool: PgPool) {
 }
 
 async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
     let (user, _, _) = service
         .register(
             "two_factor_login_blocked".to_string(),
@@ -1065,7 +1065,7 @@ async fn assert_two_factor_blocks_single_factor_token_issuance(pool: PgPool) {
 }
 
 async fn assert_mfa_password_failures_trigger_brute_force_lockout(pool: PgPool) {
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
     let (user, _, _) = service
         .register(
             "two_factor_mfa_password_lockout".to_string(),
@@ -1137,7 +1137,7 @@ async fn assert_mfa_password_failures_trigger_brute_force_lockout(pool: PgPool) 
 }
 
 async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
-    let (service, jwt, pipeline) = create_user_service_with_security_pipeline(pool);
+    let (service, jwt, pipeline) = create_user_service_with_security_pipeline(&pool);
     let (user, old_access_token, old_refresh_token) = service
         .register(
             "two_factor_access_context".to_string(),
@@ -1259,7 +1259,7 @@ async fn assert_two_factor_access_token_context_is_enforced(pool: PgPool) {
 }
 
 async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
-    let service = create_user_service(pool);
+    let service = create_user_service(&pool);
     let (user, _, _) = service
         .register(
             "two_factor_oauth2_allowed".to_string(),
@@ -1307,16 +1307,16 @@ async fn assert_two_factor_allows_oauth2_without_local_mfa(pool: PgPool) {
 async fn test_user_service_registration_login_and_delete_flows() {
     let (_container, pool) = create_test_pool().await;
 
-    let duplicate_username_service = create_user_service(pool.clone());
+    let duplicate_username_service = create_user_service(&pool);
     assert_register_duplicate_username_error(&duplicate_username_service).await;
 
-    let duplicate_email_service = create_user_service(pool.clone());
+    let duplicate_email_service = create_user_service(&pool);
     assert_register_duplicate_email_error(&duplicate_email_service).await;
 
-    let wrong_password_service = create_user_service(pool.clone());
+    let wrong_password_service = create_user_service(&pool);
     assert_login_wrong_password(&wrong_password_service).await;
 
-    let delete_twice_service = create_user_service(pool.clone());
+    let delete_twice_service = create_user_service(&pool);
     assert_delete_user_already_deleted_returns_error(&delete_twice_service).await;
 
     assert_delete_user_removes_owned_resources_and_resets_foreign_room_playback(pool.clone()).await;
@@ -1338,9 +1338,9 @@ async fn test_user_service_registration_login_and_delete_flows() {
 async fn test_user_service_registration_brute_force_flows() {
     let (_container, pool) = create_test_pool().await;
 
-    let username_taken_service = create_user_service(pool.clone());
+    let username_taken_service = create_user_service(&pool);
     assert_register_username_taken_no_brute_force_lockout(&username_taken_service).await;
 
-    let validation_error_service = create_user_service(pool);
+    let validation_error_service = create_user_service(&pool);
     assert_register_validation_errors_trigger_brute_force_lockout(&validation_error_service).await;
 }

@@ -433,14 +433,15 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::AuthRequired => {
                 Self::Authentication(synctv_common::messages::AUTHENTICATION_REQUIRED.to_string())
             }
-            ProviderError::Authentication(msg) => Self::Authentication(msg),
+            ProviderError::Authentication(msg) | ProviderError::CredentialExpired(msg) => {
+                Self::Authentication(msg)
+            }
             ProviderError::CredentialRequired => {
                 Self::Authentication("Credential required".to_string())
             }
             ProviderError::InvalidCredentialType => {
                 Self::InvalidInput("Invalid credential type".to_string())
             }
-            ProviderError::CredentialExpired(msg) => Self::Authentication(msg),
             ProviderError::RouteRegistrationFailed(msg) | ProviderError::Internal(msg) => {
                 Self::Internal(msg)
             }

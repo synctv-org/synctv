@@ -328,7 +328,7 @@ impl ClientApiImpl {
                 target_uid,
                 role,
                 notify,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -403,7 +403,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 request_id,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -483,7 +483,7 @@ impl ClientApiImpl {
                 uid,
                 request_id,
                 reason,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;
@@ -586,7 +586,7 @@ impl ClientApiImpl {
                     removed_permissions,
                     admin_added_permissions,
                     admin_removed_permissions,
-                    prepared_membership_fanout.outbox_factory(),
+                    Some(prepared_membership_fanout.outbox_factory()),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -684,7 +684,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 target_uid,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
                 lifecycle_outbox_event,
             )
             .await
@@ -740,7 +740,7 @@ impl ClientApiImpl {
                 uid,
                 target_uid,
                 reason,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
                 lifecycle_outbox_event,
             )
             .await
@@ -779,7 +779,7 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 target_uid,
-                prepared_membership_fanout.outbox_factory(),
+                Some(prepared_membership_fanout.outbox_factory()),
             )
             .await
             .map_err(ApiError::from)?;

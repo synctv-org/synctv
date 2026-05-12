@@ -31,7 +31,7 @@ use synctv_core::{
     },
 };
 use synctv_core_testing::create_test_pool;
-fn make_user_service(pool: PgPool) -> UserService {
+fn make_user_service(pool: &PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
@@ -54,7 +54,7 @@ fn make_user_service(pool: PgPool) -> UserService {
 }
 
 fn make_room_service(pool: PgPool) -> RoomService {
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut room_service = RoomService::new(pool, user_service);
 
     // Use lightweight password hasher for fast tests
@@ -401,7 +401,7 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user_service = make_user_service(pool.clone());
+    let user_service = make_user_service(&pool);
     let mut room_service = RoomService::new(pool.clone(), user_service);
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
     let brute_force = BruteForceProtection::in_memory("test_fallback_mode".to_string());

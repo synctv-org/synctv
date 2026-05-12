@@ -823,7 +823,7 @@ mod websocket_e2e {
         );
 
         let mut user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),
@@ -4510,7 +4510,7 @@ mod websocket_connection_limit_timing {
         );
 
         let mut user_service = UserService::new(
-            pool.clone(),
+            &pool,
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),

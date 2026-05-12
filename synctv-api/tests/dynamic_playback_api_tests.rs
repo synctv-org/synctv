@@ -42,6 +42,8 @@ fn decode_dynamic_target(target: &[u8]) -> String {
         .to_string()
 }
 
+const NEXT_ITEM_SOURCE_CONFIG_SECRET: &str = "dynamic-next-item-secret";
+
 fn public_id_codec() -> synctv_api::PublicIdCodec {
     synctv_api::PublicIdCodec::default_for_tests()
 }
@@ -70,7 +72,7 @@ fn make_user(username: &str) -> User {
     }
 }
 
-fn make_user_service(pool: sqlx::PgPool) -> UserService {
+fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     let jwt_service = JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
@@ -132,7 +134,10 @@ impl FakeDynamicProvider {
         NextPlayItem {
             name,
             item_type: ItemType::Media,
-            source_config: serde_json::json!({ "path": path }),
+            source_config: serde_json::json!({
+                "path": path,
+                "secret_token": NEXT_ITEM_SOURCE_CONFIG_SECRET,
+            }),
             metadata: serde_json::json!({}),
             provider_data: serde_json::json!({}),
             target: dynamic_target(path),
@@ -355,7 +360,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
 
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
@@ -443,6 +448,12 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         .await
         .unwrap();
 
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert!(
+        !response_json.contains(NEXT_ITEM_SOURCE_CONFIG_SECRET),
+        "dynamic NextPlayItem source_config must not be exposed in client playback responses"
+    );
+
     let state = response.playback_state.unwrap();
     assert_eq!(state.playing_media_id, "");
     assert_eq!(state.playing_playlist_id, playlist_public_id);
@@ -479,7 +490,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
 async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
@@ -590,7 +601,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
 async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
@@ -701,7 +712,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
@@ -830,7 +841,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
 async fn test_get_playback_without_active_media_returns_stable_non_empty_snapshot_version() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
@@ -900,7 +911,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let mut room_service = RoomService::new(pool.clone(), (*user_service).clone());
     room_service.set_password_hasher(Arc::new(TestPasswordHasher::new()));
@@ -989,7 +1000,7 @@ async fn test_get_playback_returns_state_when_snapshot_generation_fails() {
 async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),
@@ -1093,7 +1104,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
 async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
     let (_postgres, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let user_service = Arc::new(make_user_service(pool.clone()));
+    let user_service = Arc::new(make_user_service(&pool));
 
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
         ProviderInstanceRepository::new(pool.clone()),

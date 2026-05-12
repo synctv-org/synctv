@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT username,\n                   email,\n                   legacy_password_hash,\n                   opaque_record,\n                   opaque_credential_identifier,\n                   opaque_ciphersuite,\n                   opaque_server_setup_version,\n                   signup_method AS \"signup_method: SignupMethod\",\n                   oauth2_provider,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_verified\n            FROM user_registration_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "legacy_password_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "opaque_record",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "opaque_credential_identifier",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "opaque_ciphersuite",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "opaque_server_setup_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "signup_method: SignupMethod",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 8,
+        "name": "oauth2_provider",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "oauth2_provider_user_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "oauth2_provider_username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "oauth2_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "oauth2_email_verified",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "e8c41fe07823285fa98e4654e1e86363c95dc2774a53990eff23f714b962d040"
+}

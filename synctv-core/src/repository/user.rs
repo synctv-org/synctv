@@ -1379,37 +1379,39 @@ mod tests {
             WHERE user_id = $1
             ",
         )
-        .bind(created.id)
+        .bind(created.id.as_i64())
         .fetch_one(&pool)
         .await
         .expect("password credential row should exist");
 
         assert_eq!(
-            row.try_get::<String, _>("legacy_password_hash").unwrap(),
-            "legacy-hash"
-        );
-        assert_eq!(
-            row.try_get::<String, _>("legacy_password_algorithm")
+            row.try_get::<Option<String>, _>("legacy_password_hash")
                 .unwrap(),
-            "argon2id"
+            Some("legacy-hash".to_string())
         );
         assert_eq!(
-            row.try_get::<Vec<u8>, _>("opaque_record").unwrap(),
-            b"opaque-record"
-        );
-        assert_eq!(
-            row.try_get::<Vec<u8>, _>("opaque_credential_identifier")
+            row.try_get::<Option<String>, _>("legacy_password_algorithm")
                 .unwrap(),
-            b"synctv:user:credential_user"
+            Some("argon2id".to_string())
         );
         assert_eq!(
-            row.try_get::<String, _>("opaque_ciphersuite").unwrap(),
-            "opaque-ristretto255-sha512-argon2id"
+            row.try_get::<Option<Vec<u8>>, _>("opaque_record").unwrap(),
+            Some(b"opaque-record".to_vec())
         );
         assert_eq!(
-            row.try_get::<i32, _>("opaque_server_setup_version")
+            row.try_get::<Option<Vec<u8>>, _>("opaque_credential_identifier")
                 .unwrap(),
-            1
+            Some(b"synctv:user:credential_user".to_vec())
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("opaque_ciphersuite")
+                .unwrap(),
+            Some("opaque-ristretto255-sha512-argon2id".to_string())
+        );
+        assert_eq!(
+            row.try_get::<Option<i32>, _>("opaque_server_setup_version")
+                .unwrap(),
+            Some(1)
         );
         assert_eq!(row.try_get::<i32, _>("password_version").unwrap(), 0);
     }
@@ -1431,10 +1433,10 @@ mod tests {
             .create(&user)
             .await
             .expect("OAuth2 user should be created without password credentials");
-        let credential_exists: bool = sqlx::query_scalar(
+        let credential_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM auth_password_credentials WHERE user_id = $1)",
         )
-        .bind(created.id)
+        .bind(created.id.as_i64())
         .fetch_one(&pool)
         .await
         .expect("credential existence query should succeed");

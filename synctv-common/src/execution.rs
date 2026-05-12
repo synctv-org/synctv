@@ -189,7 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellable_only_returns_cancelled() {
-        let control = ExecutionControl::from_timeout(Some(Duration::from_secs(60)));
+        let control = ExecutionControl::from_timeout(Some(Duration::from_mins(1)));
         control.cancel();
 
         assert_eq!(

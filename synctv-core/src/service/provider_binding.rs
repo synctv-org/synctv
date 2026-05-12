@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    models::{resolve_provider_instance_binding, UserId},
+    models::{resolve_provider_instance_binding, CredentialProviderInstanceName, UserId},
     provider::{MediaProvider, ProviderContext},
     repository::UserProviderCredentialRepository,
     Error, Result,
@@ -24,8 +24,11 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
     explicit_provider_instance_name: Option<&str>,
 ) -> Result<Option<String>> {
     let Some(credential_repo) = credential_repo else {
-        return resolve_provider_instance_binding(explicit_provider_instance_name, None)
-            .map_err(|error| Error::InvalidInput(error.to_string()));
+        return resolve_provider_instance_binding(
+            explicit_provider_instance_name,
+            CredentialProviderInstanceName::NotCredentialBacked,
+        )
+        .map_err(|error| Error::InvalidInput(error.to_string()));
     };
 
     let dependencies = provider
@@ -56,7 +59,9 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
 
         let record_binding = resolve_provider_instance_binding(
             None,
-            Some(credential.provider_instance_name.as_deref()),
+            CredentialProviderInstanceName::CredentialBacked(
+                credential.provider_instance_name.as_deref(),
+            ),
         )
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
 
@@ -74,9 +79,10 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
 
     resolve_provider_instance_binding(
         explicit_provider_instance_name,
-        credential_binding
-            .as_ref()
-            .map(|binding| binding.as_deref()),
+        credential_binding.as_ref().map_or(
+            CredentialProviderInstanceName::NotCredentialBacked,
+            |binding| CredentialProviderInstanceName::CredentialBacked(binding.as_deref()),
+        ),
     )
     .map_err(|error| Error::InvalidInput(error.to_string()))
 }

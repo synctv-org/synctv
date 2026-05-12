@@ -128,7 +128,7 @@ pub struct Media {
     /// e.g., "bilibili_main", "alist_company"
     #[prost(string, tag = "10")]
     pub provider_instance_name: ::prost::alloc::string::String,
-    /// JSON source config (replaces url for flexibility)
+    /// JSON source config, only returned to the media creator
     #[prost(bytes = "vec", tag = "11")]
     #[serde(with = "crate::http_serde::json_bytes")]
     pub source_config: ::prost::alloc::vec::Vec<u8>,
@@ -176,6 +176,16 @@ pub struct Playlist {
     /// Resource version from database
     #[prost(int64, tag = "11")]
     pub version: i64,
+    /// JSON source config, only returned to the playlist creator
+    #[prost(bytes = "vec", tag = "12")]
+    #[serde(with = "crate::http_serde::json_bytes")]
+    pub source_config: ::prost::alloc::vec::Vec<u8>,
+    /// Source provider for dynamic playlists
+    #[prost(string, tag = "13")]
+    pub source_provider: ::prost::alloc::string::String,
+    /// Provider instance for dynamic playlists
+    #[prost(string, tag = "14")]
+    pub provider_instance_name: ::prost::alloc::string::String,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.PlaybackState")]

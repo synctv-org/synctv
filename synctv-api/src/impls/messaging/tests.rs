@@ -2283,7 +2283,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
             id: MediaId::new(),
             playlist_id: None,
             room_id: handler.room_id,
-            creator_id: None,
+            creator_id: Some(handler.user_id),
             name: "observe-playback-media-update".to_string(),
             position: 0.0,
             source_provider: "direct_url".to_string(),
@@ -2436,7 +2436,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
         .create(&synctv_core::models::Playlist {
             id: PlaylistId::new(),
             room_id: handler.room_id,
-            creator_id: None,
+            creator_id: Some(handler.user_id),
             name: "observe-playback-playlist-update".to_string(),
             parent_id: None,
             position: 0.0,

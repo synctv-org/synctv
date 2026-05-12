@@ -167,18 +167,18 @@ impl ReviewRepository {
         reviewed_by: Option<UserId>,
         reason: &str,
     ) -> Result<u64> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r"
             UPDATE user_registration_requests
             SET status = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3, rejection_reason = $4
             WHERE id = $1 AND reviewed_at IS NULL AND status = $5
             ",
+            request_id.as_i64(),
+            i16::from(ReviewStatus::Rejected),
+            reviewed_by.map(|id| id.as_i64()),
+            reason,
+            i16::from(ReviewStatus::Pending)
         )
-        .bind(request_id)
-        .bind(ReviewStatus::Rejected)
-        .bind(reviewed_by)
-        .bind(reason)
-        .bind(ReviewStatus::Pending)
         .execute(&self.pool)
         .await?;
 

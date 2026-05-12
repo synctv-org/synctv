@@ -868,7 +868,13 @@ impl RealtimeManager {
 
         // Shut down ConnectionManager's TTL refresh task
         if let Some(ref cm) = self.connection_manager {
-            cm.shutdown().await;
+            let report = cm.shutdown().await;
+            if !report.all_clean() {
+                warn!(
+                    ?report,
+                    "ConnectionManager reported background task issues during realtime shutdown"
+                );
+            }
         }
 
         // Shut down RoomMessageHub background tasks (Redis TTL refresh and stale cleanup)

@@ -696,7 +696,7 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
             ProviderClientError::Parse(msg) | ProviderClientError::InvalidHeader(msg) => {
                 Self::ParseError(msg)
             }
-            ProviderClientError::Auth(msg) => Self::ApiError(msg),
+            ProviderClientError::Auth(msg) => Self::Authentication(msg),
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
             ProviderClientError::NotImplemented(msg) => {
                 Self::ApiError(format!("Not implemented: {msg}"))

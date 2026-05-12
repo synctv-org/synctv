@@ -86,6 +86,14 @@ Before exposing Swagger UI in production:
 - Restrict access at Ingress, Nginx, gateway, or firewall level if only internal developers should access it.
 
 To avoid exposing API structure in production, build without the `openapi` feature.
+For Docker builds, pass an explicit feature set:
+
+```bash
+docker build \
+  --build-arg SYNCTV_BUILD_NO_DEFAULT_FEATURES=true \
+  --build-arg SYNCTV_BUILD_FEATURES="k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" \
+  -t synctv:production-no-openapi .
+```
 
 ## Continue Reading
 

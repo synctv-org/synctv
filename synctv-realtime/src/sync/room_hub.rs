@@ -255,6 +255,10 @@ impl RoomMessageHub {
         format!("{}room_hub:room:{room_id}", self.redis_key_prefix)
     }
 
+    fn room_key_prefix(&self) -> String {
+        format!("{}room_hub:room:", self.redis_key_prefix)
+    }
+
     fn conn_key(&self, connection_id: &str) -> String {
         format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id)
     }
@@ -1275,9 +1279,7 @@ impl RoomMessageHub {
 
                     let conn_keys: Vec<String> = entries
                         .iter()
-                        .map(|(conn_id, _)| {
-                            format!("{}room_hub:conn:{}", self.redis_key_prefix, conn_id)
-                        })
+                        .map(|(conn_id, _)| self.conn_key(conn_id))
                         .collect();
                     let conn_rooms = match conn_clone.mget::<_, Vec<Option<i64>>>(conn_keys).await {
                         Ok(conn_rooms) => conn_rooms,
@@ -1393,11 +1395,11 @@ impl RoomMessageHub {
             .await
             .map_err(|e| format!("Failed to load room subscription index directory: {e}"))?;
         let mut stale_directory_members = Vec::new();
+        let room_key_prefix = self.room_key_prefix();
 
         for key in keys {
             // Extract room_id from key
-            let room_id_str =
-                key.trim_start_matches(&format!("{}room_hub:room:", self.redis_key_prefix));
+            let room_id_str = key.trim_start_matches(&room_key_prefix);
             let Ok(room_id) = room_id_str.parse::<RoomId>() else {
                 tracing::warn!(room_id = %room_id_str, "Ignoring invalid room hub room key");
                 continue;
@@ -1456,7 +1458,7 @@ impl RoomMessageHub {
 
         // Collect room keys for all active rooms
         for entry in self.rooms.iter() {
-            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, entry.key());
+            let room_key = self.room_key(entry.key());
             keys_to_refresh.push(room_key);
         }
 
@@ -1466,7 +1468,7 @@ impl RoomMessageHub {
 
         // Collect connection keys for all active connections
         for entry in self.connections.iter() {
-            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, entry.key());
+            let conn_key = self.conn_key(entry.key());
             keys_to_refresh.push(conn_key);
         }
 
@@ -1521,8 +1523,8 @@ impl RoomMessageHub {
                 continue;
             }
 
-            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id);
-            let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
+            let room_key = self.room_key(&room_id);
+            let conn_key = self.conn_key(&connection_id);
 
             let mut pipe = redis::pipe();
             pipe.hdel(&room_key, &connection_id).ignore();

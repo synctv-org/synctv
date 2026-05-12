@@ -1,10 +1,10 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
-compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
+compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 // Allocator selection: mimalloc (default) or jemalloc (opt-in, unix only).
 // Compile-time guard: cannot enable both simultaneously.
 #[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
-compile_error!("features \"mimalloc\" and \"jemalloc\" are mutually exclusive — use only one");
+compile_error!("features \"mimalloc\" and \"jemalloc\" are mutually exclusive - use only one");
 
 #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
 #[global_allocator]

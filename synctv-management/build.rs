@@ -1,4 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=proto/management.proto");
+
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let out_dir = std::env::var("OUT_DIR")?;
     let mut prost_config = prost_config();

@@ -124,7 +124,7 @@ fn u128_to_u64_saturating(value: u128) -> u64 {
 
 use super::dedup::{DedupKey, MessageDeduplicator};
 use super::events::RealtimeEvent;
-use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
+use super::room_hub::RoomLifecycleEvent;
 use super::runtime::RoomMessageRuntime;
 use super::transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,
@@ -327,7 +327,7 @@ impl RealtimeMessageTransportFactory for RedisRealtimeMessageTransportFactory {
         &self,
         config: RealtimeMessageTransportConfig,
     ) -> crate::error::Result<Arc<dyn RealtimeMessageTransport>> {
-        Ok(Arc::new(RedisPubSub::with_key_prefix_runtime(
+        Ok(Arc::new(RedisPubSub::with_key_prefix(
             self.redis_runtime.clone(),
             config.message_runtime,
             config.node_id,
@@ -345,34 +345,13 @@ impl RedisPubSub {
     /// Create a new `RedisPubSub` service.
     pub fn new(
         redis_runtime: Arc<dyn RedisCoordinationRuntime>,
-        message_hub: Arc<RoomMessageHub>,
-        node_id: String,
-        admin_event_tx: broadcast::Sender<RealtimeEvent>,
-        event_handler: Option<Arc<dyn RealtimeEventHandler>>,
-        deduplicator: Arc<MessageDeduplicator>,
-    ) -> Result<Self> {
-        Self::with_key_prefix(
-            redis_runtime,
-            message_hub,
-            node_id,
-            "synctv:",
-            admin_event_tx,
-            event_handler,
-            deduplicator,
-            300,
-            DEFAULT_MAX_STREAM_LENGTH,
-        )
-    }
-
-    pub fn new_with_runtime(
-        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
         message_hub: Arc<dyn RoomMessageRuntime>,
         node_id: String,
         admin_event_tx: broadcast::Sender<RealtimeEvent>,
         event_handler: Option<Arc<dyn RealtimeEventHandler>>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix_runtime(
+        Self::with_key_prefix(
             redis_runtime,
             message_hub,
             node_id,
@@ -392,32 +371,6 @@ impl RedisPubSub {
     /// `stream_max_length` controls the maximum number of entries per Redis Stream.
     #[allow(clippy::too_many_arguments)]
     pub fn with_key_prefix(
-        redis_runtime: Arc<dyn RedisCoordinationRuntime>,
-        message_hub: Arc<RoomMessageHub>,
-        node_id: String,
-        key_prefix: &str,
-        admin_event_tx: broadcast::Sender<RealtimeEvent>,
-        event_handler: Option<Arc<dyn RealtimeEventHandler>>,
-        deduplicator: Arc<MessageDeduplicator>,
-        catchup_window_secs: u64,
-        stream_max_length: usize,
-    ) -> Result<Self> {
-        let message_hub: Arc<dyn RoomMessageRuntime> = message_hub;
-        Self::with_key_prefix_runtime(
-            redis_runtime,
-            message_hub,
-            node_id,
-            key_prefix,
-            admin_event_tx,
-            event_handler,
-            deduplicator,
-            catchup_window_secs,
-            stream_max_length,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_key_prefix_runtime(
         redis_runtime: Arc<dyn RedisCoordinationRuntime>,
         message_hub: Arc<dyn RoomMessageRuntime>,
         node_id: String,
@@ -2433,14 +2386,14 @@ mod tests {
     }
 
     #[test]
-    fn test_with_key_prefix_runtime_accepts_trait_object_message_hub() {
+    fn test_with_key_prefix_accepts_trait_object_message_hub() {
         let redis_client =
             redis::Client::open("redis://127.0.0.1/").expect("redis client should parse");
         let message_hub: Arc<dyn RoomMessageRuntime> = Arc::new(RoomMessageHub::new());
         let (admin_event_tx, _) = tokio::sync::broadcast::channel(1);
         let deduplicator = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
 
-        let pubsub = RedisPubSub::with_key_prefix_runtime(
+        let pubsub = RedisPubSub::with_key_prefix(
             synctv_core::coordination_runtime_from_client(redis_client),
             message_hub,
             "runtime-node".to_string(),
@@ -2469,7 +2422,7 @@ mod tests {
         let handler: Arc<dyn RealtimeEventHandler> =
             Arc::new(RecordingEventHandler { tx: handler_tx });
 
-        let pubsub = RedisPubSub::with_key_prefix_runtime(
+        let pubsub = RedisPubSub::with_key_prefix(
             synctv_core::coordination_runtime_from_client(redis_client),
             message_hub,
             "runtime-node".to_string(),

@@ -129,6 +129,7 @@ impl From<crate::provider::ProviderError> for Error {
             | ProviderError::InvalidCredentialType => {
                 Self::Authentication("Provider authentication required".to_string())
             }
+            ProviderError::Authentication(msg) => Self::Authentication(msg),
             // Configuration errors
             ProviderError::InvalidConfig(msg) => {
                 Self::InvalidInput(format!("Invalid provider configuration: {msg}"))

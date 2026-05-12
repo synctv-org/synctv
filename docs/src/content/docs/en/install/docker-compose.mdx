@@ -86,7 +86,7 @@ Open `http://localhost:8080` in a browser. The default root username is `root`; 
 
 Docker Compose loads required `.env.postgres` and `.env.synctv` files through `env_file`: PostgreSQL reads only database variables, and `synctv` reads only application settings. Back up both files and reuse them across restarts, new shells, host reboots, and upgrades. If either file is missing, `docker compose config` fails immediately.
 
-When upgrading, update the SyncTV image tag in `docker-compose.yml` or pin the desired image in your own Compose override file. Treat PostgreSQL and Redis image tag changes as separate data-service upgrades: back up the volumes first, review upstream release notes, and keep rollback tags available.
+When upgrading, set `SYNCTV_IMAGE_TAG` to the desired release before running Compose, or pin the desired image in your own Compose override file. The sample Compose file defaults to the documented app version instead of `latest` so deployments are reproducible. Treat PostgreSQL and Redis image tag changes as separate data-service upgrades: back up the volumes first, review upstream release notes, and keep rollback tags available.
 
 ## Development Compose
 

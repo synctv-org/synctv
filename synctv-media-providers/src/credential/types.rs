@@ -166,40 +166,35 @@ impl CredentialData {
     }
 
     /// Get the server ID for this credential
-    /// - Bilibili: constant "bilibili"
+    /// - Bilibili: SHA-256 hash of the global "bilibili" scope
     /// - Alist/Emby: SHA-256 hash of host
     #[must_use]
     pub fn server_id(&self) -> String {
         match self {
-            Self::Bilibili { .. } => "bilibili".to_string(),
-            Self::Alist { host, .. } | Self::Emby { host, .. } => {
-                use sha2::{Digest, Sha256};
-                hex::encode(Sha256::digest(host.as_bytes()))
-            }
+            Self::Bilibili { .. } => Self::hash_server_id("bilibili"),
+            Self::Alist { host, .. } | Self::Emby { host, .. } => Self::hash_server_id(host),
         }
     }
 
     /// Get the server ID for this credential, scoped to an optional provider instance.
     #[must_use]
     pub fn server_id_for_instance(&self, provider_instance_name: Option<&str>) -> String {
-        use sha2::{Digest, Sha256};
-
         match self {
-            Self::Bilibili { .. } => match Self::normalized_instance_name(provider_instance_name) {
-                Some(instance_name) => hex::encode(Sha256::digest(
-                    format!("bilibili\n{instance_name}").as_bytes(),
-                )),
-                None => self.server_id(),
-            },
+            Self::Bilibili { .. } => self.server_id(),
             Self::Alist { host, .. } | Self::Emby { host, .. } => {
                 match Self::normalized_instance_name(provider_instance_name) {
-                    Some(instance_name) => hex::encode(Sha256::digest(
-                        format!("{host}\n{instance_name}").as_bytes(),
-                    )),
+                    Some(instance_name) => {
+                        Self::hash_server_id(&format!("{host}\n{instance_name}"))
+                    }
                     None => self.server_id(),
                 }
             }
         }
+    }
+
+    fn hash_server_id(input: &str) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(input.as_bytes()))
     }
 }
 
@@ -248,9 +243,9 @@ mod tests {
 
     #[test]
     fn test_credential_data_server_id() {
-        // Bilibili always has fixed server_id
+        // Bilibili always has the same global server_id used by core storage.
         let bilibili = CredentialData::bilibili(HashMap::new());
-        assert_eq!(bilibili.server_id(), "bilibili");
+        assert_eq!(bilibili.server_id().len(), 64);
 
         // Alist/Emby use SHA-256 hash of host
         let alist = CredentialData::alist(
@@ -292,8 +287,8 @@ mod tests {
         );
 
         let bilibili = CredentialData::bilibili(HashMap::new());
-        assert_eq!(bilibili.server_id_for_instance(None), "bilibili");
-        assert_ne!(
+        assert_eq!(bilibili.server_id_for_instance(None), bilibili.server_id());
+        assert_eq!(
             bilibili.server_id_for_instance(Some("bili-main")),
             bilibili.server_id_for_instance(Some("bili-backup"))
         );

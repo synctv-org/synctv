@@ -61,7 +61,8 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
 }
 
 /// Shared HTTP client for all Emby requests (connection pooling).
-/// SSRF-safe: uses the common DNS resolver and disables redirects.
+/// Redirect-safe by default. Private-network SSRF blocking follows SyncTV's
+/// runtime SSRF policy, which is permissive unless a strict guard is configured.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
     LazyLock::new(crate::build_provider_http_client);
 

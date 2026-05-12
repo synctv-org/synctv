@@ -6,7 +6,7 @@
 //! external APIs.
 
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
-compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
+compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 pub mod http_serde;
 pub mod serde_defaults;

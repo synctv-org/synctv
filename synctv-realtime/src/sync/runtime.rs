@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
+    ShutdownReport,
 };
 use super::events::RealtimeEvent;
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
@@ -207,7 +208,7 @@ pub trait ConnectionRuntime: Send + Sync {
         cancel_token: CancellationToken,
     ) -> JoinHandle<()>;
 
-    async fn shutdown(&self);
+    async fn shutdown(&self) -> ShutdownReport;
 
     fn metrics(&self) -> ConnectionMetrics;
 
@@ -369,8 +370,8 @@ impl ConnectionRuntime for ConnectionManager {
         ConnectionManager::spawn_cleanup_task(self, interval, cancel_token)
     }
 
-    async fn shutdown(&self) {
-        let _ = ConnectionManager::shutdown(self).await;
+    async fn shutdown(&self) -> ShutdownReport {
+        ConnectionManager::shutdown(self).await
     }
 
     fn metrics(&self) -> ConnectionMetrics {

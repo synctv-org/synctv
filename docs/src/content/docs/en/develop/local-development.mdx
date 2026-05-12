@@ -161,7 +161,16 @@ cargo fmt --all --check
 Clippy:
 
 ```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Do not use `--all-features` for the full workspace: some feature pairs are
+intentionally mutually exclusive, such as `mimalloc`/`jemalloc` and
+`tls-aws-lc`/`tls-ring`. Check non-default builds with explicit feature sets:
+
+```bash
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 
 Run focused tests first for the area you changed, then broader checks.

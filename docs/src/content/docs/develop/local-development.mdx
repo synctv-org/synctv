@@ -171,7 +171,16 @@ cargo fmt --all --check
 Clippy：
 
 ```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+不要对整个 workspace 使用 `--all-features`：部分 feature 组合是刻意互斥的，
+例如 `mimalloc`/`jemalloc` 和 `tls-aws-lc`/`tls-ring`。非默认构建应使用显式
+feature 组合检查：
+
+```bash
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 
 如果修改了特定功能，优先跑对应的聚焦测试，再跑更大的测试集。不要只依赖编译通过。

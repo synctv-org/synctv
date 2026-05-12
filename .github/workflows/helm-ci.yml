@@ -10,8 +10,7 @@ on:
       - ".github/workflows/helm.yml"
       - "Cargo.toml"
       - "helm/**"
-      - "docs/src/content/docs/**/deployment/helm.mdx"
-      - "docs/src/content/docs/deployment/helm.mdx"
+      - "docs/src/content/docs/**/install/helm.mdx"
   pull_request:
     branches: ['**']
     paths:
@@ -19,8 +18,7 @@ on:
       - ".github/workflows/helm.yml"
       - "Cargo.toml"
       - "helm/**"
-      - "docs/src/content/docs/**/deployment/helm.mdx"
-      - "docs/src/content/docs/deployment/helm.mdx"
+      - "docs/src/content/docs/**/install/helm.mdx"
   workflow_dispatch:
 
 concurrency:

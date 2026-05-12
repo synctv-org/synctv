@@ -1,5 +1,11 @@
-# SyncTV Helm Chart - Production Configuration
+# SyncTV Helm Chart - default install values
 # Documentation: https://github.com/synctv-org/synctv
+#
+# These defaults prioritize a simple first install: one SyncTV replica,
+# chart-managed single-instance PostgreSQL/Redis, cluster mode disabled, and
+# memory HLS storage. For HA or production-scale traffic, review the Helm guide
+# and set cluster, shared storage, backing data-service, HPA/PDB, and Secret
+# management values explicitly.
 
 ## Global Settings
 global:
@@ -464,6 +470,9 @@ config:
 
   ## BootstrapConfig
   bootstrap:
+    ## Helm enables first-install root creation by default so a fresh release is
+    ## usable immediately. Disable this after bootstrap, or set it false from
+    ## the start when root user creation is handled out of band.
     createRootUser: true
     rootUsername: "root"
     rootEmail: ""

@@ -9,6 +9,10 @@ use synctv_media_providers::{
     CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
 };
 
+fn bilibili_server_id() -> String {
+    CredentialData::bilibili(HashMap::new()).server_id()
+}
+
 #[tokio::test]
 async fn test_in_memory_storage_basic_crud() {
     let storage = InMemoryCredentialStorage::new();
@@ -21,21 +25,21 @@ async fn test_in_memory_storage_basic_crud() {
 
     // Read
     let found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(found.is_some());
 
     // Delete
     let deleted = storage
-        .delete("user1", ProviderType::Bilibili, "bilibili")
+        .delete("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(deleted);
 
     // Verify deleted
     let not_found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(not_found.is_none());
@@ -82,7 +86,7 @@ async fn test_in_memory_storage_multiple_providers() {
 
     // Each provider should be queryable
     let bilibili = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(bilibili.is_some());
@@ -148,7 +152,7 @@ async fn test_credential_storage_as_trait_object() {
         .unwrap();
 
     let found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(found.is_some());
@@ -448,7 +452,7 @@ async fn test_credential_logout_pattern() {
         .unwrap();
 
     assert!(storage
-        .exists("user123", ProviderType::Bilibili, "bilibili")
+        .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap());
 
@@ -461,7 +465,7 @@ async fn test_credential_logout_pattern() {
 
     // Verify credential is gone
     assert!(!storage
-        .exists("user123", ProviderType::Bilibili, "bilibili")
+        .exists("user123", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap());
 }
@@ -547,7 +551,7 @@ async fn test_stored_credential_thread_safety() {
         let s = storage.clone();
         handles.push(tokio::spawn(async move {
             let cred = s
-                .get("user123", ProviderType::Bilibili, "bilibili")
+                .get("user123", ProviderType::Bilibili, &bilibili_server_id())
                 .await
                 .unwrap();
             cred.expect("credential should exist")

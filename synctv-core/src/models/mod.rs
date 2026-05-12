@@ -151,8 +151,9 @@ pub use playlist::{
     UpdatePlaylistRequest,
 };
 pub use provider_instance::{
-    normalize_provider_instance_name, normalize_provider_instance_name_owned,
-    resolve_provider_instance_binding, NewProviderInstance, ProviderCredential, ProviderInstance,
+    is_valid_provider_instance_name, normalize_provider_instance_name,
+    normalize_provider_instance_name_owned, resolve_provider_instance_binding,
+    validate_provider_instance_name, NewProviderInstance, ProviderCredential, ProviderInstance,
     ProviderInstanceBindingMismatch, ProviderInstanceListQuery, ProviderInstanceListSortBy,
     UserProviderCredential,
 };

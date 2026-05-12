@@ -28,6 +28,10 @@ use synctv_media_providers::{
     CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
 };
 
+fn bilibili_server_id() -> String {
+    CredentialData::bilibili(HashMap::new()).server_id()
+}
+
 /// Verifies that a single InMemoryCredentialStorage instance works correctly
 /// for basic CRUD operations.
 #[tokio::test]
@@ -42,21 +46,21 @@ async fn test_single_instance_basic_crud_works() {
 
     // Read
     let found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(found.is_some());
 
     // Delete
     let deleted = storage
-        .delete("user1", ProviderType::Bilibili, "bilibili")
+        .delete("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(deleted);
 
     // Verify deleted
     let not_found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(not_found.is_none());
@@ -87,7 +91,7 @@ async fn test_single_instance_concurrent_access_works() {
     for i in 0..10 {
         let user_id = format!("user{i}");
         let found = storage
-            .get(&user_id, ProviderType::Bilibili, "bilibili")
+            .get(&user_id, ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
         assert!(found.is_some(), "Expected credential for {user_id}");
@@ -116,7 +120,7 @@ async fn test_multiple_instances_do_not_share_state() {
 
     // Verify it's accessible on replica A
     let found_on_a = replica_a
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(
@@ -126,7 +130,7 @@ async fn test_multiple_instances_do_not_share_state() {
 
     // Verify it's NOT accessible on replica B (this is the limitation)
     let found_on_b = replica_b
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(
@@ -175,7 +179,7 @@ async fn test_updates_not_synchronized_across_instances() {
 
     // Replica A has the update
     let cred_a = replica_a
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap()
         .unwrap();
@@ -188,7 +192,7 @@ async fn test_updates_not_synchronized_across_instances() {
 
     // Replica B still has nothing
     let cred_b = replica_b
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(
@@ -219,26 +223,26 @@ async fn test_deletions_not_synchronized_across_instances() {
 
     // Both have the credential
     assert!(replica_a
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap()
         .is_some());
     assert!(replica_b
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap()
         .is_some());
 
     // Delete on replica B only
     let deleted = replica_b
-        .delete("user1", ProviderType::Bilibili, "bilibili")
+        .delete("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(deleted, "Delete on replica B should succeed");
 
     // Replica B no longer has it
     assert!(replica_b
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap()
         .is_none());
@@ -246,7 +250,7 @@ async fn test_deletions_not_synchronized_across_instances() {
     // But replica A still has it! (inconsistent state)
     assert!(
         replica_a
-            .get("user1", ProviderType::Bilibili, "bilibili")
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap()
             .is_some(),
@@ -270,7 +274,7 @@ async fn test_arc_only_shares_within_same_process() {
 
     // Access using the clone - this works because they share the same HashMap
     let found = storage_clone
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(
@@ -298,7 +302,7 @@ async fn test_documented_use_case_testing() {
 
     // Works perfectly for isolated tests
     assert!(storage
-        .exists("test_user", ProviderType::Bilibili, "bilibili")
+        .exists("test_user", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap());
 }
@@ -341,7 +345,7 @@ async fn test_documented_default_creates_unencrypted_storage() {
         .unwrap();
 
     let found = storage
-        .get("user1", ProviderType::Bilibili, "bilibili")
+        .get("user1", ProviderType::Bilibili, &bilibili_server_id())
         .await
         .unwrap();
     assert!(found.is_some());

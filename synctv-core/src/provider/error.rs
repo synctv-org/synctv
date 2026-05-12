@@ -24,6 +24,9 @@ pub enum ProviderError {
     #[error("Invalid credential type")]
     InvalidCredentialType,
 
+    #[error("Provider authentication failed: {0}")]
+    Authentication(String),
+
     #[error("Resource not found")]
     NotFound,
 

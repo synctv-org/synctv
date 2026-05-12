@@ -20,6 +20,12 @@ WORKDIR /app
 # a build-time database connection.
 ENV SQLX_OFFLINE=true
 
+# Empty feature args use the crate's default features. Set
+# SYNCTV_BUILD_NO_DEFAULT_FEATURES=true plus SYNCTV_BUILD_FEATURES to build a
+# narrower production binary, for example without openapi.
+ARG SYNCTV_BUILD_NO_DEFAULT_FEATURES=false
+ARG SYNCTV_BUILD_FEATURES=""
+
 # Copy entire source tree
 COPY . .
 
@@ -28,7 +34,14 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin synctv && \
+    build_flags="--release --bin synctv"; \
+    if [ "$SYNCTV_BUILD_NO_DEFAULT_FEATURES" = "true" ]; then \
+        build_flags="$build_flags --no-default-features"; \
+    fi; \
+    if [ -n "$SYNCTV_BUILD_FEATURES" ]; then \
+        build_flags="$build_flags --features $SYNCTV_BUILD_FEATURES"; \
+    fi; \
+    cargo build $build_flags && \
     cp /app/target/release/synctv /tmp/synctv
 
 # Stage 2: Runtime image

@@ -78,6 +78,33 @@ jobs:
       - name: Check SQLx offline metadata
         run: cargo check --workspace --all-targets --locked
 
+  feature-check:
+    name: Feature Check (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: synctv-minimal-tls
+            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+          - name: synctv-production-no-openapi
+            command: cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run feature check
+        run: ${{ matrix.command }}
+
   # Test non-ignored cases
   test-default:
     name: Test Default (${{ matrix.os }})

@@ -1,0 +1,107 @@
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use tonic::{Request, Status};
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ManagementAccessController {
+    required_bearer_token: Option<String>,
+}
+
+impl ManagementAccessController {
+    pub(crate) fn new(auth_token: &str) -> Self {
+        let trimmed = auth_token.trim();
+        let required_bearer_token = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        Self {
+            required_bearer_token,
+        }
+    }
+
+    pub(crate) fn authorize<T: std::fmt::Debug>(&self, request: &Request<T>) -> Result<(), Status> {
+        let Some(expected_token) = &self.required_bearer_token else {
+            return Ok(());
+        };
+
+        let header_value = request
+            .metadata()
+            .get("authorization")
+            .ok_or_else(|| Status::unauthenticated("Management authentication required"))?
+            .to_str()
+            .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
+
+        let provided_token =
+            synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
+                .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
+
+        if constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated(
+                "Invalid management authorization header",
+            ))
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let left_hash = Sha256::digest(left);
+    let right_hash = Sha256::digest(right);
+    left_hash.ct_eq(&right_hash).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ManagementAccessController;
+    use tonic::{Code, Request};
+
+    #[test]
+    fn management_access_controller_allows_missing_header_when_token_disabled() {
+        let controller = ManagementAccessController::new("");
+        let request = Request::new(());
+
+        controller
+            .authorize(&request)
+            .expect("disabled management token should allow local requests");
+    }
+
+    #[test]
+    fn management_access_controller_rejects_missing_header_when_token_configured() {
+        let controller = ManagementAccessController::new("management-secret");
+        let request = Request::new(());
+
+        let error = controller
+            .authorize(&request)
+            .expect_err("missing auth header must be rejected when management token is configured");
+
+        assert_eq!(error.code(), Code::Unauthenticated);
+        assert_eq!(error.message(), "Management authentication required");
+    }
+
+    #[test]
+    fn management_access_controller_rejects_incorrect_bearer_token() {
+        let controller = ManagementAccessController::new("management-secret");
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer wrong-secret".parse().unwrap());
+
+        let error = controller
+            .authorize(&request)
+            .expect_err("wrong management bearer token must be rejected");
+
+        assert_eq!(error.code(), Code::Unauthenticated);
+        assert_eq!(error.message(), "Invalid management authorization header");
+    }
+
+    #[test]
+    fn management_access_controller_accepts_matching_bearer_token() {
+        let controller = ManagementAccessController::new("management-secret");
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer management-secret".parse().unwrap());
+
+        controller
+            .authorize(&request)
+            .expect("matching management bearer token should be accepted");
+    }
+}

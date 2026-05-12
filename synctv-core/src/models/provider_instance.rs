@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use super::{pagination::PageParams, query::SortDirection, UserId};
 
 pub const DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS: u32 = 10;
+pub const PROVIDER_INSTANCE_NAME_MAX_LEN: usize = 64;
 
 /// Normalize optional provider instance names at API, service, and repository boundaries.
 ///
@@ -24,6 +25,25 @@ pub fn normalize_provider_instance_name(value: Option<&str>) -> Option<&str> {
 #[must_use]
 pub fn normalize_provider_instance_name_owned(value: Option<String>) -> Option<String> {
     value.and_then(|value| normalize_provider_instance_name(Some(&value)).map(str::to_owned))
+}
+
+#[must_use]
+pub fn is_valid_provider_instance_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= PROVIDER_INSTANCE_NAME_MAX_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+pub fn validate_provider_instance_name(value: &str) -> Result<(), String> {
+    if is_valid_provider_instance_name(value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "provider instance name must be 1-{PROVIDER_INSTANCE_NAME_MAX_LEN} characters of letters, numbers, underscores, or hyphens"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -549,6 +569,16 @@ mod tests {
             normalize_provider_instance_name_owned(Some("  emby_main  ".to_string())),
             Some("emby_main".to_string())
         );
+    }
+
+    #[test]
+    fn test_validate_provider_instance_name_matches_proto_contract() {
+        assert!(validate_provider_instance_name("alist-main_01").is_ok());
+        assert!(validate_provider_instance_name("").is_err());
+        assert!(validate_provider_instance_name("bad name").is_err());
+        assert!(validate_provider_instance_name("bad.name").is_err());
+        assert!(validate_provider_instance_name("中文").is_err());
+        assert!(validate_provider_instance_name(&"a".repeat(65)).is_err());
     }
 
     #[test]

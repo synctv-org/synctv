@@ -448,6 +448,10 @@ impl CredentialStorage for InMemoryCredentialStorage {
 mod tests {
     use super::*;
 
+    fn bilibili_server_id() -> String {
+        CredentialData::bilibili(HashMap::new()).server_id()
+    }
+
     #[tokio::test]
     async fn test_in_memory_storage_set_and_get() {
         let storage = InMemoryCredentialStorage::new();
@@ -462,11 +466,11 @@ mod tests {
 
         assert_eq!(cred.user_id, "user123");
         assert_eq!(cred.provider, ProviderType::Bilibili);
-        assert_eq!(cred.server_id, "bilibili");
+        assert_eq!(cred.server_id, bilibili_server_id());
 
         // Retrieve the credential
         let retrieved = storage
-            .get("user123", ProviderType::Bilibili, "bilibili")
+            .get("user123", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
 
@@ -481,7 +485,7 @@ mod tests {
         let storage = InMemoryCredentialStorage::new();
 
         let result = storage
-            .get("nonexistent", ProviderType::Bilibili, "bilibili")
+            .get("nonexistent", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
 
@@ -500,21 +504,21 @@ mod tests {
 
         // Delete it
         let deleted = storage
-            .delete("user123", ProviderType::Bilibili, "bilibili")
+            .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
         assert!(deleted);
 
         // Verify it's gone
         let result = storage
-            .get("user123", ProviderType::Bilibili, "bilibili")
+            .get("user123", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
         assert!(result.is_none());
 
         // Delete non-existent returns false
         let deleted_again = storage
-            .delete("user123", ProviderType::Bilibili, "bilibili")
+            .delete("user123", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap();
         assert!(!deleted_again);
@@ -645,7 +649,7 @@ mod tests {
         let storage = InMemoryCredentialStorage::new();
 
         assert!(!storage
-            .exists("user1", ProviderType::Bilibili, "bilibili")
+            .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap());
 
@@ -655,7 +659,7 @@ mod tests {
             .unwrap();
 
         assert!(storage
-            .exists("user1", ProviderType::Bilibili, "bilibili")
+            .exists("user1", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .unwrap());
     }
@@ -829,7 +833,7 @@ mod tests {
 
         // Retrieve the credential
         let retrieved = storage
-            .get("user1", ProviderType::Bilibili, "bilibili")
+            .get("user1", ProviderType::Bilibili, &bilibili_server_id())
             .await
             .expect("Failed to get credential")
             .expect("Credential should exist");

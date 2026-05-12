@@ -3870,7 +3870,7 @@ impl ShutdownReport {
         }
     }
 
-    const fn all_clean(&self) -> bool {
+    pub(crate) const fn all_clean(&self) -> bool {
         matches!(
             (
                 self.ttl_refresh.as_ref(),

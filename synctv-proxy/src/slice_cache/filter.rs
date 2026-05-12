@@ -151,7 +151,7 @@ fn parse_total_size_from_content_range(
 fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(), io::Error> {
     if let Some(control) = request_control {
         control
-            .check_active()
+            .check_cancelled()
             .map_err(|error| io::Error::other(format!("Proxy stream stopped: {error}")))?;
     }
     Ok(())

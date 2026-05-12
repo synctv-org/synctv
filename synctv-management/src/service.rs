@@ -3,13 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
 
+use crate::access::ManagementAccessController;
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
+use crate::mapping::{
+    map_management_user_lookup_error, map_room_list_sort_by, map_room_member_list_sort_by,
+    map_room_status, map_sort_direction, map_user_list_sort_by, map_user_role, map_user_status,
+    validate_client_actor_user,
+};
 use crate::proto::{
     management_service_server::ManagementService, AddAdminRequest, AddAlistMediaRequest,
     AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest, AddBilibiliVideoMediaRequest,
@@ -51,11 +55,11 @@ use synctv_api::impls::{
     AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl,
     ProviderCommonApiImpl,
 };
-use synctv_core::models::{UserId, UserRole as CoreUserRole, UserStatus as CoreUserStatus};
+use synctv_core::models::{UserId, UserRole as CoreUserRole};
 use synctv_core::service::UserService;
 use synctv_core::Config;
 use synctv_proto::{
-    admin as admin_proto, client as client_proto, common as common_proto,
+    admin as admin_proto, client as client_proto,
     providers::{
         alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
         emby as emby_proto, rtmp as rtmp_proto,
@@ -88,52 +92,6 @@ pub trait ManagementSliceCacheRuntime: Send + Sync {
     async fn purge_all(&self) -> ManagementSliceCachePurgeResult;
 
     async fn evict_expired_entries(&self) -> u64;
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ManagementAccessController {
-    required_bearer_token: Option<String>,
-}
-
-impl ManagementAccessController {
-    pub(crate) fn new(auth_token: &str) -> Self {
-        let trimmed = auth_token.trim();
-        let required_bearer_token = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        Self {
-            required_bearer_token,
-        }
-    }
-
-    pub(crate) fn authorize<T: std::fmt::Debug>(&self, request: &Request<T>) -> Result<(), Status> {
-        let Some(expected_token) = &self.required_bearer_token else {
-            return Ok(());
-        };
-
-        let header_value = request
-            .metadata()
-            .get("authorization")
-            .ok_or_else(|| Status::unauthenticated("Management authentication required"))?
-            .to_str()
-            .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
-
-        let provided_token =
-            synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
-                .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
-
-        if constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
-            Ok(())
-        } else {
-            Err(Status::unauthenticated(
-                "Invalid management authorization header",
-            ))
-        }
-    }
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let left_hash = Sha256::digest(left);
-    let right_hash = Sha256::digest(right);
-    left_hash.ct_eq(&right_hash).into()
 }
 
 #[derive(Clone)]
@@ -3566,197 +3524,16 @@ fn stop_server_stream_event(event: &LifecycleEvent) -> (StopServerEvent, bool) {
     (proto, terminal)
 }
 
-fn invalid_enum_value(field: &'static str, value: i32) -> Status {
-    Status::invalid_argument(format!("Invalid {field}: unknown enum value {value}"))
-}
-
-fn map_user_role(role: i32) -> Result<i32, Status> {
-    let role =
-        common_proto::UserRole::try_from(role).map_err(|_| invalid_enum_value("role", role))?;
-    Ok(match role {
-        common_proto::UserRole::User => common_proto::UserRole::User as i32,
-        common_proto::UserRole::Admin => common_proto::UserRole::Admin as i32,
-        common_proto::UserRole::Root => common_proto::UserRole::Root as i32,
-        common_proto::UserRole::Unspecified => common_proto::UserRole::Unspecified as i32,
-    })
-}
-
-fn map_user_status(status: i32) -> Result<i32, Status> {
-    let status = common_proto::UserStatus::try_from(status)
-        .map_err(|_| invalid_enum_value("status", status))?;
-    Ok(match status {
-        common_proto::UserStatus::Active => common_proto::UserStatus::Active as i32,
-        common_proto::UserStatus::Banned => common_proto::UserStatus::Banned as i32,
-        common_proto::UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
-    })
-}
-
-fn map_room_status(status: i32) -> Result<i32, Status> {
-    let status = common_proto::RoomStatus::try_from(status)
-        .map_err(|_| invalid_enum_value("status", status))?;
-    Ok(match status {
-        common_proto::RoomStatus::Active => common_proto::RoomStatus::Active as i32,
-        common_proto::RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
-        common_proto::RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
-    })
-}
-
-fn map_user_list_sort_by(sort_by: i32) -> Result<i32, Status> {
-    let sort_by = crate::proto::UserListSortBy::try_from(sort_by)
-        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
-    Ok(match sort_by {
-        crate::proto::UserListSortBy::Username => admin_proto::UserListSortBy::Username as i32,
-        crate::proto::UserListSortBy::Email => admin_proto::UserListSortBy::Email as i32,
-        crate::proto::UserListSortBy::Status => admin_proto::UserListSortBy::Status as i32,
-        crate::proto::UserListSortBy::Role => admin_proto::UserListSortBy::Role as i32,
-        crate::proto::UserListSortBy::UpdatedAt => admin_proto::UserListSortBy::UpdatedAt as i32,
-        crate::proto::UserListSortBy::CreatedAt | crate::proto::UserListSortBy::Unspecified => {
-            admin_proto::UserListSortBy::CreatedAt as i32
-        }
-    })
-}
-
-fn map_room_list_sort_by(sort_by: i32) -> Result<i32, Status> {
-    let sort_by = crate::proto::RoomListSortBy::try_from(sort_by)
-        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
-    Ok(match sort_by {
-        crate::proto::RoomListSortBy::Name => admin_proto::RoomListSortBy::Name as i32,
-        crate::proto::RoomListSortBy::UpdatedAt => admin_proto::RoomListSortBy::UpdatedAt as i32,
-        crate::proto::RoomListSortBy::LastActivityAt => {
-            admin_proto::RoomListSortBy::LastActivityAt as i32
-        }
-        crate::proto::RoomListSortBy::CreatedAt | crate::proto::RoomListSortBy::Unspecified => {
-            admin_proto::RoomListSortBy::CreatedAt as i32
-        }
-    })
-}
-
-fn map_room_member_list_sort_by(sort_by: i32) -> Result<i32, Status> {
-    let sort_by = crate::proto::RoomMemberListSortBy::try_from(sort_by)
-        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
-    Ok(match sort_by {
-        crate::proto::RoomMemberListSortBy::Username => {
-            admin_proto::RoomMemberListSortBy::Username as i32
-        }
-        crate::proto::RoomMemberListSortBy::Role => admin_proto::RoomMemberListSortBy::Role as i32,
-        crate::proto::RoomMemberListSortBy::Status => {
-            admin_proto::RoomMemberListSortBy::Status as i32
-        }
-        crate::proto::RoomMemberListSortBy::JoinedAt
-        | crate::proto::RoomMemberListSortBy::Unspecified => {
-            admin_proto::RoomMemberListSortBy::JoinedAt as i32
-        }
-    })
-}
-
-fn map_sort_direction(
-    sort_direction: i32,
-    default: admin_proto::SortDirection,
-) -> Result<i32, Status> {
-    let sort_direction = crate::proto::SortDirection::try_from(sort_direction)
-        .map_err(|_| invalid_enum_value("sort_direction", sort_direction))?;
-    Ok(match sort_direction {
-        crate::proto::SortDirection::Asc => admin_proto::SortDirection::Asc as i32,
-        crate::proto::SortDirection::Desc => admin_proto::SortDirection::Desc as i32,
-        crate::proto::SortDirection::Unspecified => default as i32,
-    })
-}
-
-fn validate_client_actor_user(user: &synctv_core::models::User) -> Result<(), Status> {
-    if user.is_deleted() {
-        return Err(Status::permission_denied(format!(
-            "actor user '{}' is deleted",
-            user.username
-        )));
-    }
-    match user.status {
-        CoreUserStatus::Active => {}
-        CoreUserStatus::Banned => {
-            return Err(Status::permission_denied(format!(
-                "actor user '{}' is banned",
-                user.username
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn map_management_user_lookup_error(err: synctv_core::Error) -> Status {
-    match err {
-        synctv_core::Error::NotFound(_) => Status::not_found("User not found"),
-        synctv_core::Error::InvalidInput(message) => Status::invalid_argument(message),
-        synctv_core::Error::Authentication(message) => Status::unauthenticated(message),
-        synctv_core::Error::Authorization(message) => Status::permission_denied(message),
-        synctv_core::Error::AlreadyExists(message) => Status::already_exists(message),
-        synctv_core::Error::RateLimited(message) => Status::resource_exhausted(message),
-        synctv_core::Error::ServiceUnavailable(message) => Status::unavailable(message),
-        synctv_core::Error::Timeout(message) => Status::deadline_exceeded(message),
-        synctv_core::Error::OptimisticLockConflict => {
-            Status::aborted("management actor user was modified concurrently")
-        }
-        synctv_core::Error::LockConflict(message) => Status::aborted(message),
-        synctv_core::Error::EmailNotVerified => {
-            Status::permission_denied("management actor user email is not verified")
-        }
-        other => {
-            tracing::error!("Management user lookup failed: {other}");
-            Status::internal("Internal error")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        stop_server_event_stream, validate_client_actor_user, ManagementAccessController,
-        ManagementServiceImpl,
-    };
+    use super::{stop_server_event_stream, ManagementServiceImpl};
     use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
     use crate::proto::{
         EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult, SliceCacheNodeFailure,
         SliceCacheStatsResponse,
     };
     use futures::TryStreamExt;
-    use synctv_core::models::{SignupMethod, User, UserStatus};
-    use tonic::{Code, Request};
-
-    fn make_actor_user(username: &str, status: UserStatus) -> User {
-        let mut user = User::new_with_status(
-            username.to_string(),
-            Some(format!("{username}@example.com")),
-            "hash".to_string(),
-            SignupMethod::Email,
-            status,
-        );
-        user.email_verified = true;
-        user
-    }
-
-    #[test]
-    fn validate_client_actor_user_accepts_active_user() {
-        let user = make_actor_user("root", UserStatus::Active);
-        validate_client_actor_user(&user).expect("active actor should be accepted");
-    }
-
-    #[test]
-    fn validate_client_actor_user_rejects_banned_user_with_explicit_message() {
-        let user = make_actor_user("root", UserStatus::Banned);
-        let error = validate_client_actor_user(&user).expect_err("banned actor should be rejected");
-
-        assert_eq!(error.code(), tonic::Code::PermissionDenied);
-        assert_eq!(error.message(), "actor user 'root' is banned");
-    }
-
-    #[test]
-    fn validate_client_actor_user_rejects_deleted_user_with_explicit_message() {
-        let mut user = make_actor_user("root", UserStatus::Active);
-        user.deleted_at = Some(user.created_at);
-        let error =
-            validate_client_actor_user(&user).expect_err("deleted actor should be rejected");
-
-        assert_eq!(error.code(), tonic::Code::PermissionDenied);
-        assert_eq!(error.message(), "actor user 'root' is deleted");
-    }
+    use tonic::Code;
 
     #[test]
     fn map_api_error_preserves_service_unavailable() {
@@ -3777,84 +3554,6 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("secret"));
-    }
-
-    #[test]
-    fn enum_mapping_rejects_unknown_user_sort_values() {
-        let status = super::map_user_list_sort_by(99)
-            .expect_err("unknown management user sort enum should be rejected");
-
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
-        assert!(status.message().contains("sort_by"));
-    }
-
-    #[test]
-    fn enum_mapping_preserves_status_user_sort() {
-        assert_eq!(
-            super::map_user_list_sort_by(crate::proto::UserListSortBy::Status as i32).unwrap(),
-            synctv_proto::admin::UserListSortBy::Status as i32
-        );
-    }
-
-    #[test]
-    fn enum_mapping_rejects_unknown_sort_direction_values() {
-        let status = super::map_sort_direction(99, synctv_proto::admin::SortDirection::Desc)
-            .expect_err("unknown management sort direction enum should be rejected");
-
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
-        assert!(status.message().contains("sort_direction"));
-    }
-
-    #[test]
-    fn management_access_controller_allows_missing_header_when_token_disabled() {
-        let controller = ManagementAccessController::new("");
-        let request = Request::new(());
-
-        controller
-            .authorize(&request)
-            .expect("disabled management token should allow local requests");
-    }
-
-    #[test]
-    fn management_access_controller_rejects_missing_header_when_token_configured() {
-        let controller = ManagementAccessController::new("management-secret");
-        let request = Request::new(());
-
-        let error = controller
-            .authorize(&request)
-            .expect_err("missing auth header must be rejected when management token is configured");
-
-        assert_eq!(error.code(), Code::Unauthenticated);
-        assert_eq!(error.message(), "Management authentication required");
-    }
-
-    #[test]
-    fn management_access_controller_rejects_incorrect_bearer_token() {
-        let controller = ManagementAccessController::new("management-secret");
-        let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", "Bearer wrong-secret".parse().unwrap());
-
-        let error = controller
-            .authorize(&request)
-            .expect_err("wrong management bearer token must be rejected");
-
-        assert_eq!(error.code(), Code::Unauthenticated);
-        assert_eq!(error.message(), "Invalid management authorization header");
-    }
-
-    #[test]
-    fn management_access_controller_accepts_matching_bearer_token() {
-        let controller = ManagementAccessController::new("management-secret");
-        let mut request = Request::new(());
-        request
-            .metadata_mut()
-            .insert("authorization", "Bearer management-secret".parse().unwrap());
-
-        controller
-            .authorize(&request)
-            .expect("matching management bearer token should be accepted");
     }
 
     #[test]

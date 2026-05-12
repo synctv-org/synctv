@@ -433,6 +433,7 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::AuthRequired => {
                 Self::Authentication(synctv_common::messages::AUTHENTICATION_REQUIRED.to_string())
             }
+            ProviderError::Authentication(msg) => Self::Authentication(msg),
             ProviderError::CredentialRequired => {
                 Self::Authentication("Credential required".to_string())
             }
@@ -1272,6 +1273,20 @@ mod tests {
         ));
         assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_authentication_maps_to_authentication() {
+        let provider_err = synctv_core::provider::ProviderError::Authentication(
+            "provider rejected credentials".to_string(),
+        );
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::Authentication(ref msg) if msg == "provider rejected credentials"
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::Unauthenticated));
+        assert_eq!(api_err.code(), error_codes::UNAUTHENTICATED);
     }
 
     #[test]

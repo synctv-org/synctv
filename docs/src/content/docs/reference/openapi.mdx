@@ -85,7 +85,15 @@ openapi-generator-cli generate \
 - 反向代理允许访问 `/api-docs/openapi.json`。
 - 只允许内网开发者访问时，在 Ingress、Nginx、网关或防火墙层限制来源。
 
-不暴露 API 结构时，使用不带 `openapi` feature 的生产构建。
+不暴露 API 结构时，使用不带 `openapi` feature 的生产构建。Docker 构建可传入显式
+feature 组合：
+
+```bash
+docker build \
+  --build-arg SYNCTV_BUILD_NO_DEFAULT_FEATURES=true \
+  --build-arg SYNCTV_BUILD_FEATURES="k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" \
+  -t synctv:production-no-openapi .
+```
 
 ## 继续阅读
 

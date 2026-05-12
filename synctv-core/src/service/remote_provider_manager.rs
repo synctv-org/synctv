@@ -11,7 +11,7 @@
 // their local channel cache even across restarts and transient disconnects.
 
 use crate::cache::{CacheInvalidationRuntime, InvalidationMessage};
-use crate::models::{ProviderInstance, ProviderInstanceListQuery};
+use crate::models::{validate_provider_instance_name, ProviderInstance, ProviderInstanceListQuery};
 use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
@@ -205,6 +205,9 @@ impl RemoteProviderManager {
             ProviderError::AuthRequired => ProviderError::AuthRequired,
             ProviderError::CredentialRequired => ProviderError::CredentialRequired,
             ProviderError::InvalidCredentialType => ProviderError::InvalidCredentialType,
+            ProviderError::Authentication(message) => {
+                ProviderError::Authentication(message.clone())
+            }
             ProviderError::NotFound => ProviderError::NotFound,
             ProviderError::ApiError(message) => ProviderError::ApiError(message.clone()),
             ProviderError::UpstreamHttp { status, url } => ProviderError::UpstreamHttp {
@@ -544,12 +547,14 @@ impl RemoteProviderManager {
         ))
     }
 
-    /// Validate that an endpoint URL does not target internal/private IP addresses
-    /// or reserved hostnames (SSRF protection).
+    /// Validate endpoint URL structure and apply the configured runtime SSRF
+    /// policy to hostnames and IP literals.
     ///
     /// Only validates hostnames and IP literals statically. Does NOT resolve DNS,
     /// because DNS results can change between validation and connection (DNS rebinding),
     /// and VPN/proxy environments may return unexpected IPs for public hostnames.
+    /// SyncTV's default policy is permissive for self-hosted/private deployments;
+    /// strict private-address blocking only happens when the shared guard is strict.
     fn validate_endpoint_ssrf(endpoint: &str) -> crate::Result<()> {
         let url = url::Url::parse(endpoint).map_err(|e| {
             crate::Error::InvalidInput(format!("SSRF validation: invalid URL: {e}"))
@@ -570,14 +575,14 @@ impl RemoteProviderManager {
 
         let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
-        // Check if the hostname itself is blocked (e.g., "localhost", metadata endpoints)
+        // Check if the configured policy blocks the hostname itself.
         if guard.is_host_blocked(host) {
             return Err(crate::Error::InvalidInput(format!(
                 "SSRF validation: host '{host}' is blocked (internal/reserved)"
             )));
         }
 
-        // If the host is an IP address, check it directly against blocklist
+        // If the host is an IP address, check it directly against the configured policy.
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             if guard.is_ip_blocked(&ip) {
                 return Err(crate::Error::InvalidInput(format!(
@@ -585,9 +590,9 @@ impl RemoteProviderManager {
                 )));
             }
         }
-        // Note: For hostnames, we do NOT resolve DNS here. DNS-based SSRF checking
-        // is unreliable (DNS rebinding, VPN interception). The gRPC transport layer
-        // provides the actual connection-time SSRF protection.
+        // Note: For hostnames, we do NOT resolve DNS here. DNS results can change
+        // between validation and connection; the gRPC transport applies the same
+        // configured policy to resolved addresses at connection time.
 
         // Validate port range
         if let Some(port) = url.port() {
@@ -638,6 +643,7 @@ impl RemoteProviderManager {
 
     /// Validate endpoint and timeout without creating or connecting a channel.
     fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
+        validate_provider_instance_name(&config.name).map_err(crate::Error::InvalidInput)?;
         config.parse_timeout().map_err(crate::Error::Internal)?;
         for provider in &config.providers {
             if !Self::is_supported_remote_provider(provider) {
@@ -875,7 +881,7 @@ impl RemoteProviderManager {
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
     async fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
-        // SSRF validation: block internal/private IPs and reserved hostnames
+        // Apply the configured SSRF policy to the endpoint before connecting.
         Self::validate_endpoint_ssrf(&config.endpoint)?;
 
         // Parse timeout
@@ -1718,6 +1724,20 @@ mod tests {
 
         RemoteProviderManager::validate_config(&config)
             .expect("http:// endpoint should remain valid");
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_provider_instance_name() {
+        let mut config = remote_instance("http://provider.example.com:50051");
+        config.name = "bad name".to_string();
+
+        let err = RemoteProviderManager::validate_config(&config)
+            .expect_err("provider instance names must match the core naming contract");
+
+        assert!(
+            err.to_string().contains("provider instance name"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

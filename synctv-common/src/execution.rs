@@ -88,6 +88,14 @@ impl ExecutionControl {
         self.cancellation.is_cancelled()
     }
 
+    pub fn check_cancelled(&self) -> Result<(), ExecutionControlError> {
+        if self.is_cancelled() {
+            return Err(ExecutionControlError::Cancelled);
+        }
+
+        Ok(())
+    }
+
     pub fn check_deadline(&self) -> Result<(), ExecutionControlError> {
         if self
             .deadline
@@ -100,11 +108,23 @@ impl ExecutionControl {
     }
 
     pub fn check_active(&self) -> Result<(), ExecutionControlError> {
-        if self.is_cancelled() {
-            return Err(ExecutionControlError::Cancelled);
-        }
-
+        self.check_cancelled()?;
         self.check_deadline()
+    }
+
+    pub async fn run_cancellable_only<F, T>(&self, future: F) -> Result<T, ExecutionControlError>
+    where
+        F: Future<Output = T>,
+    {
+        self.check_cancelled()?;
+
+        let cancellation = self.cancellation_token();
+        tokio::pin!(future);
+
+        tokio::select! {
+            () = cancellation.cancelled() => Err(ExecutionControlError::Cancelled),
+            output = &mut future => Ok(output),
+        }
     }
 
     pub async fn run<F, T>(&self, future: F) -> Result<T, ExecutionControlError>
@@ -155,5 +175,29 @@ mod tests {
         let result = control.run(async { 42 }).await;
 
         assert_eq!(result, Err(ExecutionControlError::DeadlineExceeded));
+    }
+
+    #[tokio::test]
+    async fn cancellable_only_ignores_elapsed_deadline() {
+        let control = ExecutionControl::from_timeout(Some(Duration::ZERO));
+
+        assert_eq!(control.check_cancelled(), Ok(()));
+        let result = control.run_cancellable_only(async { 42 }).await;
+
+        assert_eq!(result, Ok(42));
+    }
+
+    #[tokio::test]
+    async fn cancellable_only_returns_cancelled() {
+        let control = ExecutionControl::from_timeout(Some(Duration::from_secs(60)));
+        control.cancel();
+
+        assert_eq!(
+            control.check_cancelled(),
+            Err(ExecutionControlError::Cancelled)
+        );
+        let result = control.run_cancellable_only(async { 42 }).await;
+
+        assert_eq!(result, Err(ExecutionControlError::Cancelled));
     }
 }

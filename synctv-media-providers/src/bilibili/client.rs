@@ -48,7 +48,8 @@ const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 /// Shared HTTP client for all Bilibili requests (connection pooling).
-/// SSRF-safe: uses the common DNS resolver and disables redirects.
+/// Redirect-safe by default. Private-network SSRF blocking follows SyncTV's
+/// runtime SSRF policy, which is permissive unless a strict guard is configured.
 static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
     crate::provider_http_client_builder()
         .user_agent(USER_AGENT)
@@ -1069,9 +1070,10 @@ impl BilibiliClient {
     ///
     /// The shared client has `redirect(Policy::none())`, so we manually follow
     /// the `Location` header from b23.tv to get the resolved URL.
-    /// The resolved URL is validated against SSRF rules before returning.
+    /// The resolved URL is structurally validated before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
-        // SSRF protection is handled by the DNS resolver at connection time
+        // Redirects are handled manually; private-network blocking depends on
+        // the configured runtime SSRF policy.
         let response = self.client.get(url).send().await?;
         let status = response.status();
 

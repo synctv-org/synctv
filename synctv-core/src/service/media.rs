@@ -7,6 +7,7 @@
 //! 2. Add Media - Store `source_config` in database
 //! 3. Generate Playback - Dynamically generate playback info when playing
 
+use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
     models::{
         normalize_provider_instance_name, Media, MediaId, PermissionBits, PlaylistId, RoomId,
@@ -16,7 +17,7 @@ use crate::{
         provider_requires_credential_repo, DirectoryItem, DynamicListQuery, ProviderContext,
         SourceConfig,
     },
-    repository::UserProviderCredentialRepository,
+    repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
         notification::{MediaAddedNotification, NotificationService},
@@ -39,6 +40,11 @@ const MAX_BATCH_SIZE: usize = 100;
 const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
 /// Leave sparse gaps between inserted media positions to reduce renumbering.
 const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
+
+pub type RealtimeOutboxMediaEventFactory =
+    Arc<dyn Fn(&Media) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxMediaBatchEventFactory =
+    Arc<dyn Fn(&[Media]) -> Vec<NewRealtimeOutboxEvent> + Send + Sync>;
 
 fn batch_media_position(index: usize, start_position: f64) -> f64 {
     let index = u32::try_from(index).unwrap_or(u32::MAX);
@@ -105,6 +111,7 @@ pub struct MediaService {
     credential_encryption: Option<crate::service::CredentialEncryption>,
     /// Optional credential repository for provider-backed source resolution
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
 }
 
 impl std::fmt::Debug for MediaService {
@@ -209,6 +216,7 @@ impl MediaService {
             notification_service,
             credential_encryption: None,
             credential_repo: None,
+            realtime_outbox: None,
         }
     }
 
@@ -234,7 +242,12 @@ impl MediaService {
             notification_service,
             credential_encryption,
             credential_repo,
+            realtime_outbox: None,
         }
+    }
+
+    pub fn set_realtime_outbox(&mut self, realtime_outbox: Option<Arc<RealtimeOutboxRepository>>) {
+        self.realtime_outbox = realtime_outbox;
     }
 
     /// Get a reference to the providers manager
@@ -293,6 +306,17 @@ impl MediaService {
         room_id: RoomId,
         user_id: UserId,
         request: AddMediaRequest,
+    ) -> Result<Media> {
+        self.add_media_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn add_media_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: AddMediaRequest,
+        outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
     ) -> Result<Media> {
         validate_media_name(&request.name)?;
 
@@ -412,6 +436,13 @@ impl MediaService {
             .create_with_executor(&media, &mut *tx)
             .await?;
 
+        let outbox_event = outbox_event_factory
+            .as_ref()
+            .and_then(|factory| factory(&created_media));
+        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
+            outbox.insert_with_executor(event, &mut *tx).await?;
+        }
+
         tx.commit().await?;
 
         tracing::info!(
@@ -452,6 +483,18 @@ impl MediaService {
         user_id: UserId,
         playlist_id: Option<PlaylistId>,
         items: Vec<AddMediaRequest>,
+    ) -> Result<Vec<Media>> {
+        self.add_media_batch_with_outbox(room_id, user_id, playlist_id, items, None)
+            .await
+    }
+
+    pub async fn add_media_batch_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        playlist_id: Option<PlaylistId>,
+        items: Vec<AddMediaRequest>,
+        outbox_event_factory: Option<RealtimeOutboxMediaBatchEventFactory>,
     ) -> Result<Vec<Media>> {
         // Check permission
         self.permission_service
@@ -600,6 +643,15 @@ impl MediaService {
             .create_batch_with_executor(&media_items, &mut *tx)
             .await?;
 
+        let outbox_events = outbox_event_factory
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&created_items));
+        if let Some(outbox) = &self.realtime_outbox {
+            for event in &outbox_events {
+                outbox.insert_with_executor(event, &mut *tx).await?;
+            }
+        }
+
         tx.commit().await?;
 
         tracing::info!(
@@ -648,6 +700,17 @@ impl MediaService {
         user_id: UserId,
         request: EditMediaRequest,
     ) -> Result<Media> {
+        self.edit_media_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn edit_media_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: EditMediaRequest,
+        outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
+    ) -> Result<Media> {
         for attempt in 0..Self::EDIT_MAX_RETRIES {
             // Get existing media (fresh on every retry)
             let mut media = self
@@ -680,13 +743,22 @@ impl MediaService {
                 validate_media_name(name)?;
                 media.name = name.clone();
             }
+            let mut tx = self.media_repo.pool().begin().await?;
             // Conditional update: only succeed if no other edit changed the row
             match self
                 .media_repo
-                .update_with_version(&media, expected_version)
+                .update_with_version_with_executor(&media, expected_version, &mut *tx)
                 .await
             {
                 Ok(Some(updated_media)) => {
+                    let outbox_event = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(&updated_media));
+                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
+                        outbox.insert_with_executor(event, &mut *tx).await?;
+                    }
+                    tx.commit().await?;
+
                     tracing::info!(
                         room_id = %room_id,
                         media_id = %request.media_id,
@@ -712,6 +784,7 @@ impl MediaService {
                     return Ok(updated_media);
                 }
                 Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
+                    tx.rollback().await?;
                     // Concurrent modification detected, retry with fresh data
                     tracing::debug!(
                         media_id = %request.media_id,
@@ -720,6 +793,7 @@ impl MediaService {
                     );
                 }
                 Ok(None) => {
+                    tx.rollback().await?;
                     return Err(Error::Internal(
                         format!(
                             "Media edit failed: concurrent modification after {} retries for media_id={}",
@@ -747,6 +821,18 @@ impl MediaService {
         actor_username: &str,
         request: EditMediaRequest,
     ) -> Result<Media> {
+        self.admin_edit_media_with_outbox(room_id, admin_user_id, actor_username, request, None)
+            .await
+    }
+
+    pub async fn admin_edit_media_with_outbox(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        actor_username: &str,
+        request: EditMediaRequest,
+        outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
+    ) -> Result<Media> {
         for attempt in 0..Self::EDIT_MAX_RETRIES {
             let mut media = self
                 .media_repo
@@ -760,12 +846,21 @@ impl MediaService {
                 validate_media_name(name)?;
                 media.name = name.clone();
             }
+            let mut tx = self.media_repo.pool().begin().await?;
             match self
                 .media_repo
-                .update_with_version(&media, expected_version)
+                .update_with_version_with_executor(&media, expected_version, &mut *tx)
                 .await
             {
                 Ok(Some(updated_media)) => {
+                    let outbox_event = outbox_event_factory
+                        .as_ref()
+                        .and_then(|factory| factory(&updated_media));
+                    if let (Some(outbox), Some(event)) = (&self.realtime_outbox, &outbox_event) {
+                        outbox.insert_with_executor(event, &mut *tx).await?;
+                    }
+                    tx.commit().await?;
+
                     tracing::info!(
                         room_id = %room_id,
                         admin_user_id = %admin_user_id,
@@ -789,8 +884,11 @@ impl MediaService {
 
                     return Ok(updated_media);
                 }
-                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {}
+                Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {
+                    tx.rollback().await?;
+                }
                 Ok(None) => {
+                    tx.rollback().await?;
                     return Err(Error::Internal(format!(
                         "Media edit failed: concurrent modification after {} retries for media_id={}",
                         attempt + 1,
@@ -916,7 +1014,18 @@ impl MediaService {
         user_id: UserId,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(room_id, user_id, None, request, false)
+        self.move_media_with_outbox(room_id, user_id, request, None)
+            .await
+    }
+
+    pub async fn move_media_with_outbox(
+        &self,
+        room_id: RoomId,
+        user_id: UserId,
+        request: MoveMediaRequest,
+        outbox_event_factory: Option<RealtimeOutboxMediaBatchEventFactory>,
+    ) -> Result<Vec<Media>> {
+        self.move_media_internal(room_id, user_id, None, request, false, outbox_event_factory)
             .await
     }
 
@@ -927,8 +1036,27 @@ impl MediaService {
         actor_username: &str,
         request: MoveMediaRequest,
     ) -> Result<Vec<Media>> {
-        self.move_media_internal(room_id, admin_user_id, Some(actor_username), request, true)
+        self.admin_move_media_with_outbox(room_id, admin_user_id, actor_username, request, None)
             .await
+    }
+
+    pub async fn admin_move_media_with_outbox(
+        &self,
+        room_id: RoomId,
+        admin_user_id: UserId,
+        actor_username: &str,
+        request: MoveMediaRequest,
+        outbox_event_factory: Option<RealtimeOutboxMediaBatchEventFactory>,
+    ) -> Result<Vec<Media>> {
+        self.move_media_internal(
+            room_id,
+            admin_user_id,
+            Some(actor_username),
+            request,
+            true,
+            outbox_event_factory,
+        )
+        .await
     }
 
     async fn move_media_internal(
@@ -938,6 +1066,7 @@ impl MediaService {
         actor_username: Option<&str>,
         request: MoveMediaRequest,
         bypass_room_permissions: bool,
+        outbox_event_factory: Option<RealtimeOutboxMediaBatchEventFactory>,
     ) -> Result<Vec<Media>> {
         if !bypass_room_permissions {
             self.permission_service
@@ -1068,6 +1197,15 @@ impl MediaService {
                 &mut tx,
             )
             .await?;
+
+        let outbox_events = outbox_event_factory
+            .as_ref()
+            .map_or_else(Vec::new, |factory| factory(&moved));
+        if let Some(outbox) = &self.realtime_outbox {
+            for event in &outbox_events {
+                outbox.insert_with_executor(event, &mut *tx).await?;
+            }
+        }
 
         tx.commit().await?;
 

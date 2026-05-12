@@ -16,7 +16,7 @@
 //! Storage is abstracted via the [`AttemptTracker`] trait. Two implementations
 //! are provided:
 //! - [`RedisAttemptTracker`]: Redis-backed with configurable failure mode.
-//!   In cluster mode (`fail_closed=true`), Redis failures result in rejected
+//!   In distributed mode (`fail_closed=true`), Redis failures result in rejected
 //!   requests rather than degraded protection.
 //! - [`InMemoryAttemptTracker`]: moka cache only. Used in standalone mode
 //!   without Redis.
@@ -680,7 +680,7 @@ impl RedisAttemptTracker {
             key = %key,
             error = %error,
             "Redis unavailable in fail-closed mode: blocking all login attempts for security. \
-             In cluster mode, falling back to per-replica counters would allow attackers to \
+             In distributed mode, falling back to per-replica counters would allow attackers to \
              bypass brute-force protection by distributing requests across replicas. \
              Restore Redis availability immediately to allow logins."
         );
@@ -821,7 +821,7 @@ impl AttemptTracker for RedisAttemptTracker {
 ///
 /// ## Cluster Mode
 ///
-/// In cluster mode, use [`Self::with_redis_fail_closed`] to ensure Redis
+/// In distributed mode, use [`Self::with_redis_fail_closed`] to ensure Redis
 /// failures result in rejected login attempts rather than degraded protection.
 /// This is critical for security in multi-replica deployments where fallback
 /// to per-replica counters would allow attackers to bypass lockouts.
@@ -1410,7 +1410,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared brute-force protection state"),
+                .contains("distributed runtime requires shared brute-force protection state"),
             "unexpected error: {error}"
         );
     }

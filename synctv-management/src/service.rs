@@ -773,9 +773,9 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<SliceCacheStatsResponse, Status> {
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         let mut request = Request::new(synctv_proxy::grpc::proto::GetSliceCacheStatsRequest {});
         self.attach_cluster_secret(&mut request)?;
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
             .get_slice_cache_stats(request)
             .await
@@ -878,9 +878,9 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<PurgeSliceCacheNodeResult, Status> {
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         let mut request = Request::new(synctv_proxy::grpc::proto::PurgeSliceCacheRequest {});
         self.attach_cluster_secret(&mut request)?;
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
             .purge_slice_cache(request)
             .await
@@ -989,9 +989,9 @@ impl ManagementServiceImpl {
         &self,
         node: &synctv_cluster::discovery::NodeInfo,
     ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         let mut request = Request::new(synctv_proxy::grpc::proto::EvictExpiredSliceCacheRequest {});
         self.attach_cluster_secret(&mut request)?;
+        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
         client
             .evict_expired_slice_cache(request)
             .await
@@ -2356,7 +2356,7 @@ impl ManagementService for ManagementServiceImpl {
                     dynamic_only: req.dynamic_only,
                     sort_by: req.sort_by,
                     sort_direction: req.sort_direction,
-                    availability: client_proto::ResourceAvailabilityFilter::All as i32,
+                    availability: req.availability,
                 },
                 &validated.user_id,
             )
@@ -2548,7 +2548,7 @@ impl ManagementService for ManagementServiceImpl {
                     provider_instance_name: req.provider_instance_name,
                     sort_by: req.sort_by,
                     sort_direction: req.sort_direction,
-                    availability: client_proto::ResourceAvailabilityFilter::All as i32,
+                    availability: req.availability,
                     refresh: req.refresh,
                 },
                 &validated.user_id,

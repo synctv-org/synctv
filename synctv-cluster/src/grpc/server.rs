@@ -1,54 +1,25 @@
-//! Cluster gRPC server implementation
+//! Cluster gRPC server implementation.
 //!
-//! Handles inter-node communication for cluster coordination.
+//! This service is intentionally limited to cluster topology/discovery. Business
+//! inter-node calls live in their owning crates and are mounted on the main API
+//! tonic server with internal shared-secret auth.
 
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use super::synctv::cluster::cluster_service_server::ClusterService;
-use super::synctv::cluster::{
-    GetNodesRequest, GetNodesResponse, GetRoomConnectionsRequest, GetRoomConnectionsResponse,
-    GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, NodeInfo, RoomConnection,
-    UserOnlineStatus,
-};
+use super::synctv::cluster::{GetNodesRequest, GetNodesResponse, NodeInfo};
 use super::ClusterAuthInterceptor;
 use crate::discovery::{ClusterNodeDirectory, NodeInfo as DiscoveryNodeInfo};
-use crate::sync::ConnectionRuntime;
-use synctv_core::models::{RoomId, UserId};
 
-fn u64_to_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-/// Cluster gRPC service
-///
-/// Handles cluster discovery and state synchronization.
-///
-/// # Architecture Overview
-///
-/// Redis is the **sole discovery mechanism** for this cluster:
-/// - Nodes self-register in Redis via `NodeRegistry::register()` on startup
-/// - Periodic heartbeats are sent directly to Redis via `NodeRegistry::heartbeat()`
-/// - Graceful deregistration uses `NodeRegistry::unregister()` with epoch validation
-///
-/// # Endpoint Usage Status
-///
-/// | Endpoint | Status | Notes |
-/// |----------|--------|-------|
-/// | `GetNodes` | ACTIVE | Returns all known nodes from Redis registry |
-/// | `GetUserOnlineStatus` | ACTIVE | Fan-out query for user presence across nodes |
-/// | `GetRoomConnections` | ACTIVE | Fan-out query for room participants across nodes |
 #[derive(Clone)]
 pub struct ClusterServer {
     node_registry: Arc<dyn ClusterNodeDirectory>,
-    connection_runtime: Option<Arc<dyn ConnectionRuntime>>,
-    node_id: String,
     auth: Option<ClusterAuthInterceptor>,
 }
 
-#[allow(clippy::result_large_err)] // tonic::Status is inherently large; required by gRPC API
+#[allow(clippy::result_large_err)]
 impl ClusterServer {
-    /// Create a new cluster server
     #[must_use]
     pub fn new<N>(node_registry: Arc<N>, node_id: String) -> Self
     where
@@ -59,39 +30,19 @@ impl ClusterServer {
 
     #[must_use]
     pub fn from_runtime(node_registry: Arc<dyn ClusterNodeDirectory>, node_id: String) -> Self {
+        let _ = node_id;
         Self {
             node_registry,
-            connection_runtime: None,
-            node_id,
             auth: None,
         }
     }
 
-    /// Set the connection query runtime for user/room presence queries.
-    #[must_use]
-    pub fn with_connection_runtime(
-        mut self,
-        connection_runtime: Arc<dyn ConnectionRuntime>,
-    ) -> Self {
-        self.connection_runtime = Some(connection_runtime);
-        self
-    }
-
-    /// Enable shared-secret authentication for cluster RPC handlers.
-    ///
-    /// Cluster RPCs are internal-only and must never be exposed without an
-    /// application-layer shared secret. `ClusterServer::new()` defaults to
-    /// fail-closed until a secret is provided here.
     #[must_use]
     pub fn with_cluster_secret(mut self, secret: String) -> Self {
         self.auth = Some(ClusterAuthInterceptor::new(secret));
         self
     }
 
-    /// Maximum number of `user_ids` in a single request
-    const MAX_USER_IDS: usize = 1000;
-
-    /// Convert discovery `NodeInfo` to proto `NodeInfo`.
     fn discovery_to_proto_node(discovery: &DiscoveryNodeInfo) -> NodeInfo {
         NodeInfo {
             node_id: discovery.node_id.clone(),
@@ -116,9 +67,8 @@ impl ClusterServer {
 }
 
 #[tonic::async_trait]
-#[allow(clippy::result_large_err)] // tonic::Status is inherently large; required by gRPC trait
+#[allow(clippy::result_large_err)]
 impl ClusterService for ClusterServer {
-    /// Get all nodes in the cluster
     async fn get_nodes(
         &self,
         request: Request<GetNodesRequest>,
@@ -136,12 +86,11 @@ impl ClusterService for ClusterServer {
                 synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                     .with_label_values(&["cluster", "get_nodes", "ok"])
                     .inc();
-                let proto_nodes: Vec<NodeInfo> =
-                    nodes.iter().map(Self::discovery_to_proto_node).collect();
+                let proto_nodes = nodes.iter().map(Self::discovery_to_proto_node).collect();
 
                 Ok(Response::new(GetNodesResponse { nodes: proto_nodes }))
             }
-            Err(e) => {
+            Err(error) => {
                 let elapsed = start.elapsed().as_secs_f64();
                 synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
                     .with_label_values(&["cluster", "get_nodes", "error"])
@@ -149,124 +98,9 @@ impl ClusterService for ClusterServer {
                 synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                     .with_label_values(&["cluster", "get_nodes", "error"])
                     .inc();
-                tracing::error!("Failed to get nodes: {}", e);
-                Err(Status::unavailable(e.to_string()))
+                tracing::error!("Failed to get nodes from cluster registry: {error}");
+                Err(Status::unavailable(error.to_string()))
             }
         }
-    }
-
-    /// Get online status of users on this node
-    ///
-    /// Returns the online status for requested users based on this node's
-    /// `ConnectionManager`. In a multi-replica setup, the caller should fan out
-    /// this query to all nodes to get the global picture.
-    async fn get_user_online_status(
-        &self,
-        request: Request<GetUserOnlineStatusRequest>,
-    ) -> std::result::Result<Response<GetUserOnlineStatusResponse>, Status> {
-        self.authorize(&request)?;
-        let start = std::time::Instant::now();
-        let req = request.into_inner();
-
-        if req.user_ids.len() > Self::MAX_USER_IDS {
-            return Err(Status::invalid_argument(format!(
-                "user_ids array must contain at most {} entries",
-                Self::MAX_USER_IDS
-            )));
-        }
-
-        let Some(ref cm) = self.connection_runtime else {
-            return Ok(Response::new(GetUserOnlineStatusResponse {
-                statuses: Vec::new(),
-            }));
-        };
-
-        let statuses: Vec<UserOnlineStatus> = req
-            .user_ids
-            .iter()
-            .map(|uid| {
-                let user_id = UserId::try_from(*uid).map_err(|error| {
-                    Status::invalid_argument(format!("invalid user_id: {error}"))
-                })?;
-                let connections = cm.get_user_connections(&user_id);
-                let is_online = !connections.is_empty();
-                let room_ids: Vec<i64> = connections
-                    .iter()
-                    .filter_map(|c| c.room_id.as_ref().map(RoomId::as_i64))
-                    .collect();
-
-                Ok(UserOnlineStatus {
-                    user_id: *uid,
-                    is_online,
-                    room_ids,
-                    node_id: self.node_id.clone(),
-                })
-            })
-            .collect::<std::result::Result<_, Status>>()?;
-
-        let elapsed = start.elapsed().as_secs_f64();
-        synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-            .with_label_values(&["cluster", "get_user_online_status", "ok"])
-            .observe(elapsed);
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "get_user_online_status", "ok"])
-            .inc();
-
-        Ok(Response::new(GetUserOnlineStatusResponse { statuses }))
-    }
-
-    /// Get connections for a room on this node
-    ///
-    /// Returns the active connections in a specific room based on this node's
-    /// `ConnectionManager`. In a multi-replica setup, the caller should fan out
-    /// this query to all nodes to get the global room connections.
-    async fn get_room_connections(
-        &self,
-        request: Request<GetRoomConnectionsRequest>,
-    ) -> std::result::Result<Response<GetRoomConnectionsResponse>, Status> {
-        self.authorize(&request)?;
-        let start = std::time::Instant::now();
-        let req = request.into_inner();
-
-        let Some(ref cm) = self.connection_runtime else {
-            return Ok(Response::new(GetRoomConnectionsResponse {
-                connections: Vec::new(),
-            }));
-        };
-
-        let room_id = RoomId::try_from(req.room_id)
-            .map_err(|error| Status::invalid_argument(format!("invalid room_id: {error}")))?;
-        let room_conns = cm.get_room_connections(&room_id);
-
-        let connections: Vec<RoomConnection> = room_conns
-            .iter()
-            .map(|conn| {
-                // Convert Instant durations to Unix timestamps (approximate)
-                let now_unix = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let now_unix = u64_to_i64(now_unix);
-                let connected_secs_ago = u64_to_i64(conn.connected_at.elapsed().as_secs());
-                let last_activity_secs_ago = u64_to_i64(conn.last_activity.elapsed().as_secs());
-
-                RoomConnection {
-                    user_id: conn.user_id.as_i64(),
-                    node_id: self.node_id.clone(),
-                    connected_at: now_unix - connected_secs_ago,
-                    last_activity: now_unix - last_activity_secs_ago,
-                }
-            })
-            .collect();
-
-        let elapsed = start.elapsed().as_secs_f64();
-        synctv_core::metrics::grpc::GRPC_REQUEST_DURATION
-            .with_label_values(&["cluster", "get_room_connections", "ok"])
-            .observe(elapsed);
-        synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-            .with_label_values(&["cluster", "get_room_connections", "ok"])
-            .inc();
-
-        Ok(Response::new(GetRoomConnectionsResponse { connections }))
     }
 }

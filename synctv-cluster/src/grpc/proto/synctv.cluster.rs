@@ -20,51 +20,6 @@ pub struct GetNodesResponse {
     #[prost(message, repeated, tag = "1")]
     pub nodes: ::prost::alloc::vec::Vec<NodeInfo>,
 }
-/// User connection tracking
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetUserOnlineStatusRequest {
-    #[prost(int64, repeated, tag = "1")]
-    pub user_ids: ::prost::alloc::vec::Vec<i64>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetUserOnlineStatusResponse {
-    #[prost(message, repeated, tag = "1")]
-    pub statuses: ::prost::alloc::vec::Vec<UserOnlineStatus>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UserOnlineStatus {
-    #[prost(int64, tag = "1")]
-    pub user_id: i64,
-    #[prost(bool, tag = "2")]
-    pub is_online: bool,
-    /// Rooms user is currently in
-    #[prost(int64, repeated, tag = "3")]
-    pub room_ids: ::prost::alloc::vec::Vec<i64>,
-    /// Node where user is connected
-    #[prost(string, tag = "4")]
-    pub node_id: ::prost::alloc::string::String,
-}
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetRoomConnectionsRequest {
-    #[prost(int64, tag = "1")]
-    pub room_id: i64,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetRoomConnectionsResponse {
-    #[prost(message, repeated, tag = "1")]
-    pub connections: ::prost::alloc::vec::Vec<RoomConnection>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct RoomConnection {
-    #[prost(int64, tag = "1")]
-    pub user_id: i64,
-    #[prost(string, tag = "2")]
-    pub node_id: ::prost::alloc::string::String,
-    #[prost(int64, tag = "3")]
-    pub connected_at: i64,
-    #[prost(int64, tag = "4")]
-    pub last_activity: i64,
-}
 /// Generated client implementations.
 pub mod cluster_service_client {
     #![allow(
@@ -83,13 +38,10 @@ pub mod cluster_service_client {
     /// * Redis is the SOLE discovery mechanism for this cluster
     /// * Nodes self-register in Redis via NodeRegistry::register() on startup
     /// * Heartbeats are sent directly to Redis via NodeRegistry::heartbeat()
-    /// * Events are broadcast via Redis Pub/Sub through ClusterManager
     ///
     /// Endpoint Usage:
     ///
     /// * GetNodes: ACTIVE - returns all known nodes from Redis registry
-    /// * GetUserOnlineStatus: ACTIVE - fan-out query for user presence
-    /// * GetRoomConnections: ACTIVE - fan-out query for room participants
     #[derive(Debug, Clone)]
     pub struct ClusterServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -195,65 +147,6 @@ pub mod cluster_service_client {
                 .insert(GrpcMethod::new("synctv.cluster.ClusterService", "GetNodes"));
             self.inner.unary(req, path, codec).await
         }
-        /// User connection tracking - ACTIVE endpoints for fan-out queries
-        pub async fn get_user_online_status(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetUserOnlineStatusRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetUserOnlineStatusResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.cluster.ClusterService/GetUserOnlineStatus",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "synctv.cluster.ClusterService",
-                        "GetUserOnlineStatus",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_room_connections(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetRoomConnectionsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetRoomConnectionsResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/synctv.cluster.ClusterService/GetRoomConnections",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "synctv.cluster.ClusterService",
-                        "GetRoomConnections",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -277,21 +170,6 @@ pub mod cluster_service_server {
             tonic::Response<super::GetNodesResponse>,
             tonic::Status,
         >;
-        /// User connection tracking - ACTIVE endpoints for fan-out queries
-        async fn get_user_online_status(
-            &self,
-            request: tonic::Request<super::GetUserOnlineStatusRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetUserOnlineStatusResponse>,
-            tonic::Status,
-        >;
-        async fn get_room_connections(
-            &self,
-            request: tonic::Request<super::GetRoomConnectionsRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetRoomConnectionsResponse>,
-            tonic::Status,
-        >;
     }
     /// Cluster coordination service for multi-replica deployment
     ///
@@ -300,13 +178,10 @@ pub mod cluster_service_server {
     /// * Redis is the SOLE discovery mechanism for this cluster
     /// * Nodes self-register in Redis via NodeRegistry::register() on startup
     /// * Heartbeats are sent directly to Redis via NodeRegistry::heartbeat()
-    /// * Events are broadcast via Redis Pub/Sub through ClusterManager
     ///
     /// Endpoint Usage:
     ///
     /// * GetNodes: ACTIVE - returns all known nodes from Redis registry
-    /// * GetUserOnlineStatus: ACTIVE - fan-out query for user presence
-    /// * GetRoomConnections: ACTIVE - fan-out query for room participants
     #[derive(Debug)]
     pub struct ClusterServiceServer<T> {
         inner: Arc<T>,
@@ -413,101 +288,6 @@ pub mod cluster_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetNodesSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.cluster.ClusterService/GetUserOnlineStatus" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetUserOnlineStatusSvc<T: ClusterService>(pub Arc<T>);
-                    impl<
-                        T: ClusterService,
-                    > tonic::server::UnaryService<super::GetUserOnlineStatusRequest>
-                    for GetUserOnlineStatusSvc<T> {
-                        type Response = super::GetUserOnlineStatusResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetUserOnlineStatusRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ClusterService>::get_user_online_status(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetUserOnlineStatusSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/synctv.cluster.ClusterService/GetRoomConnections" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetRoomConnectionsSvc<T: ClusterService>(pub Arc<T>);
-                    impl<
-                        T: ClusterService,
-                    > tonic::server::UnaryService<super::GetRoomConnectionsRequest>
-                    for GetRoomConnectionsSvc<T> {
-                        type Response = super::GetRoomConnectionsResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetRoomConnectionsRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ClusterService>::get_room_connections(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetRoomConnectionsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

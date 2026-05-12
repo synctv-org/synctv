@@ -11,107 +11,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
 use tokio::sync::mpsc;
-
-// Mock StreamRegistryTrait that counts stop_all calls via a shared counter.
-// We can't directly observe stop_all() calls, but we can observe the effect:
-// when stop_all() is called, it removes streams from the pool.
-// This test uses a different approach: we create a mock StreamPool directly,
-// add streams to it, then verify that drop clears the pool.
-struct MockStreamRegistry;
-
-#[async_trait::async_trait]
-impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
-    async fn register_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _node_id: &str,
-        _app_name: &str,
-        _api_address: &str,
-    ) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn try_register_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _node_id: &str,
-        _user_id: &str,
-        _api_address: &str,
-    ) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn refresh_publisher_ttl(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _user_id: &str,
-        _node_id: &str,
-        _expected_epoch: u64,
-    ) -> anyhow::Result<PublisherRefreshOutcome> {
-        Ok(PublisherRefreshOutcome::Refreshed)
-    }
-
-    async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn unregister_publisher_if_epoch_matches(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _expected_epoch: u64,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn get_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-    ) -> anyhow::Result<Option<synctv_livestream::relay::PublisherInfo>> {
-        Ok(None)
-    }
-
-    async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<bool> {
-        Ok(false)
-    }
-
-    async fn list_active_publishers(
-        &self,
-    ) -> anyhow::Result<Vec<synctv_livestream::relay::ActivePublisherEntry>> {
-        Ok(vec![])
-    }
-
-    async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(vec![])
-    }
-
-    async fn get_user_publishers(&self, _user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(vec![])
-    }
-
-    async fn unregister_all_user_publishers(&self, _user_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn validate_epoch(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _epoch: u64,
-    ) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn cleanup_all_publishers_for_node(&self, _node_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
 
 /// Test that stop_all on StreamPool clears all streams.
 /// This is a unit test for the StreamPool behavior that LivestreamHandle relies on.
@@ -174,8 +74,7 @@ async fn test_stream_pool_stop_all_clears_streams() {
 /// Test that PullStreamManager.stop_all() clears the internal pool.
 #[tokio::test]
 async fn test_pull_stream_manager_stop_all_clears_pool() {
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -192,8 +91,7 @@ async fn test_pull_stream_manager_stop_all_clears_pool() {
 /// Test that ExternalPublishManager.stop_all() clears the internal pool.
 #[tokio::test]
 async fn test_external_publish_manager_stop_all_clears_pool() {
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
 
     let external_publish_manager = Arc::new(
@@ -221,8 +119,7 @@ async fn test_livestream_handle_drop_spawns_stop_all_task() {
     // tokio::spawn is called with stop_all(). Since tokio::spawn is fire-and-forget,
     // we need to give the runtime a chance to execute it.
 
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -307,8 +204,7 @@ async fn test_stop_all_spawned_task_executes() {
 /// Test that multiple drops don't cause issues (idempotency).
 #[tokio::test]
 async fn test_multiple_stop_all_calls_are_safe() {
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -328,8 +224,7 @@ async fn test_multiple_stop_all_calls_are_safe() {
 /// This test simulates the exact code path in LivestreamHandle::drop.
 #[tokio::test]
 async fn test_drop_behavior_simulation() {
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -371,8 +266,7 @@ async fn test_stop_all_task_completes_after_scope_exit() {
     let stop_all_completed = Arc::new(AtomicUsize::new(0));
 
     let handle = {
-        let registry =
-            Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+        let registry = synctv_livestream::relay::local_stream_registry();
         let (event_sender, _) = mpsc::channel(64);
         let completed_counter = Arc::clone(&stop_all_completed);
 

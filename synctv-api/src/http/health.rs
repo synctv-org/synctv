@@ -118,7 +118,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         }
     };
 
-    // Check cluster health (only when cluster mode is active)
+    // Check cluster health (only when distributed mode is active)
     let cluster_status = match check_cluster_health(&state) {
         Some(Ok(())) => Some("healthy".to_string()),
         Some(Err(e)) => {
@@ -131,7 +131,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     };
 
     // Check WebSocket ticket service.
-    // In cluster mode, memory-backed ticket storage causes cross-replica auth failures.
+    // In distributed mode, memory-backed ticket storage causes cross-replica auth failures.
     let ws_ticket_status = {
         let svc = &state.ws_ticket_service;
         let is_cluster_mode = state.config.cluster_runtime_enabled();
@@ -140,16 +140,16 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
             Some(health)
         } else {
             error_messages.push(
-                "WsTicketService: ticket storage is not cross-node capable in cluster mode \
+                "WsTicketService: ticket storage is not cross-node capable in distributed mode \
                  (tickets created on one node cannot be validated on another)"
                     .to_string(),
             );
             is_healthy = false;
             warn!(
-                "WsTicketService storage is not cross-node capable in cluster mode; \
+                "WsTicketService storage is not cross-node capable in distributed mode; \
                  cross-replica ticket validation will fail"
             );
-            Some("unhealthy (single-node ticket storage in cluster mode)".to_string())
+            Some("unhealthy (single-node ticket storage in distributed mode)".to_string())
         }
     };
 
@@ -233,15 +233,15 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
 /// Check cluster health by verifying the realtime cluster service is operational.
 ///
 /// Returns `None` if no cluster realtime service is configured (single-node mode).
-/// Returns `Some(Ok(()))` if the cluster runtime is healthy.
-/// Returns `Some(Err(...))` if the cluster runtime reports issues.
+/// Returns `Some(Ok(()))` if the realtime runtime is healthy.
+/// Returns `Some(Err(...))` if the realtime runtime reports issues.
 fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
     if !state.config.cluster_runtime_enabled() {
         return None;
     }
     let Some(event_service) = state.event_service.as_ref() else {
         return Some(Err(
-            "Cluster runtime is enabled but realtime event service is not available".to_string(),
+            "Realtime runtime is enabled but realtime event service is not available".to_string(),
         ));
     };
     let metrics = event_service.metrics();
@@ -281,7 +281,7 @@ enum RedisHealthStatus {
 
 /// Whether Redis must exist is a configuration-layer invariant enforced during
 /// startup validation. At runtime, a missing Redis handle is treated as
-/// "not configured" rather than re-enforcing cluster configuration rules.
+/// "not configured" rather than re-enforcing realtime configuration rules.
 async fn check_redis_health(state: &AppState) -> RedisHealthStatus {
     let redis_conn = state.resolve_redis_conn().await;
     check_redis_health_from_conn(redis_conn).await
@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ws_ticket_memory_backend_is_only_unhealthy_when_cluster_enabled() {
+    fn test_ws_ticket_memory_backend_is_only_unhealthy_when_distributed_enabled() {
         let memory_tickets = synctv_core::service::WsTicketService::local_only(None);
         assert!(
             ws_ticket_backend_is_safe_for_mode(&memory_tickets, false),
@@ -1037,7 +1037,7 @@ mod tests {
         );
         assert!(
             !ws_ticket_backend_is_safe_for_mode(&memory_tickets, true),
-            "cluster mode must reject memory-backed ws tickets"
+            "distributed mode must reject memory-backed ws tickets"
         );
 
         let shared_tickets = synctv_core::service::WsTicketService::from_store(
@@ -1048,7 +1048,7 @@ mod tests {
         standalone.cluster.enabled = false;
         assert!(
             !standalone.cluster_runtime_enabled(),
-            "standalone config should not be treated as cluster mode"
+            "standalone config should not be treated as distributed mode"
         );
 
         let mut clustered = synctv_core::Config::default();
@@ -1056,11 +1056,11 @@ mod tests {
         clustered.server.cluster_secret = "shared-secret".to_string();
         assert!(
             clustered.cluster_runtime_enabled(),
-            "cluster-enabled config should be treated as cluster mode"
+            "cluster-enabled config should be treated as distributed mode"
         );
         assert!(
             ws_ticket_backend_is_safe_for_mode(&shared_tickets, true),
-            "cluster mode should accept any store that advertises cluster capability"
+            "distributed mode should accept any store that advertises cluster capability"
         );
         assert!(
             check_ws_ticket_health(&shared_tickets).contains("cross-node capable"),
@@ -1081,7 +1081,7 @@ mod tests {
         );
         assert!(
             !ws_ticket_backend_is_safe_for_mode(&memory_tickets, true),
-            "helper should treat distributed cluster mode as unsafe for memory tickets"
+            "helper should treat distributed distributed mode as unsafe for memory tickets"
         );
     }
 

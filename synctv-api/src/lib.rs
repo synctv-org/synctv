@@ -6,19 +6,18 @@
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive — use only one");
 
 pub mod client_ip;
-pub mod cluster_fanout;
 pub mod fanout;
 pub mod grpc;
 pub mod http;
 pub mod impls;
 mod media_fanout;
-mod member_fanout;
 mod membership_event_fanout;
 pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 mod playlist_fanout;
 pub mod proto;
+pub mod realtime_fanout;
 mod realtime_lifecycle;
 mod resource_change;
 mod room_cache_fanout;
@@ -27,7 +26,7 @@ pub mod runtime;
 
 #[doc(hidden)]
 pub mod test_support {
-    pub use crate::cluster_fanout::channel_cluster_fanout_service;
+    pub use crate::realtime_fanout::channel_realtime_fanout_service;
 }
 
 // Re-export commonly used types

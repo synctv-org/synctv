@@ -317,15 +317,22 @@ impl ClientApiImpl {
             proto_role_to_room_role(role)?
         };
 
-        let changed_by = uid;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, uid);
         let member = self
             .room_service
-            .add_member(rid, uid, target_uid, role, notify)
+            .add_member_with_outbox(
+                rid,
+                uid,
+                target_uid,
+                role,
+                notify,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self
             .user_service
@@ -387,16 +394,21 @@ impl ClientApiImpl {
             .public_id_codec
             .decode_review_request_id(&req.request_id)
             .map_err(ApiError::InvalidInput)?;
-        let changed_by = uid;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(UserId::MAX, uid);
         let member = self
             .room_service
-            .approve_join_request(rid, uid, request_id)
+            .approve_join_request_with_outbox(
+                rid,
+                uid,
+                request_id,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
         let target_uid = member.user_id;
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self
             .user_service
@@ -461,16 +473,21 @@ impl ClientApiImpl {
             .map_err(ApiError::InvalidInput)?;
         let reason = (!req.reason.trim().is_empty()).then_some(req.reason.as_str());
 
-        let changed_by = uid;
-        let target_uid = self
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(UserId::MAX, uid);
+        let _target_uid = self
             .room_service
-            .reject_join_request(rid, uid, request_id, reason)
+            .reject_join_request_with_outbox(
+                rid,
+                uid,
+                request_id,
+                reason,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::RejectRoomJoinReviewResponse {
             review: Some(self.load_room_join_review(&rid, request_id).await?),
@@ -555,11 +572,20 @@ impl ClientApiImpl {
             // Handle role update if provided (non-zero = specified).
             if role_is_changing {
                 let new_role = proto_role_to_room_role(role)?;
+                let prepared_membership_fanout = self
+                    .membership_event_fanout
+                    .prepare_permission_changed_outbox_fanout(target_uid, uid);
                 self.room_service
-                    .member_service()
-                    .set_member_role(rid, uid, target_uid, new_role)
+                    .set_member_role_with_outbox(
+                        rid,
+                        uid,
+                        target_uid,
+                        new_role,
+                        prepared_membership_fanout.outbox_factory(),
+                    )
                     .await
                     .map_err(ApiError::from)?;
+                prepared_membership_fanout.publish_after_outbox_commit();
             }
 
             // Handle permission updates
@@ -579,16 +605,23 @@ impl ClientApiImpl {
                     removed_permissions
                 };
 
+                let prepared_membership_fanout = self
+                    .membership_event_fanout
+                    .prepare_permission_changed_outbox_fanout(target_uid, uid);
                 self.room_service
-                    .set_member_permission(rid, uid, target_uid, added, removed)
+                    .set_member_permission_with_outbox(
+                        rid,
+                        uid,
+                        target_uid,
+                        added,
+                        removed,
+                        prepared_membership_fanout.outbox_factory(),
+                    )
                     .await
                     .map_err(ApiError::from)?;
+                prepared_membership_fanout.publish_after_outbox_commit();
             }
         }
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid)
-            .await?;
 
         // Get updated member directly instead of fetching all members
         let member = self
@@ -665,22 +698,23 @@ impl ClientApiImpl {
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, uid);
         self.room_service
-            .kick_member(rid, uid, target_uid)
+            .kick_member_with_outbox(
+                rid,
+                uid,
+                target_uid,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
             .await;
-
-        self.member_fanout
-            .publish_kick_user_from_room(&rid, &target_uid, "kicked");
-
-        // Notify other replicas to invalidate permission cache
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid)
-            .await?;
 
         Ok(crate::proto::client::KickMemberResponse { success: true })
     }
@@ -707,23 +741,24 @@ impl ClientApiImpl {
             Some(reason)
         };
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, uid);
         self.room_service
-            .member_service()
-            .ban_member(rid, uid, target_uid, reason)
+            .ban_member_with_outbox(
+                rid,
+                uid,
+                target_uid,
+                reason,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
             .await;
-
-        self.member_fanout
-            .publish_kick_user_from_room(&rid, &target_uid, "banned");
-
-        // Notify other replicas to invalidate permission cache
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid)
-            .await?;
 
         Ok(crate::proto::client::BanMemberResponse { success: true })
     }
@@ -743,16 +778,19 @@ impl ClientApiImpl {
         let target_uid =
             crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, uid);
         self.room_service
-            .member_service()
-            .unban_member(rid, uid, target_uid)
+            .unban_member_with_outbox(
+                rid,
+                uid,
+                target_uid,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        // Notify other replicas to invalidate permission cache
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &uid)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::UnbanMemberResponse { success: true })
     }

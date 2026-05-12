@@ -1784,11 +1784,11 @@ impl RoomService for ClientServiceImpl {
         // Connection registration is handled by StreamMessageHandler::run()
         // which generates its own connection_id and manages the full lifecycle.
 
-        // ClusterManager is required for real-time messaging; in single-node mode
+        // RealtimeManager is required for real-time messaging; in single-node mode
         // without Redis, streaming is not supported.
         let event_service = self.event_service.clone().ok_or_else(|| {
             Status::unavailable(
-                "Real-time messaging requires cluster manager (Redis not configured)",
+                "Real-time messaging requires realtime manager (Redis not configured)",
             )
         })?;
 

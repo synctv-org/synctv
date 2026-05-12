@@ -186,6 +186,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         // Invalidate room cache on other replicas for playlist structure change
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -247,6 +248,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         // Invalidate room cache on other replicas for playlist update
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -307,6 +309,7 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.room_cache_fanout.publish_invalidation(&rid);
 

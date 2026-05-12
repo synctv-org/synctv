@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use synctv_cluster::sync::{BroadcastResult, ClusterEvent, ClusterManager, ConnectionId};
 use synctv_core::models::{RoomId, UserId};
+use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent, RealtimeManager};
 use tokio::sync::{broadcast, mpsc};
 
-pub use synctv_cluster::sync::ConnectionRuntime as RealtimeConnectionService;
+pub use synctv_realtime::sync::ConnectionRuntime as RealtimeConnectionService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RealtimeMetrics {
@@ -96,34 +96,34 @@ pub trait RealtimeEventService: Send + Sync {
         room_id: RoomId,
         user_id: UserId,
         connection_id: String,
-    ) -> synctv_cluster::Result<(mpsc::Receiver<ClusterEvent>, ConnectionId)>;
+    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)>;
 
     fn unsubscribe(&self, connection_id: &str);
 
-    fn broadcast(&self, event: ClusterEvent) -> BroadcastResult;
+    fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult;
 
-    fn publish_only(&self, event: ClusterEvent) -> bool;
+    fn publish_only(&self, event: RealtimeEvent) -> bool;
 
-    fn broadcast_local(&self, room_id: &RoomId, event: &ClusterEvent) -> usize;
+    fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize;
 
-    fn broadcast_admin_local(&self, _event: &ClusterEvent) -> usize {
+    fn broadcast_admin_local(&self, _event: &RealtimeEvent) -> usize {
         0
     }
 
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent>;
+    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent>;
 
     fn metrics(&self) -> RealtimeMetrics;
 
-    fn broadcast_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+    fn broadcast_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
         let result = self.broadcast(event);
         RealtimeDeliveryOutcome::from_broadcast(&result, self.metrics())
     }
 
-    fn publish_only_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+    fn publish_only_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
         RealtimeDeliveryOutcome::from_publish_only(self.publish_only(event), self.metrics())
     }
 
-    fn retry_broadcast_outcome(&self, event: ClusterEvent) -> RealtimeDeliveryOutcome {
+    fn retry_broadcast_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
         if self.metrics().distributed_enabled {
             self.publish_only_outcome(event)
         } else {
@@ -138,66 +138,66 @@ pub trait RealtimeEventService: Send + Sync {
 
 #[derive(Clone)]
 pub struct ClusterRealtimeEventService {
-    cluster_manager: Arc<ClusterManager>,
+    realtime_manager: Arc<RealtimeManager>,
 }
 
 impl ClusterRealtimeEventService {
     #[must_use]
-    pub const fn new(cluster_manager: Arc<ClusterManager>) -> Self {
-        Self { cluster_manager }
+    pub const fn new(realtime_manager: Arc<RealtimeManager>) -> Self {
+        Self { realtime_manager }
     }
 }
 
 #[async_trait]
-impl RealtimeEventService for ClusterManager {
+impl RealtimeEventService for RealtimeManager {
     async fn subscribe_with_id(
         &self,
         room_id: RoomId,
         user_id: UserId,
         connection_id: String,
-    ) -> synctv_cluster::Result<(mpsc::Receiver<ClusterEvent>, ConnectionId)> {
-        ClusterManager::subscribe_with_id(self, room_id, user_id, connection_id).await
+    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+        RealtimeManager::subscribe_with_id(self, room_id, user_id, connection_id).await
     }
 
     fn unsubscribe(&self, connection_id: &str) {
-        ClusterManager::unsubscribe(self, connection_id);
+        RealtimeManager::unsubscribe(self, connection_id);
     }
 
-    fn broadcast(&self, event: ClusterEvent) -> BroadcastResult {
-        ClusterManager::broadcast(self, event)
+    fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult {
+        RealtimeManager::broadcast(self, event)
     }
 
-    fn publish_only(&self, event: ClusterEvent) -> bool {
-        ClusterManager::publish_only(self, event)
+    fn publish_only(&self, event: RealtimeEvent) -> bool {
+        RealtimeManager::publish_only(self, event)
     }
 
-    fn broadcast_local(&self, room_id: &RoomId, event: &ClusterEvent) -> usize {
-        ClusterManager::message_hub(self).broadcast(room_id, event)
+    fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        RealtimeManager::message_hub(self).broadcast(room_id, event)
     }
 
-    fn broadcast_admin_local(&self, event: &ClusterEvent) -> usize {
-        ClusterManager::admin_event_tx(self)
+    fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {
+        RealtimeManager::admin_event_tx(self)
             .send(event.clone())
             .unwrap_or_default()
     }
 
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
-        ClusterManager::subscribe_admin_events(self)
+    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        RealtimeManager::subscribe_admin_events(self)
     }
 
     fn metrics(&self) -> RealtimeMetrics {
-        let metrics = ClusterManager::metrics(self);
+        let metrics = RealtimeManager::metrics(self);
         RealtimeMetrics {
             distributed_enabled: metrics.distributed_enabled,
         }
     }
 
     fn node_id(&self) -> &str {
-        ClusterManager::node_id(self)
+        RealtimeManager::node_id(self)
     }
 
     async fn shutdown(&self) {
-        ClusterManager::shutdown(self).await;
+        RealtimeManager::shutdown(self).await;
     }
 }
 
@@ -208,9 +208,9 @@ impl RealtimeEventService for ClusterRealtimeEventService {
         room_id: RoomId,
         user_id: UserId,
         connection_id: String,
-    ) -> synctv_cluster::Result<(mpsc::Receiver<ClusterEvent>, ConnectionId)> {
-        <ClusterManager as RealtimeEventService>::subscribe_with_id(
-            self.cluster_manager.as_ref(),
+    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+        <RealtimeManager as RealtimeEventService>::subscribe_with_id(
+            self.realtime_manager.as_ref(),
             room_id,
             user_id,
             connection_id,
@@ -219,51 +219,54 @@ impl RealtimeEventService for ClusterRealtimeEventService {
     }
 
     fn unsubscribe(&self, connection_id: &str) {
-        <ClusterManager as RealtimeEventService>::unsubscribe(
-            self.cluster_manager.as_ref(),
+        <RealtimeManager as RealtimeEventService>::unsubscribe(
+            self.realtime_manager.as_ref(),
             connection_id,
         );
     }
 
-    fn broadcast(&self, event: ClusterEvent) -> BroadcastResult {
-        <ClusterManager as RealtimeEventService>::broadcast(self.cluster_manager.as_ref(), event)
+    fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult {
+        <RealtimeManager as RealtimeEventService>::broadcast(self.realtime_manager.as_ref(), event)
     }
 
-    fn publish_only(&self, event: ClusterEvent) -> bool {
-        <ClusterManager as RealtimeEventService>::publish_only(self.cluster_manager.as_ref(), event)
+    fn publish_only(&self, event: RealtimeEvent) -> bool {
+        <RealtimeManager as RealtimeEventService>::publish_only(
+            self.realtime_manager.as_ref(),
+            event,
+        )
     }
 
-    fn broadcast_local(&self, room_id: &RoomId, event: &ClusterEvent) -> usize {
-        <ClusterManager as RealtimeEventService>::broadcast_local(
-            self.cluster_manager.as_ref(),
+    fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        <RealtimeManager as RealtimeEventService>::broadcast_local(
+            self.realtime_manager.as_ref(),
             room_id,
             event,
         )
     }
 
-    fn broadcast_admin_local(&self, event: &ClusterEvent) -> usize {
-        <ClusterManager as RealtimeEventService>::broadcast_admin_local(
-            self.cluster_manager.as_ref(),
+    fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {
+        <RealtimeManager as RealtimeEventService>::broadcast_admin_local(
+            self.realtime_manager.as_ref(),
             event,
         )
     }
 
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
-        <ClusterManager as RealtimeEventService>::subscribe_admin_events(
-            self.cluster_manager.as_ref(),
+    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+        <RealtimeManager as RealtimeEventService>::subscribe_admin_events(
+            self.realtime_manager.as_ref(),
         )
     }
 
     fn metrics(&self) -> RealtimeMetrics {
-        <ClusterManager as RealtimeEventService>::metrics(self.cluster_manager.as_ref())
+        <RealtimeManager as RealtimeEventService>::metrics(self.realtime_manager.as_ref())
     }
 
     fn node_id(&self) -> &str {
-        <ClusterManager as RealtimeEventService>::node_id(self.cluster_manager.as_ref())
+        <RealtimeManager as RealtimeEventService>::node_id(self.realtime_manager.as_ref())
     }
 
     async fn shutdown(&self) {
-        <ClusterManager as RealtimeEventService>::shutdown(self.cluster_manager.as_ref()).await;
+        <RealtimeManager as RealtimeEventService>::shutdown(self.realtime_manager.as_ref()).await;
     }
 }
 
@@ -275,11 +278,11 @@ mod tests {
     };
     use std::sync::Arc;
     use std::time::Duration;
-    use synctv_cluster::sync::{
-        BroadcastResult, ClusterConfig, ClusterEvent, ClusterManager, ConnectionLimits,
-        ConnectionManager,
-    };
     use synctv_core::models::{RoomId, UserId};
+    use synctv_realtime::sync::{
+        BroadcastResult, ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeEvent,
+        RealtimeManager,
+    };
 
     fn room_id() -> RoomId {
         RoomId::expect_positive(108_001)
@@ -289,34 +292,31 @@ mod tests {
         UserId::expect_positive(108_002)
     }
 
-    async fn local_cluster_manager(node_id: &str) -> Arc<ClusterManager> {
+    async fn local_realtime_manager(node_id: &str) -> Arc<RealtimeManager> {
         Arc::new(
-            ClusterManager::new(
-                ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: Arc::new(synctv_cluster::sync::RoomMessageHub::new()),
-                    cluster_enabled: false,
-                    node_id: node_id.to_string(),
-                    dedup_window: Duration::from_secs(30),
-                    critical_channel_capacity: 16,
-                    publish_channel_capacity: 16,
-                    key_prefix: "runtime-test:".to_string(),
-                    catchup_window_secs: 30,
-                    stream_max_length: 128,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+            RealtimeManager::new(RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: node_id.to_string(),
+                dedup_window: Duration::from_secs(30),
+                critical_channel_capacity: 16,
+                publish_channel_capacity: 16,
+                key_prefix: "runtime-test:".to_string(),
+                catchup_window_secs: 30,
+                stream_max_length: 128,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("local cluster manager should initialize"),
+            .expect("local realtime manager should initialize"),
         )
     }
 
     #[tokio::test]
     async fn test_cluster_realtime_event_service_delegates_local_broadcasts() {
-        let cluster_manager = local_cluster_manager("runtime-node").await;
-        let event_service = ClusterRealtimeEventService::new(cluster_manager.clone());
+        let realtime_manager = local_realtime_manager("runtime-node").await;
+        let event_service = ClusterRealtimeEventService::new(realtime_manager.clone());
 
         let mut room_rx = event_service
             .subscribe_with_id(room_id(), user_id(), "conn-runtime".to_string())
@@ -324,7 +324,7 @@ mod tests {
             .expect("room subscription should succeed")
             .0;
 
-        let event = ClusterEvent::ChatMessage {
+        let event = RealtimeEvent::ChatMessage {
             event_id: "evt-runtime".to_string(),
             room_id: room_id(),
             user_id: user_id(),
@@ -338,11 +338,11 @@ mod tests {
         assert_eq!(event_service.broadcast_local(&room_id(), &event), 1);
         assert!(matches!(
             room_rx.recv().await,
-            Some(ClusterEvent::ChatMessage { .. })
+            Some(RealtimeEvent::ChatMessage { .. })
         ));
         assert!(!event_service.metrics().distributed_enabled);
 
-        cluster_manager.shutdown().await;
+        realtime_manager.shutdown().await;
     }
 
     #[tokio::test]

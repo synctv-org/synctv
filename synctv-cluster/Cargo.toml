@@ -109,7 +109,3 @@ testcontainers.workspace = true
 testcontainers-modules.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-
-[[bench]]
-name = "connection_manager_ttl_refresh"
-harness = false

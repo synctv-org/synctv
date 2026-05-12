@@ -1142,7 +1142,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared rate-limit state"),
+                .contains("distributed runtime requires shared rate-limit state"),
             "unexpected error: {error}"
         );
     }

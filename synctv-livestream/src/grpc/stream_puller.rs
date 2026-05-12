@@ -9,6 +9,7 @@ use synctv_xiu::streamhub::{
     utils::Uuid,
 };
 use tokio::sync::oneshot;
+use tonic::metadata::{Ascii, MetadataValue};
 use tonic::Request;
 use tracing::{error, info, warn};
 
@@ -102,6 +103,17 @@ impl GrpcStreamPuller {
         self
     }
 
+    fn cluster_secret_metadata(&self) -> anyhow::Result<MetadataValue<Ascii>> {
+        let secret = self
+            .cluster_secret
+            .as_deref()
+            .filter(|secret| !secret.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("cluster secret is required for remote stream relay"))?;
+        secret
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))
+    }
+
     /// Run the puller: connect to remote, pull stream, publish to local `StreamHub`.
     ///
     /// Adds exponential-backoff retry logic so a transient network hiccup
@@ -130,6 +142,8 @@ impl GrpcStreamPuller {
             publisher = %self.publisher_node_addr,
             "Starting gRPC stream puller"
         );
+
+        self.cluster_secret_metadata()?;
 
         // Publish to local StreamHub to get a frame data sender.
         // This is done once — we keep the same local publication across retries.
@@ -230,6 +244,8 @@ impl GrpcStreamPuller {
         data_sender: &FrameDataSender,
         is_reconnect: bool,
     ) -> anyhow::Result<()> {
+        let cluster_secret = self.cluster_secret_metadata()?;
+
         let channel = self
             .connection_pool
             .get_channel(&self.publisher_node_addr)
@@ -249,15 +265,9 @@ impl GrpcStreamPuller {
             is_reconnect,
         });
 
-        // Attach cluster authentication secret if configured
-        if let Some(secret) = &self.cluster_secret {
-            request.metadata_mut().insert(
-                "x-cluster-secret",
-                secret
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))?,
-            );
-        }
+        request
+            .metadata_mut()
+            .insert("x-cluster-secret", cluster_secret);
 
         let stream_result = client.pull_rtmp_stream(request).await;
         let mut stream = match stream_result {
@@ -452,6 +462,53 @@ mod tests {
         .with_cluster_secret(Some("test-secret".to_string()));
 
         assert_eq!(puller.cluster_secret.as_deref(), Some("test-secret"));
+    }
+
+    #[tokio::test]
+    async fn test_puller_rejects_missing_cluster_secret() {
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pool = GrpcConnectionPool::with_defaults();
+
+        let puller = GrpcStreamPuller::new(
+            "room".to_string(),
+            "media".to_string(),
+            "node:50051".to_string(),
+            stream_hub_event_sender,
+            pool,
+        );
+
+        let error = puller
+            .cluster_secret_metadata()
+            .expect_err("remote stream relay must fail fast without a cluster secret");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_puller_rejects_empty_cluster_secret() {
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pool = GrpcConnectionPool::with_defaults();
+
+        let puller = GrpcStreamPuller::new(
+            "room".to_string(),
+            "media".to_string(),
+            "node:50051".to_string(),
+            stream_hub_event_sender,
+            pool,
+        )
+        .with_cluster_secret(Some(String::new()));
+
+        let error = puller
+            .cluster_secret_metadata()
+            .expect_err("remote stream relay must fail fast with an empty cluster secret");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
     }
 
     /// Test that connection pool health tracking works correctly.

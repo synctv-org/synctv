@@ -11,7 +11,7 @@ pub mod synctv {
     }
 }
 
-pub use client::{ClusterClient, ClusterClientConfig, FanOutResult};
+pub use client::{ClusterClient, ClusterClientConfig};
 pub use server::ClusterServer;
 pub use synctv::cluster::cluster_service_server::ClusterServiceServer;
 

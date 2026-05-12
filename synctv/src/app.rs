@@ -15,11 +15,6 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, LeadershipEvent};
-use synctv_cluster::sync::{
-    build_connection_runtime as build_cluster_connection_runtime,
-    build_room_message_runtime as build_cluster_room_message_runtime, ClusterConfig,
-    ClusterManager, ConnectionLimits, RoomMessageRuntime,
-};
 use synctv_core::{
     bootstrap::{
         bootstrap_root_user,
@@ -27,17 +22,23 @@ use synctv_core::{
         has_any_admin_users, init_redis,
         services::{init_services_with_options, InitServicesOptions},
     },
-    cache::{CacheInvalidationRuntime, KeyBuilder},
+    cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
-    repository::cluster_outbox::ClusterOutboxRepository,
+    repository::realtime_outbox::RealtimeOutboxRepository,
     service::auth::PasswordHasherService,
     Config, RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
+use synctv_realtime::sync::{
+    build_connection_runtime as build_realtime_connection_runtime,
+    build_room_message_runtime as build_realtime_room_message_runtime, CacheTarget,
+    ConnectionLimits, RealtimeConfig, RealtimeEvent, RealtimeEventHandler, RealtimeManager,
+    RoomMessageRuntime,
+};
 
-use synctv_api::cluster_fanout::{
-    default_cluster_fanout_service, default_cluster_fanout_service_with_realtime,
-    ClusterFanoutService,
+use synctv_api::realtime_fanout::{
+    default_realtime_fanout_service, default_realtime_fanout_service_with_realtime,
+    RealtimeFanoutService,
 };
 use synctv_api::runtime::{
     ClusterRealtimeEventService, RealtimeConnectionService, RealtimeEventService,
@@ -50,16 +51,16 @@ use crate::bootstrap::cluster::{
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
-use crate::cluster_bridge::{
-    room_event_to_cluster_event, ClusterMemberEventBroadcaster, ClusterPlaybackBroadcaster,
-    ClusterPlaylistBroadcaster, LocalPlaylistBroadcaster,
+use crate::realtime_bridge::{
+    room_event_to_realtime_event, LocalPlaylistBroadcaster, RealtimeMemberEventBroadcaster,
+    RealtimePlaybackBroadcaster, RealtimePlaylistBroadcaster,
 };
-use crate::outbox_dispatcher::start_cluster_outbox_dispatcher;
+use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheInvalidationStopHook, ClusterManagerShutdownHook,
-    HealthMonitorShutdownHook, PermissionServiceShutdownHook, PlaybackServiceShutdownHook,
-    ProviderInvalidationHook, RoomSettingsServiceShutdownHook, SettingsListenHook,
+    AuditFlushHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
+    PermissionServiceShutdownHook, PlaybackServiceShutdownHook, ProviderInvalidationHook,
+    RealtimeManagerShutdownHook, RoomSettingsServiceShutdownHook, SettingsListenHook,
     ShutdownCoordinator,
 };
 
@@ -93,9 +94,111 @@ impl synctv_core::service::LeaderCheck for LeaderRuntimeCheck {
     }
 }
 
+struct CoreRealtimeEventHandler {
+    permission_service: Option<synctv_core::service::PermissionService>,
+    cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
+}
+
+impl CoreRealtimeEventHandler {
+    fn new(
+        cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
+        permission_service: Option<synctv_core::service::PermissionService>,
+    ) -> Self {
+        Self {
+            permission_service,
+            cache_invalidation,
+        }
+    }
+
+    fn invalidate_cache_targets(&self, targets: &[CacheTarget]) {
+        for target in targets {
+            let msg = match target {
+                CacheTarget::User { user_id } => InvalidationMessage::User {
+                    user_id: user_id.to_string(),
+                },
+                CacheTarget::Username { user_id } => InvalidationMessage::Username {
+                    user_id: user_id.to_string(),
+                },
+                CacheTarget::Room { room_id } => InvalidationMessage::Room {
+                    room_id: room_id.to_string(),
+                },
+                CacheTarget::All => InvalidationMessage::All,
+            };
+            if let Err(error) = self.cache_invalidation.broadcast_local(msg) {
+                warn!(
+                    error = %error,
+                    "Failed to dispatch cache invalidation from remote realtime event"
+                );
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RealtimeEventHandler for CoreRealtimeEventHandler {
+    async fn handle_remote_event(
+        &self,
+        room_id: Option<synctv_core::models::RoomId>,
+        event: &RealtimeEvent,
+    ) {
+        if let RealtimeEvent::CacheInvalidate { targets, .. } = event {
+            self.invalidate_cache_targets(targets);
+            return;
+        }
+
+        let Some(room_id) = room_id else {
+            return;
+        };
+
+        if let Some(permission_service) = &self.permission_service {
+            match event {
+                RealtimeEvent::PermissionChanged { target_user_id, .. } => {
+                    permission_service
+                        .invalidate_cache(&room_id, target_user_id)
+                        .await;
+                }
+                RealtimeEvent::UserLeft { user_id, .. } => {
+                    permission_service.invalidate_cache(&room_id, user_id).await;
+                }
+                RealtimeEvent::RoomSettingsChanged { .. }
+                | RealtimeEvent::RoomDeleted { .. }
+                | RealtimeEvent::RoomBanned { .. }
+                | RealtimeEvent::RoomOwnerInactive { .. } => {
+                    permission_service.invalidate_room_cache(&room_id).await;
+                }
+                _ => {}
+            }
+        }
+
+        match event {
+            RealtimeEvent::RoomSettingsChanged { .. } | RealtimeEvent::RoomCreated { .. } => {
+                self.invalidate_cache_targets(&[CacheTarget::Room { room_id }]);
+            }
+            RealtimeEvent::RoomDeleted { .. }
+            | RealtimeEvent::RoomBanned { .. }
+            | RealtimeEvent::RoomOwnerInactive { .. } => {
+                self.invalidate_cache_targets(&[CacheTarget::Room { room_id }]);
+                if let Err(error) =
+                    self.cache_invalidation
+                        .broadcast_local(InvalidationMessage::PlaybackState {
+                            room_id: room_id.to_string(),
+                        })
+                {
+                    warn!(
+                        error = %error,
+                        room_id = %room_id,
+                        "Failed to dispatch playback cache invalidation from remote realtime event"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Cluster infrastructure.
 struct ClusterState {
-    cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     realtime_connection_service: Arc<dyn RealtimeConnectionService>,
     realtime_event_service: Option<Arc<dyn RealtimeEventService>>,
     node_registry: Option<Arc<dyn synctv_cluster::discovery::ClusterNodeDirectory>>,
@@ -315,7 +418,7 @@ fn build_connection_manager(
     limits: ConnectionLimits,
     profile: &synctv_core::SharedStateProfile,
 ) -> Result<Arc<dyn RealtimeConnectionService>> {
-    build_cluster_connection_runtime(limits, profile).map_err(|error| {
+    build_realtime_connection_runtime(limits, profile).map_err(|error| {
         anyhow::anyhow!("Failed to initialize realtime connection runtime: {error}")
     })
 }
@@ -323,28 +426,29 @@ fn build_connection_manager(
 fn build_room_message_runtime(
     profile: &synctv_core::SharedStateProfile,
 ) -> Result<Arc<dyn RoomMessageRuntime>> {
-    build_cluster_room_message_runtime(profile)
+    build_realtime_room_message_runtime(profile)
         .map_err(|error| anyhow::anyhow!("Failed to initialize realtime message runtime: {error}"))
 }
 
-fn wire_room_service_cluster_broadcasters(
+fn wire_room_service_realtime_broadcasters(
     room_service: &Arc<synctv_core::service::RoomService>,
-    cluster_manager: Arc<ClusterManager>,
+    realtime_manager: Arc<RealtimeManager>,
     playlist_broadcaster: Option<Arc<dyn synctv_core::service::PlaylistBroadcaster>>,
 ) {
-    room_service.set_playback_cluster_broadcaster(Arc::new(ClusterPlaybackBroadcaster {
-        cluster_manager: cluster_manager.clone(),
+    room_service.set_playback_realtime_broadcaster(Arc::new(RealtimePlaybackBroadcaster {
+        realtime_manager: realtime_manager.clone(),
     }));
     if let Some(playlist_broadcaster) = playlist_broadcaster {
-        room_service.set_playlist_cluster_broadcaster(playlist_broadcaster);
+        room_service.set_playlist_realtime_broadcaster(playlist_broadcaster);
     }
-    room_service
-        .set_member_event_broadcaster(Arc::new(ClusterMemberEventBroadcaster { cluster_manager }));
+    room_service.set_member_event_broadcaster(Arc::new(RealtimeMemberEventBroadcaster {
+        realtime_manager,
+    }));
 }
 
 fn start_room_notification_bridge(
     notification_service: Arc<synctv_core::service::NotificationService>,
-    cluster_manager: Arc<ClusterManager>,
+    realtime_manager: Arc<RealtimeManager>,
     shutdown: &mut ShutdownCoordinator,
 ) {
     let cancel = shutdown.register_token("room_notification_bridge");
@@ -358,8 +462,8 @@ fn start_room_notification_bridge(
                     event = rx.recv() => {
                         match event {
                             Ok((room_id, room_event)) => {
-                                if let Some(cluster_event) = room_event_to_cluster_event(&room_id, &room_event) {
-                                    let _ = cluster_manager.broadcast(cluster_event);
+                                if let Some(realtime_event) = room_event_to_realtime_event(&room_id, &room_event) {
+                                    let _ = realtime_manager.broadcast(realtime_event);
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -374,18 +478,18 @@ fn start_room_notification_bridge(
     );
 }
 
-async fn build_local_cluster_manager(
+async fn build_local_realtime_manager(
     config: &Config,
     node_id: &str,
     connection_manager: Arc<dyn RealtimeConnectionService>,
     message_runtime: Arc<dyn RoomMessageRuntime>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     permission_service: Option<synctv_core::service::PermissionService>,
-) -> Result<Arc<ClusterManager>> {
-    let cluster_config = ClusterConfig {
+) -> Result<Arc<RealtimeManager>> {
+    let realtime_config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime,
-        cluster_enabled: false,
+        distributed_enabled: false,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(
             config
@@ -399,19 +503,19 @@ async fn build_local_cluster_manager(
         key_prefix: config.redis.key_prefix.clone(),
         catchup_window_secs: config.cluster.catchup_window_secs,
         stream_max_length: config.cluster.stream_max_length,
+        event_handler: Some(Arc::new(CoreRealtimeEventHandler::new(
+            cache_invalidation,
+            permission_service,
+        ))),
         parent_cancel_token: None,
     };
 
-    let mut cluster_manager = ClusterManager::new(
-        cluster_config,
-        permission_service,
-        Some(cache_invalidation.clone()),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to create local ClusterManager: {e}"))?;
-    cluster_manager.set_connection_manager(connection_manager);
+    let mut realtime_manager = RealtimeManager::new(realtime_config)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create local RealtimeManager: {e}"))?;
+    realtime_manager.set_connection_manager(connection_manager);
 
-    Ok(Arc::new(cluster_manager))
+    Ok(Arc::new(realtime_manager))
 }
 
 fn require_cluster_coordination_provider(
@@ -419,7 +523,7 @@ fn require_cluster_coordination_provider(
 ) -> Result<Arc<dyn ClusterCoordinationProvider>> {
     provider.cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "startup invariant violated: cluster runtime reached without distributed backend wiring"
+            "startup invariant violated: realtime runtime reached without distributed backend wiring"
         )
     })
 }
@@ -559,7 +663,7 @@ impl Application {
         let node_id = generate_node_id();
         info!("Node ID: {node_id}");
 
-        // Redis (optional in standalone mode, mandatory in cluster mode)
+        // Redis (optional in standalone mode, mandatory in distributed mode)
         let sentinel_cancel = shutdown.register_token("sentinel_health_check");
         let redis_init = init_redis(&config, Some(sentinel_cancel)).await?;
         let shared_runtime = redis_init.connection_runtime();
@@ -663,12 +767,12 @@ impl Application {
         // invalidation event to avoid dropped messages during initialization.
         if should_start_cache_invalidation_listener(&infra.config, infra.shared_runtime.is_some()) {
             if let Err(e) = cache_invalidation.start().await {
-                // When cluster mode is explicitly enabled, cache invalidation failure
+                // When distributed mode is explicitly enabled, cache invalidation failure
                 // is a fatal error - the cluster cannot maintain cache consistency without it.
                 // In standalone mode, we can continue with local-only caching.
                 if cluster_runtime_enabled(&infra.config) {
                     return Err(anyhow::anyhow!(
-                        "Failed to start cache invalidation listener (cluster mode): {e}. \
+                        "Failed to start cache invalidation listener (distributed mode): {e}. \
                          Cache consistency is required when cluster.enabled=true."
                     ));
                 }
@@ -684,8 +788,8 @@ impl Application {
                 (!infra.config.security.credential_encryption_key.is_empty())
                     .then(|| infra.config.security.credential_encryption_key.clone())
             });
-        let cluster_outbox = cluster_runtime_enabled(&infra.config)
-            .then(|| Arc::new(ClusterOutboxRepository::new(infra.pool.clone())));
+        let realtime_outbox = cluster_runtime_enabled(&infra.config)
+            .then(|| Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
 
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
@@ -697,7 +801,7 @@ impl Application {
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 credential_encryption_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
-                cluster_outbox: cluster_outbox.clone(),
+                realtime_outbox: realtime_outbox.clone(),
             },
         )
         .await?;
@@ -828,7 +932,7 @@ impl Application {
             });
         }
 
-        // With Redis configured, cluster mode may be active.
+        // With Redis configured, distributed mode may be active.
         // Leader election failure in this scenario would be catastrophic:
         // multiple nodes could all believe they are the leader and run
         // singleton tasks (partition management, cleanup) simultaneously,
@@ -1055,7 +1159,7 @@ impl Application {
         if !cluster_runtime {
             let local_realtime_profile =
                 build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
-            let cluster_manager = build_local_cluster_manager(
+            let realtime_manager = build_local_realtime_manager(
                 &infra.config,
                 &infra.node_id,
                 realtime_connection_service.clone(),
@@ -1064,24 +1168,24 @@ impl Application {
                 Some(core.services.room_service.permission_service().clone()),
             )
             .await?;
-            wire_room_service_cluster_broadcasters(
+            wire_room_service_realtime_broadcasters(
                 &core.services.room_service,
-                cluster_manager.clone(),
-                Some(Arc::new(ClusterPlaylistBroadcaster {
-                    cluster_manager: cluster_manager.clone(),
+                realtime_manager.clone(),
+                Some(Arc::new(RealtimePlaylistBroadcaster {
+                    realtime_manager: realtime_manager.clone(),
                 })),
             );
             start_room_notification_bridge(
                 core.services.room_notification_service.clone(),
-                cluster_manager.clone(),
+                realtime_manager.clone(),
                 shutdown,
             );
-            info!("Cluster mode disabled — initialized local-only ClusterManager");
+            info!("Cluster mode disabled — initialized local-only RealtimeManager");
             return Ok(ClusterState {
-                cluster_fanout_service: default_cluster_fanout_service(None, false),
+                realtime_fanout_service: default_realtime_fanout_service(None, false),
                 realtime_connection_service: realtime_connection_service.clone(),
                 realtime_event_service: Some(Arc::new(ClusterRealtimeEventService::new(
-                    cluster_manager,
+                    realtime_manager,
                 ))),
                 node_registry: None,
                 health_monitor: None,
@@ -1089,20 +1193,20 @@ impl Application {
             });
         }
 
-        // ClusterManager (requires Redis)
+        // RealtimeManager (requires Redis)
         let permission_service = Some(core.services.room_service.permission_service().clone());
         let cluster_backend =
             require_cluster_coordination_provider(infra.cluster_coordination_provider.as_ref())?;
 
-        // Create a cancellation token for the cluster manager that is a child
+        // Create a cancellation token for the realtime manager that is a child
         // of the ShutdownCoordinator's token, so coordinator shutdown also
         // cancels all cluster background tasks.
-        let cluster_cancel = shutdown.register_token("cluster_manager");
+        let cluster_cancel = shutdown.register_token("realtime_manager");
 
-        let cluster_config = ClusterConfig {
+        let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(cluster_backend.distributed_transport_factory()),
             message_runtime: build_room_message_runtime(&realtime_profile)?,
-            cluster_enabled: infra.config.cluster.enabled,
+            distributed_enabled: infra.config.cluster.enabled,
             node_id: infra.node_id.clone(),
             dedup_window: Duration::from_secs(
                 infra
@@ -1117,39 +1221,37 @@ impl Application {
             key_prefix: infra.config.redis.key_prefix.clone(),
             catchup_window_secs: infra.config.cluster.catchup_window_secs,
             stream_max_length: infra.config.cluster.stream_max_length,
+            event_handler: Some(Arc::new(CoreRealtimeEventHandler::new(
+                core.cache_invalidation.clone(),
+                permission_service,
+            ))),
             parent_cancel_token: Some(cluster_cancel.clone()),
         };
-        let mut cluster_manager = match ClusterManager::new(
-            cluster_config,
-            permission_service,
-            Some(core.cache_invalidation.clone()),
-        )
-        .await
-        {
+        let mut realtime_manager = match RealtimeManager::new(realtime_config).await {
             Ok(manager) => {
-                info!("ClusterManager initialized with cross-replica cache invalidation");
+                info!("RealtimeManager initialized with cross-replica cache invalidation");
                 manager
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
-                    "Failed to create ClusterManager (cluster mode): {e}. \
-                     ClusterManager is required when cluster.enabled=true."
+                    "Failed to create RealtimeManager (distributed mode): {e}. \
+                     RealtimeManager is required when cluster.enabled=true."
                 ));
             }
         };
-        cluster_manager.set_connection_manager(realtime_connection_service.clone());
-        cluster_manager.set_leader_elector(leader.leader_runtime.clone());
-        let cluster_manager = Arc::new(cluster_manager);
-        shutdown.register_hook(ClusterManagerShutdownHook {
-            manager: cluster_manager.clone(),
+        realtime_manager.set_connection_manager(realtime_connection_service.clone());
+        realtime_manager.set_leader_elector(leader.leader_runtime.clone());
+        let realtime_manager = Arc::new(realtime_manager);
+        shutdown.register_hook(RealtimeManagerShutdownHook {
+            manager: realtime_manager.clone(),
         });
 
         // Wire cluster broadcaster into PlaybackService
-        wire_room_service_cluster_broadcasters(
+        wire_room_service_realtime_broadcasters(
             &core.services.room_service,
-            cluster_manager.clone(),
+            realtime_manager.clone(),
             Some(Arc::new(LocalPlaylistBroadcaster {
-                cluster_manager: cluster_manager.clone(),
+                realtime_manager: realtime_manager.clone(),
             })),
         );
         info!("PlaybackService wired with cluster broadcaster");
@@ -1159,7 +1261,7 @@ impl Application {
         let discovery = init_cluster_discovery(
             &infra.config,
             &cluster_backend.node_directory_factory(),
-            &cluster_manager,
+            &realtime_manager,
             realtime_connection_service.clone(),
             cluster_cancel.clone(),
         )
@@ -1173,21 +1275,21 @@ impl Application {
         });
 
         let realtime_event_service =
-            Arc::new(ClusterRealtimeEventService::new(cluster_manager.clone()));
-        let outbox = Arc::new(ClusterOutboxRepository::new(infra.pool.clone()));
-        let outbox_cancel = shutdown.register_token("cluster_outbox_dispatcher");
+            Arc::new(ClusterRealtimeEventService::new(realtime_manager.clone()));
+        let outbox = Arc::new(RealtimeOutboxRepository::new(infra.pool.clone()));
+        let outbox_cancel = shutdown.register_token("realtime_outbox_dispatcher");
         shutdown.register_task(
-            "cluster_outbox_dispatcher",
-            start_cluster_outbox_dispatcher(
+            "realtime_outbox_dispatcher",
+            start_realtime_outbox_dispatcher(
                 outbox.clone(),
-                cluster_manager.clone(),
+                realtime_manager.clone(),
                 infra.node_id.clone(),
                 outbox_cancel,
             ),
         );
 
         Ok(ClusterState {
-            cluster_fanout_service: default_cluster_fanout_service_with_realtime(
+            realtime_fanout_service: default_realtime_fanout_service_with_realtime(
                 Some(outbox),
                 true,
                 Some(realtime_event_service.clone()),
@@ -1198,7 +1300,7 @@ impl Application {
             health_monitor: Some(discovery.health_monitor.clone()),
             cluster_activation: Some(Arc::new(DefaultClusterNodeActivator::new(
                 infra.config.clone(),
-                cluster_manager.clone(),
+                realtime_manager.clone(),
                 realtime_connection_service.clone(),
                 discovery.registry,
                 discovery.health_monitor,
@@ -1270,7 +1372,7 @@ impl Application {
             user_service: core.services.user_service.clone(),
             room_service: core.services.room_service.clone(),
             jwt_service: core.services.jwt_service.clone(),
-            cluster_fanout_service: cluster.cluster_fanout_service,
+            realtime_fanout_service: cluster.realtime_fanout_service,
             rate_limiter: core.services.rate_limiter.clone(),
             rate_limit_config: core.services.rate_limit_config.clone(),
             content_filter: core.services.content_filter.clone(),
@@ -1339,36 +1441,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_activate_cluster_node_registers_only_when_called() {
-        let cluster_manager = Arc::new(
-            ClusterManager::new(
-                ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: build_room_message_runtime(
-                        &synctv_core::SharedStateProfile::from_runtime(
-                            None,
-                            "activation-test:",
-                            false,
-                        ),
-                    )
-                    .expect("local message runtime should initialize"),
-                    cluster_enabled: false,
-                    node_id: "activation-test-node".to_string(),
-                    dedup_window: Duration::from_secs(1),
-                    critical_channel_capacity: 16,
-                    publish_channel_capacity: 16,
-                    key_prefix: "activation-test:".to_string(),
-                    catchup_window_secs: 60,
-                    stream_max_length: 100,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+        let realtime_manager = Arc::new(
+            RealtimeManager::new(RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: build_room_message_runtime(
+                    &synctv_core::SharedStateProfile::from_runtime(None, "activation-test:", false),
+                )
+                .expect("local message runtime should initialize"),
+                distributed_enabled: false,
+                node_id: "activation-test-node".to_string(),
+                dedup_window: Duration::from_secs(1),
+                critical_channel_capacity: 16,
+                publish_channel_capacity: 16,
+                key_prefix: "activation-test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("cluster manager should initialize"),
+            .expect("realtime manager should initialize"),
         );
         let connection_manager: Arc<dyn RealtimeConnectionService> = Arc::new(
-            synctv_cluster::sync::ConnectionManager::new(ConnectionLimits::default()),
+            synctv_realtime::sync::ConnectionManager::new(ConnectionLimits::default()),
         );
         let registry = Arc::new(
             synctv_cluster::discovery::NodeRegistry::new_local_only(
@@ -1382,7 +1477,7 @@ mod tests {
             synctv_cluster::discovery::HealthMonitor::with_cancellation_token_and_probe_config(
                 registry.clone(),
                 15,
-                &cluster_manager.cancel_token(),
+                &realtime_manager.cancel_token(),
                 synctv_cluster::discovery::health_monitor::HealthProbeConfig::default(),
             ),
         );
@@ -1400,7 +1495,7 @@ mod tests {
 
         DefaultClusterNodeActivator::new(
             config,
-            cluster_manager.clone(),
+            realtime_manager.clone(),
             connection_manager,
             registry_runtime,
             health_runtime,
@@ -1416,7 +1511,7 @@ mod tests {
         assert_eq!(after.len(), 1, "activation should register the local node");
 
         health_monitor.shutdown().await;
-        cluster_manager.shutdown().await;
+        realtime_manager.shutdown().await;
     }
 
     fn minimal_valid_startup_config() -> Config {
@@ -1567,13 +1662,13 @@ mod tests {
 
         assert!(
             !cluster_runtime_enabled(&config),
-            "cluster_secret alone must not activate cluster runtime"
+            "cluster_secret alone must not activate realtime runtime"
         );
 
         config.cluster.enabled = true;
         assert!(
             cluster_runtime_enabled(&config),
-            "cluster.enabled=true must activate cluster runtime"
+            "cluster.enabled=true must activate realtime runtime"
         );
     }
 
@@ -1601,7 +1696,7 @@ mod tests {
         config.cluster.enabled = true;
         assert!(
             should_run_startup_partition_initialization(&config),
-            "cluster mode must also initialize required partitions before serving traffic"
+            "distributed mode must also initialize required partitions before serving traffic"
         );
     }
 
@@ -1696,18 +1791,18 @@ mod tests {
         config.redis.url.clear();
 
         let error = validate_startup_config(&config)
-            .expect_err("startup preflight must reject cluster mode without Redis");
+            .expect_err("startup preflight must reject distributed mode without Redis");
 
         assert!(
             error
                 .to_string()
-                .contains("cluster mode requires Redis to be configured"),
+                .contains("distributed mode requires Redis to be configured"),
             "unexpected error: {error}"
         );
     }
 
     #[tokio::test]
-    async fn test_build_local_cluster_manager_supports_single_node_realtime_paths() {
+    async fn test_build_local_realtime_manager_supports_single_node_realtime_paths() {
         let config = minimal_valid_startup_config();
         let realtime_profile =
             synctv_core::SharedStateProfile::from_runtime(None, "test-local:", false);
@@ -1719,7 +1814,7 @@ mod tests {
             "test-local:cache:invalidate".to_string(),
         ));
 
-        let cluster_manager = build_local_cluster_manager(
+        let realtime_manager = build_local_realtime_manager(
             &config,
             "test-node",
             connection_manager,
@@ -1729,58 +1824,55 @@ mod tests {
             None,
         )
         .await
-        .expect("standalone mode should still wire a local ClusterManager");
+        .expect("standalone mode should still wire a local RealtimeManager");
 
-        let metrics = cluster_manager.metrics();
+        let metrics = realtime_manager.metrics();
         assert!(
             metrics.has_connection_manager,
             "single-node realtime paths need a wired connection manager"
         );
         assert!(
             !metrics.distributed_enabled,
-            "local-only cluster manager must not require Redis"
+            "local-only realtime manager must not require Redis"
         );
 
-        cluster_manager.shutdown().await;
+        realtime_manager.shutdown().await;
     }
 
     #[tokio::test]
-    async fn test_wire_room_service_cluster_broadcasters_sets_member_runtime_bridge() {
+    async fn test_wire_room_service_realtime_broadcasters_sets_member_runtime_bridge() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let room_service = Arc::new(synctv_core::service::RoomService::new(
             pool.clone(),
             make_test_user_service(pool),
         ));
-        let cluster_manager = Arc::new(
-            ClusterManager::new(
-                ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: build_room_message_runtime(
-                        &synctv_core::SharedStateProfile::from_runtime(None, "test:", false),
-                    )
-                    .expect("local message runtime should initialize"),
-                    cluster_enabled: false,
-                    node_id: "test-node".to_string(),
-                    dedup_window: Duration::from_secs(30),
-                    critical_channel_capacity: 16,
-                    publish_channel_capacity: 16,
-                    key_prefix: "test:".to_string(),
-                    catchup_window_secs: 30,
-                    stream_max_length: 128,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+        let realtime_manager = Arc::new(
+            RealtimeManager::new(RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: build_room_message_runtime(
+                    &synctv_core::SharedStateProfile::from_runtime(None, "test:", false),
+                )
+                .expect("local message runtime should initialize"),
+                distributed_enabled: false,
+                node_id: "test-node".to_string(),
+                dedup_window: Duration::from_secs(30),
+                critical_channel_capacity: 16,
+                publish_channel_capacity: 16,
+                key_prefix: "test:".to_string(),
+                catchup_window_secs: 30,
+                stream_max_length: 128,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("local cluster manager should build"),
+            .expect("local realtime manager should build"),
         );
 
-        wire_room_service_cluster_broadcasters(
+        wire_room_service_realtime_broadcasters(
             &room_service,
-            cluster_manager.clone(),
-            Some(Arc::new(ClusterPlaylistBroadcaster {
-                cluster_manager: cluster_manager.clone(),
+            realtime_manager.clone(),
+            Some(Arc::new(RealtimePlaylistBroadcaster {
+                realtime_manager: realtime_manager.clone(),
             })),
         );
 
@@ -1789,16 +1881,16 @@ mod tests {
             "cluster broadcaster wiring must cover member kicks/bans in addition to playback"
         );
         assert!(
-            room_service.has_playlist_cluster_broadcaster(),
+            room_service.has_playlist_realtime_broadcaster(),
             "cluster broadcaster wiring must cover playlist lifecycle broadcasts"
         );
 
-        cluster_manager.shutdown().await;
+        realtime_manager.shutdown().await;
     }
 
     #[tokio::test]
     #[ignore = "requires Docker"]
-    async fn test_init_cluster_injects_runtime_dependencies_into_cluster_manager() {
+    async fn test_init_cluster_injects_runtime_dependencies_into_realtime_manager() {
         let (_redis, client) = synctv_core_testing::start_redis_with_client().await;
         let conn = redis::aio::ConnectionManager::new(client.clone())
             .await
@@ -1813,18 +1905,19 @@ mod tests {
         );
 
         let connection_manager =
-            build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-                .expect("cluster mode should require and accept shared realtime connection state");
+            build_connection_manager(ConnectionLimits::default(), &realtime_profile).expect(
+                "distributed mode should require and accept shared realtime connection state",
+            );
 
-        let cluster_config = ClusterConfig {
+        let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
-                synctv_cluster::build_cluster_message_transport_factory(
+                synctv_realtime::build_realtime_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(client),
                 ),
             ),
             message_runtime: build_room_message_runtime(&realtime_profile)
                 .expect("shared message runtime should initialize"),
-            cluster_enabled: true,
+            distributed_enabled: true,
             node_id: "test-node".to_string(),
             dedup_window: Duration::from_secs(30),
             critical_channel_capacity: 100,
@@ -1832,24 +1925,25 @@ mod tests {
             key_prefix: "test-cluster:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 1000,
+            event_handler: None,
             parent_cancel_token: None,
         };
 
-        let mut cluster_manager = ClusterManager::new(cluster_config, None, None)
+        let mut realtime_manager = RealtimeManager::new(realtime_config)
             .await
-            .expect("ClusterManager should initialize");
-        let metrics = cluster_manager.metrics();
+            .expect("RealtimeManager should initialize");
+        let metrics = realtime_manager.metrics();
         assert!(!metrics.has_connection_manager);
         assert!(!metrics.has_leader_elector);
 
-        cluster_manager.set_connection_manager(connection_manager);
-        cluster_manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
+        realtime_manager.set_connection_manager(connection_manager);
+        realtime_manager.set_leader_elector(Arc::new(synctv_core::service::AlwaysLeader));
 
-        let metrics = cluster_manager.metrics();
+        let metrics = realtime_manager.metrics();
         assert!(metrics.has_connection_manager);
         assert!(metrics.has_leader_elector);
 
-        cluster_manager.shutdown().await;
+        realtime_manager.shutdown().await;
     }
 
     #[tokio::test]
@@ -1869,7 +1963,7 @@ mod tests {
             synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
 
         let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("cluster mode should build shared realtime connection manager");
+            .expect("distributed mode should build shared realtime connection manager");
 
         manager
             .register("conn-1".to_string(), UserId::expect_positive(111_001))
@@ -1915,7 +2009,7 @@ mod tests {
             synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), &prefix, true);
 
         let manager = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
-            .expect("cluster mode should preserve shared runtime wiring");
+            .expect("distributed mode should preserve shared runtime wiring");
 
         manager
             .register("conn-1".to_string(), UserId::expect_positive(111_001))
@@ -1999,13 +2093,13 @@ mod tests {
         let realtime_profile = synctv_core::SharedStateProfile::from_runtime(None, "test:", true);
         let Err(error) = build_connection_manager(ConnectionLimits::default(), &realtime_profile)
         else {
-            panic!("cluster mode without Redis wiring must return an error");
+            panic!("distributed mode without Redis wiring must return an error");
         };
 
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared realtime connection state"),
+                .contains("distributed runtime requires shared realtime connection state"),
             "unexpected error: {error}"
         );
     }
@@ -2013,12 +2107,12 @@ mod tests {
     #[test]
     fn test_require_cluster_coordination_provider_returns_error_instead_of_panicking() {
         let Err(error) = require_cluster_coordination_provider(None) else {
-            panic!("missing distributed backends in cluster runtime must return an error");
+            panic!("missing distributed backends in realtime runtime must return an error");
         };
 
         assert!(
             error.to_string().contains(
-                "startup invariant violated: cluster runtime reached without distributed backend wiring"
+                "startup invariant violated: realtime runtime reached without distributed backend wiring"
             ),
             "unexpected error: {error}"
         );

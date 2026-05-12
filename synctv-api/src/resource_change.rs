@@ -1,5 +1,5 @@
-use synctv_cluster::sync::{CacheTarget, ClusterEvent};
 use synctv_core::models::{MediaId, PlaylistId, RoomId, UserId};
+use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceInvalidation {
@@ -23,41 +23,41 @@ pub enum PlaybackSnapshotInvalidation {
     Cache,
 }
 
-pub fn resource_invalidations_for_room_event(event: &ClusterEvent) -> Vec<ResourceInvalidation> {
+pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<ResourceInvalidation> {
     match event {
-        ClusterEvent::PlaybackStateChanged { .. } => vec![
+        RealtimeEvent::PlaybackStateChanged { .. } => vec![
             ResourceInvalidation::PlaybackState,
             ResourceInvalidation::PlaybackSnapshot(
                 PlaybackSnapshotInvalidation::PlaybackStateChanged,
             ),
         ],
-        ClusterEvent::MediaUpdated { media_id, .. } => vec![
+        RealtimeEvent::MediaUpdated { media_id, .. } => vec![
             ResourceInvalidation::PlaylistItems,
             ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::MediaUpdated {
                 media_id: *media_id,
             }),
         ],
-        ClusterEvent::PlaylistUpdated { playlist, .. } => vec![
+        RealtimeEvent::PlaylistUpdated { playlist, .. } => vec![
             ResourceInvalidation::PlaylistItems,
             ResourceInvalidation::PlaybackSnapshot(PlaybackSnapshotInvalidation::PlaylistUpdated {
                 playlist_id: playlist.id,
             }),
         ],
-        ClusterEvent::MediaAdded { .. }
-        | ClusterEvent::MediaRemoved { .. }
-        | ClusterEvent::MediaRemovedBatch { .. }
-        | ClusterEvent::PlaylistCreated { .. }
-        | ClusterEvent::PlaylistDeleted { .. }
-        | ClusterEvent::PlaylistReordered { .. } => {
+        RealtimeEvent::MediaAdded { .. }
+        | RealtimeEvent::MediaRemoved { .. }
+        | RealtimeEvent::MediaRemovedBatch { .. }
+        | RealtimeEvent::PlaylistCreated { .. }
+        | RealtimeEvent::PlaylistDeleted { .. }
+        | RealtimeEvent::PlaylistReordered { .. } => {
             vec![ResourceInvalidation::PlaylistItems]
         }
-        ClusterEvent::RoomSettingsChanged { .. } => vec![
+        RealtimeEvent::RoomSettingsChanged { .. } => vec![
             ResourceInvalidation::RoomSettings,
             ResourceInvalidation::RoomMembers,
         ],
-        ClusterEvent::UserJoined { .. }
-        | ClusterEvent::UserLeft { .. }
-        | ClusterEvent::PermissionChanged { .. } => vec![ResourceInvalidation::RoomMembers],
+        RealtimeEvent::UserJoined { .. }
+        | RealtimeEvent::UserLeft { .. }
+        | RealtimeEvent::PermissionChanged { .. } => vec![ResourceInvalidation::RoomMembers],
         _ => Vec::new(),
     }
 }
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn playback_state_event_invalidates_state_and_snapshot() {
-        let event = ClusterEvent::PlaybackStateChanged {
+        let event = RealtimeEvent::PlaybackStateChanged {
             event_id: "evt".to_string(),
             room_id: room_id(),
             user_id: user_id(),
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn playlist_update_invalidates_items_and_dependent_snapshot() {
         let playlist_id = PlaylistId::expect_positive(303);
-        let event = ClusterEvent::PlaylistUpdated {
+        let event = RealtimeEvent::PlaylistUpdated {
             event_id: "evt".to_string(),
             room_id: room_id(),
             user_id: user_id(),

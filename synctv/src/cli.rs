@@ -1269,6 +1269,25 @@ impl CliMediaSortField {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CliResourceAvailabilityFilter {
+    All,
+    Available,
+    Unavailable,
+}
+
+impl CliResourceAvailabilityFilter {
+    const fn to_proto(self) -> i32 {
+        match self {
+            Self::All => synctv_proto::client::ResourceAvailabilityFilter::All as i32,
+            Self::Available => synctv_proto::client::ResourceAvailabilityFilter::Available as i32,
+            Self::Unavailable => {
+                synctv_proto::client::ResourceAvailabilityFilter::Unavailable as i32
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CliProviderSortField {
     Name,
     Endpoint,
@@ -2303,6 +2322,9 @@ pub struct PlaylistListArgs {
 
     #[arg(long = "sort-dir", value_enum, default_value_t = CliSortDirection::Asc)]
     pub sort_dir: CliSortDirection,
+
+    #[arg(long, value_enum, default_value_t = CliResourceAvailabilityFilter::All)]
+    pub availability: CliResourceAvailabilityFilter,
 }
 
 #[derive(Debug, Args)]
@@ -2435,6 +2457,9 @@ pub struct MediaListArgs {
     /// Force upstream provider directory cache refresh when listing a dynamic playlist
     #[arg(long, default_value_t = false)]
     pub refresh: bool,
+
+    #[arg(long, value_enum, default_value_t = CliResourceAvailabilityFilter::All)]
+    pub availability: CliResourceAvailabilityFilter,
 }
 
 #[derive(Debug, Args)]
@@ -2466,7 +2491,7 @@ pub struct MediaAddArgs {
     pub playlist_id: Option<String>,
 
     #[arg(long)]
-    pub source_provider: Option<String>,
+    pub source_provider: String,
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
@@ -5152,6 +5177,7 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                         CliPlaylistSortField::to_proto,
                     ),
                     sort_direction: args.sort_dir.to_proto(),
+                    availability: args.availability.to_proto(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5276,6 +5302,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     ),
                     sort_direction: args.sort_dir.to_proto(),
                     refresh: args.refresh,
+                    availability: args.availability.to_proto(),
                 }
             )?;
             args.room.remote.print_output(&response)
@@ -5291,7 +5318,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
-                    source_provider: args.source_provider.unwrap_or_default(),
+                    source_provider: args.source_provider,
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref()
                     ),
@@ -10487,6 +10514,8 @@ mod tests {
             "--room-id",
             "room-123",
             "--dynamic-only",
+            "--availability",
+            "available",
         ]);
         match cli.command {
             Commands::Playlist(PlaylistCommand {
@@ -10495,6 +10524,10 @@ mod tests {
             }) => {
                 assert_eq!(args.room.room_id, "room-123");
                 assert_eq!(args.dynamic_only, Some(true));
+                assert!(matches!(
+                    args.availability,
+                    CliResourceAvailabilityFilter::Available
+                ));
             }
             other => panic!("unexpected command parsed: {other:?}"),
         }
@@ -10578,7 +10611,7 @@ mod tests {
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-                assert_eq!(args.source_provider.as_deref(), Some("alist"));
+                assert_eq!(args.source_provider, "alist");
                 assert_eq!(args.provider_instance_name.as_deref(), Some("alist-main"));
                 assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
                 assert_eq!(args.name.as_deref(), Some("Demo Video"));
@@ -10620,6 +10653,8 @@ mod tests {
             "add",
             "--room-id",
             "room-123",
+            "--source-provider",
+            "direct_url",
             "--source-config-json",
             "{\"url\":\"https://cdn.example.com/video.mp4\"}",
         ]);
@@ -10627,6 +10662,48 @@ mod tests {
             result.is_err(),
             "media add must require --username or --user-id"
         );
+    }
+
+    #[test]
+    fn cli_rejects_media_add_without_source_provider() {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "media",
+            "add",
+            "--room-id",
+            "room-123",
+            "--username",
+            "alice",
+            "--source-config-json",
+            "{\"url\":\"https://cdn.example.com/video.mp4\"}",
+        ]);
+        assert!(result.is_err(), "media add must require --source-provider");
+    }
+
+    #[test]
+    fn cli_parses_media_list_availability_filter() {
+        let cli = Cli::parse_from([
+            "synctv",
+            "media",
+            "list",
+            "--room-id",
+            "room-123",
+            "--availability",
+            "unavailable",
+        ]);
+        match cli.command {
+            Commands::Media(MediaCommand {
+                command: MediaSubcommand::List(args),
+                ..
+            }) => {
+                assert_eq!(args.room.room_id, "room-123");
+                assert!(matches!(
+                    args.availability,
+                    CliResourceAvailabilityFilter::Unavailable
+                ));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
     }
 
     #[test]
@@ -10686,7 +10763,7 @@ mod tests {
                 assert_eq!(args.actor.username.as_deref(), Some("alice"));
                 assert_eq!(args.actor.user_id, None);
                 assert_eq!(args.playlist_id.as_deref(), Some("playlist-456"));
-                assert_eq!(args.source_provider.as_deref(), Some("alist"));
+                assert_eq!(args.source_provider, "alist");
                 assert_eq!(args.provider_instance_name.as_deref(), Some("alist_main"));
                 assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
                 assert_eq!(args.name.as_deref(), Some("Demo Media"));

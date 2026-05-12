@@ -1,31 +1,31 @@
-//! Tests for local message broadcasting without ClusterManager
+//! Tests for local message broadcasting without RealtimeManager
 //!
 //! These tests verify that:
-//! 1. message_stream works without ClusterManager (no Redis)
+//! 1. message_stream works without RealtimeManager (no Redis)
 //! 2. Local messages are correctly broadcast to subscribers
 //! 3. Multiple subscribers all receive messages
-//! 4. Local ClusterManager is lazily created when needed
+//! 4. Local RealtimeManager is lazily created when needed
 //!
-//! Issue: In non-cluster mode (without Redis), message_stream gRPC endpoint
-//! previously returned an error. Now it creates a local ClusterManager fallback.
+//! Issue: In non-distributed mode (without Redis), message_stream gRPC endpoint
+//! previously returned an error. Now it creates a local RealtimeManager fallback.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_cluster::sync::ClusterEvent;
-use synctv_cluster::sync::{
-    ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager, RoomMessageHub,
-};
 use synctv_core::models::{PermissionBits, RoomId, UserId};
+use synctv_realtime::sync::RealtimeEvent;
+use synctv_realtime::sync::{
+    ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager, RoomMessageHub,
+};
 
 #[tokio::test]
-async fn test_cluster_manager_single_node_mode_works() {
-    let config = ClusterConfig {
+async fn test_realtime_manager_single_node_mode_works() {
+    let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
-        cluster_enabled: false,
+        distributed_enabled: false,
         node_id: "test_local_node".to_string(),
         dedup_window: Duration::from_mins(1),
         critical_channel_capacity: 100,
@@ -33,12 +33,13 @@ async fn test_cluster_manager_single_node_mode_works() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        event_handler: None,
         parent_cancel_token: None,
     };
 
-    let manager = ClusterManager::new(config, None, None)
+    let manager = RealtimeManager::new(config)
         .await
-        .expect("ClusterManager::new should succeed without Redis");
+        .expect("RealtimeManager::new should succeed without Redis");
 
     // Verify metrics show Redis is not enabled
     let metrics = manager.metrics();
@@ -50,10 +51,10 @@ async fn test_cluster_manager_single_node_mode_works() {
 
 #[tokio::test]
 async fn test_local_subscribe_and_broadcast() {
-    let config = ClusterConfig {
+    let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
-        cluster_enabled: false,
+        distributed_enabled: false,
         node_id: "test_local_broadcast".to_string(),
         dedup_window: Duration::from_mins(1),
         critical_channel_capacity: 100,
@@ -61,12 +62,13 @@ async fn test_local_subscribe_and_broadcast() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        event_handler: None,
         parent_cancel_token: None,
     };
 
-    let manager = ClusterManager::new(config, None, None)
+    let manager = RealtimeManager::new(config)
         .await
-        .expect("ClusterManager::new should succeed");
+        .expect("RealtimeManager::new should succeed");
 
     let room_id = RoomId::expect_positive(10_000_009);
     let user_id = UserId::expect_positive(10_000_010);
@@ -77,7 +79,7 @@ async fn test_local_subscribe_and_broadcast() {
         .await
         .expect("subscribe should succeed");
 
-    let event = ClusterEvent::ChatMessage {
+    let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
         user_id,
@@ -105,7 +107,7 @@ async fn test_local_subscribe_and_broadcast() {
         .expect("Should have a message");
 
     match received {
-        ClusterEvent::ChatMessage { message, .. } => {
+        RealtimeEvent::ChatMessage { message, .. } => {
             assert_eq!(message, "Hello local!");
         }
         _ => panic!("Expected ChatMessage event"),
@@ -117,10 +119,10 @@ async fn test_local_subscribe_and_broadcast() {
 
 #[tokio::test]
 async fn test_multiple_subscribers_receive_broadcasts() {
-    let config = ClusterConfig {
+    let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
-        cluster_enabled: false,
+        distributed_enabled: false,
         node_id: "test_multi_subscribers".to_string(),
         dedup_window: Duration::from_mins(1),
         critical_channel_capacity: 100,
@@ -128,13 +130,14 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        event_handler: None,
         parent_cancel_token: None,
     };
 
     let manager = Arc::new(
-        ClusterManager::new(config, None, None)
+        RealtimeManager::new(config)
             .await
-            .expect("ClusterManager::new should succeed"),
+            .expect("RealtimeManager::new should succeed"),
     );
 
     let room_id = RoomId::expect_positive(10_000_011);
@@ -149,7 +152,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         subscribers.push((rx, conn_id));
     }
 
-    let event = ClusterEvent::ChatMessage {
+    let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
         user_id: UserId::expect_positive(10_000_012),
@@ -174,7 +177,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
             .expect("Should have a message");
 
         match received {
-            ClusterEvent::ChatMessage { message, .. } => {
+            RealtimeEvent::ChatMessage { message, .. } => {
                 assert_eq!(
                     message, "Hello everyone!",
                     "Subscriber {i} should receive correct message"
@@ -213,12 +216,12 @@ async fn test_connection_manager_works_standalone() {
 }
 
 /// LocalMessageBroadcaster provides local-only message broadcasting
-/// when ClusterManager is not available (no Redis).
+/// when RealtimeManager is not available (no Redis).
 ///
 /// This is a lightweight wrapper around RoomMessageHub that provides
-/// the same interface as ClusterManager for local operations.
+/// the same interface as RealtimeManager for local operations.
 pub struct LocalMessageBroadcaster {
-    message_hub: Arc<synctv_cluster::sync::RoomMessageHub>,
+    message_hub: Arc<synctv_realtime::sync::RoomMessageHub>,
 }
 
 impl LocalMessageBroadcaster {
@@ -226,7 +229,7 @@ impl LocalMessageBroadcaster {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            message_hub: Arc::new(synctv_cluster::sync::RoomMessageHub::new()),
+            message_hub: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
         }
     }
 
@@ -236,7 +239,7 @@ impl LocalMessageBroadcaster {
         room_id: RoomId,
         user_id: UserId,
     ) -> (
-        tokio::sync::mpsc::Receiver<synctv_cluster::sync::ClusterEvent>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
         String,
     ) {
         let connection_id = format!("{user_id}_{}", synctv_common::snanoid!(8));
@@ -249,7 +252,11 @@ impl LocalMessageBroadcaster {
     }
 
     /// Broadcast an event to room subscribers
-    pub fn broadcast(&self, room_id: &RoomId, event: &synctv_cluster::sync::ClusterEvent) -> usize {
+    pub fn broadcast(
+        &self,
+        room_id: &RoomId,
+        event: &synctv_realtime::sync::RealtimeEvent,
+    ) -> usize {
         self.message_hub.broadcast(room_id, event)
     }
 
@@ -274,7 +281,7 @@ async fn test_local_message_broadcaster_basic() {
     // Subscribe
     let (mut rx, conn_id) = broadcaster.subscribe(room_id, user_id).await;
 
-    let event = ClusterEvent::ChatMessage {
+    let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
         user_id: UserId::expect_positive(10_000_010),
@@ -295,7 +302,7 @@ async fn test_local_message_broadcaster_basic() {
         .expect("Should have message");
 
     match received {
-        ClusterEvent::ChatMessage { message, .. } => {
+        RealtimeEvent::ChatMessage { message, .. } => {
             assert_eq!(message, "Hello from local!");
         }
         _ => panic!("Expected ChatMessage"),
@@ -319,7 +326,7 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
         conn_ids.push(conn_id);
     }
 
-    let event = ClusterEvent::ChatMessage {
+    let event = RealtimeEvent::ChatMessage {
         event_id: synctv_common::snanoid!(16),
         room_id,
         user_id: UserId::expect_positive(10_000_012),
@@ -341,7 +348,7 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
             .expect("Should have message");
 
         match received {
-            ClusterEvent::ChatMessage { message, .. } => {
+            RealtimeEvent::ChatMessage { message, .. } => {
                 assert_eq!(message, "Broadcast to all");
             }
             _ => panic!("Subscriber {i} expected ChatMessage"),
@@ -354,22 +361,22 @@ async fn test_local_message_broadcaster_multiple_subscribers() {
     }
 }
 
-/// Test that a local ClusterManager can be created on-demand.
-/// This is what ClientServiceImpl.get_cluster_manager() does internally.
+/// Test that a local RealtimeManager can be created on-demand.
+/// This is what ClientServiceImpl.get_realtime_manager() does internally.
 #[tokio::test]
-async fn test_lazy_cluster_manager_creation() {
+async fn test_lazy_realtime_manager_creation() {
     use tokio::sync::OnceCell;
 
     // Simulate the lazy creation pattern used in ClientServiceImpl
-    let local_cluster_manager: Arc<OnceCell<Arc<ClusterManager>>> = Arc::new(OnceCell::new());
+    let local_realtime_manager: Arc<OnceCell<Arc<RealtimeManager>>> = Arc::new(OnceCell::new());
 
-    // First call should create the ClusterManager
-    let cm1 = local_cluster_manager
+    // First call should create the RealtimeManager
+    let cm1 = local_realtime_manager
         .get_or_init(|| async {
-            let config = ClusterConfig {
+            let config = RealtimeConfig {
                 distributed_transport_factory: None,
                 message_runtime: Arc::new(RoomMessageHub::new()),
-                cluster_enabled: false,
+                distributed_enabled: false,
                 node_id: format!("local_{}", synctv_common::snanoid!(8)),
                 dedup_window: Duration::from_mins(1),
                 critical_channel_capacity: 100,
@@ -377,45 +384,46 @@ async fn test_lazy_cluster_manager_creation() {
                 key_prefix: "synctv:".to_string(),
                 catchup_window_secs: 300,
                 stream_max_length: 1000,
+                event_handler: None,
                 parent_cancel_token: None,
             };
             Arc::new(
-                ClusterManager::new(config, None, None)
+                RealtimeManager::new(config)
                     .await
-                    .expect("ClusterManager::new should succeed without Redis"),
+                    .expect("RealtimeManager::new should succeed without Redis"),
             )
         })
         .await;
 
     // Second call should return the same instance
-    let cm2 = local_cluster_manager
+    let cm2 = local_realtime_manager
         .get_or_init(|| async {
             // This should not be called
-            panic!("Should not create a second ClusterManager");
+            panic!("Should not create a second RealtimeManager");
         })
         .await;
 
     // Both should be the same instance
     assert!(
         Arc::ptr_eq(cm1, cm2),
-        "Should return the same ClusterManager instance"
+        "Should return the same RealtimeManager instance"
     );
 
     // Verify it works
     let metrics = cm1.metrics();
     assert!(
         !metrics.distributed_enabled,
-        "Local ClusterManager should not have Redis enabled"
+        "Local RealtimeManager should not have Redis enabled"
     );
 }
 
-/// Test that a locally-created ClusterManager supports all necessary operations.
+/// Test that a locally-created RealtimeManager supports all necessary operations.
 #[tokio::test]
-async fn test_local_cluster_manager_supports_room_operations() {
-    let config = ClusterConfig {
+async fn test_local_realtime_manager_supports_room_operations() {
+    let config = RealtimeConfig {
         distributed_transport_factory: None,
         message_runtime: Arc::new(RoomMessageHub::new()),
-        cluster_enabled: false,
+        distributed_enabled: false,
         node_id: "test_local_ops".to_string(),
         dedup_window: Duration::from_mins(1),
         critical_channel_capacity: 100,
@@ -423,13 +431,14 @@ async fn test_local_cluster_manager_supports_room_operations() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        event_handler: None,
         parent_cancel_token: None,
     };
 
     let manager = Arc::new(
-        ClusterManager::new(config, None, None)
+        RealtimeManager::new(config)
             .await
-            .expect("ClusterManager::new should succeed"),
+            .expect("RealtimeManager::new should succeed"),
     );
 
     let room_id = RoomId::expect_positive(10_000_009);
@@ -441,7 +450,7 @@ async fn test_local_cluster_manager_supports_room_operations() {
         .await
         .expect("subscribe should succeed");
 
-    let event = ClusterEvent::UserJoined {
+    let event = RealtimeEvent::UserJoined {
         event_id: synctv_common::snanoid!(16),
         room_id,
         user_id,
@@ -466,7 +475,7 @@ async fn test_local_cluster_manager_supports_room_operations() {
         .expect("Should have event");
 
     match received {
-        ClusterEvent::UserJoined { username, .. } => {
+        RealtimeEvent::UserJoined { username, .. } => {
             assert_eq!(username, "user1");
         }
         _ => panic!("Expected UserJoined event"),

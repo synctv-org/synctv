@@ -60,7 +60,7 @@ spec:
           annotations:
             summary: "Stream errors detected ({{ "{{ $value }}" }}/sec)"
             description: "Stream error rate >1/sec for 3 minutes"
-        - alert: SyncTVClusterEventDrops
+        - alert: SyncTVRealtimeEventDrops
           expr: |
             rate(synctv_cluster_events_dropped_total[5m]) > 0
           for: 1m

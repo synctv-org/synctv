@@ -53,17 +53,16 @@ pub use convert::{
 // Room password limits imported from the single source of truth in synctv-core
 use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
-use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
     ApiError, EndpointRateLimitCategory, RequestContext, RequestExecutor, RequestMetadata,
 };
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
-use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
 use crate::membership_event_fanout::{
     default_membership_event_fanout_service, MembershipEventFanoutService,
 };
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
+use crate::realtime_fanout::{default_realtime_fanout_service, RealtimeFanoutService};
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
@@ -183,9 +182,8 @@ pub struct ClientApiImpl {
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub cluster_fanout: Arc<dyn ClusterFanoutService>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
-    pub member_fanout: Arc<dyn MemberFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
     pub media_fanout: Arc<dyn MediaFanoutService>,
     pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
@@ -420,25 +418,25 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
-        let cluster_fanout = default_cluster_fanout_service(None, config.cluster_runtime_enabled());
+        let realtime_fanout =
+            default_realtime_fanout_service(None, config.cluster_runtime_enabled());
         let room_settings_fanout =
-            default_room_settings_fanout_service(cluster_fanout.clone(), None);
-        let member_fanout = default_member_fanout_service(cluster_fanout.clone());
+            default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             room_service.clone(),
             user_service.clone(),
             None,
         );
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
-        let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
-        let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone(), None);
+        let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
             connection_service.clone(),
             live_streaming_infrastructure.clone(),
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
         );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
         Self {
             user_service,
             room_service,
@@ -450,9 +448,8 @@ impl ClientApiImpl {
             live_streaming_infrastructure,
             providers_manager,
             settings_registry,
-            cluster_fanout,
+            realtime_fanout,
             room_settings_fanout,
-            member_fanout,
             membership_event_fanout,
             media_fanout,
             playlist_fanout,
@@ -484,26 +481,25 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
-        let cluster_fanout =
-            default_cluster_fanout_service(None, config.config.cluster_runtime_enabled());
+        let realtime_fanout =
+            default_realtime_fanout_service(None, config.config.cluster_runtime_enabled());
         let room_settings_fanout =
-            default_room_settings_fanout_service(cluster_fanout.clone(), None);
-        let member_fanout = default_member_fanout_service(cluster_fanout.clone());
+            default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             config.room_service.clone(),
             config.user_service.clone(),
             None,
         );
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
-        let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
-        let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone(), None);
+        let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
             config.connection_service.clone(),
             config.live_streaming_infrastructure.clone(),
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
         );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
@@ -515,9 +511,8 @@ impl ClientApiImpl {
             live_streaming_infrastructure: config.live_streaming_infrastructure,
             providers_manager: config.providers_manager,
             settings_registry: config.settings_registry,
-            cluster_fanout,
+            realtime_fanout,
             room_settings_fanout,
-            member_fanout,
             membership_event_fanout,
             media_fanout,
             playlist_fanout,
@@ -542,36 +537,35 @@ impl ClientApiImpl {
         }
     }
 
-    /// Set the cluster fanout service for cross-replica invalidation and events.
+    /// Set the realtime fanout service for cross-replica invalidation and events.
     #[must_use]
-    pub fn with_cluster_fanout_service(
+    pub fn with_realtime_fanout_service(
         mut self,
-        cluster_fanout: Arc<dyn ClusterFanoutService>,
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> Self {
         self.room_settings_fanout = default_room_settings_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.realtime_event_service.clone(),
         );
-        self.member_fanout = default_member_fanout_service(cluster_fanout.clone());
         self.membership_event_fanout = default_membership_event_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.room_service.clone(),
             self.user_service.clone(),
             self.realtime_event_service.clone(),
         );
         self.media_fanout = default_media_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.realtime_event_service.clone(),
         );
-        self.playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
-        self.room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        self.playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        self.room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         self.realtime_lifecycle = default_realtime_lifecycle_service(
             self.connection_service.clone(),
             self.live_streaming_infrastructure.clone(),
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
         );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
-        self.cluster_fanout = cluster_fanout;
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        self.realtime_fanout = realtime_fanout;
         self
     }
 
@@ -605,17 +599,17 @@ impl ClientApiImpl {
         event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         self.membership_event_fanout = default_membership_event_fanout_service(
-            self.cluster_fanout.clone(),
+            self.realtime_fanout.clone(),
             self.room_service.clone(),
             self.user_service.clone(),
             Some(event_service.clone()),
         );
         self.room_settings_fanout = default_room_settings_fanout_service(
-            self.cluster_fanout.clone(),
+            self.realtime_fanout.clone(),
             Some(event_service.clone()),
         );
         self.media_fanout =
-            default_media_fanout_service(self.cluster_fanout.clone(), Some(event_service.clone()));
+            default_media_fanout_service(self.realtime_fanout.clone(), Some(event_service.clone()));
         self.realtime_event_service = Some(event_service);
         self
     }

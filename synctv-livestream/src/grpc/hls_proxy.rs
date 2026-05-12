@@ -258,8 +258,6 @@ impl HlsProxyClient {
 
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-        let mut client = self.connect(api_address).await?;
-
         let mut request = Request::new(GetHlsPlaylistRequest {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
@@ -267,6 +265,8 @@ impl HlsProxyClient {
         });
         request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
+
+        let mut client = self.connect(api_address).await?;
 
         let response = match client.get_hls_playlist(request).await {
             Ok(response) => {
@@ -325,9 +325,6 @@ impl HlsProxyClient {
 
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-        // Cache miss — fetch from publisher node
-        let mut client = self.connect(api_address).await?;
-
         let mut request = Request::new(GetHlsSegmentRequest {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
@@ -335,6 +332,9 @@ impl HlsProxyClient {
         });
         request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
+
+        // Cache miss — fetch from publisher node
+        let mut client = self.connect(api_address).await?;
 
         let response = match client.get_hls_segment(request).await {
             Ok(response) => {
@@ -695,14 +695,17 @@ impl HlsProxyClient {
 
     /// Attach cluster authentication secret to a gRPC request.
     fn attach_auth<T>(&self, request: &mut Request<T>) -> anyhow::Result<()> {
-        if let Some(secret) = &self.cluster_secret {
-            request.metadata_mut().insert(
-                "x-cluster-secret",
-                secret
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))?,
-            );
-        }
+        let secret = self
+            .cluster_secret
+            .as_deref()
+            .filter(|secret| !secret.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("cluster secret is required for remote HLS RPC"))?;
+        request.metadata_mut().insert(
+            "x-cluster-secret",
+            secret
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))?,
+        );
         Ok(())
     }
 }
@@ -732,6 +735,84 @@ mod tests {
     fn test_hls_proxy_client_no_secret() {
         let client = HlsProxyClient::with_defaults(None);
         assert!(client.cluster_secret.is_none());
+    }
+
+    #[test]
+    fn attach_auth_rejects_missing_cluster_secret() {
+        let client = HlsProxyClient::with_defaults(None);
+        let mut request = Request::new(());
+
+        let error = client
+            .attach_auth(&mut request)
+            .expect_err("remote HLS RPC must fail fast without a cluster secret");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn attach_auth_rejects_empty_cluster_secret() {
+        let client = HlsProxyClient::with_defaults(Some(String::new()));
+        let mut request = Request::new(());
+
+        let error = client
+            .attach_auth(&mut request)
+            .expect_err("remote HLS RPC must fail fast with an empty cluster secret");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn attach_auth_sets_cluster_secret_metadata() {
+        let client = HlsProxyClient::with_defaults(Some("cluster-secret".to_string()));
+        let mut request = Request::new(());
+
+        client
+            .attach_auth(&mut request)
+            .expect("valid cluster secret should attach");
+
+        assert_eq!(
+            request
+                .metadata()
+                .get("x-cluster-secret")
+                .and_then(|value| value.to_str().ok()),
+            Some("cluster-secret")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_playlist_rejects_missing_cluster_secret_before_connect() {
+        let client = HlsProxyClient::with_defaults(None);
+
+        let error = client
+            .get_playlist("http://[invalid", "room", "media", "/segments", 1)
+            .await
+            .expect_err("remote HLS RPC must validate auth before connecting");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_segment_rejects_missing_cluster_secret_before_connect() {
+        let client = HlsProxyClient::with_defaults(None);
+
+        let error = client
+            .get_segment("http://[invalid", "room", "media", "seg-1.ts", 1)
+            .await
+            .expect_err("remote HLS RPC must validate auth before connecting");
+
+        assert!(
+            error.to_string().contains("cluster secret is required"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

@@ -487,6 +487,19 @@ impl MediaRepository {
         media: &Media,
         expected_version: i32,
     ) -> Result<Option<Media>> {
+        self.update_with_version_with_executor(media, expected_version, &self.pool)
+            .await
+    }
+
+    pub async fn update_with_version_with_executor<'e, E>(
+        &self,
+        media: &Media,
+        expected_version: i32,
+        executor: E,
+    ) -> Result<Option<Media>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let source_config_json = serde_json::to_value(&media.source_config)?;
 
         let row = sqlx::query_as!(
@@ -514,7 +527,7 @@ impl MediaRepository {
             Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref()),
             expected_version,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await?;
 
         Ok(row.map(Into::into))

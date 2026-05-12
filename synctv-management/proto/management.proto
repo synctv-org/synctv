@@ -560,6 +560,7 @@ message ListPlaylistsRequest {
     optional bool dynamic_only = 8;
     PlaylistListSortBy sort_by = 9;
     SortDirection sort_direction = 10;
+    synctv.client.ResourceAvailabilityFilter availability = 11;
 }
 
 message GetPlaylistRequest {
@@ -631,6 +632,7 @@ message ListMediaRequest {
     MediaListSortBy sort_by = 9;
     SortDirection sort_direction = 10;
     bool refresh = 11;
+    synctv.client.ResourceAvailabilityFilter availability = 12;
 }
 
 message AddMediaRequest {

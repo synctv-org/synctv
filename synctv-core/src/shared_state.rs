@@ -83,7 +83,7 @@ impl SharedStateProfile {
     ) -> Result<Arc<dyn RedisConnectionRuntime>> {
         self.shared_runtime.clone().ok_or_else(|| {
             Error::ServiceUnavailable(format!(
-                "cluster runtime requires shared {capability_description}"
+                "distributed runtime requires shared {capability_description}"
             ))
         })
     }

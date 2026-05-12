@@ -369,11 +369,11 @@ impl PublisherInfo {
 /// 2. Look up the publisher's node/API address for cross-node relay
 /// 3. Manage publisher TTL via heartbeat for crash detection
 ///
-/// **Distinction from `synctv_cluster::sync::StreamRegistry`**:
+/// **Distinction from realtime room/connection state**:
 /// - This registry tracks *publisher ownership* (who is publishing, on which node,
 ///   with what API address, at what epoch) using `room_id/media_id` keys.
-/// - The cluster stream registry tracks *stream presence* for routing/discovery
-///   using app/stream identifiers.
+/// - Realtime room/connection state tracks websocket presence and fan-out
+///   delivery, not livestream publisher ownership.
 /// - Both use Redis; this one is Redis-only (no local cache) because publisher
 ///   ownership must always be authoritative from Redis.
 #[derive(Clone)]

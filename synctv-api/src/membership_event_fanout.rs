@@ -1,28 +1,149 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-use synctv_core::models::{PermissionBits, RoomId, UserId};
-use synctv_core::service::{RoomService, UserService};
+use synctv_core::models::UserId;
+use synctv_core::service::{
+    PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot, UserService,
+};
+use synctv_realtime::sync::RealtimeEvent;
 
-use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
-use crate::impls::admin::LOCAL_MANAGEMENT_ACTOR_USER_ID;
-use crate::impls::ApiError;
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeEventService;
 
 #[async_trait]
 pub trait MembershipEventFanoutService: Send + Sync {
-    async fn publish_permission_changed(
+    fn prepare_permission_changed_outbox_fanout(
         &self,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        changed_by: &UserId,
-    ) -> Result<(), ApiError>;
+        target_user_id: UserId,
+        changed_by: UserId,
+    ) -> PreparedPermissionChangedFanout;
 
-    async fn publish_user_left(&self, room_id: &RoomId, user_id: &UserId) -> Result<(), ApiError>;
+    fn prepare_user_left_outbox_fanout(&self) -> PreparedUserLeftFanout;
+}
+
+#[derive(Clone)]
+pub struct PreparedPermissionChangedFanout {
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    event_service: Option<Arc<dyn RealtimeEventService>>,
+    events: Arc<std::sync::Mutex<Vec<RealtimeEvent>>>,
+}
+
+impl PreparedPermissionChangedFanout {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new(
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
+        event_service: Option<Arc<dyn RealtimeEventService>>,
+        _target_user_id: UserId,
+        _changed_by: UserId,
+    ) -> Self {
+        Self {
+            realtime_fanout,
+            event_service,
+            events: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn outbox_factory(&self) -> Option<RealtimeOutboxPermissionChangedEventFactory> {
+        let prepared = self.clone();
+        Some(Arc::new(
+            move |snapshot: &PermissionChangedOutboxSnapshot| {
+                let event = RealtimeEvent::PermissionChanged {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: snapshot.room_id,
+                    target_user_id: snapshot.target_user_id,
+                    target_username: snapshot.target_username.clone(),
+                    changed_by: snapshot.changed_by,
+                    changed_by_username: snapshot.changed_by_username.clone(),
+                    new_permissions: snapshot.new_permissions,
+                    role: snapshot.role,
+                    added_permissions: snapshot.added_permissions,
+                    removed_permissions: snapshot.removed_permissions,
+                    admin_added_permissions: snapshot.admin_added_permissions,
+                    admin_removed_permissions: snapshot.admin_removed_permissions,
+                    timestamp: chrono::Utc::now(),
+                };
+                prepared
+                    .events
+                    .lock()
+                    .expect("membership fanout event mutex should not be poisoned")
+                    .push(event.clone());
+                prepared.realtime_fanout.outbox_event(&event)
+            },
+        ))
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        let events = std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .expect("membership fanout event mutex should not be poisoned"),
+        );
+        for event in events {
+            if self.realtime_fanout.is_distributed_enabled() {
+                self.realtime_fanout.publish_after_outbox_commit(event);
+            } else {
+                if let (Some(event_service), Some(room_id)) = (&self.event_service, event.room_id())
+                {
+                    event_service.broadcast_local(room_id, &event);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PreparedUserLeftFanout {
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    event: Arc<std::sync::Mutex<Option<RealtimeEvent>>>,
+}
+
+impl PreparedUserLeftFanout {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
+        Self {
+            realtime_fanout,
+            event: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    #[must_use]
+    pub fn outbox_factory(&self) -> Option<RealtimeOutboxUserLeftEventFactory> {
+        let prepared = self.clone();
+        Some(Arc::new(move |snapshot: &UserLeftOutboxSnapshot| {
+            let event = RealtimeEvent::UserLeft {
+                event_id: synctv_common::snanoid!(16),
+                room_id: snapshot.room_id,
+                user_id: snapshot.user_id,
+                username: snapshot.username.clone(),
+                timestamp: chrono::Utc::now(),
+            };
+            *prepared
+                .event
+                .lock()
+                .expect("membership fanout event mutex should not be poisoned") =
+                Some(event.clone());
+            prepared.realtime_fanout.outbox_event(&event)
+        }))
+    }
+
+    pub fn publish_after_outbox_commit(&self) {
+        if let Some(event) = self
+            .event
+            .lock()
+            .expect("membership fanout event mutex should not be poisoned")
+            .take()
+        {
+            self.realtime_fanout.publish_after_outbox_commit(event);
+        }
+    }
 }
 
 pub struct DefaultMembershipEventFanoutService {
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_service: Arc<RoomService>,
     user_service: Arc<UserService>,
     event_service: Option<Arc<dyn RealtimeEventService>>,
@@ -31,37 +152,21 @@ pub struct DefaultMembershipEventFanoutService {
 impl DefaultMembershipEventFanoutService {
     #[must_use]
     pub fn new(
-        cluster_fanout: Arc<dyn ClusterFanoutService>,
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
         event_service: Option<Arc<dyn RealtimeEventService>>,
     ) -> Self {
         Self {
-            cluster_fanout,
+            realtime_fanout,
             room_service,
             user_service,
             event_service,
         }
     }
 
-    fn should_broadcast_permission_changed_locally(
-        &self,
-        target_user_id: &UserId,
-        changed_by: &UserId,
-    ) -> bool {
-        !self.cluster_fanout.is_distributed_enabled() && target_user_id == changed_by
-    }
-
-    async fn username_for_actor(&self, user_id: &UserId) -> Result<String, ApiError> {
-        if *user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
-            return Ok("local-management".to_string());
-        }
-
-        self.user_service
-            .get_user(user_id)
-            .await
-            .map(|u| u.username)
-            .map_err(ApiError::from)
+    fn touch_dependencies(&self) {
+        let _ = (&self.room_service, &self.user_service);
     }
 }
 
@@ -69,8 +174,8 @@ impl std::fmt::Debug for DefaultMembershipEventFanoutService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DefaultMembershipEventFanoutService")
             .field(
-                "cluster_fanout_distributed",
-                &self.cluster_fanout.is_distributed_enabled(),
+                "realtime_fanout_distributed",
+                &self.realtime_fanout.is_distributed_enabled(),
             )
             .finish()
     }
@@ -78,119 +183,35 @@ impl std::fmt::Debug for DefaultMembershipEventFanoutService {
 
 #[async_trait]
 impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
-    async fn publish_permission_changed(
+    fn prepare_permission_changed_outbox_fanout(
         &self,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        changed_by: &UserId,
-    ) -> Result<(), ApiError> {
-        let (
-            target_username,
-            new_permissions,
-            role,
-            added_permissions,
-            removed_permissions,
-            admin_added_permissions,
-            admin_removed_permissions,
-        ) = if let Some(member) = self
-            .room_service
-            .member_service()
-            .get_member(room_id, target_user_id)
-            .await
-            .map_err(ApiError::from)?
-        {
-            let room_settings = self
-                .room_service
-                .get_room_settings(room_id)
-                .await
-                .map_err(ApiError::from)?;
-            let username = self.username_for_actor(target_user_id).await?;
-            let role_default = self
-                .room_service
-                .permission_service()
-                .calculate_role_default_permissions(&member.role, &room_settings);
-            (
-                username,
-                member.effective_permissions(role_default),
-                i32::from(member.role),
-                member.added_permissions,
-                member.removed_permissions,
-                member.admin_added_permissions,
-                member.admin_removed_permissions,
-            )
-        } else {
-            let username = self.username_for_actor(target_user_id).await?;
-            (
-                username,
-                PermissionBits::empty(),
-                synctv_proto::common::RoomMemberRole::Member as i32,
-                0,
-                0,
-                0,
-                0,
-            )
-        };
-
-        let changed_by_username = self.username_for_actor(changed_by).await?;
-
-        let request = PublishRequest {
-            event: ClusterEvent::PermissionChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: *room_id,
-                target_user_id: *target_user_id,
-                target_username,
-                changed_by: *changed_by,
-                changed_by_username,
-                new_permissions,
-                role,
-                added_permissions: PermissionBits(added_permissions),
-                removed_permissions: PermissionBits(removed_permissions),
-                admin_added_permissions: PermissionBits(admin_added_permissions),
-                admin_removed_permissions: PermissionBits(admin_removed_permissions),
-                timestamp: chrono::Utc::now(),
-            },
-        };
-        if self.should_broadcast_permission_changed_locally(target_user_id, changed_by) {
-            if let Some(event_service) = &self.event_service {
-                event_service.broadcast_local(room_id, &request.event);
-            }
-        }
-        publish_best_effort(self.cluster_fanout.clone(), request);
-        Ok(())
+        target_user_id: UserId,
+        changed_by: UserId,
+    ) -> PreparedPermissionChangedFanout {
+        self.touch_dependencies();
+        PreparedPermissionChangedFanout::new(
+            self.realtime_fanout.clone(),
+            self.event_service.clone(),
+            target_user_id,
+            changed_by,
+        )
     }
 
-    async fn publish_user_left(&self, room_id: &RoomId, user_id: &UserId) -> Result<(), ApiError> {
-        let username = self
-            .user_service
-            .get_user(user_id)
-            .await
-            .map(|u| u.username)
-            .map_err(ApiError::from)?;
-
-        let request = PublishRequest {
-            event: ClusterEvent::UserLeft {
-                event_id: synctv_common::snanoid!(16),
-                room_id: *room_id,
-                user_id: *user_id,
-                username,
-                timestamp: chrono::Utc::now(),
-            },
-        };
-        publish_best_effort(self.cluster_fanout.clone(), request);
-
-        Ok(())
+    fn prepare_user_left_outbox_fanout(&self) -> PreparedUserLeftFanout {
+        self.touch_dependencies();
+        PreparedUserLeftFanout::new(self.realtime_fanout.clone())
     }
 }
 
 #[must_use]
 pub fn default_membership_event_fanout_service(
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_service: Arc<RoomService>,
     user_service: Arc<UserService>,
     event_service: Option<Arc<dyn RealtimeEventService>>,
 ) -> Arc<dyn MembershipEventFanoutService> {
     Arc::new(DefaultMembershipEventFanoutService::new(
-        cluster_fanout,
+        realtime_fanout,
         room_service,
         user_service,
         event_service,
@@ -199,28 +220,27 @@ pub fn default_membership_event_fanout_service(
 
 #[cfg(test)]
 mod tests {
-    use super::default_membership_event_fanout_service;
-    use crate::cluster_fanout::default_cluster_fanout_service;
+    use super::*;
+    use crate::realtime_fanout::default_realtime_fanout_service;
     use crate::runtime::{RealtimeEventService, RealtimeMetrics};
-    use crate::test_support::channel_cluster_fanout_service;
+    use crate::test_support::channel_realtime_fanout_service;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-    use synctv_cluster::sync::{BroadcastResult, ClusterEvent, ConnectionId};
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     };
     use synctv_core::KeyBuilder;
+    use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent};
     use tokio::sync::{broadcast, mpsc};
 
     #[derive(Default)]
     struct RecordingRealtimeEventService {
         broadcast_calls: AtomicUsize,
         broadcast_local_calls: AtomicUsize,
-        local_events: Mutex<Vec<(String, ClusterEvent)>>,
+        local_events: Mutex<Vec<(String, RealtimeEvent)>>,
     }
 
     #[async_trait]
@@ -230,7 +250,7 @@ mod tests {
             _room_id: RoomId,
             _user_id: UserId,
             _connection_id: String,
-        ) -> synctv_cluster::Result<(mpsc::Receiver<ClusterEvent>, ConnectionId)> {
+        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
             panic!("subscribe_with_id should not be called in membership fanout tests");
         }
 
@@ -238,7 +258,7 @@ mod tests {
             panic!("unsubscribe should not be called in membership fanout tests");
         }
 
-        fn broadcast(&self, _event: ClusterEvent) -> BroadcastResult {
+        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
             self.broadcast_calls.fetch_add(1, Ordering::SeqCst);
             BroadcastResult {
                 local_sent: 0,
@@ -246,11 +266,11 @@ mod tests {
             }
         }
 
-        fn publish_only(&self, _event: ClusterEvent) -> bool {
+        fn publish_only(&self, _event: RealtimeEvent) -> bool {
             panic!("publish_only should not be called in membership fanout tests");
         }
 
-        fn broadcast_local(&self, room_id: &RoomId, event: &ClusterEvent) -> usize {
+        fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
             self.broadcast_local_calls.fetch_add(1, Ordering::SeqCst);
             self.local_events
                 .lock()
@@ -259,7 +279,7 @@ mod tests {
             1
         }
 
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
+        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
             panic!("subscribe_admin_events should not be called in membership fanout tests");
         }
 
@@ -290,185 +310,105 @@ mod tests {
         UserId::expect_positive(id)
     }
 
-    fn test_services() -> (Arc<RoomService>, Arc<UserService>) {
-        let connect_options = <sqlx::postgres::PgConnectOptions as std::str::FromStr>::from_str(
-            "postgresql://synctv:synctv@127.0.0.1:1/synctv",
-        )
-        .expect("test connect options should parse");
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .acquire_timeout(Duration::from_millis(20))
-            .connect_lazy_with(connect_options);
-        let jwt_service =
-            JwtService::new("membership-fanout-test-secret-key-minimum-32-chars").expect("jwt");
-        let username_cache = UsernameCache::local_only("membership:username:".to_string(), 128, 60);
-        let user_service = Arc::new(UserService::new(
-            pool.clone(),
-            jwt_service,
-            username_cache,
-            synctv_core::config::PasswordComplexityConfig::default(),
-            Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
-            KeyBuilder::new("membership-fanout-test"),
-            BruteForceProtection::in_memory("membership-fanout-test".to_string()),
-        ));
-        let room_service = Arc::new(RoomService::new(pool, (*user_service).clone()));
-        (room_service, user_service)
-    }
-
-    fn assert_service_unavailable(error: &crate::impls::ApiError) {
-        assert!(
-            matches!(error, crate::impls::ApiError::ServiceUnavailable(_)),
-            "repository lookup failure should surface as ServiceUnavailable, got {error:?}"
-        );
+    fn permission_snapshot(
+        target_user_id: UserId,
+        changed_by: UserId,
+    ) -> PermissionChangedOutboxSnapshot {
+        PermissionChangedOutboxSnapshot {
+            room_id: room_id(),
+            target_user_id,
+            target_username: "target-user".to_string(),
+            changed_by,
+            changed_by_username: "actor-user".to_string(),
+            new_permissions: synctv_core::models::PermissionBits(7),
+            role: i32::from(synctv_core::models::RoomRole::Member),
+            added_permissions: synctv_core::models::PermissionBits(1),
+            removed_permissions: synctv_core::models::PermissionBits(2),
+            admin_added_permissions: synctv_core::models::PermissionBits(0),
+            admin_removed_permissions: synctv_core::models::PermissionBits(0),
+        }
     }
 
     #[tokio::test]
-    async fn test_permission_changed_lookup_failure_does_not_broadcast_locally_in_standalone_mode()
-    {
-        let (room_service, user_service) = test_services();
+    async fn test_permission_changed_self_event_broadcasts_locally_after_commit() {
         let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_membership_event_fanout_service(
-            default_cluster_fanout_service(None, false),
-            room_service,
-            user_service,
-            Some(event_service.clone()),
-        );
-
-        let error = service
-            .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
-            .await
-            .expect_err("repository lookup failure must abort permission-change publish");
-        assert_service_unavailable(&error);
-
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
-        );
-        let local_events = event_service
-            .local_events
-            .lock()
-            .expect("recorded local events mutex should not be poisoned");
-        assert!(
-            local_events.is_empty(),
-            "standalone permission-change fanout must rely on the room notification bridge instead of rebroadcasting locally"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_permission_changed_lookup_failure_does_not_broadcast_self_join_locally() {
-        let (room_service, user_service) = test_services();
-        let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_membership_event_fanout_service(
-            default_cluster_fanout_service(None, false),
-            room_service,
-            user_service,
+        let service = super::DefaultMembershipEventFanoutService::new(
+            default_realtime_fanout_service(None, false),
+            Arc::new(RoomService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://127.0.0.1:1/synctv")
+                    .unwrap(),
+                UserService::new(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .connect_lazy("postgresql://127.0.0.1:1/synctv")
+                        .unwrap(),
+                    JwtService::new("membership-fanout-test-secret-key-minimum-32-chars")
+                        .expect("jwt"),
+                    UsernameCache::local_only("membership:username:".to_string(), 128, 60),
+                    synctv_core::config::PasswordComplexityConfig::default(),
+                    Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+                    KeyBuilder::new("membership-fanout-test"),
+                    BruteForceProtection::in_memory("membership-fanout-test".to_string()),
+                ),
+            )),
+            Arc::new(UserService::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgresql://127.0.0.1:1/synctv")
+                    .unwrap(),
+                JwtService::new("membership-fanout-test-secret-key-minimum-32-chars").expect("jwt"),
+                UsernameCache::local_only("membership:username:".to_string(), 128, 60),
+                synctv_core::config::PasswordComplexityConfig::default(),
+                Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
+                KeyBuilder::new("membership-fanout-test"),
+                BruteForceProtection::in_memory("membership-fanout-test".to_string()),
+            )),
             Some(event_service.clone()),
         );
         let user = user_id("self-joiner");
+        let prepared = service.prepare_permission_changed_outbox_fanout(user, user);
+        let factory = prepared.outbox_factory().expect("factory");
 
-        let error = service
-            .publish_permission_changed(&room_id(), &user, &user)
-            .await
-            .expect_err("repository lookup failure must abort self-join publish");
-        assert_service_unavailable(&error);
+        assert!(factory(&permission_snapshot(user, user)).is_none());
+        prepared.publish_after_outbox_commit();
 
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
+            1
         );
-        let local_events = event_service
-            .local_events
-            .lock()
-            .expect("recorded local events mutex should not be poisoned");
-        assert!(local_events.is_empty());
     }
 
     #[tokio::test]
-    async fn test_permission_changed_lookup_failure_skips_cluster_publish() {
-        let (room_service, user_service) = test_services();
-        let event_service = Arc::new(RecordingRealtimeEventService::default());
+    async fn test_permission_changed_publishes_same_prepared_event_after_commit() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_membership_event_fanout_service(
-            channel_cluster_fanout_service(tx),
-            room_service,
-            user_service,
-            Some(event_service.clone()),
+        let prepared = PreparedPermissionChangedFanout::new(
+            channel_realtime_fanout_service(tx),
+            None,
+            user_id("target"),
+            user_id("actor"),
         );
-        let error = service
-            .publish_permission_changed(&room_id(), &user_id("target"), &user_id("actor"))
-            .await
-            .expect_err("repository lookup failure must abort cluster permission publish");
-        assert_service_unavailable(&error);
-
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "permission change must not publish a cluster event after lookup failure"
-        );
+        let factory = prepared.outbox_factory().expect("factory");
+        assert!(factory(&permission_snapshot(user_id("target"), user_id("actor"))).is_none());
+        prepared.publish_after_outbox_commit();
+        let event = rx.recv().await.expect("prepared event should publish");
+        assert!(matches!(
+            event.event,
+            RealtimeEvent::PermissionChanged { .. }
+        ));
     }
 
     #[tokio::test]
-    async fn test_user_left_lookup_failure_skips_cluster_publish() {
-        let (room_service, user_service) = test_services();
-        let event_service = Arc::new(RecordingRealtimeEventService::default());
+    async fn test_user_left_publishes_same_prepared_event_after_commit() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_membership_event_fanout_service(
-            channel_cluster_fanout_service(tx),
-            room_service,
-            user_service,
-            Some(event_service.clone()),
-        );
-        let error = service
-            .publish_user_left(&room_id(), &user_id("target"))
-            .await
-            .expect_err("repository lookup failure must abort cluster user-left publish");
-        assert_service_unavailable(&error);
-
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "user-left must not publish a cluster event after lookup failure"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_user_left_lookup_failure_does_not_broadcast_locally_in_standalone_mode() {
-        let (room_service, user_service) = test_services();
-        let event_service = Arc::new(RecordingRealtimeEventService::default());
-        let service = default_membership_event_fanout_service(
-            default_cluster_fanout_service(None, false),
-            room_service,
-            user_service,
-            Some(event_service.clone()),
-        );
-
-        let error = service
-            .publish_user_left(&room_id(), &user_id("target"))
-            .await
-            .expect_err("repository lookup failure must abort user-left publish");
-        assert_service_unavailable(&error);
-
-        assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            event_service.broadcast_local_calls.load(Ordering::SeqCst),
-            0
-        );
-        let local_events = event_service
-            .local_events
-            .lock()
-            .expect("recorded local events mutex should not be poisoned");
-        assert!(
-            local_events.is_empty(),
-            "standalone user-left fanout must rely on the room notification bridge instead of rebroadcasting locally"
-        );
+        let prepared = PreparedUserLeftFanout::new(channel_realtime_fanout_service(tx));
+        let factory = prepared.outbox_factory().expect("factory");
+        assert!(factory(&UserLeftOutboxSnapshot {
+            room_id: room_id(),
+            user_id: user_id("target"),
+            username: "target-user".to_string(),
+        })
+        .is_none());
+        prepared.publish_after_outbox_commit();
+        let event = rx.recv().await.expect("prepared event should publish");
+        assert!(matches!(event.event, RealtimeEvent::UserLeft { .. }));
     }
 }

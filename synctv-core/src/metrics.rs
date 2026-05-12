@@ -624,46 +624,46 @@ pub mod cluster {
         .expect("Failed to register NODE_ACTIVE_ROOMS")
     });
 
-    /// Total cluster events published, labeled by event type.
-    pub static CLUSTER_EVENTS_PUBLISHED: std::sync::LazyLock<IntCounterVec> =
+    /// Total realtime events published, labeled by event type.
+    pub static REALTIME_EVENTS_PUBLISHED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
             register_int_counter_vec_with_registry!(
                 Opts::new(
-                    "synctv_cluster_events_published_total",
-                    "Total cluster events published"
+                    "synctv_realtime_events_published_total",
+                    "Total realtime events published"
                 ),
                 &["event_type"],
                 REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_EVENTS_PUBLISHED")
+            .expect("Failed to register REALTIME_EVENTS_PUBLISHED")
         });
 
-    /// Total cluster events received from other nodes, labeled by event type.
-    pub static CLUSTER_EVENTS_RECEIVED: std::sync::LazyLock<IntCounterVec> =
+    /// Total realtime events received from other nodes, labeled by event type.
+    pub static REALTIME_EVENTS_RECEIVED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
             register_int_counter_vec_with_registry!(
                 Opts::new(
-                    "synctv_cluster_events_received_total",
-                    "Total cluster events received from other nodes"
+                    "synctv_realtime_events_received_total",
+                    "Total realtime events received from other nodes"
                 ),
                 &["event_type"],
                 REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_EVENTS_RECEIVED")
+            .expect("Failed to register REALTIME_EVENTS_RECEIVED")
         });
 
-    /// Total cluster events dropped (channel full or subscriber disconnected).
-    pub static CLUSTER_EVENTS_DROPPED: std::sync::LazyLock<IntCounterVec> =
+    /// Total realtime events dropped (channel full or subscriber disconnected).
+    pub static REALTIME_EVENTS_DROPPED: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
             register_int_counter_vec_with_registry!(
                 Opts::new(
-                    "synctv_cluster_events_dropped_total",
-                    "Total cluster events dropped"
+                    "synctv_realtime_events_dropped_total",
+                    "Total realtime events dropped"
                 ),
                 &["reason"],
                 REGISTRY.clone()
             )
-            .expect("Failed to register CLUSTER_EVENTS_DROPPED")
+            .expect("Failed to register REALTIME_EVENTS_DROPPED")
         });
 
     /// Consecutive heartbeat failures (network partition detection).
@@ -1546,21 +1546,21 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_event_metrics() {
-        cluster::CLUSTER_EVENTS_PUBLISHED
+    fn test_realtime_event_metrics() {
+        cluster::REALTIME_EVENTS_PUBLISHED
             .with_label_values(&["chat_message"])
             .inc();
-        cluster::CLUSTER_EVENTS_RECEIVED
+        cluster::REALTIME_EVENTS_RECEIVED
             .with_label_values(&["chat_message"])
             .inc();
-        cluster::CLUSTER_EVENTS_DROPPED
+        cluster::REALTIME_EVENTS_DROPPED
             .with_label_values(&["channel_full"])
             .inc();
 
         let output = gather_metrics();
-        assert!(output.contains("synctv_cluster_events_published_total"));
-        assert!(output.contains("synctv_cluster_events_received_total"));
-        assert!(output.contains("synctv_cluster_events_dropped_total"));
+        assert!(output.contains("synctv_realtime_events_published_total"));
+        assert!(output.contains("synctv_realtime_events_received_total"));
+        assert!(output.contains("synctv_realtime_events_dropped_total"));
     }
 
     #[test]
@@ -1968,7 +1968,7 @@ mod tests {
             .observe(0.5);
 
         cluster::REDIS_PUBSUB_PUBLISH_LATENCY
-            .with_label_values(&["cluster_events"])
+            .with_label_values(&["realtime_events"])
             .observe(0.002);
 
         cluster::NODE_MESSAGE_LATENCY

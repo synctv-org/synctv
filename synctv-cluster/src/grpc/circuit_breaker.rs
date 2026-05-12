@@ -1,4 +1,4 @@
-//! gRPC circuit breaker for cross-node streaming
+//! gRPC circuit breaker for cross-node internal endpoints.
 //!
 //! Prevents cascading failures when nodes are unhealthy or unreachable.
 //! Uses the failsafe crate for state management (Closed -> Open -> Half-Open).
@@ -162,7 +162,7 @@ fn create_endpoint_breaker() -> EndpointBreaker {
 /// Circuit breaker registry for gRPC endpoints.
 ///
 /// Tracks circuit breaker state per endpoint address to prevent hammering
-/// unhealthy nodes during cross-node fan-out queries.
+/// unhealthy nodes during cross-node internal gRPC calls.
 pub struct GrpcCircuitBreakerRegistry {
     /// Map of endpoint address -> circuit breaker
     breakers: Arc<RwLock<HashMap<String, EndpointBreaker>>>,

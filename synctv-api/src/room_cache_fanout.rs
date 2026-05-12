@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use std::sync::Arc;
-use synctv_cluster::sync::{CacheTarget, ClusterEvent, PublishRequest};
 use synctv_core::models::RoomId;
+use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
 
-use crate::cluster_fanout::{publish_best_effort, ClusterFanoutService};
+use crate::realtime_fanout::{publish_best_effort, RealtimeFanoutService};
 
 #[async_trait]
 pub trait RoomCacheFanoutService: Send + Sync {
@@ -13,13 +13,13 @@ pub trait RoomCacheFanoutService: Send + Sync {
 }
 
 pub struct DefaultRoomCacheFanoutService {
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
 }
 
 impl DefaultRoomCacheFanoutService {
     #[must_use]
-    pub fn new(cluster_fanout: Arc<dyn ClusterFanoutService>) -> Self {
-        Self { cluster_fanout }
+    pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
+        Self { realtime_fanout }
     }
 }
 
@@ -27,8 +27,8 @@ impl std::fmt::Debug for DefaultRoomCacheFanoutService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DefaultRoomCacheFanoutService")
             .field(
-                "cluster_fanout_distributed",
-                &self.cluster_fanout.is_distributed_enabled(),
+                "realtime_fanout_distributed",
+                &self.realtime_fanout.is_distributed_enabled(),
             )
             .finish()
     }
@@ -38,9 +38,9 @@ impl std::fmt::Debug for DefaultRoomCacheFanoutService {
 impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
     fn publish_invalidation(&self, room_id: &RoomId) {
         publish_best_effort(
-            self.cluster_fanout.clone(),
+            self.realtime_fanout.clone(),
             PublishRequest {
-                event: ClusterEvent::CacheInvalidate {
+                event: RealtimeEvent::CacheInvalidate {
                     event_id: synctv_common::snanoid!(16),
                     targets: vec![CacheTarget::Room { room_id: *room_id }],
                     timestamp: chrono::Utc::now(),
@@ -50,9 +50,9 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
     }
 
     async fn try_publish_all_invalidation(&self) -> bool {
-        self.cluster_fanout
+        self.realtime_fanout
             .try_publish(PublishRequest {
-                event: ClusterEvent::CacheInvalidate {
+                event: RealtimeEvent::CacheInvalidate {
                     event_id: synctv_common::snanoid!(16),
                     targets: vec![CacheTarget::All],
                     timestamp: chrono::Utc::now(),
@@ -64,23 +64,23 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
 
 #[must_use]
 pub fn default_room_cache_fanout_service(
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
 ) -> Arc<dyn RoomCacheFanoutService> {
-    Arc::new(DefaultRoomCacheFanoutService::new(cluster_fanout))
+    Arc::new(DefaultRoomCacheFanoutService::new(realtime_fanout))
 }
 
 #[cfg(test)]
 mod tests {
     use super::default_room_cache_fanout_service;
-    use crate::cluster_fanout::default_cluster_fanout_service;
-    use crate::test_support::channel_cluster_fanout_service;
-    use synctv_cluster::sync::{CacheTarget, ClusterEvent};
+    use crate::realtime_fanout::default_realtime_fanout_service;
+    use crate::test_support::channel_realtime_fanout_service;
     use synctv_core::models::RoomId;
+    use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
     #[tokio::test]
-    async fn test_room_cache_fanout_is_noop_when_cluster_fanout_is_local() {
+    async fn test_room_cache_fanout_is_noop_when_realtime_fanout_is_local() {
         let service =
-            default_room_cache_fanout_service(default_cluster_fanout_service(None, false));
+            default_room_cache_fanout_service(default_realtime_fanout_service(None, false));
 
         service.publish_invalidation(&RoomId::expect_positive(109_001));
     }
@@ -88,14 +88,14 @@ mod tests {
     #[tokio::test]
     async fn test_room_cache_fanout_publishes_room_target_invalidation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_cache_fanout_service(channel_cluster_fanout_service(tx));
+        let service = default_room_cache_fanout_service(channel_realtime_fanout_service(tx));
         let room_id = RoomId::expect_positive(109_002);
 
         service.publish_invalidation(&room_id);
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
-            ClusterEvent::CacheInvalidate {
+            RealtimeEvent::CacheInvalidate {
                 targets, event_id, ..
             } => {
                 assert_eq!(targets.len(), 1);
@@ -114,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn test_room_cache_fanout_publishes_all_target_invalidation() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let service = default_room_cache_fanout_service(channel_cluster_fanout_service(tx));
+        let service = default_room_cache_fanout_service(channel_realtime_fanout_service(tx));
 
         assert!(
             service.try_publish_all_invalidation().await,
@@ -123,7 +123,7 @@ mod tests {
 
         let request = rx.recv().await.expect("publish request should be queued");
         match request.event {
-            ClusterEvent::CacheInvalidate { targets, .. } => {
+            RealtimeEvent::CacheInvalidate { targets, .. } => {
                 assert_eq!(targets.len(), 1);
                 assert!(matches!(targets[0], CacheTarget::All));
             }

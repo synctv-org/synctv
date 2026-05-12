@@ -567,10 +567,6 @@ mod websocket_e2e {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     // Security checks (password version, user status) handled by SecurityPipeline
-    use synctv_cluster::sync::{
-        build_connection_manager, ClusterConfig, ClusterManager, ConnectionLimits,
-        ConnectionManager,
-    };
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
@@ -580,6 +576,10 @@ mod websocket_e2e {
     };
     use synctv_proto::client::{
         client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage, WebRtcJoin,
+    };
+    use synctv_realtime::sync::{
+        build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
+        RealtimeManager,
     };
 
     use sqlx::PgPool;
@@ -639,7 +639,7 @@ mod websocket_e2e {
         room_service: Arc<RoomService>,
         user_service: Arc<UserService>,
         connection_manager: Arc<ConnectionManager>,
-        cluster_manager: Arc<ClusterManager>,
+        realtime_manager: Arc<RealtimeManager>,
         ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
         server_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
         server_handle: Option<JoinHandle<()>>,
@@ -654,7 +654,7 @@ mod websocket_e2e {
             }
 
             self.connection_manager.shutdown().await;
-            self.cluster_manager.shutdown().await;
+            self.realtime_manager.shutdown().await;
         }
     }
 
@@ -843,25 +843,25 @@ mod websocket_e2e {
         let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
-        let cluster_config = ClusterConfig {
+        let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
-                synctv_cluster::build_cluster_message_transport_factory(
+                synctv_realtime::build_realtime_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
                 ),
             ),
-            message_runtime: synctv_cluster::build_room_message_runtime(
+            message_runtime: synctv_realtime::build_room_message_runtime(
                 &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
             )
             .expect("shared message runtime should initialize"),
-            cluster_enabled: true,
+            distributed_enabled: true,
             node_id: node_id.to_string(),
             key_prefix: redis_key_prefix.clone(),
             ..Default::default()
         };
-        let cluster_manager = Arc::new(
-            ClusterManager::new(cluster_config, None, None)
+        let realtime_manager = Arc::new(
+            RealtimeManager::new(realtime_config)
                 .await
-                .expect("ClusterManager"),
+                .expect("RealtimeManager"),
         );
         let redis_client_for_connections =
             redis::Client::open(redis_url.clone()).expect("Redis client for connection manager");
@@ -927,10 +927,10 @@ mod websocket_e2e {
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            event_service: Some(cluster_manager.clone()),
+            event_service: Some(realtime_manager.clone()),
             connection_manager,
             jwt_service: jwt_service.clone(),
-            cluster_fanout_service: synctv_api::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: synctv_api::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             oauth2_service: None,
@@ -1004,7 +1004,7 @@ mod websocket_e2e {
             room_service,
             user_service,
             connection_manager: connection_manager_ret,
-            cluster_manager,
+            realtime_manager,
             ws_ticket_service,
             server_shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
@@ -2012,7 +2012,7 @@ mod websocket_e2e {
             drain_until_quiet(&mut ws2, 1500),
         );
 
-        let event = synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
+        let event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
             room_id: rid,
             user_id: user2_id,
@@ -2020,7 +2020,7 @@ mod websocket_e2e {
             timestamp: chrono::Utc::now(),
         };
         server
-            .cluster_manager
+            .realtime_manager
             .admin_event_tx()
             .send(event)
             .expect("admin event send");
@@ -2312,7 +2312,7 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_ws_cross_replica_room_realtime_message_matrix_via_cluster_events() {
+    async fn test_ws_cross_replica_room_realtime_message_matrix_via_realtime_events() {
         let infra = TestInfra::new().await;
 
         let server1 = setup_e2e_server_with_node(&infra, "matrix_replica_1").await;
@@ -2370,8 +2370,8 @@ mod websocket_e2e {
         };
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::ChatMessage {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::ChatMessage {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2403,8 +2403,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::MediaAdded {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaAdded {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2437,8 +2437,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::MediaUpdated {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaUpdated {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2470,16 +2470,16 @@ mod websocket_e2e {
             "MediaUpdated event should be forwarded"
         );
 
-        server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistReordered {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PlaylistReordered {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 media_ids: vec![media_two, media_one],
                 timestamp: chrono::Utc::now(),
-            });
+            },
+        );
         let playlist_reordered_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
@@ -2507,8 +2507,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemoved {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::MediaRemoved {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2538,16 +2538,16 @@ mod websocket_e2e {
             "MediaRemoved event should be forwarded"
         );
 
-        server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::MediaRemovedBatch {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
                 username: "matrix_owner".to_string(),
                 media_ids: vec![media_one, media_two],
                 timestamp: chrono::Utc::now(),
-            });
+            },
+        );
         let media_removed_batch_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
@@ -2575,8 +2575,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistCreated {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistCreated {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2612,8 +2612,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistUpdated {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistUpdated {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2649,8 +2649,8 @@ mod websocket_e2e {
         );
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::PlaylistDeleted {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::PlaylistDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2681,9 +2681,8 @@ mod websocket_e2e {
 
         let permission_bits = synctv_core::models::PermissionBits::START_LIVE
             | synctv_core::models::PermissionBits::PLAY_CONTROL;
-        server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::PermissionChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PermissionChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 target_user_id: member_id,
@@ -2697,7 +2696,8 @@ mod websocket_e2e {
                 admin_added_permissions: synctv_core::models::PermissionBits(permission_bits),
                 admin_removed_permissions: synctv_core::models::PermissionBits(0),
                 timestamp: chrono::Utc::now(),
-            });
+            },
+        );
         let permission_changed_msg = recv_matching_server_message(
             &mut ws_member,
             std::time::Duration::from_secs(10),
@@ -2727,8 +2727,8 @@ mod websocket_e2e {
             "chat_enabled": false,
             "allow_guest_join": true,
         });
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::RoomSettingsChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2766,8 +2766,8 @@ mod websocket_e2e {
             "chat_enabled": true,
             "allow_guest_join": false,
         });
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::RoomSettingsChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2802,8 +2802,8 @@ mod websocket_e2e {
         }
 
         server1
-            .cluster_manager
-            .broadcast(synctv_cluster::sync::ClusterEvent::RoomDeleted {
+            .realtime_manager
+            .broadcast(synctv_realtime::sync::RealtimeEvent::RoomDeleted {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 deleted_by: owner_id,
@@ -2836,7 +2836,7 @@ mod websocket_e2e {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_ws_cross_replica_playback_operation_matrix_via_cluster_events() {
+    async fn test_ws_cross_replica_playback_operation_matrix_via_realtime_events() {
         let infra = TestInfra::new().await;
 
         let server1 = setup_e2e_server_with_node(&infra, "playback_matrix_replica_1").await;
@@ -2880,8 +2880,8 @@ mod websocket_e2e {
         started_state.playing_media_id = Some(media_id);
         started_state.is_playing = true;
         started_state.version = 1;
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2922,8 +2922,8 @@ mod websocket_e2e {
         paused_state.current_time = 17.5;
         paused_state.is_playing = false;
         paused_state.version = 2;
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -2965,8 +2965,8 @@ mod websocket_e2e {
         resumed_state.speed = 1.5;
         resumed_state.is_playing = true;
         resumed_state.version = 3;
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: room,
                 user_id: owner_id,
@@ -3004,8 +3004,8 @@ mod websocket_e2e {
 
         let mut stopped_state = synctv_core::models::RoomPlaybackState::new(room);
         stopped_state.version = 4;
-        server1.cluster_manager.broadcast(
-            synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+        server1.realtime_manager.broadcast(
+            synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                 event_id: synctv_common::snanoid!(16),
                 room_id: decode_test_room_id(&room_id),
                 user_id: owner_id,
@@ -4330,10 +4330,6 @@ mod websocket_connection_limit_timing {
     use tokio_tungstenite::tungstenite;
 
     use synctv_api::http::websocket::websocket_handler;
-    use synctv_cluster::sync::{
-        build_connection_manager, ClusterConfig, ClusterManager, ConnectionLimits,
-        ConnectionManager,
-    };
     use synctv_core::cache::UsernameCache;
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::id::UserId;
@@ -4344,6 +4340,10 @@ mod websocket_connection_limit_timing {
     use synctv_core_testing::{
         create_test_pool_with_options_and_label, redis_connection_manager,
         start_redis_url_with_label, test_redis_key_prefix, RedisContainer, TestContainer,
+    };
+    use synctv_realtime::sync::{
+        build_connection_manager, ConnectionLimits, ConnectionManager, RealtimeConfig,
+        RealtimeManager,
     };
 
     use sqlx::PgPool;
@@ -4528,13 +4528,13 @@ mod websocket_connection_limit_timing {
         let shared_runtime: Arc<dyn synctv_core::RedisConnectionRuntime> = Arc::new(
             synctv_core::DirectRedisConnectionRuntime::new(redis_conn_for_cluster.clone()),
         );
-        let cluster_config = ClusterConfig {
+        let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
-                synctv_cluster::build_cluster_message_transport_factory(
+                synctv_realtime::build_realtime_message_transport_factory(
                     synctv_core::coordination_runtime_from_client(redis_client_for_cluster),
                 ),
             ),
-            message_runtime: synctv_cluster::build_room_message_runtime(
+            message_runtime: synctv_realtime::build_room_message_runtime(
                 &SharedStateProfile::from_runtime(Some(shared_runtime), &redis_key_prefix, true),
             )
             .expect("shared message runtime should initialize"),
@@ -4542,10 +4542,10 @@ mod websocket_connection_limit_timing {
             key_prefix: redis_key_prefix.clone(),
             ..Default::default()
         };
-        let cluster_manager = Arc::new(
-            ClusterManager::new(cluster_config, None, None)
+        let realtime_manager = Arc::new(
+            RealtimeManager::new(realtime_config)
                 .await
-                .expect("ClusterManager"),
+                .expect("RealtimeManager"),
         );
 
         let connection_limits = ConnectionLimits {
@@ -4614,10 +4614,10 @@ mod websocket_connection_limit_timing {
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
             providers: providers.clone(),
-            event_service: Some(cluster_manager),
+            event_service: Some(realtime_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
-            cluster_fanout_service: synctv_api::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: synctv_api::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             oauth2_service: None,

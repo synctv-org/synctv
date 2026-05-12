@@ -1,18 +1,18 @@
 use async_trait::async_trait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use synctv_cluster::sync::{ClusterEvent, PublishRequest};
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::user::UserDeletionSummary;
 use synctv_core::service::RoomService;
 use synctv_livestream::api::LiveStreamingInfrastructure;
+use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::cluster_fanout::ClusterFanoutService;
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeConnectionService;
 
 pub struct DeletedRoomAfterCommitFanout {
     pub room_id: RoomId,
-    pub event: ClusterEvent,
+    pub event: RealtimeEvent,
 }
 
 #[async_trait]
@@ -40,7 +40,7 @@ pub trait RealtimeLifecycleService: Send + Sync {
 pub struct DefaultRealtimeLifecycleService {
     connection_service: Arc<dyn RealtimeConnectionService>,
     live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
 }
 
 impl DefaultRealtimeLifecycleService {
@@ -48,12 +48,12 @@ impl DefaultRealtimeLifecycleService {
     pub fn new(
         connection_service: Arc<dyn RealtimeConnectionService>,
         live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-        cluster_fanout: Arc<dyn ClusterFanoutService>,
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> Self {
         Self {
             connection_service,
             live_streaming_infrastructure,
-            cluster_fanout,
+            realtime_fanout,
         }
     }
 }
@@ -66,8 +66,8 @@ impl std::fmt::Debug for DefaultRealtimeLifecycleService {
                 &self.live_streaming_infrastructure.is_some(),
             )
             .field(
-                "cluster_fanout_distributed",
-                &self.cluster_fanout.is_distributed_enabled(),
+                "realtime_fanout_distributed",
+                &self.realtime_fanout.is_distributed_enabled(),
             )
             .finish()
     }
@@ -90,9 +90,9 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         }
 
         if !self
-            .cluster_fanout
+            .realtime_fanout
             .try_publish(PublishRequest {
-                event: ClusterEvent::KickPublisher {
+                event: RealtimeEvent::KickPublisher {
                     event_id: synctv_common::snanoid!(16),
                     room_id: *room_id,
                     media_id: *media_id,
@@ -101,12 +101,12 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 },
             })
             .await
-            && self.cluster_fanout.is_distributed_enabled()
+            && self.realtime_fanout.is_distributed_enabled()
         {
             tracing::warn!(
                 room_id = %room_id,
                 media_id = %media_id,
-                "Failed to send cluster-wide kick event after bounded retry"
+                "Failed to send replica-wide kick event after bounded retry"
             );
         }
     }
@@ -210,9 +210,9 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         }
 
         let _ = self
-            .cluster_fanout
+            .realtime_fanout
             .try_publish(PublishRequest {
-                event: ClusterEvent::KickUser {
+                event: RealtimeEvent::KickUser {
                     event_id: synctv_common::snanoid!(16),
                     user_id: *user_id,
                     reason: reason.to_string(),
@@ -258,7 +258,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 .finalize_deleted_room_after_commit(&room_id)
                 .await;
 
-            self.cluster_fanout
+            self.realtime_fanout
                 .publish_after_outbox_commit(deleted_room.event);
 
             self.disconnect_room(&room_id, "room_deleted").await;
@@ -273,35 +273,35 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
 pub fn default_realtime_lifecycle_service(
     connection_service: Arc<dyn RealtimeConnectionService>,
     live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    cluster_fanout: Arc<dyn ClusterFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
 ) -> Arc<dyn RealtimeLifecycleService> {
     Arc::new(DefaultRealtimeLifecycleService::new(
         connection_service,
         live_streaming_infrastructure,
-        cluster_fanout,
+        realtime_fanout,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::default_realtime_lifecycle_service;
-    use crate::cluster_fanout::default_cluster_fanout_service;
+    use crate::realtime_fanout::default_realtime_fanout_service;
     use crate::runtime::RealtimeConnectionService;
-    use crate::test_support::channel_cluster_fanout_service;
+    use crate::test_support::channel_realtime_fanout_service;
     use std::sync::Arc;
-    use synctv_cluster::sync::{ClusterEvent, ConnectionLimits, ConnectionManager};
     use synctv_core::models::{MediaId, RoomId, UserId};
     use synctv_livestream::api::{LiveStreamingInfrastructure, StreamTracker};
     use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, RealtimeEvent};
     #[tokio::test]
-    async fn test_realtime_lifecycle_kick_stream_uses_cluster_fanout_service() {
+    async fn test_realtime_lifecycle_kick_stream_uses_realtime_fanout_service() {
         let connection_service: Arc<dyn RealtimeConnectionService> =
             Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let (publish_tx, mut publish_rx) = tokio::sync::mpsc::channel(4);
         let service = default_realtime_lifecycle_service(
             connection_service,
             None,
-            channel_cluster_fanout_service(publish_tx),
+            channel_realtime_fanout_service(publish_tx),
         );
 
         service
@@ -315,10 +315,10 @@ mod tests {
         let published = publish_rx
             .recv()
             .await
-            .expect("kick helper should publish exactly one cluster event");
+            .expect("kick helper should publish exactly one realtime event");
         assert!(matches!(
             published.event,
-            ClusterEvent::KickPublisher { ref room_id, ref media_id, ref reason, .. }
+            RealtimeEvent::KickPublisher { ref room_id, ref media_id, ref reason, .. }
                 if room_id.as_i64() == 1001
                     && media_id.as_i64() == 2001
                     && reason == "test-reason"
@@ -335,7 +335,7 @@ mod tests {
         let service = default_realtime_lifecycle_service(
             Arc::clone(&connection_service),
             None,
-            channel_cluster_fanout_service(publish_tx),
+            channel_realtime_fanout_service(publish_tx),
         );
         let user_id = UserId::expect_positive(101_001);
 
@@ -346,7 +346,7 @@ mod tests {
             .await
             .expect("disconnect_user should publish a kick event");
         match published.event {
-            ClusterEvent::KickUser {
+            RealtimeEvent::KickUser {
                 user_id: published_user_id,
                 reason,
                 ..
@@ -451,7 +451,7 @@ mod tests {
         let service = default_realtime_lifecycle_service(
             connection_service.clone(),
             Some(infra),
-            default_cluster_fanout_service(None, false),
+            default_realtime_fanout_service(None, false),
         );
 
         service.disconnect_user_from_room(&room_one, &user_id).await;
@@ -483,7 +483,7 @@ mod tests {
             .expect("room-scoped disconnect must emit a disconnect signal");
         assert!(matches!(
             disconnect_signal,
-            synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+            synctv_realtime::sync::DisconnectSignal::UserFromRoom {
                 user_id: ref signal_user_id,
                 room_id: ref signal_room_id,
             } if signal_user_id == &user_id && signal_room_id == &room_one

@@ -5,10 +5,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_cluster::sync::{
-    build_room_message_runtime, ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
-};
-use synctv_cluster::sync::{ClusterEvent, NotificationLevel, RoomMessageHub};
 use synctv_core::cache::UsernameCache;
 use synctv_core::models::notification::{Notification, NotificationType};
 use synctv_core::models::{
@@ -28,6 +24,11 @@ use synctv_core::{DirectRedisConnectionRuntime, RedisConnectionRuntime};
 use synctv_core_testing::{
     create_test_request_rate_limiter, start_dedicated_redis_url_with_label, RedisContainer,
 };
+use synctv_realtime::sync::{
+    build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
+    RealtimeManager,
+};
+use synctv_realtime::sync::{NotificationLevel, RealtimeEvent, RoomMessageHub};
 
 fn room_id() -> RoomId {
     RoomId::expect_positive(1)
@@ -577,31 +578,28 @@ fn bounded_fixture_username(node_id: &str) -> String {
     format!("{prefix}{suffix}")
 }
 
-async fn test_cluster_manager(node_id: &str) -> Arc<ClusterManager> {
+async fn test_realtime_manager(node_id: &str) -> Arc<RealtimeManager> {
     Arc::new(
-        ClusterManager::new(
-            ClusterConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                cluster_enabled: false,
-                node_id: node_id.to_string(),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 100,
-                publish_channel_capacity: 1000,
-                key_prefix: "synctv:".to_string(),
-                catchup_window_secs: 300,
-                stream_max_length: 1000,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
+        RealtimeManager::new(RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: node_id.to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 100,
+            publish_channel_capacity: 1000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 1000,
+            event_handler: None,
+            parent_cancel_token: None,
+        })
         .await
-        .expect("cluster manager"),
+        .expect("realtime manager"),
     )
 }
 
-async fn test_cluster_manager_with_redis(node_id: &str, redis_url: &str) -> Arc<ClusterManager> {
+async fn test_realtime_manager_with_redis(node_id: &str, redis_url: &str) -> Arc<RealtimeManager> {
     let redis_client = redis::Client::open(redis_url).expect("Redis client");
     let redis_conn = redis_client
         .get_connection_manager()
@@ -613,30 +611,27 @@ async fn test_cluster_manager_with_redis(node_id: &str, redis_url: &str) -> Arc<
         synctv_core::SharedStateProfile::from_runtime(Some(shared_runtime), "synctv:", true);
 
     Arc::new(
-        ClusterManager::new(
-            ClusterConfig {
-                distributed_transport_factory: Some(
-                    synctv_cluster::build_cluster_message_transport_factory(
-                        synctv_core::coordination_runtime_from_client(redis_client),
-                    ),
+        RealtimeManager::new(RealtimeConfig {
+            distributed_transport_factory: Some(
+                synctv_realtime::build_realtime_message_transport_factory(
+                    synctv_core::coordination_runtime_from_client(redis_client),
                 ),
-                message_runtime: build_room_message_runtime(&realtime_profile)
-                    .expect("shared message runtime should initialize"),
-                cluster_enabled: false,
-                node_id: node_id.to_string(),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 100,
-                publish_channel_capacity: 1000,
-                key_prefix: "synctv:".to_string(),
-                catchup_window_secs: 300,
-                stream_max_length: 1000,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
+            ),
+            message_runtime: build_room_message_runtime(&realtime_profile)
+                .expect("shared message runtime should initialize"),
+            distributed_enabled: false,
+            node_id: node_id.to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 100,
+            publish_channel_capacity: 1000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 1000,
+            event_handler: None,
+            parent_cancel_token: None,
+        })
         .await
-        .expect("cluster manager with redis"),
+        .expect("realtime manager with redis"),
     )
 }
 
@@ -1163,7 +1158,7 @@ impl crate::impls::room_members_snapshot::RoomMembersSnapshotService
 
 fn test_message_handler(
     sender: Arc<dyn MessageSender>,
-    event_service: Arc<ClusterManager>,
+    event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
 ) -> StreamMessageHandler {
     test_message_handler_for_user(sender, event_service, connection_service, user_id())
@@ -1171,7 +1166,7 @@ fn test_message_handler(
 
 fn test_message_handler_for_user(
     sender: Arc<dyn MessageSender>,
-    event_service: Arc<ClusterManager>,
+    event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     user_id: UserId,
 ) -> StreamMessageHandler {
@@ -1213,7 +1208,7 @@ fn test_guest_principal_with_permissions(permissions: PermissionBits) -> Realtim
 
 fn test_guest_message_handler(
     sender: Arc<dyn MessageSender>,
-    event_service: Arc<ClusterManager>,
+    event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     permissions: PermissionBits,
 ) -> StreamMessageHandler {
@@ -1246,7 +1241,7 @@ async fn create_start_handler_fixture(
     sender: Arc<dyn MessageSender>,
 ) -> StartTestFixture {
     let (container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_cluster_manager(node_id).await;
+    let event_service = test_realtime_manager(node_id).await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
@@ -1307,7 +1302,7 @@ async fn create_guest_start_handler_fixture(
     permissions: PermissionBits,
 ) -> StartTestFixture {
     let (container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_cluster_manager(node_id).await;
+    let event_service = test_realtime_manager(node_id).await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
@@ -1393,7 +1388,7 @@ async fn create_guest_start_handler_fixture(
 struct StartTestFixture {
     _container: synctv_core_testing::TestContainer,
     pool: sqlx::PgPool,
-    event_service: Arc<ClusterManager>,
+    event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
     handler: StreamMessageHandler,
 }
@@ -1426,7 +1421,7 @@ async fn prepare_handler_for_run_after_join(
 async fn wait_for_start_cleanup(
     handler: &StreamMessageHandler,
     connection_service: &Arc<ConnectionManager>,
-    event_service: &ClusterManager,
+    event_service: &RealtimeManager,
     cancel_token: &tokio_util::sync::CancellationToken,
     expect_room_subscription_cleanup: bool,
 ) {
@@ -1448,7 +1443,7 @@ async fn wait_for_start_cleanup(
                     .get_connection(&connection_id)
                     .is_none()
                 && (!expect_room_subscription_cleanup
-                    || cluster_manager_subscriber_count(event_service, &room) == 0)
+                    || realtime_manager_subscriber_count(event_service, &room) == 0)
             {
                 break;
             }
@@ -1460,7 +1455,7 @@ async fn wait_for_start_cleanup(
 }
 
 async fn shutdown_test_runtime_resources(
-    event_service: Arc<ClusterManager>,
+    event_service: Arc<RealtimeManager>,
     connection_service: Arc<ConnectionManager>,
 ) {
     event_service.shutdown().await;
@@ -1468,7 +1463,7 @@ async fn shutdown_test_runtime_resources(
     tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
-fn cluster_manager_subscriber_count(event_service: &ClusterManager, room_id: &RoomId) -> usize {
+fn realtime_manager_subscriber_count(event_service: &RealtimeManager, room_id: &RoomId) -> usize {
     event_service.get_room_subscribers(room_id).len()
 }
 
@@ -1501,7 +1496,7 @@ async fn wait_for_recorded_message_count(stream_state: &RecordingStreamState, ex
 async fn wait_for_run_after_join_cleanup(
     handler: &StreamMessageHandler,
     connection_service: &Arc<ConnectionManager>,
-    event_service: &ClusterManager,
+    event_service: &RealtimeManager,
     task: tokio::task::JoinHandle<Result<(), String>>,
 ) {
     let result = tokio::time::timeout(Duration::from_secs(1), task)
@@ -1518,7 +1513,7 @@ async fn wait_for_run_after_join_cleanup(
             if connection_service.connection_count() == 0
                 && connection_service.room_connection_count(&handler.room_id) == 0
                 && connection_service.user_connection_count(&handler.user_id) == 0
-                && cluster_manager_subscriber_count(event_service, &handler.room_id) == 0
+                && realtime_manager_subscriber_count(event_service, &handler.room_id) == 0
             {
                 break;
             }
@@ -1596,7 +1591,7 @@ async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails()
 
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
-async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
+async fn test_start_cancels_and_cleans_up_when_realtime_event_send_fails() {
     let sender = FailingMessageSender::fail_after(1);
     let sender_for_assert = Arc::clone(&sender);
     let fixture = create_start_handler_fixture("start_event_send_failure", sender).await;
@@ -1611,7 +1606,7 @@ async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if cluster_manager_subscriber_count(event_service, &handler.room_id) == 1 {
+            if realtime_manager_subscriber_count(event_service, &handler.room_id) == 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1620,7 +1615,7 @@ async fn test_start_cancels_and_cleans_up_when_cluster_event_send_fails() {
     .await
     .expect("subscription should be established");
 
-    event_service.broadcast(ClusterEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::ChatMessage {
         event_id: "evt-start-fail".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -1663,7 +1658,7 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if cluster_manager_subscriber_count(event_service, &handler.room_id) == 1 {
+            if realtime_manager_subscriber_count(event_service, &handler.room_id) == 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1672,7 +1667,7 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
     .await
     .expect("subscription should be established");
 
-    event_service.broadcast(ClusterEvent::UserNotification {
+    event_service.broadcast(RealtimeEvent::UserNotification {
         event_id: "evt-admin-notify".to_string(),
         user_id: handler.user_id,
         title: "title".to_string(),
@@ -1698,8 +1693,8 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
 }
 
 #[tokio::test]
-async fn test_run_after_join_cleans_up_when_cluster_event_send_fails() {
-    let event_service = test_cluster_manager("test_run_after_join_event_failure").await;
+async fn test_run_after_join_cleans_up_when_realtime_event_send_fails() {
+    let event_service = test_realtime_manager("test_run_after_join_event_failure").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -1714,7 +1709,7 @@ async fn test_run_after_join_cleans_up_when_cluster_event_send_fails() {
 
     wait_for_run_after_join_ready(&stream_state).await;
 
-    event_service.broadcast(ClusterEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::ChatMessage {
         event_id: "evt-run-after-join".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -1731,7 +1726,7 @@ async fn test_run_after_join_cleans_up_when_cluster_event_send_fails() {
 
 #[tokio::test]
 async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
-    let event_service = test_cluster_manager("test_pre_join_caches_room_subscription").await;
+    let event_service = test_realtime_manager("test_pre_join_caches_room_subscription").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -1740,7 +1735,7 @@ async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
     );
     prepare_handler_for_run_after_join(&handler, &connection_service).await;
 
-    event_service.broadcast(ClusterEvent::ChatMessage {
+    event_service.broadcast(RealtimeEvent::ChatMessage {
         event_id: "evt-prejoin-window".to_string(),
         room_id: handler.room_id,
         user_id: UserId::expect_positive(113_001),
@@ -1782,7 +1777,7 @@ async fn test_cached_room_subscription_survives_pre_run_after_join_event_gap() {
 
 #[tokio::test]
 async fn test_run_after_join_cleans_up_when_initial_send_fails() {
-    let event_service = test_cluster_manager("test_run_after_join_initial_failure").await;
+    let event_service = test_realtime_manager("test_run_after_join_initial_failure").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -2233,7 +2228,7 @@ async fn test_observed_playback_snapshot_receives_future_playback_state_updates(
         expires_at: Some(4_102_444_801),
     });
 
-    event_service.broadcast(ClusterEvent::PlaybackStateChanged {
+    event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-snapshot-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -2390,7 +2385,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
         expires_at: Some(4_102_444_860),
     });
 
-    event_service.broadcast(ClusterEvent::MediaUpdated {
+    event_service.broadcast(RealtimeEvent::MediaUpdated {
         event_id: "evt-observe-playback-snapshot-media-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -2544,7 +2539,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_playlist_is_upda
         expires_at: Some(4_102_444_860),
     });
 
-    event_service.broadcast(ClusterEvent::PlaylistUpdated {
+    event_service.broadcast(RealtimeEvent::PlaylistUpdated {
         event_id: "evt-observe-playback-snapshot-playlist-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -2669,7 +2664,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
         .await
         .expect("playback target should update before broadcasting state change");
 
-    event_service.broadcast(ClusterEvent::PlaybackStateChanged {
+    event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-snapshot-same-version-new-content".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -2767,7 +2762,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
     .await
     .expect("initial observed playback snapshot should be delivered");
 
-    event_service.broadcast(ClusterEvent::PlaybackStateChanged {
+    event_service.broadcast(RealtimeEvent::PlaybackStateChanged {
         event_id: "evt-observe-playback-snapshot-refresh-error".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -2794,7 +2789,7 @@ async fn test_playback_snapshot_refresh_failure_removes_observation_without_clos
         "snapshot refresh failures should not tear down the realtime connection"
     );
 
-    event_service.broadcast(ClusterEvent::UserLeft {
+    event_service.broadcast(RealtimeEvent::UserLeft {
         event_id: "evt-after-snapshot-refresh-error".to_string(),
         room_id: handler.room_id,
         user_id: UserId::expect_positive(113_002),
@@ -3107,7 +3102,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender.clone(),
-        test_cluster_manager("playlist_items_coalesce").await,
+        test_realtime_manager("playlist_items_coalesce").await,
         test_connection_manager(),
     );
     let snapshot_service =
@@ -3195,7 +3190,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
 #[tokio::test]
 async fn test_resource_observations_are_bounded_per_connection() {
     let sender = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("resource_observation_limit").await;
+    let event_service = test_realtime_manager("resource_observation_limit").await;
     let connection_service = test_connection_manager();
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
@@ -3283,7 +3278,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender,
-        test_cluster_manager("playlist_items_refresh_consumed").await,
+        test_realtime_manager("playlist_items_refresh_consumed").await,
         test_connection_manager(),
     );
     let snapshot_service = RecordingPlaylistItemsRequestSnapshotService::new(
@@ -3336,7 +3331,7 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
     let message_sender = FailingMessageSender::fail_after(1);
     let handler = test_message_handler(
         message_sender.clone(),
-        test_cluster_manager("resource_changed_send_failure").await,
+        test_realtime_manager("resource_changed_send_failure").await,
         test_connection_manager(),
     );
     let snapshot_service =
@@ -3392,7 +3387,7 @@ async fn test_resource_changed_send_failure_propagates_and_removes_observation()
 async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     let failing_sender = FailingMessageSender::fail_after(1);
     let healthy_sender = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("other_subscriber_send_failure").await;
+    let event_service = test_realtime_manager("other_subscriber_send_failure").await;
     let connection_service = test_connection_manager();
     let pool = test_pool();
     let room_service = test_room_service(pool.clone());
@@ -3471,7 +3466,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     snapshot_service.wait_for_calls(1).await;
 
     snapshot_service.replace(empty_playlist_items_response("items-v2"));
-    let event = ClusterEvent::MediaAdded {
+    let event = RealtimeEvent::MediaAdded {
         event_id: "other-subscriber-send-failure-refresh".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -3508,7 +3503,7 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_changed() {
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender.clone(),
-        test_cluster_manager("stale_refresh_after_unobserve").await,
+        test_realtime_manager("stale_refresh_after_unobserve").await,
         test_connection_manager(),
     );
     let snapshot_service =
@@ -3582,7 +3577,7 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender.clone(),
-        test_cluster_manager("stale_refresh_failure_after_unobserve").await,
+        test_realtime_manager("stale_refresh_failure_after_unobserve").await,
         test_connection_manager(),
     );
     let snapshot_service =
@@ -3657,7 +3652,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
     );
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("playlist_items_singleflight").await;
+    let event_service = test_realtime_manager("playlist_items_singleflight").await;
     let connection_service = test_connection_manager();
     let handler_a = test_message_handler(
         sender_a.clone(),
@@ -3734,7 +3729,7 @@ async fn test_room_resource_hub_coalesces_event_refresh_and_fans_out() {
         });
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("room_resource_hub_event_refresh").await;
+    let event_service = test_realtime_manager("room_resource_hub_event_refresh").await;
     let connection_service = test_connection_manager();
     let pool = test_pool();
     let room_service = test_room_service(pool.clone());
@@ -3815,7 +3810,7 @@ async fn test_room_resource_hub_coalesces_event_refresh_and_fans_out() {
         current_path: Vec::new(),
         version: "items-v2".to_string(),
     });
-    let event = ClusterEvent::MediaAdded {
+    let event = RealtimeEvent::MediaAdded {
         event_id: "room-hub-media-added".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -3862,7 +3857,7 @@ async fn test_room_resource_hub_refresh_dedupe_tracks_subscription_generation() 
         BlockingPlaylistItemsSnapshotService::new(empty_playlist_items_response("items-v1"), 2);
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("room_resource_hub_generation_dedupe").await;
+    let event_service = test_realtime_manager("room_resource_hub_generation_dedupe").await;
     let connection_service = test_connection_manager();
     let pool = test_pool();
     let room_service = test_room_service(pool.clone());
@@ -3931,7 +3926,7 @@ async fn test_room_resource_hub_refresh_dedupe_tracks_subscription_generation() 
         .expect("first observe should register");
     snapshot_service.wait_for_calls(1).await;
 
-    let event = ClusterEvent::MediaAdded {
+    let event = RealtimeEvent::MediaAdded {
         event_id: "room-hub-generation-dedupe-media-added".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -4004,7 +3999,7 @@ async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
     );
     let sender_a = RecordingMessageSender::new();
     let sender_b = RecordingMessageSender::new();
-    let event_service = test_cluster_manager("room_settings_singleflight").await;
+    let event_service = test_realtime_manager("room_settings_singleflight").await;
     let connection_service = test_connection_manager();
     let handler_a = test_message_handler_for_user(
         sender_a.clone(),
@@ -4058,7 +4053,7 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
     let message_sender = RecordingMessageSender::new();
     let handler = test_message_handler(
         message_sender.clone(),
-        test_cluster_manager("observe_no_completed_reuse").await,
+        test_realtime_manager("observe_no_completed_reuse").await,
         test_connection_manager(),
     );
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
@@ -4304,7 +4299,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         version: "items-v2".to_string(),
     });
 
-    event_service.broadcast(ClusterEvent::MediaAdded {
+    event_service.broadcast(RealtimeEvent::MediaAdded {
         event_id: "evt-observe-playlist-items-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -4577,7 +4572,7 @@ async fn test_observed_room_members_receive_future_permission_updates() {
         version: "members-v2".to_string(),
     });
 
-    event_service.broadcast(ClusterEvent::PermissionChanged {
+    event_service.broadcast(RealtimeEvent::PermissionChanged {
         event_id: "evt-observe-room-members-update".to_string(),
         room_id: handler.room_id,
         target_user_id: UserId::expect_positive(113_004),
@@ -4691,7 +4686,7 @@ async fn test_observed_room_members_receive_future_room_settings_updates() {
         version: "members-v2".to_string(),
     });
 
-    event_service.broadcast(ClusterEvent::RoomSettingsChanged {
+    event_service.broadcast(RealtimeEvent::RoomSettingsChanged {
         event_id: "evt-observe-room-members-settings-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -4829,7 +4824,7 @@ async fn test_observed_room_settings_receive_future_updates() {
         version: 8,
     });
 
-    event_service.broadcast(ClusterEvent::RoomSettingsChanged {
+    event_service.broadcast(RealtimeEvent::RoomSettingsChanged {
         event_id: "evt-observe-room-settings-update".to_string(),
         room_id: handler.room_id,
         user_id: handler.user_id,
@@ -4862,7 +4857,7 @@ async fn test_observed_room_settings_receive_future_updates() {
 
 #[tokio::test]
 async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
-    let event_service = test_cluster_manager("test_run_after_join_admin_failure").await;
+    let event_service = test_realtime_manager("test_run_after_join_admin_failure").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -4877,7 +4872,7 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
 
     wait_for_run_after_join_ready(&stream_state).await;
 
-    event_service.broadcast(ClusterEvent::UserNotification {
+    event_service.broadcast(RealtimeEvent::UserNotification {
         event_id: "evt-run-after-join-admin".to_string(),
         user_id: handler.user_id,
         title: "title".to_string(),
@@ -4893,7 +4888,7 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
 
 #[tokio::test]
 async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
-    let event_service = test_cluster_manager("test_run_after_join_backpressure_failure").await;
+    let event_service = test_realtime_manager("test_run_after_join_backpressure_failure").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -4916,7 +4911,7 @@ async fn test_run_after_join_cleans_up_when_backpressure_error_send_fails() {
 
 #[tokio::test]
 async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
-    let event_service = test_cluster_manager("test_run_after_join_direct_failure").await;
+    let event_service = test_realtime_manager("test_run_after_join_direct_failure").await;
     let connection_service = test_connection_manager();
     let notification_pool = test_pool();
     let notification_service = Arc::new(synctv_core::service::UserNotificationService::new(
@@ -4958,7 +4953,7 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
 
 #[test]
 fn test_chat_message_event_conversion() {
-    let event = ClusterEvent::ChatMessage {
+    let event = RealtimeEvent::ChatMessage {
         event_id: "evt1".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -4969,7 +4964,7 @@ fn test_chat_message_event_conversion() {
         color: Some("#ff0000".to_string()),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     let msg = &msgs[0];
     match &msg.message {
@@ -4998,7 +4993,7 @@ fn test_playback_state_changed_event_conversion() {
         updated_at: now(),
         version: 7,
     };
-    let event = ClusterEvent::PlaybackStateChanged {
+    let event = RealtimeEvent::PlaybackStateChanged {
         event_id: "evt2".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5007,7 +5002,7 @@ fn test_playback_state_changed_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::PlaybackState(ps)) => {
@@ -5025,7 +5020,7 @@ fn test_playback_state_changed_event_conversion() {
 
 #[test]
 fn test_user_joined_event_conversion() {
-    let event = ClusterEvent::UserJoined {
+    let event = RealtimeEvent::UserJoined {
         event_id: "evt3".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5040,7 +5035,7 @@ fn test_user_joined_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::UserJoined(uj)) => {
@@ -5057,7 +5052,7 @@ fn test_user_joined_event_conversion() {
 
 #[test]
 fn test_user_left_event_conversion() {
-    let event = ClusterEvent::UserLeft {
+    let event = RealtimeEvent::UserLeft {
         event_id: "evt4".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5065,7 +5060,7 @@ fn test_user_left_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::UserLeft(ul)) => {
@@ -5078,7 +5073,7 @@ fn test_user_left_event_conversion() {
 
 #[test]
 fn test_media_added_event_conversion() {
-    let event = ClusterEvent::MediaAdded {
+    let event = RealtimeEvent::MediaAdded {
         event_id: "evt5".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5088,7 +5083,7 @@ fn test_media_added_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::MediaAdded(ma)) => {
@@ -5103,7 +5098,7 @@ fn test_media_added_event_conversion() {
 
 #[test]
 fn test_media_removed_event_conversion() {
-    let event = ClusterEvent::MediaRemoved {
+    let event = RealtimeEvent::MediaRemoved {
         event_id: "evt6".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5112,7 +5107,7 @@ fn test_media_removed_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::MediaRemoved(mr)) => {
@@ -5126,7 +5121,7 @@ fn test_media_removed_event_conversion() {
 
 #[test]
 fn test_media_removed_batch_event_conversion() {
-    let event = ClusterEvent::MediaRemovedBatch {
+    let event = RealtimeEvent::MediaRemovedBatch {
         event_id: "evt6_batch".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5138,7 +5133,7 @@ fn test_media_removed_batch_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::MediaRemovedBatch(batch)) => {
@@ -5163,7 +5158,7 @@ fn test_media_removed_batch_event_conversion() {
 
 #[test]
 fn test_media_updated_event_conversion() {
-    let event = ClusterEvent::MediaUpdated {
+    let event = RealtimeEvent::MediaUpdated {
         event_id: "evt6b".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5173,7 +5168,7 @@ fn test_media_updated_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::MediaUpdated(mu)) => {
@@ -5188,7 +5183,7 @@ fn test_media_updated_event_conversion() {
 
 #[test]
 fn test_playlist_reordered_event_conversion() {
-    let event = ClusterEvent::PlaylistReordered {
+    let event = RealtimeEvent::PlaylistReordered {
         event_id: "evt6c".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5200,7 +5195,7 @@ fn test_playlist_reordered_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::PlaylistReordered(reordered)) => {
@@ -5225,7 +5220,7 @@ fn test_playlist_reordered_event_conversion() {
 
 #[test]
 fn test_playlist_created_event_conversion() {
-    let event = ClusterEvent::PlaylistCreated {
+    let event = RealtimeEvent::PlaylistCreated {
         event_id: "evt6d".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5234,7 +5229,7 @@ fn test_playlist_created_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::PlaylistCreated(created)) => {
@@ -5252,7 +5247,7 @@ fn test_playlist_created_event_conversion() {
 fn test_playlist_updated_event_conversion() {
     let mut updated_playlist = playlist();
     updated_playlist.name = "Renamed Playlist".to_string();
-    let event = ClusterEvent::PlaylistUpdated {
+    let event = RealtimeEvent::PlaylistUpdated {
         event_id: "evt6e".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5261,7 +5256,7 @@ fn test_playlist_updated_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::PlaylistUpdated(updated)) => {
@@ -5277,7 +5272,7 @@ fn test_playlist_updated_event_conversion() {
 
 #[test]
 fn test_playlist_deleted_event_conversion() {
-    let event = ClusterEvent::PlaylistDeleted {
+    let event = RealtimeEvent::PlaylistDeleted {
         event_id: "evt6f".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5286,7 +5281,7 @@ fn test_playlist_deleted_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::PlaylistDeleted(deleted)) => {
@@ -5304,7 +5299,7 @@ fn test_playlist_deleted_event_conversion() {
 
 #[test]
 fn test_room_settings_changed_event_conversion() {
-    let event = ClusterEvent::RoomSettingsChanged {
+    let event = RealtimeEvent::RoomSettingsChanged {
         event_id: "evt6g".to_string(),
         room_id: room_id(),
         user_id: user_id(),
@@ -5314,7 +5309,7 @@ fn test_room_settings_changed_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::RoomSettings(changed)) => {
@@ -5328,7 +5323,7 @@ fn test_room_settings_changed_event_conversion() {
 
 #[test]
 fn test_webrtc_offer_event_conversion() {
-    let event = ClusterEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCSignaling {
         event_id: "evt7".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::Offer,
@@ -5338,7 +5333,7 @@ fn test_webrtc_offer_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::WebrtcOffer(o)) => {
@@ -5352,7 +5347,7 @@ fn test_webrtc_offer_event_conversion() {
 
 #[test]
 fn test_webrtc_answer_event_conversion() {
-    let event = ClusterEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCSignaling {
         event_id: "evt8".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::Answer,
@@ -5362,7 +5357,7 @@ fn test_webrtc_answer_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::WebrtcAnswer(a)) => {
@@ -5375,7 +5370,7 @@ fn test_webrtc_answer_event_conversion() {
 
 #[test]
 fn test_webrtc_ice_candidate_event_conversion() {
-    let event = ClusterEvent::WebRTCSignaling {
+    let event = RealtimeEvent::WebRTCSignaling {
         event_id: "evt9".to_string(),
         room_id: room_id(),
         message_type: WebRTCSignalKind::IceCandidate,
@@ -5385,7 +5380,7 @@ fn test_webrtc_ice_candidate_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     assert!(matches!(
         &msgs[0].message,
@@ -5395,14 +5390,14 @@ fn test_webrtc_ice_candidate_event_conversion() {
 
 #[test]
 fn test_room_deleted_event_conversion() {
-    let event = ClusterEvent::RoomDeleted {
+    let event = RealtimeEvent::RoomDeleted {
         event_id: "evt11".to_string(),
         room_id: room_id(),
         deleted_by: user_id(),
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::Error(e)) => {
@@ -5415,14 +5410,14 @@ fn test_room_deleted_event_conversion() {
 
 #[test]
 fn test_room_banned_event_conversion() {
-    let event = ClusterEvent::RoomBanned {
+    let event = RealtimeEvent::RoomBanned {
         event_id: "evt11b".to_string(),
         room_id: room_id(),
         banned_by: user_id(),
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::Error(e)) => {
@@ -5435,7 +5430,7 @@ fn test_room_banned_event_conversion() {
 
 #[test]
 fn test_room_owner_inactive_event_conversion() {
-    let event = ClusterEvent::RoomOwnerInactive {
+    let event = RealtimeEvent::RoomOwnerInactive {
         event_id: "evt11c".to_string(),
         room_id: room_id(),
         owner_id: user_id(),
@@ -5443,7 +5438,7 @@ fn test_room_owner_inactive_event_conversion() {
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::Error(e)) => {
@@ -5456,14 +5451,14 @@ fn test_room_owner_inactive_event_conversion() {
 
 #[test]
 fn test_system_notification_event_conversion() {
-    let event = ClusterEvent::SystemNotification {
+    let event = RealtimeEvent::SystemNotification {
         event_id: "evt12".to_string(),
         message: "Server maintenance in 5 minutes".to_string(),
         level: NotificationLevel::Warning,
         timestamp: now(),
     };
 
-    let msgs = cluster_event_to_server_messages(&event, "room_test", &public_id_codec());
+    let msgs = realtime_event_to_server_messages(&event, "room_test", &public_id_codec());
     assert_eq!(msgs.len(), 1);
     match &msgs[0].message {
         Some(Message::Notification(n)) => {
@@ -5476,31 +5471,31 @@ fn test_system_notification_event_conversion() {
 
 #[test]
 fn test_admin_events_return_empty() {
-    let event = ClusterEvent::KickPublisher {
+    let event = RealtimeEvent::KickPublisher {
         event_id: "evt13".to_string(),
         room_id: room_id(),
         media_id: media_id(),
         reason: "test".to_string(),
         timestamp: now(),
     };
-    assert!(cluster_event_to_server_messages(&event, "room_test", &public_id_codec()).is_empty());
+    assert!(realtime_event_to_server_messages(&event, "room_test", &public_id_codec()).is_empty());
 
-    let event = ClusterEvent::KickUser {
+    let event = RealtimeEvent::KickUser {
         event_id: "evt14".to_string(),
         user_id: user_id(),
         reason: "banned".to_string(),
         timestamp: now(),
     };
-    assert!(cluster_event_to_server_messages(&event, "room_test", &public_id_codec()).is_empty());
+    assert!(realtime_event_to_server_messages(&event, "room_test", &public_id_codec()).is_empty());
 
-    let event = ClusterEvent::RoomBanned {
+    let event = RealtimeEvent::RoomBanned {
         event_id: "evt15".to_string(),
         room_id: room_id(),
         banned_by: user_id(),
         timestamp: now(),
     };
     assert_eq!(
-        cluster_event_to_server_messages(&event, "room_test", &public_id_codec()).len(),
+        realtime_event_to_server_messages(&event, "room_test", &public_id_codec()).len(),
         1
     );
 }
@@ -6036,7 +6031,7 @@ async fn test_user_left_retry_semaphore_limits_concurrent_tasks() {
 #[test]
 fn test_user_left_requires_retry_when_distributed_delivery_is_missing() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 1,
             redis_sent: false,
         },
@@ -6054,7 +6049,7 @@ fn test_user_left_requires_retry_when_distributed_delivery_is_missing() {
 #[test]
 fn test_user_left_does_not_retry_in_single_node_mode_after_local_delivery() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 1,
             redis_sent: false,
         },
@@ -6076,7 +6071,7 @@ fn test_user_left_does_not_retry_in_single_node_mode_after_local_delivery() {
 #[test]
 fn test_user_left_does_not_retry_when_no_subscribers_exist_and_distributed_backend_is_off() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 0,
             redis_sent: false,
         },
@@ -6116,7 +6111,7 @@ fn test_guest_policy_backend_error_remains_transient() {
 
 #[tokio::test]
 async fn test_guest_token_blacklist_disconnects_live_guest() {
-    let event_service = test_cluster_manager("guest_token_blacklist_disconnects_live_guest").await;
+    let event_service = test_realtime_manager("guest_token_blacklist_disconnects_live_guest").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -6234,7 +6229,7 @@ async fn test_guest_playlist_observation_is_rejected_even_if_permission_bits_inc
 #[test]
 fn test_guest_left_retry_rebuilds_guest_left_event() {
     let expected_room_id = room_id();
-    let original = ClusterEvent::GuestLeft {
+    let original = RealtimeEvent::GuestLeft {
         event_id: "original-event".to_string(),
         room_id: expected_room_id,
         guest_id: "gst_session".to_string(),
@@ -6245,7 +6240,7 @@ fn test_guest_left_retry_rebuilds_guest_left_event() {
     let retry = super::rebuild_leave_event_for_retry(&original);
 
     match retry {
-        ClusterEvent::GuestLeft {
+        RealtimeEvent::GuestLeft {
             event_id,
             room_id,
             guest_id,
@@ -6265,7 +6260,7 @@ fn test_guest_left_retry_rebuilds_guest_left_event() {
 fn test_user_left_retry_rebuilds_user_left_event() {
     let expected_room_id = room_id();
     let expected_user_id = user_id();
-    let original = ClusterEvent::UserLeft {
+    let original = RealtimeEvent::UserLeft {
         event_id: "original-event".to_string(),
         room_id: expected_room_id,
         user_id: expected_user_id,
@@ -6276,7 +6271,7 @@ fn test_user_left_retry_rebuilds_user_left_event() {
     let retry = super::rebuild_leave_event_for_retry(&original);
 
     match retry {
-        ClusterEvent::UserLeft {
+        RealtimeEvent::UserLeft {
             event_id,
             room_id,
             user_id,
@@ -6295,7 +6290,7 @@ fn test_user_left_retry_rebuilds_user_left_event() {
 #[test]
 fn test_webrtc_signal_requires_distributed_delivery_when_available() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 1,
             redis_sent: false,
         },
@@ -6313,7 +6308,7 @@ fn test_webrtc_signal_requires_distributed_delivery_when_available() {
 #[test]
 fn test_webrtc_signal_allows_single_node_delivery_without_distributed_backend() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 1,
             redis_sent: false,
         },
@@ -6328,7 +6323,7 @@ fn test_webrtc_signal_allows_single_node_delivery_without_distributed_backend() 
 #[test]
 fn test_webrtc_signal_allows_cluster_delivery_when_distributed_publish_succeeds() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 0,
             redis_sent: true,
         },
@@ -6343,7 +6338,7 @@ fn test_webrtc_signal_allows_cluster_delivery_when_distributed_publish_succeeds(
 #[test]
 fn test_webrtc_signal_fails_when_no_delivery_path_succeeds() {
     let outcome = RealtimeDeliveryOutcome::from_broadcast(
-        &synctv_cluster::sync::BroadcastResult {
+        &synctv_realtime::sync::BroadcastResult {
             local_sent: 0,
             redis_sent: false,
         },
@@ -6411,7 +6406,7 @@ fn test_user_left_delivery_skips_when_distributed_check_fails() {
 
 #[tokio::test]
 async fn test_guest_cleanup_broadcasts_guest_left() {
-    let event_service = test_cluster_manager("guest_cleanup_broadcasts_left").await;
+    let event_service = test_realtime_manager("guest_cleanup_broadcasts_left").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -6442,7 +6437,7 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
         .expect("guest left event should be delivered")
         .expect("guest left receiver should remain open until event is read");
     match event {
-        ClusterEvent::GuestLeft {
+        RealtimeEvent::GuestLeft {
             room_id,
             guest_id,
             username,
@@ -6461,7 +6456,7 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
 
 #[tokio::test]
 async fn test_guest_webrtc_recipient_validation_uses_public_guest_actor_id() {
-    let event_service = test_cluster_manager("guest_webrtc_recipient").await;
+    let event_service = test_realtime_manager("guest_webrtc_recipient").await;
     let connection_service = test_connection_manager();
     let handler = test_guest_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -6533,7 +6528,7 @@ async fn test_current_connection_matches_webrtc_recipient_requires_public_actor_
     let user_id = user_id();
     let manager = test_connection_manager();
     let pool = test_pool();
-    let event_service = test_cluster_manager("node-test").await;
+    let event_service = test_realtime_manager("node-test").await;
     let public_id_codec = Arc::new(crate::PublicIdCodec::default_for_tests());
 
     let handler = super::StreamMessageHandler::new(
@@ -6589,7 +6584,7 @@ async fn test_current_connection_matches_webrtc_recipient_rejects_malformed_targ
     let user_id = user_id();
     let manager = test_connection_manager();
     let pool = test_pool();
-    let event_service = test_cluster_manager("node-test").await;
+    let event_service = test_realtime_manager("node-test").await;
 
     let handler = super::StreamMessageHandler::new(
         room_id,
@@ -6691,7 +6686,7 @@ fn test_realtime_join_error_into_string_preserves_message() {
 #[tokio::test]
 async fn test_pre_join_after_registration_fails_closed_when_membership_revalidation_unavailable() {
     let event_service =
-        test_cluster_manager("test_pre_join_membership_revalidation_unavailable").await;
+        test_realtime_manager("test_pre_join_membership_revalidation_unavailable").await;
     let connection_service = test_connection_manager();
     let handler = test_message_handler(
         FailingMessageSender::fail_after(usize::MAX),
@@ -6736,7 +6731,7 @@ async fn test_pre_join_after_registration_fails_closed_when_membership_revalidat
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidation() {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_cluster_manager("test_pre_join_room_closed_final_revalidation").await;
+    let event_service = test_realtime_manager("test_pre_join_room_closed_final_revalidation").await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
@@ -6824,7 +6819,7 @@ async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidat
 async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let event_service =
-        test_cluster_manager("test_pre_join_room_creator_inactive_final_revalidation").await;
+        test_realtime_manager("test_pre_join_room_creator_inactive_final_revalidation").await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
@@ -6911,7 +6906,7 @@ async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidation() {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_cluster_manager("test_pre_join_user_banned_final_revalidation").await;
+    let event_service = test_realtime_manager("test_pre_join_user_banned_final_revalidation").await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
@@ -7002,7 +6997,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
     let (redis, redis_url): (RedisContainer, String) =
         start_dedicated_redis_url_with_label("msg-pre-join-subscription-fail").await;
     let event_service =
-        test_cluster_manager_with_redis("test_pre_join_subscription_cache_failure", &redis_url)
+        test_realtime_manager_with_redis("test_pre_join_subscription_cache_failure", &redis_url)
             .await;
     let connection_service = test_connection_manager();
     let room_service = test_room_service(pool.clone());
@@ -7078,7 +7073,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
     assert!(
         error
             .to_string()
-            .contains("Failed to subscribe to cluster events during pre_join"),
+            .contains("Failed to subscribe to realtime events during pre_join"),
         "expected room subscription caching error, got: {error}"
     );
     assert_eq!(
@@ -7097,7 +7092,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
         "failed subscription caching must not consume per-user capacity"
     );
     assert_eq!(
-        cluster_manager_subscriber_count(&event_service, &room.id),
+        realtime_manager_subscriber_count(&event_service, &room.id),
         0,
         "failed subscription caching must not leave local room subscribers behind"
     );
@@ -7113,25 +7108,25 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
     let connection_id = "conn-123";
 
     assert!(super::disconnect_signal_requires_skip_cleanup(
-        &synctv_cluster::sync::DisconnectSignal::Connection(connection_id.to_string()),
+        &synctv_realtime::sync::DisconnectSignal::Connection(connection_id.to_string()),
         &uid,
         &rid,
         connection_id,
     ));
     assert!(!super::disconnect_signal_requires_skip_cleanup(
-        &synctv_cluster::sync::DisconnectSignal::User(uid),
+        &synctv_realtime::sync::DisconnectSignal::User(uid),
         &uid,
         &rid,
         connection_id,
     ));
     assert!(super::disconnect_signal_requires_skip_cleanup(
-        &synctv_cluster::sync::DisconnectSignal::Room(rid),
+        &synctv_realtime::sync::DisconnectSignal::Room(rid),
         &uid,
         &rid,
         connection_id,
     ));
     assert!(super::disconnect_signal_requires_skip_cleanup(
-        &synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+        &synctv_realtime::sync::DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,
         },
@@ -7148,7 +7143,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
     let now = chrono::Utc::now();
 
     assert!(!super::admin_event_requires_skip_cleanup(
-        &ClusterEvent::KickUser {
+        &RealtimeEvent::KickUser {
             event_id: "evt-1".to_string(),
             user_id: uid,
             reason: "ban".to_string(),
@@ -7158,7 +7153,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
-        &ClusterEvent::KickUserFromRoom {
+        &RealtimeEvent::KickUserFromRoom {
             event_id: "evt-2".to_string(),
             room_id: rid,
             user_id: uid,
@@ -7169,7 +7164,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
-        &ClusterEvent::UserLeft {
+        &RealtimeEvent::UserLeft {
             event_id: "evt-3".to_string(),
             room_id: rid,
             user_id: uid,
@@ -7180,7 +7175,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
         &rid,
     ));
     assert!(super::admin_event_requires_skip_cleanup(
-        &ClusterEvent::RoomBanned {
+        &RealtimeEvent::RoomBanned {
             event_id: "evt-4".to_string(),
             room_id: rid,
             banned_by: uid,
@@ -7193,7 +7188,7 @@ fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exit
 
 #[tokio::test]
 async fn test_connection_reservation_room_slot() {
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     let limits = ConnectionLimits {
         max_per_room: 2,
         ..ConnectionLimits::default()
@@ -7217,7 +7212,7 @@ async fn test_connection_reservation_room_slot() {
 
 #[tokio::test]
 async fn test_connection_reservation_user_slot() {
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     let limits = ConnectionLimits {
         max_per_user: 3,
         ..ConnectionLimits::default()
@@ -7247,7 +7242,7 @@ async fn test_connection_reservation_user_slot() {
 
 #[tokio::test]
 async fn test_connection_reservation_concurrent_simulation() {
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     let limits = ConnectionLimits {
         max_per_room: 5,
         ..ConnectionLimits::default()

@@ -15,7 +15,7 @@ use crate::{
         UserId,
     },
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
-    repository::cluster_outbox::{ClusterOutboxRepository, NewClusterOutboxEvent},
+    repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
     repository::PlaylistRepository,
     repository::{UserProviderCredentialRepository, UserRepository},
     service::{
@@ -26,14 +26,13 @@ use crate::{
 };
 use serde_json::Value as JsonValue;
 
-pub type ClusterOutboxPlaylistEventFactory =
-    Arc<dyn Fn(&Playlist) -> Option<NewClusterOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxPlaylistEventFactory =
+    Arc<dyn Fn(&Playlist) -> Option<NewRealtimeOutboxEvent> + Send + Sync>;
 
-/// Trait for broadcasting playlist changes to cluster replicas.
+/// Trait for broadcasting playlist changes to realtime replicas.
 ///
-/// This abstracts over the cluster manager so that `synctv-core` does not
-/// depend on `synctv-cluster`. The implementation lives in the API/wiring
-/// layer where `ClusterManager` is available.
+/// This abstracts over realtime delivery so that `synctv-core` does not depend
+/// on `synctv-realtime`. The implementation lives in the API/wiring layer.
 pub trait PlaylistBroadcaster: Send + Sync {
     /// Broadcast that a playlist was created.
     fn broadcast_playlist_created(
@@ -138,9 +137,9 @@ pub struct PlaylistService {
     providers_manager: Arc<ProvidersManager>,
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
-    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     /// Optional cluster broadcaster for cross-replica playlist sync
-    cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
+    realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
 }
 
 impl std::fmt::Debug for PlaylistService {
@@ -183,8 +182,8 @@ impl PlaylistService {
             providers_manager,
             credential_encryption: None,
             credential_repo: None,
-            cluster_outbox: None,
-            cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+            realtime_outbox: None,
+            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -203,23 +202,23 @@ impl PlaylistService {
             providers_manager,
             credential_encryption,
             credential_repo,
-            cluster_outbox: None,
-            cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+            realtime_outbox: None,
+            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
-    pub fn set_cluster_outbox(&mut self, cluster_outbox: Option<Arc<ClusterOutboxRepository>>) {
-        self.cluster_outbox = cluster_outbox;
+    pub fn set_realtime_outbox(&mut self, realtime_outbox: Option<Arc<RealtimeOutboxRepository>>) {
+        self.realtime_outbox = realtime_outbox;
     }
 
     /// Set the cluster broadcaster for cross-replica playlist sync
-    pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
-        *self.cluster_broadcaster.write() = Some(broadcaster);
+    pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
+        *self.realtime_broadcaster.write() = Some(broadcaster);
     }
 
     #[doc(hidden)]
-    pub fn has_cluster_broadcaster(&self) -> bool {
-        self.cluster_broadcaster.read().is_some()
+    pub fn has_realtime_broadcaster(&self) -> bool {
+        self.realtime_broadcaster.read().is_some()
     }
 
     /// Get a reference to the providers manager.
@@ -336,7 +335,7 @@ impl PlaylistService {
         room_id: RoomId,
         user_id: UserId,
         request: CreatePlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.create_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
@@ -348,7 +347,7 @@ impl PlaylistService {
         user_id: UserId,
         request: CreatePlaylistRequest,
         bypass_room_permissions: bool,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if request.name.chars().count() > 255 {
             return Err(Error::InvalidInput(
@@ -446,7 +445,7 @@ impl PlaylistService {
             .as_ref()
             .and_then(|factory| factory(&created_playlist))
         {
-            if let Some(outbox) = &self.cluster_outbox {
+            if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut *tx).await?;
             }
         }
@@ -461,14 +460,18 @@ impl PlaylistService {
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
 
-        // Broadcast to cluster replicas
-        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
-            broadcaster.broadcast_playlist_created(
-                &room_id,
-                &created_playlist,
-                &user_id,
-                &actor_username,
-            );
+        // The API-level outbox fanout publishes the committed event locally
+        // after the transaction. Core broadcasts only legacy direct callers
+        // that do not provide an outbox factory.
+        if outbox_event_factory.is_none() {
+            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
+                broadcaster.broadcast_playlist_created(
+                    &room_id,
+                    &created_playlist,
+                    &user_id,
+                    &actor_username,
+                );
+            }
         }
 
         Ok(created_playlist)
@@ -478,7 +481,6 @@ impl PlaylistService {
     pub async fn get_playlist(&self, playlist_id: &PlaylistId) -> Result<Option<Playlist>> {
         self.playlist_repo.get_by_id(playlist_id).await
     }
-
     /// Get playlist by ID, scoped to a room.
     pub async fn get_room_playlist(
         &self,
@@ -586,7 +588,7 @@ impl PlaylistService {
         room_id: RoomId,
         user_id: UserId,
         request: SetPlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.set_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
@@ -608,7 +610,7 @@ impl PlaylistService {
         room_id: RoomId,
         actor_user_id: UserId,
         request: SetPlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.set_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
             .await
@@ -620,7 +622,7 @@ impl PlaylistService {
         user_id: UserId,
         request: SetPlaylistRequest,
         bypass_room_permissions: bool,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             // Renaming and reordering existing playlist entries requires REORDER_PLAYLIST,
@@ -663,7 +665,7 @@ impl PlaylistService {
                         .as_ref()
                         .and_then(|factory| factory(&updated_playlist))
                     {
-                        if let Some(outbox) = &self.cluster_outbox {
+                        if let Some(outbox) = &self.realtime_outbox {
                             outbox.insert_with_executor(&event, &mut *tx).await?;
                         }
                     }
@@ -674,13 +676,15 @@ impl PlaylistService {
                         "Playlist updated"
                     );
                     let actor_username = self.resolve_actor_username(&user_id).await;
-                    if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
-                        broadcaster.broadcast_playlist_updated(
-                            &room_id,
-                            &updated_playlist,
-                            &user_id,
-                            &actor_username,
-                        );
+                    if outbox_event_factory.is_none() {
+                        if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
+                            broadcaster.broadcast_playlist_updated(
+                                &room_id,
+                                &updated_playlist,
+                                &user_id,
+                                &actor_username,
+                            );
+                        }
                     }
                     return Ok(updated_playlist);
                 }
@@ -729,7 +733,7 @@ impl PlaylistService {
         room_id: RoomId,
         user_id: UserId,
         request: MovePlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.move_playlist_internal(room_id, user_id, request, false, outbox_event_factory)
             .await
@@ -750,7 +754,7 @@ impl PlaylistService {
         room_id: RoomId,
         actor_user_id: UserId,
         request: MovePlaylistRequest,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         self.move_playlist_internal(room_id, actor_user_id, request, true, outbox_event_factory)
             .await
@@ -762,7 +766,7 @@ impl PlaylistService {
         user_id: UserId,
         request: MovePlaylistRequest,
         bypass_room_permissions: bool,
-        outbox_event_factory: Option<ClusterOutboxPlaylistEventFactory>,
+        outbox_event_factory: Option<RealtimeOutboxPlaylistEventFactory>,
     ) -> Result<Playlist> {
         if !bypass_room_permissions {
             self.permission_service
@@ -794,14 +798,16 @@ impl PlaylistService {
             .as_ref()
             .and_then(|factory| factory(&moved))
         {
-            if let Some(outbox) = &self.cluster_outbox {
+            if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut *tx).await?;
             }
         }
         tx.commit().await?;
         let actor_username = self.resolve_actor_username(&user_id).await;
-        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
-            broadcaster.broadcast_playlist_updated(&room_id, &moved, &user_id, &actor_username);
+        if outbox_event_factory.is_none() {
+            if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
+                broadcaster.broadcast_playlist_updated(&room_id, &moved, &user_id, &actor_username);
+            }
         }
         Ok(moved)
     }
@@ -865,8 +871,8 @@ impl PlaylistService {
         );
         let actor_username = self.resolve_actor_username(&user_id).await;
 
-        // Broadcast to cluster replicas
-        if let Some(broadcaster) = self.cluster_broadcaster.read().clone() {
+        // Broadcast to realtime replicas.
+        if let Some(broadcaster) = self.realtime_broadcaster.read().clone() {
             broadcaster.broadcast_playlist_deleted(
                 &room_id,
                 &playlist_id,

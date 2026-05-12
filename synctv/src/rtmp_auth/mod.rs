@@ -1671,7 +1671,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared RTMP user stream index"),
+                .contains("distributed runtime requires shared RTMP user stream index"),
             "unexpected error: {error}"
         );
     }

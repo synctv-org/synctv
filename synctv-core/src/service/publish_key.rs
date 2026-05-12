@@ -765,7 +765,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared publish-key deduplication state"),
+                .contains("distributed runtime requires shared publish-key deduplication state"),
             "unexpected error: {error}"
         );
     }

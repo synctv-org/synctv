@@ -11,7 +11,7 @@ use crate::{
         CacheManager, RoomCache, UserCache, UsernameCache,
     },
     repository::{
-        cluster_outbox::ClusterOutboxRepository, ChatRepository, NotificationRepository,
+        realtime_outbox::RealtimeOutboxRepository, ChatRepository, NotificationRepository,
         ProviderInstanceRepository, RoomMemberRepository, RoomRepository,
         RoomSettingsRepository as RoomSettingsRepo, SettingsRepository,
         UserOAuthProviderRepository, UserProviderCredentialRepository,
@@ -120,7 +120,7 @@ pub struct InitServicesOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
-    pub cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
+    pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
 }
 
 impl std::fmt::Debug for InitServicesOptions {
@@ -142,8 +142,8 @@ impl std::fmt::Debug for InitServicesOptions {
                 &self.password_hasher_override.as_ref().map(|_| "<injected>"),
             )
             .field(
-                "cluster_outbox",
-                &self.cluster_outbox.as_ref().map(|_| "<injected>"),
+                "realtime_outbox",
+                &self.realtime_outbox.as_ref().map(|_| "<injected>"),
             )
             .finish()
     }
@@ -240,7 +240,7 @@ fn handle_provider_invalidation_listener_result(
     if let Err(e) = start_result {
         if cluster_mode {
             return Err(anyhow::anyhow!(
-                "cluster mode requires provider invalidation listener to start successfully: {e}"
+                "distributed mode requires provider invalidation listener to start successfully: {e}"
             ));
         }
         tracing::warn!("Failed to start provider invalidation listener: {e}");
@@ -592,7 +592,7 @@ pub async fn init_services_with_options(
             email_verification_required,
             settings_registry: Some(Arc::clone(&settings_registry)),
             password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
-            cluster_outbox: options.cluster_outbox.clone(),
+            realtime_outbox: options.realtime_outbox.clone(),
             opaque_password_service: Some(Arc::new(
                 crate::service::auth::OpaquePasswordService::derive_from_secret(
                     config.security.opaque_server_setup_secret.as_bytes(),
@@ -647,7 +647,7 @@ pub async fn init_services_with_options(
         settings_registry: Some(Arc::clone(&settings_registry)),
         user_notification_service: Some(Arc::clone(&notification_service)),
         password_hasher: options.password_hasher_override.as_ref().map(Arc::clone),
-        cluster_outbox: options.cluster_outbox.clone(),
+        realtime_outbox: options.realtime_outbox.clone(),
         runtime: room_runtime,
     });
     info!("RoomService initialized with construction-time dependencies");
@@ -796,7 +796,7 @@ struct RoomServiceBuildArgs {
     settings_registry: Option<Arc<SettingsRegistry>>,
     user_notification_service: Option<Arc<UserNotificationService>>,
     password_hasher: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
-    cluster_outbox: Option<Arc<ClusterOutboxRepository>>,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     runtime: RoomServiceRuntime,
 }
 
@@ -860,7 +860,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
         settings_registry,
         user_notification_service,
         password_hasher,
-        cluster_outbox,
+        realtime_outbox,
         runtime,
     } = args;
     let permission_service = PermissionService::new_with_runtime(
@@ -888,7 +888,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> RoomService {
             settings_registry,
             user_notification_service,
             password_hasher,
-            cluster_outbox,
+            realtime_outbox,
         },
     )
 }
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared publish-key deduplication state"),
+                .contains("distributed runtime requires shared publish-key deduplication state"),
             "unexpected error: {error}"
         );
     }
@@ -1068,7 +1068,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared brute-force protection state"),
+                .contains("distributed runtime requires shared brute-force protection state"),
             "unexpected error: {error}"
         );
     }
@@ -1083,7 +1083,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared rate-limit state"),
+                .contains("distributed runtime requires shared rate-limit state"),
             "unexpected error: {error}"
         );
     }
@@ -1111,7 +1111,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared rate-limit state"),
+                .contains("distributed runtime requires shared rate-limit state"),
             "unexpected error: {error}"
         );
     }
@@ -1127,7 +1127,7 @@ mod tests {
         .expect_err("cluster mode must fail closed on provider invalidation wiring");
         assert!(
             err.to_string()
-                .contains("cluster mode requires provider invalidation listener"),
+                .contains("distributed mode requires provider invalidation listener"),
             "unexpected error: {err}"
         );
     }
@@ -1181,7 +1181,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared WebSocket ticket storage"),
+                .contains("distributed runtime requires shared WebSocket ticket storage"),
             "unexpected error: {error}"
         );
     }
@@ -1264,7 +1264,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1343,7 +1343,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime.clone()), "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1374,7 +1374,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(Some(redis_runtime), "test:", true),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1446,7 +1446,7 @@ mod tests {
             settings_registry: Some(Arc::clone(&settings_registry)),
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1506,7 +1506,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1566,7 +1566,7 @@ mod tests {
             settings_registry: None,
             user_notification_service: None,
             password_hasher: None,
-            cluster_outbox: None,
+            realtime_outbox: None,
             runtime: build_room_service_runtime(
                 &SharedStateProfile::from_runtime(None, "test:", false),
                 &crate::config::RedisDeploymentMode::Standalone,
@@ -1598,7 +1598,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("cluster mode requires Redis")),
+                .any(|e| e.contains("distributed mode requires Redis")),
             "Expected cluster/Redis validation error, got: {errors:?}"
         );
     }
@@ -1613,7 +1613,7 @@ mod tests {
         assert!(
             !errors
                 .iter()
-                .any(|e| e.contains("cluster mode requires Redis")),
+                .any(|e| e.contains("distributed mode requires Redis")),
             "cluster=false should not be rejected by cluster/Redis rule: {errors:?}"
         );
     }
@@ -1631,7 +1631,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared single-use OAuth2 state storage"),
+                .contains("distributed runtime requires shared single-use OAuth2 state storage"),
             "unexpected error: {error}"
         );
     }

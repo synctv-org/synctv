@@ -205,7 +205,6 @@ mod permissions {
     use std::sync::Arc;
 
     use synctv_api::impls::{ApiError, ClientApiImpl};
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
@@ -220,6 +219,7 @@ mod permissions {
         create_test_pool_with_db_and_label, redis_connection_manager, start_redis_url_with_label,
         test_redis_key_prefix, RedisContainer, TestContainer,
     };
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     use tokio_util::sync::CancellationToken;
 
     struct ClientApiFixture {

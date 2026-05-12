@@ -105,7 +105,7 @@ fn prepare_deleted_room_outbox_fanout(
     room_ids: &[RoomId],
     deleted_by: &UserId,
 ) -> (
-    HashMap<RoomId, synctv_core::repository::cluster_outbox::NewClusterOutboxEvent>,
+    HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
     Vec<DeletedRoomAfterCommitFanout>,
 ) {
     let mut outbox_events = HashMap::with_capacity(room_ids.len());

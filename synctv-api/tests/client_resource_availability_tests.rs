@@ -5,7 +5,6 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde_json::json;
 use synctv_api::impls::ClientApiImpl;
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -21,6 +20,7 @@ use synctv_core::{
     Config,
 };
 use synctv_core_testing::{create_test_pool, TestContainer};
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn public_id_codec() -> synctv_api::PublicIdCodec {
     synctv_api::PublicIdCodec::default_for_tests()

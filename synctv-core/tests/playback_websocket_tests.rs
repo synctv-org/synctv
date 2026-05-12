@@ -180,7 +180,7 @@ async fn test_play_pause_triggers_broadcast() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger play
     room_service
@@ -249,7 +249,7 @@ async fn test_seek_triggers_broadcast() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger seek
     room_service
@@ -298,7 +298,7 @@ async fn test_speed_change_triggers_broadcast() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger speed change
     room_service
@@ -368,7 +368,7 @@ async fn test_media_switch_triggers_broadcast() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger media switch
     room_service
@@ -419,7 +419,7 @@ async fn test_reset_triggers_broadcast() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger reset
     room_service
@@ -475,7 +475,7 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Multiple operations
     room_service
@@ -550,7 +550,7 @@ async fn test_broadcast_contains_correct_room_id() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Trigger operation
     room_service
@@ -597,7 +597,7 @@ async fn test_operations_succeed_when_broadcast_fails() {
     mock_broadcaster.set_fail(true);
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Operations should still succeed
     let result = room_service
@@ -773,7 +773,7 @@ async fn test_broadcast_contains_correct_version() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Initial version
     let state = room_service
@@ -829,7 +829,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Spawn concurrent operations
     let mut handles = vec![];
@@ -913,7 +913,7 @@ async fn test_cluster_mode_multiple_rooms() {
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     room_service
         .playback_service()
-        .set_cluster_broadcaster(mock_broadcaster.clone());
+        .set_realtime_broadcaster(mock_broadcaster.clone());
 
     // Update room1
     room_service

@@ -9,6 +9,7 @@ use synctv_proto::providers::bilibili::bilibili_provider_service_server::Bilibil
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
 use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
+use synctv_realtime::grpc::RealtimePresenceServiceServer;
 use tonic::codec::CompressionEncoding;
 
 pub mod admin_service;
@@ -106,6 +107,7 @@ impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::grpc::StreamRelayServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_realtime::grpc::RealtimePresenceServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proxy::grpc::ProxySliceCacheServiceServer<T>);
 
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
@@ -242,6 +244,10 @@ const fn should_register_proxy_slice_cache_service(config: &synctv_core::Config)
     config.cluster_runtime_enabled() && !config.server.cluster_secret.is_empty()
 }
 
+const fn should_register_realtime_presence_service(config: &synctv_core::Config) -> bool {
+    config.cluster_runtime_enabled() && !config.server.cluster_secret.is_empty()
+}
+
 const fn should_mark_livestream_relay_serving(
     config: &synctv_core::Config,
     live_streaming_infrastructure_available: bool,
@@ -295,6 +301,7 @@ struct GrpcHealthRegistrationState {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    realtime_presence_registered: bool,
     proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
 }
@@ -312,6 +319,7 @@ struct GrpcOptionalRegistrations {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    realtime_presence_registered: bool,
     proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
 }
@@ -333,6 +341,7 @@ const fn grpc_service_registration_plan(
             oauth2_registered: optional.oauth2_registered,
             provider_services_registered: optional.provider_services_registered,
             cluster_service_registered: optional.cluster_service_registered,
+            realtime_presence_registered: optional.realtime_presence_registered,
             proxy_slice_cache_registered: optional.proxy_slice_cache_registered,
             livestream_relay_registered: optional.livestream_relay_registered,
         },
@@ -443,6 +452,13 @@ async fn set_registered_grpc_services_serving(
             >>()
             .await;
     }
+    if state.realtime_presence_registered {
+        health_reporter
+            .set_serving::<synctv_realtime::grpc::RealtimePresenceServiceServer<
+                synctv_realtime::grpc::RealtimePresenceServiceImpl,
+            >>()
+            .await;
+    }
     if state.proxy_slice_cache_registered {
         health_reporter
             .set_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
@@ -545,6 +561,13 @@ async fn set_registered_grpc_services_not_serving(
             >>()
             .await;
     }
+    if state.realtime_presence_registered {
+        health_reporter
+            .set_not_serving::<synctv_realtime::grpc::RealtimePresenceServiceServer<
+                synctv_realtime::grpc::RealtimePresenceServiceImpl,
+            >>()
+            .await;
+    }
     if state.proxy_slice_cache_registered {
         health_reporter
             .set_not_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
@@ -581,7 +604,6 @@ fn validate_cluster_grpc_runtime_requirements(
 }
 
 // Use synctv_proto for all server traits and message types (single source of truth)
-use crate::cluster_fanout::ClusterFanoutService;
 use crate::proto::admin_service_server::AdminServiceServer;
 use crate::proto::client::{
     auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
@@ -589,6 +611,7 @@ use crate::proto::client::{
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
 };
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::{
     RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
 };
@@ -639,7 +662,7 @@ pub struct GrpcServerConfig<'a> {
     pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<CoreRoomService>,
     pub event_service: Option<Arc<dyn RealtimeEventService>>,
-    pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
@@ -732,7 +755,7 @@ struct FallbackHttpAppStateDeps {
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
     ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
-    cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     messaging_rate_limit_config: RateLimitConfig,
@@ -779,7 +802,7 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             event_service: deps.event_service,
             connection_manager: deps.connection_service,
             jwt_service: deps.jwt_service,
-            cluster_fanout_service: deps.cluster_fanout_service,
+            realtime_fanout_service: deps.realtime_fanout_service,
             oauth2_service: deps.oauth2_service,
             passkey_service: deps.passkey_service,
             settings_service: Some(deps.settings_service),
@@ -818,7 +841,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         user_cache,
         room_service,
         event_service,
-        cluster_fanout_service,
+        realtime_fanout_service,
         rate_limiter,
         rate_limit_config,
         content_filter,
@@ -878,7 +901,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             email_service: email_service.clone(),
             email_token_service: email_token_service.clone(),
             ws_ticket_service: ws_ticket_service.clone(),
-            cluster_fanout_service: cluster_fanout_service.clone(),
+            realtime_fanout_service: realtime_fanout_service.clone(),
             redis_runtime: redis_runtime.clone(),
             rate_limiter: rate_limiter.clone(),
             messaging_rate_limit_config: rate_limit_config.clone(),
@@ -989,6 +1012,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             oauth2_registered: oauth2_service_registered,
             provider_services_registered,
             cluster_service_registered,
+            realtime_presence_registered: should_register_realtime_presence_service(config),
             proxy_slice_cache_registered: should_register_proxy_slice_cache_service(config),
             livestream_relay_registered: should_mark_livestream_relay_serving(
                 config,
@@ -1065,7 +1089,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         tracing::info!("NotificationService gRPC registered");
 
         // Spawn a background task that bridges notification creation events to
-        // the cluster event system, enabling real-time WebSocket push for
+        // the realtime event system, enabling real-time WebSocket push for
         // persistent user notifications. Without this, clients must poll.
         // The task listens for the server shutdown signal so it does not leak
         // when the gRPC server stops.
@@ -1101,7 +1125,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                         result = notification_rx.recv() => {
                             match result {
                                 Ok(event) => {
-                                    let cluster_event = synctv_cluster::sync::ClusterEvent::UserNotification {
+                                    let realtime_event = synctv_realtime::sync::RealtimeEvent::UserNotification {
                                         event_id: synctv_common::snanoid!(16),
                                         user_id: event.user_id,
                                         notification_id: event.notification.id.to_string(),
@@ -1110,7 +1134,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                                         notification_type: event.notification.notification_type.to_string(),
                                         timestamp: chrono::Utc::now(),
                                     };
-                                    let outcome = event_service.publish_only_outcome(cluster_event);
+                                    let outcome = event_service.publish_only_outcome(realtime_event);
                                     if !outcome.satisfies(
                                         RealtimeDeliveryRequirement::DistributedIfAvailable,
                                     ) {
@@ -1225,7 +1249,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         );
     }
 
-    // Register cluster gRPC service only in cluster mode.
+    // Register cluster gRPC service only in distributed mode.
     if !grpc_registration_plan
         .health_state
         .cluster_service_registered
@@ -1248,19 +1272,32 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             .expect("node_registry presence checked by should_register_cluster_grpc_service");
         let cluster_server =
             synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone(), cluster_node_id.clone())
-                .with_cluster_secret(config.server.cluster_secret.clone())
-                .with_connection_runtime(connection_service.clone());
+                .with_cluster_secret(config.server.cluster_secret.clone());
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
         );
-        tracing::info!(
-            "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
-        );
+        tracing::info!("Cluster node-discovery gRPC service registered with shared-secret auth");
     } else {
         unreachable!(
             "cluster.enabled=true without NodeRegistry must be rejected before gRPC service assembly"
         );
+    }
+
+    if grpc_registration_plan
+        .health_state
+        .realtime_presence_registered
+    {
+        let service = synctv_realtime::grpc::RealtimePresenceServiceImpl::new(
+            connection_service.clone(),
+            cluster_node_id.clone(),
+        )
+        .with_cluster_secret(config.server.cluster_secret.clone());
+        routes.add_service(
+            RealtimePresenceServiceServer::new(service)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        tracing::info!("Realtime presence gRPC service registered with shared-secret auth");
     }
 
     if grpc_registration_plan
@@ -1415,7 +1452,6 @@ mod tests {
     use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
-    use synctv_cluster::sync::{BroadcastResult, ClusterEvent};
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::{RoomId, UserId};
     use synctv_core::provider::{
@@ -1430,6 +1466,7 @@ mod tests {
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
+    use synctv_realtime::sync::{BroadcastResult, RealtimeEvent};
     use tokio::sync::{broadcast, mpsc};
 
     #[test]
@@ -1471,9 +1508,9 @@ mod tests {
             _room_id: RoomId,
             _user_id: UserId,
             _connection_id: String,
-        ) -> synctv_cluster::Result<(
-            mpsc::Receiver<ClusterEvent>,
-            synctv_cluster::sync::ConnectionId,
+        ) -> synctv_realtime::Result<(
+            mpsc::Receiver<RealtimeEvent>,
+            synctv_realtime::sync::ConnectionId,
         )> {
             panic!("subscribe_with_id should not be called in this test");
         }
@@ -1482,19 +1519,19 @@ mod tests {
             panic!("unsubscribe should not be called in this test");
         }
 
-        fn broadcast(&self, _event: ClusterEvent) -> BroadcastResult {
+        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
             panic!("broadcast should not be called in this test");
         }
 
-        fn publish_only(&self, _event: ClusterEvent) -> bool {
+        fn publish_only(&self, _event: RealtimeEvent) -> bool {
             panic!("publish_only should not be called in this test");
         }
 
-        fn broadcast_local(&self, _room_id: &RoomId, _event: &ClusterEvent) -> usize {
+        fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
             panic!("broadcast_local should not be called in this test");
         }
 
-        fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
+        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
             panic!("subscribe_admin_events should not be called in this test");
         }
 
@@ -1630,11 +1667,11 @@ mod tests {
                 ),
                 providers,
                 event_service: None,
-                connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                    synctv_cluster::sync::ConnectionLimits::default(),
+                connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                    synctv_realtime::sync::ConnectionLimits::default(),
                 )),
                 jwt_service: context.jwt_service,
-                cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+                realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                     None, false,
                 ),
                 oauth2_service: None,
@@ -1743,8 +1780,8 @@ mod tests {
     async fn test_build_fallback_http_app_state_reuses_shared_runtime_instances() {
         let context = fallback_grpc_test_context();
         let connection_service: Arc<dyn RealtimeConnectionService> =
-            Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                synctv_cluster::sync::ConnectionLimits::default(),
+            Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                synctv_realtime::sync::ConnectionLimits::default(),
             ));
         let event_service: Arc<dyn RealtimeEventService> = Arc::new(FakeRealtimeEventService {
             node_id: "fallback-http-node".to_string(),
@@ -1803,7 +1840,7 @@ mod tests {
             email_service: None,
             email_token_service: None,
             ws_ticket_service: ws_ticket_service.clone(),
-            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             redis_runtime: None,
@@ -2029,7 +2066,7 @@ mod tests {
         config.server.cluster_secret = "shared-secret".to_string();
 
         let err = validate_cluster_grpc_runtime_requirements(&config, false)
-            .expect_err("cluster runtime must fail closed without NodeRegistry");
+            .expect_err("realtime runtime must fail closed without NodeRegistry");
 
         assert!(
             err.to_string().contains("requires NodeRegistry"),
@@ -2043,7 +2080,7 @@ mod tests {
         config.cluster.enabled = true;
 
         let err = validate_cluster_grpc_runtime_requirements(&config, true)
-            .expect_err("cluster runtime must fail closed without cluster_secret");
+            .expect_err("realtime runtime must fail closed without cluster_secret");
 
         assert!(
             err.to_string().contains("server.cluster_secret"),
@@ -2152,7 +2189,7 @@ mod tests {
         config.cluster.enabled = true;
         assert!(
             !should_register_livestream_relay_service(&config, true),
-            "cluster mode without a secret must fail closed"
+            "distributed mode without a secret must fail closed"
         );
 
         config.server.cluster_secret = "shared-secret".to_string();
@@ -2163,7 +2200,7 @@ mod tests {
 
         assert!(
             should_register_livestream_relay_service(&config, true),
-            "cluster mode with secret and livestream infra should register relay service"
+            "distributed mode with secret and livestream infra should register relay service"
         );
         assert!(
             should_mark_livestream_relay_serving(&config, true),
@@ -2197,6 +2234,7 @@ mod tests {
                 oauth2_registered: true,
                 provider_services_registered: false,
                 cluster_service_registered: true,
+                realtime_presence_registered: true,
                 proxy_slice_cache_registered: true,
                 livestream_relay_registered: false,
             },
@@ -2212,6 +2250,7 @@ mod tests {
         assert!(plan.health_state.oauth2_registered);
         assert!(!plan.health_state.provider_services_registered);
         assert!(plan.health_state.cluster_service_registered);
+        assert!(plan.health_state.realtime_presence_registered);
         assert!(plan.health_state.proxy_slice_cache_registered);
         assert!(!plan.health_state.livestream_relay_registered);
     }
@@ -2282,6 +2321,7 @@ mod tests {
             oauth2_registered: false,
             provider_services_registered: false,
             cluster_service_registered: false,
+            realtime_presence_registered: false,
             proxy_slice_cache_registered: false,
             livestream_relay_registered: false,
         };

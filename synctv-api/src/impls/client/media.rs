@@ -5,7 +5,7 @@ use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use synctv_core::models::{
-    Media, MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
+    MediaId, MediaListQuery as CoreMediaListQuery, MediaListSortBy as CoreMediaListSortBy,
     PermissionBits, Playlist, PlaylistListQuery as CorePlaylistListQuery,
     PlaylistListSortBy as CorePlaylistListSortBy, RoomId, SortDirection as CoreSortDirection,
     UserId,
@@ -14,8 +14,8 @@ use synctv_core::provider::DynamicListQuery;
 use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
 use synctv_core::service::room::{
-    ClusterOutboxDeleteEntriesEventFactory, DeleteEntriesPlan,
-    DeleteEntriesRequest as CoreDeleteEntriesRequest,
+    DeleteEntriesPlan, DeleteEntriesRequest as CoreDeleteEntriesRequest,
+    RealtimeOutboxDeleteEntriesEventFactory,
 };
 use synctv_core::service::MediaService;
 
@@ -34,7 +34,7 @@ struct AddMediaBatchBuildResult {
     playlist_id: Option<synctv_core::models::PlaylistId>,
 }
 
-pub(crate) enum MoveMediaFanoutStep {
+pub enum MoveMediaFanoutStep {
     Updated { media_id: MediaId },
     RemovedAndAdded { media_id: MediaId },
 }
@@ -55,7 +55,7 @@ enum PreparedDeleteEntriesEvent {
 
 impl PreparedDeleteEntriesOutboxFanout {
     #[must_use]
-    pub(crate) fn outbox_factory(&self) -> ClusterOutboxDeleteEntriesEventFactory {
+    pub(crate) fn outbox_factory(&self) -> RealtimeOutboxDeleteEntriesEventFactory {
         let media_fanout = self.media_fanout.clone();
         let playlist_fanout = self.playlist_fanout.clone();
         let room_id = self.room_id;
@@ -135,7 +135,7 @@ pub(crate) fn prepare_delete_entries_outbox_fanout(
     }
 }
 
-pub(crate) enum MoveMediaFanoutPlan {
+pub enum MoveMediaFanoutPlan {
     None,
     Reordered,
     PerMedia(Vec<MoveMediaFanoutStep>),
@@ -291,58 +291,6 @@ pub(crate) async fn build_move_media_fanout_plan(
     }
 
     Ok(MoveMediaFanoutPlan::PerMedia(steps))
-}
-
-pub(crate) fn publish_move_media_fanout(
-    media_fanout: &Arc<dyn MediaFanoutService>,
-    plan: MoveMediaFanoutPlan,
-    room_id: &RoomId,
-    user_id: &UserId,
-    username: &str,
-    moved_media: &[Media],
-) {
-    match plan {
-        MoveMediaFanoutPlan::None => {}
-        MoveMediaFanoutPlan::Reordered => {
-            media_fanout.publish_reordered(
-                room_id,
-                user_id,
-                username,
-                moved_media.iter().map(|media| media.id).collect(),
-            );
-        }
-        MoveMediaFanoutPlan::PerMedia(steps) => {
-            let moved_by_id: std::collections::HashMap<MediaId, &Media> =
-                moved_media.iter().map(|media| (media.id, media)).collect();
-            for step in steps {
-                match step {
-                    MoveMediaFanoutStep::Updated { media_id } => {
-                        if let Some(media) = moved_by_id.get(&media_id) {
-                            media_fanout.publish_updated(
-                                room_id,
-                                user_id,
-                                username,
-                                &media.id,
-                                &media.name,
-                            );
-                        }
-                    }
-                    MoveMediaFanoutStep::RemovedAndAdded { media_id } => {
-                        media_fanout.publish_removed(room_id, user_id, username, &media_id);
-                        if let Some(media) = moved_by_id.get(&media_id) {
-                            media_fanout.publish_added(
-                                room_id,
-                                user_id,
-                                username,
-                                &media.id,
-                                &media.name,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -643,22 +591,27 @@ impl ClientApiImpl {
             )));
         }
 
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        let prepared_outbox_fanout = self
+            .media_fanout
+            .prepare_added_outbox_fanout(rid, uid, username);
         let media = self
             .room_service
             .media_service()
-            .add_media(rid, uid, service_req)
+            .add_media_with_outbox(
+                rid,
+                uid,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-        {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            self.media_fanout
-                .publish_added(&rid, &uid, &username, &media.id, &media.name);
-        }
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::AddMediaResponse {
             media: Some(media_to_proto(&media, &self.public_id_codec)),
@@ -738,21 +691,27 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let service_req = build_edit_media_request(req, &self.public_id_codec)?;
 
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        let prepared_outbox_fanout = self
+            .media_fanout
+            .prepare_updated_outbox_fanout(rid, uid, username);
         let media = self
             .room_service
-            .edit_media(rid, uid, service_req.media_id, service_req.name)
+            .media_service()
+            .edit_media_with_outbox(
+                rid,
+                uid,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-        {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            self.media_fanout
-                .publish_updated(&rid, &uid, &username, &media.id, &media.name);
-        }
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         // Invalidate room cache on other replicas so they see updated metadata
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -781,28 +740,24 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        let prepared_outbox_fanout = self
+            .media_fanout
+            .prepare_removed_batch_outbox_fanout(rid, uid, username);
         let result = self
             .room_service
-            .clear_playlist(rid, uid)
+            .clear_playlist_with_outbox(rid, uid, prepared_outbox_fanout.outbox_factory())
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast a single MediaRemovedBatch event instead of N individual events.
-        // This reduces Redis pub/sub traffic from O(n) to O(1) messages.
-        if !result.deleted_media_ids.is_empty() {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            self.media_fanout.publish_removed_batch(
-                &rid,
-                &uid,
-                &username,
-                result.deleted_media_ids.clone(),
-            );
-        }
+        // Broadcast a single MediaRemovedBatch event instead of N individual
+        // events. The distributed copy is written transactionally by core.
+        prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(crate::proto::client::ClearPlaylistResponse {
@@ -860,24 +815,28 @@ impl ClientApiImpl {
             )));
         }
 
+        let username = self
+            .user_service
+            .get_user(&uid)
+            .await
+            .map(|u| u.username)
+            .unwrap_or_default();
+        let prepared_outbox_fanout = self
+            .media_fanout
+            .prepare_added_batch_outbox_fanout(rid, uid, username);
         let media_list = self
             .room_service
             .media_service()
-            .add_media_batch(rid, uid, playlist_id, items)
+            .add_media_batch_with_outbox(
+                rid,
+                uid,
+                playlist_id,
+                items,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-        {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            for media in &media_list {
-                self.media_fanout
-                    .publish_added(&rid, &uid, &username, &media.id, &media.name);
-            }
-        }
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         let results = media_list
             .into_iter()
@@ -911,27 +870,30 @@ impl ClientApiImpl {
             build_move_media_fanout_plan(self.room_service.media_service(), &rid, &service_req)
                 .await?;
 
-        let media = self
-            .room_service
-            .media_service()
-            .move_media(rid, uid, service_req)
-            .await
-            .map_err(ApiError::from)?;
-
         let actor_username = self
             .user_service
             .get_user(&uid)
             .await
             .map(|user| user.username)
             .unwrap_or_default();
-        publish_move_media_fanout(
-            &self.media_fanout,
+        let prepared_outbox_fanout = self.media_fanout.prepare_move_outbox_fanout(
+            rid,
+            uid,
+            actor_username,
             media_fanout_plan,
-            &rid,
-            &uid,
-            &actor_username,
-            &media,
         );
+        let media = self
+            .room_service
+            .media_service()
+            .move_media_with_outbox(
+                rid,
+                uid,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(crate::proto::client::MoveMediaResponse {

@@ -377,15 +377,15 @@ impl ShutdownHook for HealthMonitorShutdownHook {
     }
 }
 
-/// Shuts down the `ClusterManager`, ensuring node unregister and task drain run
+/// Shuts down the `RealtimeManager`, ensuring node unregister and task drain run
 /// on startup rollback and normal process shutdown.
-pub struct ClusterManagerShutdownHook {
-    pub manager: Arc<synctv_cluster::sync::ClusterManager>,
+pub struct RealtimeManagerShutdownHook {
+    pub manager: Arc<synctv_realtime::sync::RealtimeManager>,
 }
 
-impl ShutdownHook for ClusterManagerShutdownHook {
+impl ShutdownHook for RealtimeManagerShutdownHook {
     fn name(&self) -> &'static str {
-        "cluster_manager"
+        "realtime_manager"
     }
     fn timeout(&self) -> Duration {
         Duration::from_secs(15)
@@ -787,31 +787,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cluster_manager_shutdown_hook_runs_manager_shutdown() {
-        use synctv_cluster::sync::{
-            cluster_manager::ClusterConfig, ClusterManager, RoomMessageHub,
+    async fn test_realtime_manager_shutdown_hook_runs_manager_shutdown() {
+        use synctv_realtime::sync::{
+            realtime_manager::RealtimeConfig, RealtimeManager, RoomMessageHub,
         };
 
         let manager = Arc::new(
-            ClusterManager::new(
-                ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: Arc::new(RoomMessageHub::new()),
-                    cluster_enabled: false,
-                    node_id: "hook-test-node".to_string(),
-                    dedup_window: Duration::from_secs(1),
-                    critical_channel_capacity: 16,
-                    publish_channel_capacity: 16,
-                    key_prefix: "hook-test:".to_string(),
-                    catchup_window_secs: 60,
-                    stream_max_length: 100,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+            RealtimeManager::new(RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: "hook-test-node".to_string(),
+                dedup_window: Duration::from_secs(1),
+                critical_channel_capacity: 16,
+                publish_channel_capacity: 16,
+                key_prefix: "hook-test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("cluster manager should initialize"),
+            .expect("realtime manager should initialize"),
         );
 
         let cancel_token = manager.cancel_token().clone();
@@ -821,12 +818,12 @@ mod tests {
         );
 
         let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
-        coord.register_hook(ClusterManagerShutdownHook { manager });
+        coord.register_hook(RealtimeManagerShutdownHook { manager });
         coord.shutdown().await;
 
         assert!(
             cancel_token.is_cancelled(),
-            "cluster manager shutdown hook must invoke ClusterManager::shutdown"
+            "realtime manager shutdown hook must invoke RealtimeManager::shutdown"
         );
     }
 }

@@ -1193,7 +1193,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared WebSocket ticket storage"),
+                .contains("distributed runtime requires shared WebSocket ticket storage"),
             "unexpected error: {error}"
         );
     }
@@ -1613,14 +1613,14 @@ mod tests {
         assert_eq!(service.ticket_ttl_secs(), 60);
     }
 
-    /// Test: non-cluster mode without Redis works but logs warning.
+    /// Test: non-distributed mode without Redis works but logs warning.
     /// Single-replica deployments should still function without Redis.
     #[test]
     fn test_non_cluster_mode_without_redis_succeeds() {
         let service = WsTicketService::local_only(Some(30));
         assert!(
             !service.supports_cluster_runtime(),
-            "Non-cluster mode without Redis should use single-node ticket storage"
+            "Non-distributed mode without Redis should use single-node ticket storage"
         );
     }
 

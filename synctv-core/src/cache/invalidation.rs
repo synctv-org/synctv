@@ -1843,7 +1843,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared cache invalidation state"),
+                .contains("distributed runtime requires shared cache invalidation state"),
             "unexpected error: {error}"
         );
     }

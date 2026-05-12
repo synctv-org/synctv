@@ -23,7 +23,7 @@ pub mod websocket;
 // Provider-specific HTTP endpoints are registered from provider instances
 pub mod providers;
 
-use crate::cluster_fanout::ClusterFanoutService;
+use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::{RealtimeConnectionService, RealtimeEventService};
 use axum::{
     http::{HeaderValue, Method},
@@ -154,7 +154,7 @@ pub struct RouterConfig {
     pub event_service: Option<Arc<dyn RealtimeEventService>>,
     pub connection_manager: Arc<dyn RealtimeConnectionService>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
@@ -391,7 +391,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             config.settings_registry.clone(),
             public_id_codec.clone(),
         )
-        .with_cluster_fanout_service(config.cluster_fanout_service.clone())
+        .with_realtime_fanout_service(config.realtime_fanout_service.clone())
         .with_shared_runtime(redis_runtime.clone())
         .with_rate_limiter(config.rate_limiter.clone())
         .with_credential_encryption(config.credential_encryption.clone())
@@ -441,7 +441,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> SharedApiRuntim
             config.audit_service.clone(),
             public_id_codec.clone(),
         )
-        .with_cluster_fanout_service(config.cluster_fanout_service.clone())
+        .with_realtime_fanout_service(config.realtime_fanout_service.clone())
         .with_provider_stores(provider_stores.clone())
         .with_provider_access_service(provider_access_service.clone())
         .with_request_executor(request_executor.clone());
@@ -1379,11 +1379,11 @@ mod tests {
             ),
             providers,
             event_service: None,
-            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                synctv_cluster::sync::ConnectionLimits::default(),
+            connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             oauth2_service: None,
@@ -1450,29 +1450,26 @@ mod tests {
             },
         );
         router_config.chat_service = Some(Arc::new(chat_service));
-        let cluster_manager = Arc::new(
-            synctv_cluster::sync::ClusterManager::new(
-                synctv_cluster::sync::ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: Arc::new(synctv_cluster::sync::RoomMessageHub::new()),
-                    cluster_enabled: false,
-                    node_id: "test-node".to_string(),
-                    dedup_window: Duration::from_secs(30),
-                    critical_channel_capacity: 8,
-                    publish_channel_capacity: 8,
-                    key_prefix: "test:".to_string(),
-                    catchup_window_secs: 60,
-                    stream_max_length: 100,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+        let realtime_manager = Arc::new(
+            synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(synctv_realtime::sync::RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: "test-node".to_string(),
+                dedup_window: Duration::from_secs(30),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("cluster manager"),
+            .expect("realtime manager"),
         );
         router_config.event_service = Some(Arc::new(
-            crate::runtime::ClusterRealtimeEventService::new(cluster_manager),
+            crate::runtime::ClusterRealtimeEventService::new(realtime_manager),
         ));
         build_app_state(router_config)
     }
@@ -1605,11 +1602,11 @@ mod tests {
             ),
             providers,
             event_service: None,
-            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                synctv_cluster::sync::ConnectionLimits::default(),
+            connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             oauth2_service: None,

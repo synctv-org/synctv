@@ -15,7 +15,6 @@ use prost::Message;
 use rand::RngExt;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_cluster::sync::{ClusterEvent, WebRTCSignalKind};
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
@@ -24,6 +23,7 @@ use synctv_core::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
     },
 };
+use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 use tokio::sync::Semaphore;
 
 use crate::impls::client::{GuestRoomAccess, RoomActor};
@@ -565,7 +565,7 @@ pub struct StreamMessageHandler {
     /// a window where the connection is joined in `ConnectionManager` but not yet
     /// subscribed in `RoomMessageHub`.
     pending_room_event_rx:
-        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<ClusterEvent>>>>,
+        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RealtimeEvent>>>>,
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
@@ -1306,7 +1306,7 @@ impl StreamMessageHandler {
                 self.skip_cleanup_user_left
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 RealtimeJoinError::Internal(format!(
-                    "Failed to subscribe to cluster events during pre_join: {e}"
+                    "Failed to subscribe to realtime events during pre_join: {e}"
                 ))
             })?;
         *pending_rx = Some(event_rx);
@@ -1316,7 +1316,7 @@ impl StreamMessageHandler {
 
     async fn take_room_event_subscription(
         &self,
-    ) -> Result<tokio::sync::mpsc::Receiver<ClusterEvent>, String> {
+    ) -> Result<tokio::sync::mpsc::Receiver<RealtimeEvent>, String> {
         if let Some(event_rx) = self.pending_room_event_rx.lock().await.take() {
             return Ok(event_rx);
         }
@@ -1325,7 +1325,7 @@ impl StreamMessageHandler {
             .subscribe_with_id(self.room_id, self.user_id, self.connection_id.clone())
             .await
             .map(|(event_rx, _connection_id)| event_rx)
-            .map_err(|e| format!("Failed to subscribe to cluster events: {e}"))
+            .map_err(|e| format!("Failed to subscribe to realtime events: {e}"))
     }
 
     /// Run the complete message loop using unified IO abstraction.
@@ -1335,7 +1335,7 @@ impl StreamMessageHandler {
     ///
     /// This method:
     /// 1. Registers the connection and joins the room (enforcing limits)
-    /// 2. Subscribes to cluster events and forwards them to the client
+    /// 2. Subscribes to realtime events and forwards them to the client
     /// 3. Receives client messages via the `StreamMessage` trait
     /// 4. Handles rate limiting, content filtering, and permissions
     /// 5. Broadcasts events to the cluster
@@ -1378,7 +1378,7 @@ impl StreamMessageHandler {
             .as_ref()
             .map(|svc| svc.subscribe_events());
 
-        // Fetch member data once and reuse it for the join payload and cluster event.
+        // Fetch member data once and reuse it for the join payload and realtime event.
         let member_data = if self.principal.is_guest() {
             None
         } else {
@@ -1527,20 +1527,20 @@ impl StreamMessageHandler {
                     }
                 }
 
-                // Cluster event (broadcast to client)
+                // Realtime event (broadcast to client)
                 event = event_rx.recv() => {
                     if let Some(event) = event {
                         // Filter WebRTC signaling: only deliver to the intended recipient.
                         // SDP data contains IP addresses, so broadcasting to all room
                         // members is both a privacy leak and causes incorrect WebRTC behavior.
-                        if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
+                        if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
                             if !self.current_connection_matches_webrtc_recipient(to) {
                                 continue;
                             }
                         }
 
                         let mut send_failed = false;
-                        for msg in cluster_event_to_server_messages(
+                        for msg in realtime_event_to_server_messages(
                             &event,
                             &room_id_str,
                             &self.public_id_codec,
@@ -1568,7 +1568,7 @@ impl StreamMessageHandler {
                             break;
                         }
                     } else {
-                        tracing::error!("Cluster event channel closed");
+                        tracing::error!("Realtime event channel closed");
                         break;
                     }
                 }
@@ -1595,7 +1595,7 @@ impl StreamMessageHandler {
                 // Disconnect signal (forced disconnect by server)
                 signal = disconnect_rx.recv() => {
                     match signal {
-                        Ok(synctv_cluster::sync::DisconnectSignal::Connection(conn_id)) => {
+                        Ok(synctv_realtime::sync::DisconnectSignal::Connection(conn_id)) => {
                             if conn_id == self.connection_id {
                                 tracing::info!(
                                     connection_id = %self.connection_id,
@@ -1604,7 +1604,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(synctv_cluster::sync::DisconnectSignal::User(uid)) => {
+                        Ok(synctv_realtime::sync::DisconnectSignal::User(uid)) => {
                             if uid == self.user_id {
                                 tracing::info!(
                                     user_id = %self.user_id,
@@ -1615,7 +1615,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(synctv_cluster::sync::DisconnectSignal::Room(rid)) => {
+                        Ok(synctv_realtime::sync::DisconnectSignal::Room(rid)) => {
                             if rid == self.room_id {
                                 tracing::info!(
                                     room_id = %self.room_id,
@@ -1627,7 +1627,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(synctv_cluster::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
+                        Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
                             if uid == self.user_id && rid == self.room_id {
                                 tracing::info!(
                                     user_id = %self.user_id,
@@ -1691,7 +1691,7 @@ impl StreamMessageHandler {
                 // Admin events from cluster (cross-replica kick/ban propagation)
                 admin_event = admin_rx.recv() => {
                     match admin_event {
-                        Ok(ClusterEvent::KickUser { ref user_id, ref reason, .. }) => {
+                        Ok(RealtimeEvent::KickUser { ref user_id, ref reason, .. }) => {
                             // Invalidate membership cache immediately so the banned user
                             // cannot send messages during the remaining cache TTL window.
                             let cache_key = (self.room_id, *user_id);
@@ -1710,7 +1710,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(ClusterEvent::KickUserFromRoom { ref user_id, ref room_id, ref reason, .. }) => {
+                        Ok(RealtimeEvent::KickUserFromRoom { ref user_id, ref room_id, ref reason, .. }) => {
                             // Invalidate membership cache immediately so the kicked/banned
                             // user cannot send messages during the remaining cache TTL window.
                             let cache_key = (*room_id, *user_id);
@@ -1730,7 +1730,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(ClusterEvent::UserLeft { ref user_id, ref room_id, .. }) => {
+                        Ok(RealtimeEvent::UserLeft { ref user_id, ref room_id, .. }) => {
                             if *user_id == self.user_id && *room_id == self.room_id {
                                 tracing::info!(
                                     user_id = %self.user_id,
@@ -1744,7 +1744,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
+                        Ok(RealtimeEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if *user_id == self.user_id {
                                 let data = serde_json::json!({
@@ -1772,7 +1772,7 @@ impl StreamMessageHandler {
                                 }
                             }
                         }
-                        Ok(ClusterEvent::ProviderCredentialChanged { ref event_id, ref user_id, ref provider, ref server_id, .. }) => {
+                        Ok(RealtimeEvent::ProviderCredentialChanged { ref event_id, ref user_id, ref provider, ref server_id, .. }) => {
                             self.resource_observer.handle_provider_credential_changed_admin_event(
                                 event_id,
                                 user_id,
@@ -1781,7 +1781,7 @@ impl StreamMessageHandler {
                             )
                             .await;
                         }
-                        Ok(ClusterEvent::CacheInvalidate { ref event_id, ref targets, .. }) => {
+                        Ok(RealtimeEvent::CacheInvalidate { ref event_id, ref targets, .. }) => {
                             self.resource_observer.handle_cache_invalidate_admin_event(event_id, targets).await;
                         }
                         Ok(_) => {
@@ -2147,7 +2147,7 @@ impl StreamMessageHandler {
         };
 
         let event = if self.principal.is_guest() {
-            ClusterEvent::GuestJoined {
+            RealtimeEvent::GuestJoined {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 guest_id: self.public_actor_id(),
@@ -2158,7 +2158,7 @@ impl StreamMessageHandler {
                 timestamp: chrono::Utc::now(),
             }
         } else {
-            ClusterEvent::UserJoined {
+            RealtimeEvent::UserJoined {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 user_id: self.user_id,
@@ -2226,7 +2226,7 @@ impl StreamMessageHandler {
                 );
 
                 // Broadcast WebRtcLeave so other peers know this user dropped
-                let leave_event = ClusterEvent::WebRTCLeave {
+                let leave_event = RealtimeEvent::WebRTCLeave {
                     event_id: synctv_common::snanoid!(16),
                     room_id: self.room_id,
                     actor_id: self.public_actor_id(),
@@ -2253,7 +2253,7 @@ impl StreamMessageHandler {
             }
         }
 
-        // If the disconnect was triggered by a cluster event that already
+        // If the disconnect was triggered by a realtime event that already
         // published UserLeft, skip the redundant broadcast to avoid duplicate
         // UserLeft events.
         if self
@@ -2315,7 +2315,7 @@ impl StreamMessageHandler {
         // Previously, unregistering first could leave the hub with a stale subscriber
         // if the broadcast was delayed or had no receivers.
         let event = if self.principal.is_guest() {
-            ClusterEvent::GuestLeft {
+            RealtimeEvent::GuestLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 guest_id: self.public_actor_id(),
@@ -2323,7 +2323,7 @@ impl StreamMessageHandler {
                 timestamp: chrono::Utc::now(),
             }
         } else {
-            ClusterEvent::UserLeft {
+            RealtimeEvent::UserLeft {
                 event_id: synctv_common::snanoid!(16),
                 room_id: self.room_id,
                 user_id: self.user_id,
@@ -2459,7 +2459,7 @@ impl StreamMessageHandler {
     ///
     /// This method:
     /// 1. Registers the connection and joins the room (enforcing connection limits)
-    /// 2. Subscribes to cluster events and forwards them to the client
+    /// 2. Subscribes to realtime events and forwards them to the client
     /// 3. Spawns a task to handle incoming client messages
     /// 4. Returns a sender and a cancellation token for the caller to manage lifecycle
     ///
@@ -2491,7 +2491,7 @@ impl StreamMessageHandler {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let room_id_str = self.public_room_id();
 
-        // Fetch member data once and reuse it for the join payload and cluster event.
+        // Fetch member data once and reuse it for the join payload and realtime event.
         let member_data = if self.principal.is_guest() {
             None
         } else {
@@ -2567,7 +2567,7 @@ impl StreamMessageHandler {
                                 // recipient (same logic as run()). SDP data contains IP
                                 // addresses, so broadcasting to all room members is both
                                 // a privacy leak and causes incorrect WebRTC behavior.
-                                if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
+                                if let RealtimeEvent::WebRTCSignaling { ref to, .. } = event {
                                     let is_target = to.rsplit_once(':').is_some_and(
                                         |(actor_id, conn)| {
                                             actor_id == event_actor_id
@@ -2581,12 +2581,12 @@ impl StreamMessageHandler {
 
                                 let is_room_shutdown = matches!(
                                     event,
-                                    ClusterEvent::RoomDeleted { .. }
-                                        | ClusterEvent::RoomBanned { .. }
-                                        | ClusterEvent::RoomOwnerInactive { .. }
+                                    RealtimeEvent::RoomDeleted { .. }
+                                        | RealtimeEvent::RoomBanned { .. }
+                                        | RealtimeEvent::RoomOwnerInactive { .. }
                                 );
 
-                                for msg in cluster_event_to_server_messages(
+                                for msg in realtime_event_to_server_messages(
                                     &event,
                                     &room_id_str,
                                     &public_id_codec,
@@ -2745,16 +2745,16 @@ impl StreamMessageHandler {
 
                         signal = disconnect_rx.recv() => {
                             let should_disconnect = match &signal {
-                                Ok(synctv_cluster::sync::DisconnectSignal::Connection(conn_id)) => {
+                                Ok(synctv_realtime::sync::DisconnectSignal::Connection(conn_id)) => {
                                     *conn_id == connection_id
                                 }
-                                Ok(synctv_cluster::sync::DisconnectSignal::User(uid)) => {
+                                Ok(synctv_realtime::sync::DisconnectSignal::User(uid)) => {
                                     *uid == user_id
                                 }
-                                Ok(synctv_cluster::sync::DisconnectSignal::Room(rid)) => {
+                                Ok(synctv_realtime::sync::DisconnectSignal::Room(rid)) => {
                                     *rid == room_id
                                 }
-                                Ok(synctv_cluster::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
+                                Ok(synctv_realtime::sync::DisconnectSignal::UserFromRoom { user_id: uid, room_id: rid }) => {
                                     *uid == user_id && *rid == room_id
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => false,
@@ -2802,7 +2802,7 @@ impl StreamMessageHandler {
 
                         admin_event = admin_rx.recv() => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
-                            if let Ok(ClusterEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
+                            if let Ok(RealtimeEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
                                 if *uid == user_id {
                                     let data = serde_json::json!({
                                         "type": "user_notification",
@@ -2831,7 +2831,7 @@ impl StreamMessageHandler {
                                 }
                                 continue;
                             }
-                            if let Ok(ClusterEvent::ProviderCredentialChanged { event_id, user_id: changed_user_id, provider, server_id, .. }) = &admin_event {
+                            if let Ok(RealtimeEvent::ProviderCredentialChanged { event_id, user_id: changed_user_id, provider, server_id, .. }) = &admin_event {
                                 admin_handler
                                     .resource_observer
                                     .handle_provider_credential_changed_admin_event(
@@ -2843,7 +2843,7 @@ impl StreamMessageHandler {
                                     .await;
                                 continue;
                             }
-                            if let Ok(ClusterEvent::CacheInvalidate { event_id, targets, .. }) = &admin_event
+                            if let Ok(RealtimeEvent::CacheInvalidate { event_id, targets, .. }) = &admin_event
                             {
                                 admin_handler
                                     .resource_observer
@@ -2852,12 +2852,12 @@ impl StreamMessageHandler {
                                 continue;
                             }
                             let should_disconnect = match &admin_event {
-                                Ok(ClusterEvent::KickUser { user_id: uid, .. }) => {
+                                Ok(RealtimeEvent::KickUser { user_id: uid, .. }) => {
                                     *uid == user_id
                                 }
                                 Ok(
-                                    ClusterEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }
-                                    | ClusterEvent::UserLeft { user_id: uid, room_id: rid, .. },
+                                    RealtimeEvent::KickUserFromRoom { user_id: uid, room_id: rid, .. }
+                                    | RealtimeEvent::UserLeft { user_id: uid, room_id: rid, .. },
                                 ) => {
                                     *uid == user_id && *rid == room_id
                                 }
@@ -3167,7 +3167,7 @@ impl StreamMessageHandler {
             .inc();
 
         // Use the filtered content from ChatService (content filtering already applied)
-        let event = ClusterEvent::ChatMessage {
+        let event = RealtimeEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             user_id: self.user_id,
@@ -3186,7 +3186,7 @@ impl StreamMessageHandler {
                 room_id = %self.room_id,
                 "ChatMessage broadcast missed the distributed fan-out path (message may not be visible on other replicas)"
             );
-            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                 .with_label_values(&["chat_no_redis"])
                 .inc();
         }
@@ -3211,7 +3211,7 @@ impl StreamMessageHandler {
     /// are not saved for later retrieval. This is consistent with how major
     /// danmaku platforms (Bilibili, Niconico) treat live/real-time danmaku.
     fn handle_danmaku(&self, content: &str, position: f64, color: Option<String>) {
-        let event = ClusterEvent::ChatMessage {
+        let event = RealtimeEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             user_id: self.user_id,
@@ -3262,7 +3262,7 @@ impl StreamMessageHandler {
         self.validate_webrtc_recipient(&offer.to)?;
 
         // P2P relay path: forward offer to target peer via cluster
-        let event = ClusterEvent::WebRTCSignaling {
+        let event = RealtimeEvent::WebRTCSignaling {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Offer,
@@ -3272,14 +3272,14 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
+        // Cross-replica WebRTC signaling must reach Redis when distributed mode is enabled.
         let outcome = self.event_service.broadcast_outcome(event);
         if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id,
                 "WebRTC offer realtime delivery did not satisfy distributed delivery requirements"
             );
-            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
@@ -3320,7 +3320,7 @@ impl StreamMessageHandler {
         self.validate_webrtc_recipient(&answer.to)?;
 
         // Create event with server-set 'from' field
-        let event = ClusterEvent::WebRTCSignaling {
+        let event = RealtimeEvent::WebRTCSignaling {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::Answer,
@@ -3330,14 +3330,14 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Cross-replica WebRTC signaling must reach Redis when cluster mode is enabled.
+        // Cross-replica WebRTC signaling must reach Redis when distributed mode is enabled.
         let outcome = self.event_service.broadcast_outcome(event);
         if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id,
                 "WebRTC answer realtime delivery did not satisfy distributed delivery requirements"
             );
-            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
@@ -3383,7 +3383,7 @@ impl StreamMessageHandler {
         self.validate_webrtc_recipient(&candidate.to)?;
 
         // P2P relay path: forward ICE candidate to target peer via cluster
-        let event = ClusterEvent::WebRTCSignaling {
+        let event = RealtimeEvent::WebRTCSignaling {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             message_type: WebRTCSignalKind::IceCandidate,
@@ -3393,14 +3393,14 @@ impl StreamMessageHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        // Cross-replica ICE signaling must reach Redis when cluster mode is enabled.
+        // Cross-replica ICE signaling must reach Redis when distributed mode is enabled.
         let outcome = self.event_service.broadcast_outcome(event);
         if !outcome.satisfies(RealtimeDeliveryRequirement::DistributedWhenAvailable) {
             tracing::warn!(
                 room_id = %self.room_id,
                 "ICE candidate realtime delivery did not satisfy distributed delivery requirements"
             );
-            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+            synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                 .with_label_values(&["webrtc_signal_no_redis"])
                 .inc();
             return Err(
@@ -3458,7 +3458,7 @@ impl StreamMessageHandler {
             .store(true, std::sync::atomic::Ordering::Release);
 
         // Broadcast Join event to all RTC-joined users in the room
-        let event = ClusterEvent::WebRTCJoin {
+        let event = RealtimeEvent::WebRTCJoin {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             actor_id: self.public_actor_id(),
@@ -3519,7 +3519,7 @@ impl StreamMessageHandler {
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
         // Broadcast Leave event to all RTC-joined users in the room
-        let event = ClusterEvent::WebRTCLeave {
+        let event = RealtimeEvent::WebRTCLeave {
             event_id: synctv_common::snanoid!(16),
             room_id: self.room_id,
             actor_id: self.public_actor_id(),
@@ -3648,7 +3648,7 @@ impl StreamMessageHandler {
 
                         // Local-only broadcast (no Redis) -- progress reports are
                         // high-frequency and only relevant to same-replica clients.
-                        let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                        let event = synctv_realtime::sync::RealtimeEvent::PlaybackStateChanged {
                             event_id: synctv_common::snanoid!(16),
                             room_id: self.room_id,
                             user_id: self.user_id,
@@ -3758,9 +3758,9 @@ impl StreamMessageHandler {
     }
 }
 
-/// Convert a cluster event into one or more server messages.
-fn cluster_event_to_server_messages(
-    event: &synctv_cluster::sync::ClusterEvent,
+/// Convert a realtime event into one or more server messages.
+fn realtime_event_to_server_messages(
+    event: &synctv_realtime::sync::RealtimeEvent,
     room_id: &str,
     public_id_codec: &crate::PublicIdCodec,
 ) -> Vec<ServerMessage> {
@@ -3770,32 +3770,32 @@ fn cluster_event_to_server_messages(
         PlaybackStateChanged, PlaylistCreated, PlaylistDeleted, PlaylistReordered, PlaylistUpdated,
         RoomSettingsChanged, ServerMessage, UserJoinedRoom, UserLeftRoom,
     };
-    use synctv_cluster::sync::ClusterEvent;
     use synctv_proto::common::RoomMember;
+    use synctv_realtime::sync::RealtimeEvent;
 
     let encode_user = |id| {
         public_id_codec
             .encode_user_id(id)
-            .expect("cluster event user id must be encodable")
+            .expect("realtime event user id must be encodable")
     };
     let encode_room = |id| {
         public_id_codec
             .encode_room_id(id)
-            .expect("cluster event room id must be encodable")
+            .expect("realtime event room id must be encodable")
     };
     let encode_media = |id| {
         public_id_codec
             .encode_media_id(id)
-            .expect("cluster event media id must be encodable")
+            .expect("realtime event media id must be encodable")
     };
     let encode_playlist = |id| {
         public_id_codec
             .encode_playlist_id(id)
-            .expect("cluster event playlist id must be encodable")
+            .expect("realtime event playlist id must be encodable")
     };
 
     match event {
-        ClusterEvent::ChatMessage {
+        RealtimeEvent::ChatMessage {
             user_id,
             username,
             message,
@@ -3815,7 +3815,7 @@ fn cluster_event_to_server_messages(
                 color: color.clone(),
             })),
         }],
-        ClusterEvent::PlaybackStateChanged { state, .. } => vec![ServerMessage {
+        RealtimeEvent::PlaybackStateChanged { state, .. } => vec![ServerMessage {
             message: Some(Message::PlaybackState(PlaybackStateChanged {
                 room_id: room_id.to_string(),
                 state: Some(PlaybackState {
@@ -3839,7 +3839,7 @@ fn cluster_event_to_server_messages(
                 }),
             })),
         }],
-        ClusterEvent::UserJoined {
+        RealtimeEvent::UserJoined {
             user_id,
             username,
             permissions,
@@ -3872,7 +3872,7 @@ fn cluster_event_to_server_messages(
                 }),
             })),
         }],
-        ClusterEvent::GuestJoined {
+        RealtimeEvent::GuestJoined {
             guest_id,
             username,
             permissions,
@@ -3901,19 +3901,19 @@ fn cluster_event_to_server_messages(
                 }),
             })),
         }],
-        ClusterEvent::UserLeft { user_id, .. } => vec![ServerMessage {
+        RealtimeEvent::UserLeft { user_id, .. } => vec![ServerMessage {
             message: Some(Message::UserLeft(UserLeftRoom {
                 room_id: room_id.to_string(),
                 user_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::GuestLeft { guest_id, .. } => vec![ServerMessage {
+        RealtimeEvent::GuestLeft { guest_id, .. } => vec![ServerMessage {
             message: Some(Message::UserLeft(UserLeftRoom {
                 room_id: room_id.to_string(),
                 user_id: guest_id.clone(),
             })),
         }],
-        ClusterEvent::MediaAdded {
+        RealtimeEvent::MediaAdded {
             media_id,
             media_title,
             user_id,
@@ -3928,7 +3928,7 @@ fn cluster_event_to_server_messages(
                 creator_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::MediaRemoved {
+        RealtimeEvent::MediaRemoved {
             media_id,
             user_id,
             username,
@@ -3941,7 +3941,7 @@ fn cluster_event_to_server_messages(
                 removed_by_user_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::MediaRemovedBatch {
+        RealtimeEvent::MediaRemovedBatch {
             media_ids,
             user_id,
             username,
@@ -3954,7 +3954,7 @@ fn cluster_event_to_server_messages(
                 removed_by_user_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::MediaUpdated {
+        RealtimeEvent::MediaUpdated {
             media_id,
             media_title,
             user_id,
@@ -3969,7 +3969,7 @@ fn cluster_event_to_server_messages(
                 updated_by_user_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::PlaylistReordered {
+        RealtimeEvent::PlaylistReordered {
             media_ids,
             user_id,
             username,
@@ -3982,7 +3982,7 @@ fn cluster_event_to_server_messages(
                 reordered_by_user_id: encode_user(*user_id),
             })),
         }],
-        ClusterEvent::PlaylistCreated { playlist, .. } => vec![ServerMessage {
+        RealtimeEvent::PlaylistCreated { playlist, .. } => vec![ServerMessage {
             message: Some(Message::PlaylistCreated(PlaylistCreated {
                 room_id: room_id.to_string(),
                 playlist: Some(crate::impls::client::convert::playlist_to_proto(
@@ -3992,7 +3992,7 @@ fn cluster_event_to_server_messages(
                 )),
             })),
         }],
-        ClusterEvent::PlaylistUpdated { playlist, .. } => vec![ServerMessage {
+        RealtimeEvent::PlaylistUpdated { playlist, .. } => vec![ServerMessage {
             message: Some(Message::PlaylistUpdated(PlaylistUpdated {
                 room_id: room_id.to_string(),
                 playlist: Some(crate::impls::client::convert::playlist_to_proto(
@@ -4002,13 +4002,13 @@ fn cluster_event_to_server_messages(
                 )),
             })),
         }],
-        ClusterEvent::PlaylistDeleted { playlist_id, .. } => vec![ServerMessage {
+        RealtimeEvent::PlaylistDeleted { playlist_id, .. } => vec![ServerMessage {
             message: Some(Message::PlaylistDeleted(PlaylistDeleted {
                 room_id: room_id.to_string(),
                 playlist_id: encode_playlist(*playlist_id),
             })),
         }],
-        ClusterEvent::PermissionChanged {
+        RealtimeEvent::PermissionChanged {
             target_user_id,
             new_permissions,
             role,
@@ -4033,7 +4033,7 @@ fn cluster_event_to_server_messages(
                 },
             )),
         }],
-        ClusterEvent::RoomSettingsChanged {
+        RealtimeEvent::RoomSettingsChanged {
             settings_json,
             version,
             ..
@@ -4044,7 +4044,7 @@ fn cluster_event_to_server_messages(
                 version: *version,
             })),
         }],
-        ClusterEvent::WebRTCSignaling {
+        RealtimeEvent::WebRTCSignaling {
             message_type,
             from,
             to,
@@ -4078,7 +4078,7 @@ fn cluster_event_to_server_messages(
             };
             vec![msg]
         }
-        ClusterEvent::WebRTCJoin {
+        RealtimeEvent::WebRTCJoin {
             actor_id,
             conn_id,
             username,
@@ -4090,7 +4090,7 @@ fn cluster_event_to_server_messages(
                 username: username.clone(),
             })),
         }],
-        ClusterEvent::WebRTCLeave {
+        RealtimeEvent::WebRTCLeave {
             actor_id, conn_id, ..
         } => vec![ServerMessage {
             message: Some(Message::WebrtcLeave(crate::proto::client::WebRtcLeave {
@@ -4098,7 +4098,7 @@ fn cluster_event_to_server_messages(
                 conn_id: conn_id.clone(),
             })),
         }],
-        ClusterEvent::SystemNotification {
+        RealtimeEvent::SystemNotification {
             message, timestamp, ..
         } => {
             let data = serde_json::json!({
@@ -4120,7 +4120,7 @@ fn cluster_event_to_server_messages(
                 )),
             }]
         }
-        ClusterEvent::RoomDeleted { .. } => {
+        RealtimeEvent::RoomDeleted { .. } => {
             // Notify WebSocket clients that the room has been deleted
             vec![ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
@@ -4130,7 +4130,7 @@ fn cluster_event_to_server_messages(
                 })),
             }]
         }
-        ClusterEvent::RoomBanned { .. } => {
+        RealtimeEvent::RoomBanned { .. } => {
             vec![ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: "Room has been banned".to_string(),
@@ -4139,7 +4139,7 @@ fn cluster_event_to_server_messages(
                 })),
             }]
         }
-        ClusterEvent::RoomOwnerInactive { .. } => {
+        RealtimeEvent::RoomOwnerInactive { .. } => {
             vec![ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: "Room is unavailable because its creator is not active".to_string(),
@@ -4148,13 +4148,13 @@ fn cluster_event_to_server_messages(
                 })),
             }]
         }
-        ClusterEvent::KickPublisher { .. }
-        | ClusterEvent::KickUser { .. }
-        | ClusterEvent::KickUserFromRoom { .. }
-        | ClusterEvent::RoomCreated { .. }
-        | ClusterEvent::CacheInvalidate { .. }
-        | ClusterEvent::ProviderCredentialChanged { .. }
-        | ClusterEvent::UserNotification { .. } => {
+        RealtimeEvent::KickPublisher { .. }
+        | RealtimeEvent::KickUser { .. }
+        | RealtimeEvent::KickUserFromRoom { .. }
+        | RealtimeEvent::RoomCreated { .. }
+        | RealtimeEvent::CacheInvalidate { .. }
+        | RealtimeEvent::ProviderCredentialChanged { .. }
+        | RealtimeEvent::UserNotification { .. } => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients via the room event path
             vec![]
@@ -4201,26 +4201,26 @@ fn guest_policy_error_to_denial_reason(
     }
 }
 
-fn rebuild_leave_event_for_retry(event: &ClusterEvent) -> ClusterEvent {
+fn rebuild_leave_event_for_retry(event: &RealtimeEvent) -> RealtimeEvent {
     match event {
-        ClusterEvent::UserLeft {
+        RealtimeEvent::UserLeft {
             room_id,
             user_id,
             username,
             ..
-        } => ClusterEvent::UserLeft {
+        } => RealtimeEvent::UserLeft {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
             user_id: *user_id,
             username: username.clone(),
             timestamp: chrono::Utc::now(),
         },
-        ClusterEvent::GuestLeft {
+        RealtimeEvent::GuestLeft {
             room_id,
             guest_id,
             username,
             ..
-        } => ClusterEvent::GuestLeft {
+        } => RealtimeEvent::GuestLeft {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
             guest_id: guest_id.clone(),
@@ -4295,18 +4295,18 @@ fn initial_realtime_join_denial_reason(
 
 #[inline]
 fn disconnect_signal_requires_skip_cleanup(
-    signal: &synctv_cluster::sync::DisconnectSignal,
+    signal: &synctv_realtime::sync::DisconnectSignal,
     user_id: &UserId,
     room_id: &RoomId,
     connection_id: &str,
 ) -> bool {
     match signal {
-        synctv_cluster::sync::DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
+        synctv_realtime::sync::DisconnectSignal::Connection(conn_id) => conn_id == connection_id,
         // A global user disconnect (ban/delete) must still let cleanup emit a
         // room-scoped UserLeft for the connection's current room.
-        synctv_cluster::sync::DisconnectSignal::User(_uid) => false,
-        synctv_cluster::sync::DisconnectSignal::Room(rid) => rid == room_id,
-        synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+        synctv_realtime::sync::DisconnectSignal::User(_uid) => false,
+        synctv_realtime::sync::DisconnectSignal::Room(rid) => rid == room_id,
+        synctv_realtime::sync::DisconnectSignal::UserFromRoom {
             user_id: uid,
             room_id: rid,
         } => uid == user_id && rid == room_id,
@@ -4315,22 +4315,22 @@ fn disconnect_signal_requires_skip_cleanup(
 
 #[inline]
 fn admin_event_requires_skip_cleanup(
-    event: &ClusterEvent,
+    event: &RealtimeEvent,
     user_id: &UserId,
     room_id: &RoomId,
 ) -> bool {
     match event {
         // A global KickUser must still allow connection cleanup to publish a
         // room-scoped UserLeft on the affected room.
-        ClusterEvent::KickUser { user_id: _uid, .. } => false,
-        ClusterEvent::RoomBanned { room_id: rid, .. }
-        | ClusterEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
-        ClusterEvent::KickUserFromRoom {
+        RealtimeEvent::KickUser { user_id: _uid, .. } => false,
+        RealtimeEvent::RoomBanned { room_id: rid, .. }
+        | RealtimeEvent::RoomOwnerInactive { room_id: rid, .. } => rid == room_id,
+        RealtimeEvent::KickUserFromRoom {
             user_id: uid,
             room_id: rid,
             ..
         }
-        | ClusterEvent::UserLeft {
+        | RealtimeEvent::UserLeft {
             user_id: uid,
             room_id: rid,
             ..

@@ -29,7 +29,7 @@ pub(crate) fn publish_provider_credential_changed(
         return;
     };
 
-    let event = synctv_cluster::sync::ClusterEvent::ProviderCredentialChanged {
+    let event = synctv_realtime::sync::RealtimeEvent::ProviderCredentialChanged {
         event_id: synctv_common::snanoid!(16),
         user_id,
         provider: provider.to_string(),

@@ -1263,7 +1263,7 @@ async fn handle_socket(
         user_id, room_id
     );
 
-    // Check if cluster_manager is available BEFORE incrementing metrics.
+    // Check if realtime_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
     // so there's nothing to decrement.
     let event_service = if let Some(ref service) = state.event_service {
@@ -1425,7 +1425,6 @@ async fn handle_socket(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
         config::PasswordComplexityConfig,
@@ -1436,6 +1435,7 @@ mod tests {
             UserValidator,
         },
     };
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
     struct AllowAllTicketValidator;
 
@@ -2595,7 +2595,7 @@ mod tests {
             .expect("disconnect channel should remain open");
 
         match signal {
-            synctv_cluster::sync::DisconnectSignal::Connection(id) => {
+            synctv_realtime::sync::DisconnectSignal::Connection(id) => {
                 assert_eq!(id, connection_id);
             }
             other => panic!("expected connection disconnect signal, got {other:?}"),

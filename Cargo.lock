@@ -6258,6 +6258,7 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "synctv-proxy",
+ "synctv-realtime",
  "synctv-xiu",
  "tempfile",
  "testcontainers",
@@ -6325,6 +6326,7 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "synctv-proxy",
+ "synctv-realtime",
  "testcontainers",
  "testcontainers-modules",
  "thiserror 2.0.18",
@@ -6496,7 +6498,6 @@ dependencies = [
 name = "synctv-core-testing"
 version = "1.0.0"
 dependencies = [
- "chrono",
  "redis",
  "sqlx",
  "synctv-common",
@@ -6683,6 +6684,42 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "synctv-realtime"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "criterion",
+ "dashmap",
+ "futures",
+ "mockall",
+ "moka",
+ "parking_lot",
+ "prost",
+ "protoc-bin-vendored",
+ "rand 0.10.1",
+ "redis",
+ "serde",
+ "serde_json",
+ "subtle",
+ "synctv-cluster",
+ "synctv-common",
+ "synctv-core",
+ "synctv-core-testing",
+ "tempfile",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
 ]
 
 [[package]]

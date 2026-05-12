@@ -3,12 +3,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::time::Duration;
 
-use synctv_cluster::sync::{CacheTarget, ClusterEvent};
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
     service::RoomService,
 };
+use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
 use crate::impls::client::convert::{playback_client_profile_from_proto, playback_state_to_proto};
@@ -652,7 +652,7 @@ impl RoomResourceHub {
 
     pub(super) async fn refresh_for_room_event(
         self: &Arc<Self>,
-        event: &ClusterEvent,
+        event: &RealtimeEvent,
         fatal_connection_id: Option<&str>,
     ) -> Result<(), String> {
         let invalidations = resource_invalidations_for_room_event(event);

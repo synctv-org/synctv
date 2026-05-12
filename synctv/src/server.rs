@@ -20,10 +20,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tower::ServiceExt;
 use tracing::{error, info, warn};
 
-use synctv_api::cluster_fanout::ClusterFanoutService;
 use synctv_api::impls::{AdminApiImpl, ClientApiImpl};
+use synctv_api::realtime_fanout::RealtimeFanoutService;
 use synctv_api::runtime::{RealtimeConnectionService, RealtimeEventService};
-use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
     cache::UserCache,
     config::absolute_display_path,
@@ -33,6 +32,7 @@ use synctv_core::{
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
 use synctv_management::server::{spawn_management_server, ManagementServerConfig};
+use synctv_realtime::sync::RealtimeEvent;
 
 use crate::bootstrap::cluster::ClusterNodeActivator;
 use crate::shutdown::ShutdownCoordinator;
@@ -66,7 +66,7 @@ pub struct Services {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub cluster_fanout_service: Arc<dyn ClusterFanoutService>,
+    pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     pub rate_limit_config: synctv_core::service::RateLimitConfig,
     pub content_filter: synctv_core::service::ContentFilter,
@@ -711,7 +711,7 @@ fn spawn_admin_event_listener(
                 recv = admin_rx.recv() => {
                     match recv {
                         Ok(event) => match &event {
-                            ClusterEvent::KickPublisher {
+                            RealtimeEvent::KickPublisher {
                                 room_id,
                                 media_id,
                                 reason,
@@ -721,7 +721,7 @@ fn spawn_admin_event_listener(
                                     room_id = %room_id,
                                     media_id = %media_id,
                                     reason = %reason,
-                                    "Received cluster-wide stream kick"
+                                    "Received replica-wide stream kick"
                                 );
                                 let room_id_string = room_id.to_string();
                                 let media_id_string = media_id.to_string();
@@ -737,18 +737,18 @@ fn spawn_admin_event_listener(
                                     );
                                 }
                             }
-                            ClusterEvent::KickUser {
+                            RealtimeEvent::KickUser {
                                 user_id, reason, ..
                             } => {
                                 info!(
                                     user_id = %user_id,
                                     reason = %reason,
-                                    "Received cluster-wide user kick"
+                                    "Received replica-wide user kick"
                                 );
                                 let user_id_string = user_id.to_string();
                                 infra.kick_user_publishers(&user_id_string).await;
                             }
-                            ClusterEvent::KickUserFromRoom {
+                            RealtimeEvent::KickUserFromRoom {
                                 room_id,
                                 user_id,
                                 reason,
@@ -1019,7 +1019,7 @@ impl SyncTvServer {
             }
         }
 
-        // Spawn streaming event listener for cluster-wide kicks
+        // Spawn streaming event listener for replica-wide kicks
         let admin_event_cancel = tokio_util::sync::CancellationToken::new();
         let admin_event_handle: Option<JoinHandle<()>> = if let (Some(event_service), Some(infra)) = (
             &self.services.realtime_event_service,
@@ -1030,7 +1030,7 @@ impl SyncTvServer {
                 Arc::clone(infra),
                 admin_event_cancel.clone(),
             );
-            info!("Admin event listener spawned for cluster-wide stream kicks");
+            info!("Admin event listener spawned for replica-wide stream kicks");
             Some(handle)
         } else {
             None
@@ -1167,7 +1167,7 @@ impl SyncTvServer {
             info!("API, metrics, and management servers shut down");
         }
 
-        // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
+        // Phase 2: Drain active connections BEFORE shutting down the realtime manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
         // system to be alive so they can be broadcast to other replicas.
         // Use the remaining time from the total budget instead of a separate
@@ -1218,7 +1218,7 @@ impl SyncTvServer {
             }
         }
 
-        // Shut down the cluster manager so the admin event broadcast channel
+        // Shut down the realtime manager so the admin event broadcast channel
         // closes, allowing the admin_event_handle listener to exit.
         if let Some(ref event_service) = self.services.realtime_event_service {
             info!(
@@ -1301,7 +1301,7 @@ impl SyncTvServer {
         info!("Realtime connection service shut down");
 
         // Minor fix: Removed redundant `registry.unregister()` call.
-        // `ClusterManager::shutdown()` already calls `registry.unregister()` during
+        // `RealtimeManager::shutdown()` already calls `registry.unregister()` during
         // heartbeat state cleanup. Calling it again here was a no-op (the node is
         // already deregistered) but added unnecessary Redis round-trip and log noise.
 
@@ -1356,7 +1356,7 @@ impl SyncTvServer {
             user_cache: self.services.user_cache.clone(),
             room_service: self.services.room_service.clone(),
             event_service: self.services.realtime_event_service.clone(),
-            cluster_fanout_service: self.services.cluster_fanout_service.clone(),
+            realtime_fanout_service: self.services.realtime_fanout_service.clone(),
             rate_limiter: self.services.rate_limiter.clone(),
             rate_limit_config: self.services.rate_limit_config.clone(),
             content_filter: self.services.content_filter.clone(),
@@ -1417,7 +1417,7 @@ impl SyncTvServer {
                 event_service: self.services.realtime_event_service.clone(),
                 connection_manager: self.services.realtime_connection_service.clone(),
                 jwt_service: self.services.jwt_service.clone(),
-                cluster_fanout_service: self.services.cluster_fanout_service.clone(),
+                realtime_fanout_service: self.services.realtime_fanout_service.clone(),
                 oauth2_service: self.services.oauth2_service.clone(),
                 passkey_service: self.services.passkey_service.clone(),
                 settings_service: Some(self.services.settings_service.clone()),
@@ -1632,9 +1632,7 @@ impl SyncTvServer {
                 Arc::new(synctv_cluster::grpc::ClusterClient::from_runtime(
                     node_registry.clone(),
                     synctv_cluster::grpc::ClusterClientConfig {
-                        cluster_secret: self.config.server.cluster_secret.clone(),
                         self_node_id: node_id.clone(),
-                        ..synctv_cluster::grpc::ClusterClientConfig::default()
                     },
                 ))
             });
@@ -1739,7 +1737,6 @@ mod tests {
         Arc,
     };
     use std::time::Duration;
-    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
     use synctv_core::{
         cache::UsernameCache,
         config::PasswordComplexityConfig,
@@ -1750,6 +1747,7 @@ mod tests {
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
+    use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
     use tokio::sync::{oneshot, watch};
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
@@ -1828,9 +1826,8 @@ mod tests {
                 connection_manager: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
                 jwt_service: JwtService::new("test-jwt-secret-key-for-testing-minimum-length")
                     .expect("jwt"),
-                cluster_fanout_service: synctv_api::cluster_fanout::default_cluster_fanout_service(
-                    None, false,
-                ),
+                realtime_fanout_service:
+                    synctv_api::realtime_fanout::default_realtime_fanout_service(None, false),
                 oauth2_service: None,
                 passkey_service: None,
                 settings_service: Some(settings_service),
@@ -2494,30 +2491,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_event_listener_stops_on_cancel() {
-        use synctv_cluster::sync::{ClusterConfig, ClusterManager, RoomMessageHub};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_realtime::sync::{RealtimeConfig, RealtimeManager, RoomMessageHub};
         use tokio::sync::mpsc;
 
-        let cluster_manager = ClusterManager::new(
-            ClusterConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                cluster_enabled: false,
-                node_id: "test-node".to_string(),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 8,
-                publish_channel_capacity: 8,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 60,
-                stream_max_length: 100,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
+        let realtime_manager = RealtimeManager::new(RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test-node".to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 8,
+            publish_channel_capacity: 8,
+            key_prefix: "test:".to_string(),
+            catchup_window_secs: 60,
+            stream_max_length: 100,
+            event_handler: None,
+            parent_cancel_token: None,
+        })
         .await
-        .expect("cluster manager should be created");
+        .expect("realtime manager should be created");
 
         let registry = synctv_livestream::relay::local_stream_registry();
         let (event_sender, _event_receiver) = mpsc::channel(8);
@@ -2541,7 +2535,7 @@ mod tests {
             Arc::new(StreamTracker::new()),
         ));
         let cancel = CancellationToken::new();
-        let handle = spawn_admin_event_listener(Arc::new(cluster_manager), infra, cancel.clone());
+        let handle = spawn_admin_event_listener(Arc::new(realtime_manager), infra, cancel.clone());
 
         cancel.cancel();
         await_task_shutdown("admin event listener", handle, Duration::from_secs(1)).await;
@@ -2550,31 +2544,30 @@ mod tests {
     #[tokio::test]
     async fn test_admin_event_listener_kick_publisher_removes_registry_entry() {
         use chrono::Utc;
-        use synctv_cluster::sync::{ClusterConfig, ClusterEvent, ClusterManager, RoomMessageHub};
         use synctv_core::models::{MediaId, RoomId};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_realtime::sync::{
+            RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub,
+        };
         use tokio::sync::mpsc;
 
-        let cluster_manager = ClusterManager::new(
-            ClusterConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                cluster_enabled: false,
-                node_id: "test-node".to_string(),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 8,
-                publish_channel_capacity: 8,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 60,
-                stream_max_length: 100,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
+        let realtime_manager = RealtimeManager::new(RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test-node".to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 8,
+            publish_channel_capacity: 8,
+            key_prefix: "test:".to_string(),
+            catchup_window_secs: 60,
+            stream_max_length: 100,
+            event_handler: None,
+            parent_cancel_token: None,
+        })
         .await
-        .expect("cluster manager should be created");
+        .expect("realtime manager should be created");
 
         let room_id = RoomId::expect_positive(112_001);
         let media_id = MediaId::expect_positive(112_002);
@@ -2613,14 +2606,14 @@ mod tests {
             Arc::new(StreamTracker::new()),
         ));
         let cancel = CancellationToken::new();
-        let cluster_manager = Arc::new(cluster_manager);
-        let handle = spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone());
+        let realtime_manager = Arc::new(realtime_manager);
+        let handle = spawn_admin_event_listener(realtime_manager.clone(), infra, cancel.clone());
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager
+                if realtime_manager
                     .admin_event_tx()
-                    .send(ClusterEvent::KickPublisher {
+                    .send(RealtimeEvent::KickPublisher {
                         event_id: synctv_common::snanoid!(16),
                         room_id,
                         media_id,
@@ -2668,31 +2661,30 @@ mod tests {
     #[tokio::test]
     async fn test_admin_event_listener_kick_user_from_room_only_removes_room_local_publishers() {
         use chrono::Utc;
-        use synctv_cluster::sync::{ClusterConfig, ClusterEvent, ClusterManager, RoomMessageHub};
         use synctv_core::models::{MediaId, RoomId, UserId};
         use synctv_livestream::api::StreamTracker;
         use synctv_livestream::livestream::{ExternalPublishManager, PullStreamManager};
+        use synctv_realtime::sync::{
+            RealtimeConfig, RealtimeEvent, RealtimeManager, RoomMessageHub,
+        };
         use tokio::sync::mpsc;
 
-        let cluster_manager = ClusterManager::new(
-            ClusterConfig {
-                distributed_transport_factory: None,
-                message_runtime: Arc::new(RoomMessageHub::new()),
-                cluster_enabled: false,
-                node_id: "test-node".to_string(),
-                dedup_window: Duration::from_mins(1),
-                critical_channel_capacity: 8,
-                publish_channel_capacity: 8,
-                key_prefix: "test:".to_string(),
-                catchup_window_secs: 60,
-                stream_max_length: 100,
-                parent_cancel_token: None,
-            },
-            None,
-            None,
-        )
+        let realtime_manager = RealtimeManager::new(RealtimeConfig {
+            distributed_transport_factory: None,
+            message_runtime: Arc::new(RoomMessageHub::new()),
+            distributed_enabled: false,
+            node_id: "test-node".to_string(),
+            dedup_window: Duration::from_mins(1),
+            critical_channel_capacity: 8,
+            publish_channel_capacity: 8,
+            key_prefix: "test:".to_string(),
+            catchup_window_secs: 60,
+            stream_max_length: 100,
+            event_handler: None,
+            parent_cancel_token: None,
+        })
         .await
-        .expect("cluster manager should be created");
+        .expect("realtime manager should be created");
 
         let room_id = RoomId::expect_positive(112_001);
         let other_room_id = RoomId::expect_positive(112_004);
@@ -2763,14 +2755,14 @@ mod tests {
             tracker.clone(),
         ));
         let cancel = CancellationToken::new();
-        let cluster_manager = Arc::new(cluster_manager);
-        let handle = spawn_admin_event_listener(cluster_manager.clone(), infra, cancel.clone());
+        let realtime_manager = Arc::new(realtime_manager);
+        let handle = spawn_admin_event_listener(realtime_manager.clone(), infra, cancel.clone());
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if cluster_manager
+                if realtime_manager
                     .admin_event_tx()
-                    .send(ClusterEvent::KickUserFromRoom {
+                    .send(RealtimeEvent::KickUserFromRoom {
                         event_id: synctv_common::snanoid!(16),
                         room_id,
                         user_id,

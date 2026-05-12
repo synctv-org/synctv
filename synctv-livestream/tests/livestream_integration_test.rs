@@ -18,116 +18,10 @@ use synctv_livestream::api::{HlsStreamingApi, LiveStreamingInfrastructure};
 use synctv_livestream::libraries::storage::MemoryStorage;
 use synctv_livestream::livestream::segment_manager::{CleanupConfig, SegmentManager};
 use synctv_livestream::protocols::hls::remuxer::{SegmentInfo, StreamProcessorState};
-use synctv_livestream::relay::registry_trait::PublisherRefreshOutcome;
 use tokio::sync::mpsc;
 
-// Mock implementation for testing
-struct MockStreamRegistry;
-
-#[async_trait::async_trait]
-impl synctv_livestream::relay::StreamRegistryTrait for MockStreamRegistry {
-    async fn register_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _node_id: &str,
-        _app_name: &str,
-        _api_address: &str,
-    ) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn try_register_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _node_id: &str,
-        _user_id: &str,
-        _api_address: &str,
-    ) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn refresh_publisher_ttl(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _user_id: &str,
-        _node_id: &str,
-        _expected_epoch: u64,
-    ) -> anyhow::Result<PublisherRefreshOutcome> {
-        Ok(PublisherRefreshOutcome::Refreshed)
-    }
-
-    async fn unregister_publisher(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn unregister_publisher_if_epoch_matches(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _expected_epoch: u64,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn get_publisher(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-    ) -> anyhow::Result<Option<synctv_livestream::relay::PublisherInfo>> {
-        Ok(Some(synctv_livestream::relay::PublisherInfo {
-            node_id: "test_node".to_string(),
-            api_address: String::new(),
-            app_name: "live".to_string(),
-            user_id: String::new(),
-            started_at: chrono::Utc::now(),
-            epoch: 1,
-        }))
-    }
-
-    async fn is_stream_active(&self, _room_id: &str, _media_id: &str) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn list_active_publishers(
-        &self,
-    ) -> anyhow::Result<Vec<synctv_livestream::relay::ActivePublisherEntry>> {
-        Ok(vec![])
-    }
-
-    async fn list_active_streams(&self) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(vec![])
-    }
-
-    async fn get_user_publishers(&self, _user_id: &str) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(vec![])
-    }
-
-    async fn unregister_all_user_publishers(&self, _user_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn validate_epoch(
-        &self,
-        _room_id: &str,
-        _media_id: &str,
-        _epoch: u64,
-    ) -> anyhow::Result<bool> {
-        // Mock always returns true for validation
-        Ok(true)
-    }
-
-    async fn cleanup_all_publishers_for_node(&self, _node_id: &str) -> anyhow::Result<()> {
-        // Mock cleanup - no-op
-        Ok(())
-    }
-}
-
 fn create_test_infrastructure() -> LiveStreamingInfrastructure {
-    let registry =
-        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry = synctv_livestream::relay::local_stream_registry();
     let (event_sender, _) = mpsc::channel(64);
     let storage = Arc::new(MemoryStorage::new());
     let segment_manager = Arc::new(SegmentManager::new(storage, CleanupConfig::default()));
@@ -159,10 +53,23 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
     .with_hls_stream_registry(hls_registry)
 }
 
+async fn register_test_publisher(
+    infrastructure: &LiveStreamingInfrastructure,
+    room_id: &str,
+    media_id: &str,
+) {
+    infrastructure
+        .registry
+        .register_publisher(room_id, media_id, "test-node", room_id, "")
+        .await
+        .expect("test publisher should register");
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_complete_hls_workflow() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "test_room", "test_media").await;
 
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
@@ -242,6 +149,7 @@ async fn test_multiple_room_media_combinations() {
 
     // Write segments for each combination
     for (room, media, count) in &test_cases {
+        register_test_publisher(&infrastructure, room, media).await;
         for i in 0..*count {
             let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
             let segment_data = Bytes::from(format!("{room}-{media}-seg{i}"));
@@ -331,6 +239,7 @@ async fn test_registry_key_format_consistency() {
 #[ignore = "Requires Docker"]
 async fn test_hls_url_generation_with_custom_callback() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "room123", "media456").await;
 
     // Register test stream
     let mut segments = VecDeque::new();
@@ -391,6 +300,7 @@ async fn test_hls_url_generation_with_custom_callback() {
 #[ignore = "Requires Docker"]
 async fn test_segment_cleanup() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "room1", "media1").await;
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
     // Write multiple segments
@@ -427,6 +337,7 @@ async fn test_segment_cleanup() {
 #[ignore = "Requires Docker"]
 async fn test_concurrent_segment_access() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "room1", "media1").await;
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
 
     // Write segments
@@ -461,6 +372,7 @@ async fn test_concurrent_segment_access() {
 #[ignore = "Requires Docker"]
 async fn test_hls_playlist_with_discontinuity() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "room1", "media1").await;
 
     let mut segments = VecDeque::new();
     segments.push_back(SegmentInfo {
@@ -514,6 +426,7 @@ async fn test_hls_playlist_with_discontinuity() {
 #[ignore = "Requires Docker"]
 async fn test_hls_playlist_ended_stream() {
     let infrastructure = create_test_infrastructure();
+    register_test_publisher(&infrastructure, "room1", "media1").await;
 
     let mut segments = VecDeque::new();
     segments.push_back(SegmentInfo {

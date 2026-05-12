@@ -211,9 +211,9 @@ async fn execute_flv_stream(
                 disconnect = disconnect_rx.recv() => {
                     if let Ok(event) = disconnect {
                         let should_disconnect = match event {
-                            synctv_cluster::sync::DisconnectSignal::User(ref uid) => uid == &user_id,
-                            synctv_cluster::sync::DisconnectSignal::Room(ref rid) => rid == &room_id,
-                            synctv_cluster::sync::DisconnectSignal::UserFromRoom {
+                            synctv_realtime::sync::DisconnectSignal::User(ref uid) => uid == &user_id,
+                            synctv_realtime::sync::DisconnectSignal::Room(ref rid) => rid == &room_id,
+                            synctv_realtime::sync::DisconnectSignal::UserFromRoom {
                                 user_id: ref uid,
                                 room_id: ref rid,
                             } => uid == &user_id && rid == &room_id,

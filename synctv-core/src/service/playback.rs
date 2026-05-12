@@ -42,7 +42,7 @@ enum NextTarget {
     },
 }
 
-/// Result of a broadcast operation from `ClusterManager::broadcast`.
+/// Result of a realtime broadcast operation.
 ///
 /// Indicates whether the event was delivered to local subscribers and/or Redis.
 #[derive(Debug, Clone, Copy, Default)]
@@ -175,13 +175,13 @@ fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()> {
     }
 }
 
-/// Trait for broadcasting playback state changes to cluster replicas.
+/// Trait for broadcasting playback state changes to realtime replicas.
 ///
-/// This abstracts over the cluster manager so that `synctv-core` does not
-/// depend on `synctv-cluster`.  The implementation lives in the API/wiring
-/// layer where `ClusterManager` is available.
+/// This abstracts over the realtime transport so that `synctv-core` does not
+/// depend on the runtime implementation. The implementation lives in the
+/// application wiring layer.
 pub trait PlaybackBroadcaster: Send + Sync {
-    /// Broadcast a playback state change to other cluster replicas.
+    /// Broadcast a playback state change to other realtime replicas.
     ///
     /// Returns a `BroadcastResult` indicating whether the broadcast succeeded.
     /// Implementations should be non-blocking but report success/failure.
@@ -216,7 +216,7 @@ pub struct PlaybackService {
     user_service: UserService,
     /// Optional cluster broadcaster for cross-replica sync (interior mutability
     /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
-    cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
+    realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
     /// Optional L2 cache (Redis) for cross-replica consistency.
@@ -280,7 +280,7 @@ impl PlaybackService {
             permission_service,
             media_service,
             user_service,
-            cluster_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
+            realtime_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
             playback_cache: Arc::new(
                 moka::future::CacheBuilder::new(Self::DEFAULT_CACHE_SIZE)
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
@@ -313,8 +313,8 @@ impl PlaybackService {
 
     /// Set the cluster broadcaster for cross-replica playback state sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_cluster_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
-        *self.cluster_broadcaster.write() = Some(broadcaster);
+    pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
+        *self.realtime_broadcaster.write() = Some(broadcaster);
     }
 
     /// Set the cache invalidation service and start listening for cross-replica invalidation.
@@ -567,10 +567,10 @@ impl PlaybackService {
         self.l2_cache.read().is_some()
     }
 
-    /// Broadcast a playback state change to local clients and cluster replicas.
+    /// Broadcast a playback state change to local clients and realtime replicas.
     ///
-    /// Uses the cluster broadcaster as the single broadcast path. The cluster
-    /// broadcaster calls `ClusterManager::broadcast`, which delivers the event
+    /// Uses the realtime broadcaster as the single broadcast path. The broadcaster
+    /// delivers the event
     /// to local WebSocket subscribers (via the in-process message hub) AND
     /// publishes to Redis for remote replicas in one step.
     ///
@@ -585,7 +585,7 @@ impl PlaybackService {
         // (via the in-process message hub) and remote delivery (via Redis pub/sub).
         // Do NOT also call notification_service here — that would send the event
         // to local WebSocket clients a second time.
-        if let Some(ref broadcaster) = *self.cluster_broadcaster.read() {
+        if let Some(ref broadcaster) = *self.realtime_broadcaster.read() {
             let result = broadcaster.broadcast_playback_state(state);
 
             // Log warning if broadcast failed to reach any destination

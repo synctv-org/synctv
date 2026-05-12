@@ -2,7 +2,6 @@
 
 use chrono::Utc;
 use std::sync::Arc;
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -15,6 +14,7 @@ use synctv_core::{
     Config,
 };
 use synctv_proto::client::{ListMyRoomsRequest, MyRoomRelation};
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();

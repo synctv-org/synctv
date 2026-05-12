@@ -91,7 +91,7 @@ pub trait OAuthStateStore: Send + Sync {
 ///
 /// # Errors
 ///
-/// Returns an error when cluster mode requires shared state but no shared
+/// Returns an error when distributed mode requires shared state but no shared
 /// runtime is available.
 pub fn state_store_from_shared_state_profile(
     profile: &SharedStateProfile,
@@ -477,7 +477,7 @@ impl OAuth2Service {
         // Clustered callback handling requires shared single-use state storage.
         if cluster_mode && !state_store.supports_cross_node_single_use() {
             return Err(Error::Internal(
-                "cluster runtime requires shared single-use OAuth2 state storage. \
+                "distributed runtime requires shared single-use OAuth2 state storage. \
                  Local-only state is only visible on the replica that created it, \
                  causing authentication failures when the callback hits a different replica. \
                  Configure a shared state backend to fix this."
@@ -1575,7 +1575,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("cluster runtime requires shared single-use OAuth2 state storage"),
+                .contains("distributed runtime requires shared single-use OAuth2 state storage"),
             "unexpected error: {error}"
         );
     }
@@ -2868,10 +2868,10 @@ mod tests {
     // Cluster mode Redis dependency tests.
 
     /// Test: cluster mode with a local-only state store returns a descriptive error.
-    /// In cluster mode, `OAuth2` states created on replica A cannot be validated
+    /// In distributed mode, `OAuth2` states created on replica A cannot be validated
     /// on replica B without shared single-use state storage.
     #[tokio::test]
-    async fn test_cluster_mode_without_redis_returns_error() {
+    async fn test_distributed_mode_without_redis_returns_error() {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = local_oauth_state_store();
@@ -2885,7 +2885,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "Cluster mode without shared single-use state must return an error"
+            "Distributed mode without shared single-use state must return an error"
         );
 
         let err = result.unwrap_err();
@@ -2897,8 +2897,8 @@ mod tests {
             "Error should mention shared single-use OAuth2 state; got: {err_msg}"
         );
         assert!(
-            err_msg.contains("cluster mode") || err_msg.contains("cluster"),
-            "Error should mention cluster mode; got: {err_msg}"
+            err_msg.contains("distributed runtime"),
+            "Error should mention distributed runtime; got: {err_msg}"
         );
         assert!(
             err_msg.contains("replica") || err_msg.contains("replicas"),

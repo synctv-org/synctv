@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use synctv_api::impls::ClientApiImpl;
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -27,6 +26,7 @@ use synctv_core::{
     Config,
 };
 use synctv_core_testing::create_test_pool;
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn dynamic_target(cursor: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "relative_path": cursor }))

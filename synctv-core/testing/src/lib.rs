@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 pub mod assertions;
 pub mod constants;
-pub mod fixtures;
 pub mod postgres;
 pub mod redis;
 pub mod services;
@@ -20,8 +19,6 @@ pub(crate) fn test_temp_dir() -> PathBuf {
     path
 }
 
-// Re-export commonly used items
-pub use fixtures::{TestRoom, TestUser};
 pub use postgres::{
     connect_test_pool_url, create_test_database, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,

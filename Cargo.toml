@@ -8,6 +8,7 @@ members = [
     "synctv-api",
     "synctv-livestream",
     "synctv-cluster",
+    "synctv-realtime",
     "synctv-media-providers",
     "synctv-management",
     "synctv",
@@ -309,6 +310,7 @@ synctv-core = { path = "synctv-core", default-features = false }
 synctv-core-testing = { path = "synctv-core/testing", default-features = false }
 synctv-api = { path = "synctv-api", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
+synctv-realtime = { path = "synctv-realtime", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers", default-features = false }
 synctv-management = { path = "synctv-management", default-features = false }
 synctv-proxy = { path = "synctv-proxy", default-features = false }

@@ -27,8 +27,8 @@ async fn test_client_api() -> (synctv_core_testing::TestContainer, super::Client
     let api = super::ClientApiImpl::new(
         Arc::new(synctv_core_testing::create_test_user_service(pool.clone())),
         Arc::new(synctv_core_testing::create_test_room_service(pool)),
-        Arc::new(synctv_cluster::sync::ConnectionManager::new(
-            synctv_cluster::sync::ConnectionLimits::default(),
+        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+            synctv_realtime::sync::ConnectionLimits::default(),
         )),
         Arc::new(synctv_core::Config::default()),
         None,
@@ -164,8 +164,8 @@ async fn test_client_api_impl_accepts_trait_object_redis_runtime() {
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),
         )),
-        Arc::new(synctv_cluster::sync::ConnectionManager::new(
-            synctv_cluster::sync::ConnectionLimits::default(),
+        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+            synctv_realtime::sync::ConnectionLimits::default(),
         )),
         Arc::new(synctv_core::Config::default()),
         None,
@@ -284,8 +284,8 @@ async fn test_client_api_impl_accepts_trait_object_provider_store_resolver() {
                 synctv_core::service::BruteForceProtection::in_memory("test".to_string()),
             ),
         )),
-        Arc::new(synctv_cluster::sync::ConnectionManager::new(
-            synctv_cluster::sync::ConnectionLimits::default(),
+        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+            synctv_realtime::sync::ConnectionLimits::default(),
         )),
         Arc::new(synctv_core::Config::default()),
         None,

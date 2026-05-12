@@ -18,16 +18,16 @@ use crate::{
     Error, Result,
 };
 
-/// Trait for broadcasting member events to cluster replicas.
+/// Trait for broadcasting member events to realtime replicas.
 ///
-/// This abstracts over the cluster manager so that `synctv-core` does not
-/// depend on `synctv-cluster`. The implementation lives in the API/wiring
-/// layer where `ClusterManager` is available.
+/// This abstracts over the realtime transport so that `synctv-core` does not
+/// depend on the runtime implementation. The implementation lives in the
+/// application wiring layer.
 pub trait MemberEventBroadcaster: Send + Sync {
-    /// Broadcast a kick event for a user from a specific room to all cluster replicas.
+    /// Broadcast a kick event for a user from a specific room to all realtime replicas.
     fn broadcast_kick_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str);
 
-    /// Broadcast a ban event for a user (disconnect from all rooms) to all cluster replicas.
+    /// Broadcast a ban event for a user (disconnect from all rooms) to all realtime replicas.
     fn broadcast_kick_user(&self, user_id: &UserId, reason: &str);
 }
 
@@ -231,7 +231,7 @@ impl MemberService {
         self.cache_invalidation = Some(service);
     }
 
-    /// Set the cluster event broadcaster for cross-replica kick/ban propagation
+    /// Set the realtime event broadcaster for cross-replica kick/ban propagation.
     pub fn set_event_broadcaster(&self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
         *self.event_broadcaster.write() = Some(broadcaster);
     }
@@ -239,6 +239,13 @@ impl MemberService {
     #[doc(hidden)]
     pub fn has_event_broadcaster(&self) -> bool {
         self.event_broadcaster.read().is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn broadcast_kick_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str) {
+        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
+            broadcaster.broadcast_kick_from_room(room_id, user_id, reason);
+        }
     }
 
     async fn notify_permission_changed(
@@ -408,7 +415,7 @@ impl MemberService {
             .invalidate_cache(&room_id, &user_id)
             .await;
 
-        // Broadcast kick event to cluster for cross-replica disconnect
+        // Broadcast kick event for cross-replica disconnect.
         if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(&room_id, &user_id, "removed");
         }
@@ -468,7 +475,7 @@ impl MemberService {
             );
         }
 
-        // Broadcast kick event to all cluster replicas for cross-replica disconnect
+        // Broadcast kick event to all realtime replicas for cross-replica disconnect.
         if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         }
@@ -1164,8 +1171,8 @@ impl MemberService {
             );
         }
 
-        // Broadcast kick event to all cluster replicas for cross-replica disconnect.
-        // The cluster event system handles propagation asynchronously; no need to
+        // Broadcast kick event to all realtime replicas for cross-replica disconnect.
+        // The realtime event system handles propagation asynchronously; no need to
         // wait here as receivers process events independently.
         if let Some(ref broadcaster) = *self.event_broadcaster.read() {
             broadcaster.broadcast_kick_from_room(

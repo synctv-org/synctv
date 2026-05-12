@@ -77,7 +77,9 @@ pub use global_settings::{
     ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
     OAuth2SignupPolicy, PublicSettings, SettingsRegistry,
 };
-pub use media::MediaService;
+pub use media::{
+    MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
+};
 pub use member::{AddMemberOptions, MemberEventBroadcaster, MemberService};
 pub use notification::{NotificationService, RoomEvent};
 pub use notification_partition_manager::{
@@ -95,7 +97,7 @@ pub use passkey::{
 };
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
-pub use playlist::{ClusterOutboxPlaylistEventFactory, PlaylistBroadcaster, PlaylistService};
+pub use playlist::{PlaylistBroadcaster, PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use providers_manager::ProvidersManager;
 pub use proxy_signature::{
     build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
@@ -115,8 +117,10 @@ pub use review::{
     UserRegistrationReviewRecord,
 };
 pub use room::{
-    AuthorizedAdminActor, ClusterOutboxDeleteEntriesEventFactory, ClusterOutboxRoomEventFactory,
-    ClusterOutboxSettingsEventFactory, RoomService,
+    AuthorizedAdminActor, PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
+    RealtimeOutboxMediaIdsEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomService, UserLeftOutboxSnapshot,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::{SettingsChangeListener, SettingsService};

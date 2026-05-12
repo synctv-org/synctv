@@ -12,8 +12,8 @@ use synctv_cluster::discovery::{
     ClusterNodeDirectoryFactory, HealthMonitor, StaticDiscovery, StaticDiscoveryConfig,
     StaticPeerConfig,
 };
-use synctv_cluster::sync::{ClusterManager, ConnectionRuntime};
 use synctv_core::{config::ClusterDiscoveryMode, Config};
+use synctv_realtime::sync::{ConnectionRuntime, RealtimeManager, RealtimeMessageTransportFactory};
 
 #[async_trait]
 pub trait ClusterNodeActivator: Send + Sync {
@@ -23,7 +23,7 @@ pub trait ClusterNodeActivator: Send + Sync {
 #[derive(Clone)]
 pub struct DefaultClusterNodeActivator {
     config: Config,
-    cluster_manager: Arc<ClusterManager>,
+    realtime_manager: Arc<RealtimeManager>,
     connection_manager: Arc<dyn ConnectionRuntime>,
     registry: Arc<dyn ClusterNodeDirectory>,
     health_monitor: Arc<dyn ClusterHealthRuntime>,
@@ -33,14 +33,14 @@ impl DefaultClusterNodeActivator {
     #[must_use]
     pub const fn new(
         config: Config,
-        cluster_manager: Arc<ClusterManager>,
+        realtime_manager: Arc<RealtimeManager>,
         connection_manager: Arc<dyn ConnectionRuntime>,
         registry: Arc<dyn ClusterNodeDirectory>,
         health_monitor: Arc<dyn ClusterHealthRuntime>,
     ) -> Self {
         Self {
             config,
-            cluster_manager,
+            realtime_manager,
             connection_manager,
             registry,
             health_monitor,
@@ -53,7 +53,7 @@ impl ClusterNodeActivator for DefaultClusterNodeActivator {
     async fn activate(&self) -> Result<(), anyhow::Error> {
         activate_cluster_node(
             &self.config,
-            &self.cluster_manager,
+            &self.realtime_manager,
             self.connection_manager.clone(),
             &self.registry,
             &self.health_monitor,
@@ -95,23 +95,19 @@ pub struct ClusterDiscoveryBundle {
 }
 
 pub trait ClusterCoordinationProvider: Send + Sync {
-    fn distributed_transport_factory(
-        &self,
-    ) -> Arc<dyn synctv_cluster::ClusterMessageTransportFactory>;
+    fn distributed_transport_factory(&self) -> Arc<dyn RealtimeMessageTransportFactory>;
 
     fn node_directory_factory(&self) -> Arc<dyn ClusterNodeDirectoryFactory>;
 }
 
 #[derive(Clone)]
 struct RedisClusterCoordinationProvider {
-    distributed_transport_factory: Arc<dyn synctv_cluster::ClusterMessageTransportFactory>,
+    distributed_transport_factory: Arc<dyn RealtimeMessageTransportFactory>,
     node_directory_factory: Arc<dyn ClusterNodeDirectoryFactory>,
 }
 
 impl ClusterCoordinationProvider for RedisClusterCoordinationProvider {
-    fn distributed_transport_factory(
-        &self,
-    ) -> Arc<dyn synctv_cluster::ClusterMessageTransportFactory> {
+    fn distributed_transport_factory(&self) -> Arc<dyn RealtimeMessageTransportFactory> {
         self.distributed_transport_factory.clone()
     }
 
@@ -125,7 +121,7 @@ pub fn build_cluster_coordination_provider(
     runtime: Arc<dyn synctv_core::RedisCoordinationRuntime>,
 ) -> Arc<dyn ClusterCoordinationProvider> {
     Arc::new(RedisClusterCoordinationProvider {
-        distributed_transport_factory: synctv_cluster::build_cluster_message_transport_factory(
+        distributed_transport_factory: synctv_realtime::build_realtime_message_transport_factory(
             runtime.clone(),
         ),
         node_directory_factory: synctv_cluster::build_cluster_node_directory_factory(runtime),
@@ -294,7 +290,7 @@ fn build_static_cluster_peer_discovery_driver(
 
 pub fn init_cluster_components(
     node_directory_factory: &Arc<dyn ClusterNodeDirectoryFactory>,
-    cm: &Arc<ClusterManager>,
+    cm: &Arc<RealtimeManager>,
     config: &Config,
     _connection_manager: Arc<dyn ConnectionRuntime>,
 ) -> Result<ClusterDiscoveryComponents, anyhow::Error> {
@@ -325,7 +321,7 @@ pub fn init_cluster_components(
 
 pub async fn activate_cluster_node(
     config: &Config,
-    cm: &Arc<ClusterManager>,
+    cm: &Arc<RealtimeManager>,
     connection_manager: Arc<dyn ConnectionRuntime>,
     registry: &Arc<dyn ClusterNodeDirectory>,
     health_monitor: &Arc<dyn ClusterHealthRuntime>,
@@ -361,7 +357,7 @@ pub async fn activate_cluster_node(
             cm.shutdown().await;
             Err(anyhow::anyhow!(
                 "Failed to start health monitor: {e}. \
-                 Health monitoring is required for cluster mode."
+                 Health monitoring is required for distributed mode."
             ))
         }
     }
@@ -373,12 +369,12 @@ pub async fn activate_cluster_node(
 ///   "redis"   - Redis-based node registry (default)
 ///   "`k8s_dns`" - Kubernetes headless service DNS discovery
 ///
-/// When cluster mode is explicitly enabled, any failure is propagated to the caller
+/// When distributed mode is explicitly enabled, any failure is propagated to the caller
 /// as a fatal error, preventing the node from running in a ghost state.
 pub async fn init_cluster_discovery(
     config: &Config,
     node_directory_factory: &Arc<dyn ClusterNodeDirectoryFactory>,
-    cm: &Arc<ClusterManager>,
+    cm: &Arc<RealtimeManager>,
     connection_manager: Arc<dyn ConnectionRuntime>,
     shutdown_token: CancellationToken,
 ) -> Result<ClusterDiscoveryBundle, anyhow::Error> {
@@ -402,15 +398,15 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::discovery::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
-    use synctv_cluster::sync::{
-        build_room_message_runtime, ClusterConfig, ClusterManager, ConnectionLimits,
-        ConnectionManager,
-    };
     use synctv_core::{config::ClusterDiscoveryMode, Config};
+    use synctv_realtime::sync::{
+        build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
+        RealtimeManager,
+    };
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 
-    fn test_cluster_config() -> Config {
+    fn test_realtime_config() -> Config {
         let mut config = Config::default();
         config.server.host = "127.0.0.1".to_string();
         config.server.port = 8080;
@@ -464,33 +460,30 @@ mod tests {
     async fn test_init_cluster_components_uses_injected_directory_factory() {
         let factory = CountingDirectoryFactory::default();
         let config = Config::default();
-        let cluster_manager = Arc::new(
-            ClusterManager::new(
-                ClusterConfig {
-                    distributed_transport_factory: None,
-                    message_runtime: Arc::new(synctv_cluster::RoomMessageHub::new()),
-                    cluster_enabled: false,
-                    node_id: "bootstrap-factory-test".to_string(),
-                    dedup_window: Duration::from_secs(1),
-                    critical_channel_capacity: 8,
-                    publish_channel_capacity: 8,
-                    key_prefix: "bootstrap-factory-test:".to_string(),
-                    catchup_window_secs: 60,
-                    stream_max_length: 100,
-                    parent_cancel_token: None,
-                },
-                None,
-                None,
-            )
+        let realtime_manager = Arc::new(
+            RealtimeManager::new(RealtimeConfig {
+                distributed_transport_factory: None,
+                message_runtime: Arc::new(synctv_realtime::RoomMessageHub::new()),
+                distributed_enabled: false,
+                node_id: "bootstrap-factory-test".to_string(),
+                dedup_window: Duration::from_secs(1),
+                critical_channel_capacity: 8,
+                publish_channel_capacity: 8,
+                key_prefix: "bootstrap-factory-test:".to_string(),
+                catchup_window_secs: 60,
+                stream_max_length: 100,
+                event_handler: None,
+                parent_cancel_token: None,
+            })
             .await
-            .expect("local cluster manager should initialize"),
+            .expect("local realtime manager should initialize"),
         );
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
         let directory_factory: Arc<dyn ClusterNodeDirectoryFactory> = Arc::new(factory.clone());
         let components = init_cluster_components(
             &directory_factory,
-            &cluster_manager,
+            &realtime_manager,
             &config,
             connection_manager,
         )
@@ -520,7 +513,7 @@ mod tests {
         let coordination_provider = build_cluster_coordination_provider(
             synctv_core::coordination_runtime_from_client(client.clone()),
         );
-        let cluster_config = ClusterConfig {
+        let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(
                 coordination_provider.distributed_transport_factory(),
             ),
@@ -532,7 +525,7 @@ mod tests {
                 ),
             )
             .expect("shared message runtime should initialize"),
-            cluster_enabled: true,
+            distributed_enabled: true,
             node_id: "bootstrap-k8s-env-order".to_string(),
             dedup_window: Duration::from_secs(1),
             critical_channel_capacity: 16,
@@ -540,16 +533,17 @@ mod tests {
             key_prefix: "test-k8s-env-order:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            event_handler: None,
             parent_cancel_token: Some(CancellationToken::new()),
         };
-        let mut manager = ClusterManager::new(cluster_config, None, None)
+        let mut manager = RealtimeManager::new(realtime_config)
             .await
-            .expect("cluster manager");
+            .expect("realtime manager");
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         manager.set_connection_manager(connection_manager.clone());
         let manager = Arc::new(manager);
 
-        let mut config = test_cluster_config();
+        let mut config = test_realtime_config();
         config.redis.key_prefix = "test-k8s-env-order:".to_string();
 
         let old_service_name = std::env::var_os("HEADLESS_SERVICE_NAME");

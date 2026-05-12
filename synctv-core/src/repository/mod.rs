@@ -1,7 +1,6 @@
 pub mod audit;
 pub mod ban;
 pub mod chat;
-pub mod cluster_outbox;
 pub mod email_token;
 pub mod media;
 pub mod notification;
@@ -9,6 +8,7 @@ pub mod playback;
 pub mod playlist;
 pub mod provider_instance;
 pub mod query_builder;
+pub mod realtime_outbox;
 pub mod review;
 pub mod room;
 pub mod room_member;

@@ -514,15 +514,20 @@ impl ClientApiImpl {
             }
         }
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(uid, uid);
         let (_room, member, members) = self
             .room_service
-            .join_room(rid, uid, password)
+            .join_room_with_outbox(
+                rid,
+                uid,
+                password,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &uid, &uid)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         // Get updated room and playback state
         let room = self
@@ -632,8 +637,11 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_user_left_outbox_fanout();
         self.room_service
-            .leave_room(rid, uid)
+            .leave_room_with_outbox(rid, uid, prepared_membership_fanout.outbox_factory())
             .await
             .map_err(ApiError::from)?;
 
@@ -643,9 +651,7 @@ impl ClientApiImpl {
             .disconnect_user_from_room(&rid, &uid)
             .await;
 
-        self.membership_event_fanout
-            .publish_user_left(&rid, &uid)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
     }
@@ -661,7 +667,7 @@ impl ClientApiImpl {
             .room_lifecycle_fanout
             .prepare_room_deleted_outbox_fanout(&rid, &uid);
 
-        // 1. Delete the DB record first. If this fails, no cluster event is
+        // 1. Delete the DB record first. If this fails, no realtime event is
         //    published and no connections are dropped -- the room remains intact.
         self.room_service
             .delete_room_with_outbox(rid, uid, prepared_outbox_fanout.outbox_event.clone())
@@ -720,14 +726,11 @@ impl ClientApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        let settings_json = serde_json::to_vec(&snapshot.settings).map_err(ApiError::from)?;
-        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
-            &rid,
-            &uid,
-            &username,
-            settings_json,
-            snapshot.version,
-        );
+        let prepared_settings_fanout = prepared_settings_fanout
+            .with_settings_and_version(&snapshot.settings, snapshot.version)
+            .ok_or_else(|| {
+                ApiError::Internal("Failed to serialize updated room settings".to_string())
+            })?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(prepared_settings_fanout);
         self.room_cache_fanout.publish_invalidation(&rid);
@@ -921,17 +924,20 @@ impl ClientApiImpl {
         let rid = self.parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(current_owner_id, current_owner_id);
         let room = self
             .room_service
-            .transfer_room_ownership(rid, current_owner_id, new_owner_id)
+            .transfer_room_ownership_with_outbox(
+                rid,
+                current_owner_id,
+                new_owner_id,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(Self::map_room_access_error)?;
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &current_owner_id, &current_owner_id)
-            .await?;
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &new_owner_id, &current_owner_id)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
         let settings = self
             .room_service

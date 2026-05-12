@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use synctv_api::impls::{admin::RequestContext, AdminApiImpl, ApiError, ClientApiImpl};
-use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -24,6 +23,7 @@ use synctv_core::{
     },
     Config,
 };
+use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
 fn public_id_codec() -> synctv_api::PublicIdCodec {
     synctv_api::PublicIdCodec::default_for_tests()

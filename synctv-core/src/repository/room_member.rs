@@ -548,6 +548,19 @@ impl RoomMemberRepository {
 
     /// Remove user from room (soft delete - set `status = Left` and `left_at`)
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
+        self.remove_with_executor(room_id, user_id, &self.pool)
+            .await
+    }
+
+    pub async fn remove_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query!(
             "UPDATE room_members
              SET left_at = $3, version = version + 1
@@ -556,7 +569,7 @@ impl RoomMemberRepository {
             user_id as &UserId,
             chrono::Utc::now(),
         )
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected() > 0)
@@ -581,6 +594,19 @@ impl RoomMemberRepository {
 
     /// Get member by ID (including banned/inactive)
     pub async fn get_any(&self, room_id: &RoomId, user_id: &UserId) -> Result<Option<RoomMember>> {
+        self.get_any_with_executor(room_id, user_id, &self.pool)
+            .await
+    }
+
+    pub async fn get_any_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        executor: E,
+    ) -> Result<Option<RoomMember>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let sql = format!(
             "SELECT {ROOM_MEMBER_SELECT_COLUMNS}
              FROM room_members rm
@@ -589,7 +615,7 @@ impl RoomMemberRepository {
         let member = sqlx::query_as::<_, RoomMember>(&sql)
             .bind(room_id)
             .bind(user_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
 
         Ok(member)
@@ -933,6 +959,29 @@ impl RoomMemberRepository {
         removed_permissions: u64,
         current_version: i64,
     ) -> Result<RoomMember> {
+        self.update_permissions_with_executor(
+            room_id,
+            user_id,
+            added_permissions,
+            removed_permissions,
+            current_version,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn update_permissions_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        added_permissions: u64,
+        removed_permissions: u64,
+        current_version: i64,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let sql = format!(
             "UPDATE room_members
              SET
@@ -948,7 +997,7 @@ impl RoomMemberRepository {
             .bind(permission_bits_to_i64(added_permissions)?)
             .bind(permission_bits_to_i64(removed_permissions)?)
             .bind(current_version)
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
 
         match member {
@@ -970,6 +1019,29 @@ impl RoomMemberRepository {
         removed_permissions: u64,
         current_version: i64,
     ) -> Result<RoomMember> {
+        self.update_admin_permissions_with_executor(
+            room_id,
+            user_id,
+            added_permissions,
+            removed_permissions,
+            current_version,
+            &self.pool,
+        )
+        .await
+    }
+
+    pub async fn update_admin_permissions_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        added_permissions: u64,
+        removed_permissions: u64,
+        current_version: i64,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let sql = format!(
             "UPDATE room_members
              SET
@@ -985,7 +1057,7 @@ impl RoomMemberRepository {
             .bind(permission_bits_to_i64(added_permissions)?)
             .bind(permission_bits_to_i64(removed_permissions)?)
             .bind(current_version)
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
 
         match member {
@@ -1283,6 +1355,22 @@ impl RoomMemberRepository {
     ) -> Result<RoomMember> {
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
+        let member = self
+            .ban_member_with_executor(room_id, user_id, banned_by, reason, now, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(member)
+    }
+
+    pub async fn ban_member_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        banned_by: Option<&UserId>,
+        reason: Option<String>,
+        now: chrono::DateTime<chrono::Utc>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<RoomMember> {
         let inserted = sqlx::query!(
             r"
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
@@ -1303,7 +1391,7 @@ impl RoomMemberRepository {
             reason,
             now,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         if inserted.rows_affected() == 0 {
@@ -1320,11 +1408,10 @@ impl RoomMemberRepository {
             user_id as &UserId,
             now,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
-        tx.commit().await?;
-        self.get_any(room_id, user_id)
+        self.get_any_with_executor(room_id, user_id, &mut **tx)
             .await?
             .ok_or_else(|| Error::NotFound("Member not found".to_string()))
     }
@@ -1336,6 +1423,20 @@ impl RoomMemberRepository {
     /// `RowNotFound` panic-like error. Unban only clears ban metadata; it never
     /// restores lifecycle state or implicitly rejoins the user.
     pub async fn unban_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<RoomMember> {
+        let mut tx = self.pool.begin().await?;
+        let member = self
+            .unban_member_with_executor(room_id, user_id, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(member)
+    }
+
+    pub async fn unban_member_with_executor(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<RoomMember> {
         let result = sqlx::query!(
             "UPDATE room_member_bans
              SET revoked_at = CURRENT_TIMESTAMP
@@ -1345,7 +1446,7 @@ impl RoomMemberRepository {
             room_id as &RoomId,
             user_id as &UserId,
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -1354,7 +1455,7 @@ impl RoomMemberRepository {
             ));
         }
 
-        self.get_any(room_id, user_id)
+        self.get_any_with_executor(room_id, user_id, &mut **tx)
             .await?
             .ok_or_else(|| Error::NotFound("Member not found".to_string()))
     }
@@ -1764,6 +1865,20 @@ impl RoomMemberRepository {
         actor_id: &UserId,
         target_id: &UserId,
     ) -> Result<bool> {
+        self.remove_with_role_check_with_executor(room_id, actor_id, target_id, &self.pool)
+            .await
+    }
+
+    pub async fn remove_with_role_check_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        target_id: &UserId,
+        executor: E,
+    ) -> Result<bool>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let result = sqlx::query!(
             "UPDATE room_members AS target
              SET left_at = $4, version = target.version + 1
@@ -1782,7 +1897,7 @@ impl RoomMemberRepository {
             target_id as &UserId,
             chrono::Utc::now(),
         )
-        .execute(&self.pool)
+        .execute(executor)
         .await?;
 
         Ok(result.rows_affected() > 0)
@@ -1804,6 +1919,22 @@ impl RoomMemberRepository {
     ) -> Result<RoomMember> {
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
+        let member = self
+            .ban_with_role_check_with_executor(room_id, actor_id, target_id, reason, now, &mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(member)
+    }
+
+    pub async fn ban_with_role_check_with_executor(
+        &self,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        target_id: &UserId,
+        reason: Option<String>,
+        now: chrono::DateTime<chrono::Utc>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<RoomMember> {
         let inserted = sqlx::query!(
             r"
             INSERT INTO room_member_bans (room_id, user_id, banned_by, reason, starts_at)
@@ -1833,7 +1964,7 @@ impl RoomMemberRepository {
             reason,
             now,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         if inserted.rows_affected() == 0 {
@@ -1850,11 +1981,10 @@ impl RoomMemberRepository {
             target_id as &UserId,
             now,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
-        tx.commit().await?;
-        self.get_any(room_id, target_id)
+        self.get_any_with_executor(room_id, target_id, &mut **tx)
             .await?
             .ok_or_else(|| Error::NotFound("Member not found".to_string()))
     }

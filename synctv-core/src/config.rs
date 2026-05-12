@@ -3702,7 +3702,7 @@ impl Config {
         };
         if cluster_mode_active && !redis_backend_configured {
             errors.push(
-                "cluster mode requires Redis to be configured. \
+                "distributed mode requires Redis to be configured. \
                  Configure standalone Redis via redis.url or redis.host/redis.port \
                  before enabling cluster.enabled=true."
                     .to_string(),
@@ -3827,14 +3827,14 @@ impl Config {
             );
         }
 
-        // Require cluster_secret when cluster mode is enabled.
+        // Require cluster_secret when distributed mode is enabled.
         // An empty `cluster_secret` means that ANY node claiming to be part of the
         // cluster can call inter-node gRPC endpoints without authentication.
         // In standalone mode, `cluster_secret` is not required even with Redis
         // configured, because there are no inter-node gRPC endpoints to protect.
         if self.cluster.enabled && self.server.cluster_secret.is_empty() {
             errors.push(
-                "server.cluster_secret must be set when cluster mode is enabled. \
+                "server.cluster_secret must be set when distributed mode is enabled. \
                  An empty cluster_secret leaves inter-node gRPC endpoints unauthenticated. \
                  Generate a secret with: openssl rand -hex 32 \
                  and set it as SYNCTV_SERVER_CLUSTER_SECRET or server.cluster_secret in your config."
@@ -3857,7 +3857,7 @@ impl Config {
 
         if self.cluster.enabled && !self.has_explicit_advertise_host_source(get_env) {
             errors.push(
-                "server.advertise_host must be set explicitly when cluster mode is enabled. \
+                "server.advertise_host must be set explicitly when distributed mode is enabled. \
                  Refusing to fall back to the local hostname because other replicas may not be able to route to it. \
                  Set SYNCTV_SERVER_ADVERTISE_HOST (or server.advertise_host), or provide POD_IP via the Kubernetes downward API."
                     .to_string(),
@@ -3866,7 +3866,7 @@ impl Config {
 
         if self.cluster.enabled && self.advertise_host_with(get_env) == "0.0.0.0" {
             errors.push(
-                "server.advertise_host must resolve to a routable address when cluster mode is enabled. \
+                "server.advertise_host must resolve to a routable address when distributed mode is enabled. \
                  The current advertise host resolves to 0.0.0.0, which other replicas cannot reach for gRPC/HLS proxying. \
                  Set SYNCTV_SERVER_ADVERTISE_HOST (or server.advertise_host) to the pod IP, node IP, or service-reachable hostname."
                     .to_string(),
@@ -4940,7 +4940,7 @@ mod tests {
 
     #[test]
     fn test_validate_cluster_mode_allows_local_hls_storage() {
-        // In cluster mode, local HLS backends are allowed because non-publisher
+        // In distributed mode, local HLS backends are allowed because non-publisher
         // nodes proxy playlist/segment reads to the publisher node.
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
@@ -6724,7 +6724,7 @@ jwt:
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("cluster mode requires Redis to be configured")),
+                .any(|e| e.contains("distributed mode requires Redis to be configured")),
             "Expected cluster+no-redis error, got: {errors:?}"
         );
     }
@@ -6916,7 +6916,7 @@ jwt:
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("cluster_secret must be set when cluster mode is enabled")),
+                .any(|e| e.contains("cluster_secret must be set when distributed mode is enabled")),
             "Expected cluster_secret error, got: {errors:?}"
         );
     }

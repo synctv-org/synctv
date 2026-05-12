@@ -105,7 +105,7 @@ pub struct LivestreamConfig {
     pub cleanup_check_interval_seconds: u64,
     pub stream_timeout_seconds: u64,
     /// Whether multi-replica cluster runtime is enabled.
-    pub cluster_enabled: bool,
+    pub distributed_enabled: bool,
     /// Cluster secret for authenticating gRPC HLS proxy calls
     pub cluster_secret: Option<String>,
     /// Maximum gRPC message size for cross-node HLS relay calls.
@@ -196,7 +196,7 @@ fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStora
                 Arc::new(MemoryStorage::new())
             };
 
-            if config.cluster_enabled {
+            if config.distributed_enabled {
                 warn!(
                     "HLS storage is using in-memory backend in cluster mode. \
                      Each segment request will require gRPC proxy to the publisher node. \
@@ -1135,7 +1135,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
-            cluster_enabled: false,
+            distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
@@ -1182,7 +1182,7 @@ mod tests {
     async fn test_build_hls_storage_uses_shared_file_backend() {
         let dir = tempdir().expect("tempdir should be created");
         let mut config = test_config();
-        config.cluster_enabled = true;
+        config.distributed_enabled = true;
         config.cluster_secret = Some("cluster-secret".to_string());
         config.hls_storage_backend = HlsStorageBackend::SharedFile;
         config.hls_storage_path = dir.path().display().to_string();
@@ -1226,7 +1226,7 @@ mod tests {
                 .join("media1")
                 .join("seg1")
                 .exists(),
-            "cluster_secret without cluster_enabled must remain standalone memory storage"
+            "cluster_secret without distributed_enabled must remain standalone memory storage"
         );
     }
 
@@ -1541,7 +1541,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
-            cluster_enabled: false,
+            distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
@@ -1583,7 +1583,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
-            cluster_enabled: false,
+            distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,
@@ -1629,7 +1629,7 @@ mod tests {
             node_id: "test-node".to_string(),
             cleanup_check_interval_seconds: 1,
             stream_timeout_seconds: 5,
-            cluster_enabled: false,
+            distributed_enabled: false,
             cluster_secret: None,
             grpc_max_message_size_bytes: 16 * 1024 * 1024,
             gop_cache_max_memory_mb: 0,

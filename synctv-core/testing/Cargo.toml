@@ -12,7 +12,6 @@ sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "u
 testcontainers = { workspace = true, features = ["reusable-containers"] }
 testcontainers-modules = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-chrono = { workspace = true }
 redis = { workspace = true }
 url = { workspace = true }
 

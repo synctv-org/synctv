@@ -838,11 +838,11 @@ mod tests {
             ),
             providers,
             event_service: None,
-            connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                synctv_cluster::sync::ConnectionLimits::default(),
+            connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                synctv_realtime::sync::ConnectionLimits::default(),
             )),
             jwt_service,
-            cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+            realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                 None, false,
             ),
             oauth2_service: None,
@@ -950,11 +950,11 @@ mod tests {
                 ),
                 providers,
                 event_service: None,
-                connection_manager: Arc::new(synctv_cluster::sync::ConnectionManager::new(
-                    synctv_cluster::sync::ConnectionLimits::default(),
+                connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
+                    synctv_realtime::sync::ConnectionLimits::default(),
                 )),
                 jwt_service,
-                cluster_fanout_service: crate::cluster_fanout::default_cluster_fanout_service(
+                realtime_fanout_service: crate::realtime_fanout::default_realtime_fanout_service(
                     None, false,
                 ),
                 oauth2_service: None,

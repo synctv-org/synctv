@@ -1,7 +1,7 @@
 //! Cluster startup failure handling tests.
 //!
-//! Verifies that when cluster mode is explicitly enabled (cluster.enabled = true):
-//! 1. `ClusterManager` initialization failure is a fatal error (not silent degradation)
+//! Verifies that when distributed mode is explicitly enabled (cluster.enabled = true):
+//! 1. `RealtimeManager` initialization failure is a fatal error (not silent degradation)
 //! 2. Cache invalidation startup failure is a fatal error (not just a warning)
 //!
 //! In standalone mode (cluster.enabled = false), these failures should be non-fatal.
@@ -15,7 +15,7 @@ use synctv_core::config::{
     RedisConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
-/// Create a minimal standalone config for testing (no Redis, no cluster mode)
+/// Create a minimal standalone config for testing (no Redis, no distributed mode)
 fn standalone_test_config() -> Config {
     Config {
         server: ServerConfig {
@@ -104,7 +104,7 @@ fn standalone_test_config() -> Config {
     }
 }
 
-/// Create a config with cluster mode enabled
+/// Create a config with distributed mode enabled
 fn cluster_test_config() -> Config {
     Config {
         server: ServerConfig {
@@ -208,7 +208,7 @@ fn cluster_test_config() -> Config {
 
 /// Test that cluster.enabled=true is properly reflected in config
 #[test]
-fn test_cluster_enabled_config() {
+fn test_distributed_enabled_config() {
     let config = cluster_test_config();
     assert!(
         config.cluster.enabled,
@@ -236,7 +236,7 @@ fn test_standalone_mode_config_no_redis() {
     );
 }
 
-/// Test cluster mode requires Redis URL
+/// Test distributed mode requires Redis URL
 #[test]
 fn test_cluster_mode_requires_redis_url() {
     let mut config = cluster_test_config();
@@ -253,7 +253,7 @@ fn test_cluster_mode_requires_redis_url() {
     let errors = result.unwrap_err();
     let error_messages: Vec<_> = errors.iter().collect();
     let has_redis_error = error_messages.iter().any(|e| {
-        e.contains("Redis is required when cluster mode is enabled")
+        e.contains("Redis is required when distributed mode is enabled")
             || e.contains("cluster.enabled=true")
     });
     assert!(
@@ -262,7 +262,7 @@ fn test_cluster_mode_requires_redis_url() {
     );
 }
 
-/// Test cluster mode requires `cluster_secret`
+/// Test distributed mode requires `cluster_secret`
 #[test]
 fn test_cluster_mode_requires_cluster_secret() {
     let mut config = cluster_test_config();
@@ -299,7 +299,7 @@ fn test_standalone_mode_allows_no_redis() {
     );
 }
 
-/// Test valid cluster mode config
+/// Test valid distributed mode config
 #[test]
 fn test_valid_cluster_mode_config() {
     let config = cluster_test_config();
@@ -308,14 +308,14 @@ fn test_valid_cluster_mode_config() {
     let result = config.validate();
     assert!(
         result.is_ok(),
-        "valid cluster config should pass validation, got error: {:?}",
+        "valid realtime config should pass validation, got error: {:?}",
         result.err()
     );
 }
 
-/// Cluster config validation catches an empty Redis URL when cluster mode is enabled.
+/// Realtime config validation catches an empty Redis URL when distributed mode is enabled.
 #[test]
-fn test_cluster_enabled_requires_redis_for_node_registry() {
+fn test_distributed_enabled_requires_redis_for_node_registry() {
     let mut config = cluster_test_config();
     // Remove the Redis URL entirely
     config.redis.url = String::new();
@@ -366,20 +366,20 @@ mod cluster_cleanup_tests {
         port
     }
 
-    /// Verify that ClusterManager's cancel_token can stop the heartbeat loop.
+    /// Verify that RealtimeManager's cancel_token can stop the heartbeat loop.
     ///
     /// When init_cluster_components fails after starting the heartbeat loop,
     /// the cleanup should cancel the heartbeat loop via the cancel token.
     #[tokio::test]
     async fn test_cancel_token_stops_heartbeat_loop() {
         use synctv_cluster::discovery::{NodeInfo, NodeRegistry};
-        use synctv_cluster::sync::ClusterManager;
-        use synctv_cluster::sync::{cluster_manager::ClusterConfig, RoomMessageHub};
+        use synctv_realtime::sync::RealtimeManager;
+        use synctv_realtime::sync::{realtime_manager::RealtimeConfig, RoomMessageHub};
 
-        let config = ClusterConfig {
+        let config = RealtimeConfig {
             distributed_transport_factory: None,
             message_runtime: Arc::new(RoomMessageHub::new()),
-            cluster_enabled: false,
+            distributed_enabled: false,
             node_id: "cancel-test-node".to_string(),
             dedup_window: Duration::from_secs(1),
             critical_channel_capacity: 1000,
@@ -387,11 +387,12 @@ mod cluster_cleanup_tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            event_handler: None,
             parent_cancel_token: None,
         };
-        let manager = ClusterManager::new(config, None, None)
+        let manager = RealtimeManager::new(config)
             .await
-            .expect("ClusterManager::new should succeed");
+            .expect("RealtimeManager::new should succeed");
 
         // This test verifies cancellation semantics, not Redis I/O latency.
         let registry = Arc::new(
@@ -637,12 +638,12 @@ mod leader_election_fallback_tests {
         let errors = result.unwrap_err();
         let error_messages: Vec<_> = errors.iter().collect();
         let has_redis_error = error_messages.iter().any(|e| {
-            e.contains("Redis is required when cluster mode is enabled")
+            e.contains("Redis is required when distributed mode is enabled")
                 || e.contains("cluster.enabled=true")
         });
         assert!(
             has_redis_error,
-            "Error should mention Redis requirement for cluster mode, got: {error_messages:?}"
+            "Error should mention Redis requirement for distributed mode, got: {error_messages:?}"
         );
     }
 
@@ -673,14 +674,14 @@ mod leader_election_fallback_tests {
         );
     }
 
-    /// Test that cluster mode with valid Redis URL passes validation.
+    /// Test that distributed mode with valid Redis URL passes validation.
     ///
-    /// This verifies that the happy path (cluster mode with Redis) works correctly.
+    /// This verifies that the happy path (distributed mode with Redis) works correctly.
     #[test]
     fn test_cluster_mode_with_redis_passes_validation() {
         let config = cluster_test_config();
 
-        // Verify this is cluster mode
+        // Verify this is distributed mode
         assert!(
             config.cluster.enabled,
             "config should have cluster.enabled=true"
@@ -694,14 +695,14 @@ mod leader_election_fallback_tests {
         let result = config.validate();
         assert!(
             result.is_ok(),
-            "cluster mode with Redis should pass validation, got error: {:?}",
+            "distributed mode with Redis should pass validation, got error: {:?}",
             result.err()
         );
     }
 
     /// Document the split-brain prevention logic.
     ///
-    /// This test documents the key invariant: in cluster mode, we must NEVER
+    /// This test documents the key invariant: in distributed mode, we must NEVER
     /// fall back to AlwaysLeader when Redis is unavailable:
     /// 1. Config validation catches empty redis.url when cluster.enabled=true
     /// 2. init_leader_election returns an error (not AlwaysLeader fallback)
@@ -728,7 +729,7 @@ mod leader_election_fallback_tests {
             "cluster.enabled=false with no Redis should pass (AlwaysLeader is safe)"
         );
 
-        // Case 3: cluster.enabled=true, with Redis -> OK (cluster mode)
+        // Case 3: cluster.enabled=true, with Redis -> OK (distributed mode)
         let cluster_with_redis = cluster_test_config();
         assert!(
             cluster_with_redis.validate().is_ok(),

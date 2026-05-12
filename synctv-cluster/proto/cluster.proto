@@ -8,21 +8,13 @@ package synctv.cluster;
 // - Redis is the SOLE discovery mechanism for this cluster
 // - Nodes self-register in Redis via NodeRegistry::register() on startup
 // - Heartbeats are sent directly to Redis via NodeRegistry::heartbeat()
-// - Events are broadcast via Redis Pub/Sub through ClusterManager
 //
 // Endpoint Usage:
 // - GetNodes: ACTIVE - returns all known nodes from Redis registry
-// - GetUserOnlineStatus: ACTIVE - fan-out query for user presence
-// - GetRoomConnections: ACTIVE - fan-out query for room participants
 //
 service ClusterService {
     // Node discovery
     rpc GetNodes(GetNodesRequest) returns (GetNodesResponse);
-
-    // User connection tracking - ACTIVE endpoints for fan-out queries
-    rpc GetUserOnlineStatus(GetUserOnlineStatusRequest) returns (GetUserOnlineStatusResponse);
-    rpc GetRoomConnections(GetRoomConnectionsRequest) returns (GetRoomConnectionsResponse);
-
 }
 
 // Node information
@@ -37,35 +29,4 @@ message GetNodesRequest {}
 
 message GetNodesResponse {
     repeated NodeInfo nodes = 1;
-}
-
-// User connection tracking
-message GetUserOnlineStatusRequest {
-    repeated int64 user_ids = 1;
-}
-
-message GetUserOnlineStatusResponse {
-    repeated UserOnlineStatus statuses = 1;
-}
-
-message UserOnlineStatus {
-    int64 user_id = 1;
-    bool is_online = 2;
-    repeated int64 room_ids = 3; // Rooms user is currently in
-    string node_id = 4; // Node where user is connected
-}
-
-message GetRoomConnectionsRequest {
-    int64 room_id = 1;
-}
-
-message GetRoomConnectionsResponse {
-    repeated RoomConnection connections = 1;
-}
-
-message RoomConnection {
-    int64 user_id = 1;
-    string node_id = 2;
-    int64 connected_at = 3;
-    int64 last_activity = 4;
 }

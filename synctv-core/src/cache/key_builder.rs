@@ -297,7 +297,7 @@ impl KeyBuilder {
     ///
     /// Used for cross-cluster message broadcasting
     #[must_use]
-    pub fn cluster_events_channel(&self) -> String {
+    pub fn realtime_events_channel(&self) -> String {
         format!("{}:cluster:events", self.prefix)
     }
 

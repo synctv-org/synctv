@@ -38,10 +38,9 @@ use super::client::convert::{
 };
 use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
-use crate::cluster_fanout::{default_cluster_fanout_service, ClusterFanoutService};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::client::media::{
-    build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout, publish_move_media_fanout,
+    build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
 };
 use crate::impls::client::{proto_role_filter_to_room_role, proto_role_to_room_role};
 use crate::impls::playback_snapshot::{
@@ -51,11 +50,11 @@ use crate::impls::playback_snapshot::{
 };
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
-use crate::member_fanout::{default_member_fanout_service, MemberFanoutService};
 use crate::membership_event_fanout::{
     default_membership_event_fanout_service, MembershipEventFanoutService,
 };
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
+use crate::realtime_fanout::{default_realtime_fanout_service, RealtimeFanoutService};
 use crate::realtime_lifecycle::{
     default_realtime_lifecycle_service, DeletedRoomAfterCommitFanout, RealtimeLifecycleService,
 };
@@ -305,9 +304,8 @@ pub struct AdminApiImpl {
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub config: Arc<synctv_core::Config>,
-    pub cluster_fanout: Arc<dyn ClusterFanoutService>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
-    pub member_fanout: Arc<dyn MemberFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
     pub media_fanout: Arc<dyn MediaFanoutService>,
     pub playlist_fanout: Arc<dyn PlaylistFanoutService>,
@@ -561,7 +559,7 @@ impl AdminApiImpl {
         room_ids: &[RoomId],
         deleted_by: &UserId,
     ) -> (
-        HashMap<RoomId, synctv_core::repository::cluster_outbox::NewClusterOutboxEvent>,
+        HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
         Vec<DeletedRoomAfterCommitFanout>,
     ) {
         let mut outbox_events = HashMap::with_capacity(room_ids.len());
@@ -1385,25 +1383,25 @@ impl AdminApiImpl {
     ) -> Self {
         let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
         let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
-        let cluster_fanout = default_cluster_fanout_service(None, config.cluster_runtime_enabled());
+        let realtime_fanout =
+            default_realtime_fanout_service(None, config.cluster_runtime_enabled());
         let room_settings_fanout =
-            default_room_settings_fanout_service(cluster_fanout.clone(), None);
-        let member_fanout = default_member_fanout_service(cluster_fanout.clone());
+            default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             room_service.clone(),
             user_service.clone(),
             None,
         );
-        let media_fanout = default_media_fanout_service(cluster_fanout.clone(), None);
-        let playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
-        let room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        let media_fanout = default_media_fanout_service(realtime_fanout.clone(), None);
+        let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
             connection_service.clone(),
             live_streaming_infrastructure.clone(),
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
         );
-        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
+        let room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
         Self {
             room_service,
             user_service,
@@ -1417,9 +1415,8 @@ impl AdminApiImpl {
             live_streaming_infrastructure,
             publish_key_service,
             config,
-            cluster_fanout,
+            realtime_fanout,
             room_settings_fanout,
-            member_fanout,
             membership_event_fanout,
             media_fanout,
             playlist_fanout,
@@ -1436,34 +1433,33 @@ impl AdminApiImpl {
     }
 
     #[must_use]
-    pub fn with_cluster_fanout_service(
+    pub fn with_realtime_fanout_service(
         mut self,
-        cluster_fanout: Arc<dyn ClusterFanoutService>,
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
     ) -> Self {
         self.room_settings_fanout = default_room_settings_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.realtime_event_service.clone(),
         );
-        self.member_fanout = default_member_fanout_service(cluster_fanout.clone());
         self.membership_event_fanout = default_membership_event_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.room_service.clone(),
             self.user_service.clone(),
             self.realtime_event_service.clone(),
         );
         self.media_fanout = default_media_fanout_service(
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
             self.realtime_event_service.clone(),
         );
-        self.playlist_fanout = default_playlist_fanout_service(cluster_fanout.clone());
-        self.room_cache_fanout = default_room_cache_fanout_service(cluster_fanout.clone());
+        self.playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
+        self.room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         self.realtime_lifecycle = default_realtime_lifecycle_service(
             self.connection_service.clone(),
             self.live_streaming_infrastructure.clone(),
-            cluster_fanout.clone(),
+            realtime_fanout.clone(),
         );
-        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(cluster_fanout.clone());
-        self.cluster_fanout = cluster_fanout;
+        self.room_lifecycle_fanout = default_room_lifecycle_fanout_service(realtime_fanout.clone());
+        self.realtime_fanout = realtime_fanout;
         self
     }
 
@@ -1473,17 +1469,17 @@ impl AdminApiImpl {
         event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         self.membership_event_fanout = default_membership_event_fanout_service(
-            self.cluster_fanout.clone(),
+            self.realtime_fanout.clone(),
             self.room_service.clone(),
             self.user_service.clone(),
             Some(event_service.clone()),
         );
         self.room_settings_fanout = default_room_settings_fanout_service(
-            self.cluster_fanout.clone(),
+            self.realtime_fanout.clone(),
             Some(event_service.clone()),
         );
         self.media_fanout =
-            default_media_fanout_service(self.cluster_fanout.clone(), Some(event_service.clone()));
+            default_media_fanout_service(self.realtime_fanout.clone(), Some(event_service.clone()));
         self.realtime_event_service = Some(event_service);
         self
     }
@@ -1846,24 +1842,23 @@ impl AdminApiImpl {
         } else {
             proto_role_to_room_role(role)?
         };
-        let changed_by = *admin_user_id;
-
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         let member = self
             .room_service
-            .admin_add_member(
+            .admin_add_member_with_outbox(
                 rid,
                 *admin_user_id,
                 &actor.username,
                 target_uid,
                 role,
                 notify,
+                prepared_membership_fanout.outbox_factory(),
             )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self
             .user_service
@@ -1925,24 +1920,24 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
-        let changed_by = *admin_user_id;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(UserId::MAX, *admin_user_id);
 
         let member = self
             .room_service
-            .admin_approve_join_request(
+            .admin_approve_join_request_with_outbox(
                 rid,
                 *admin_user_id,
                 (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
                 request_id,
+                prepared_membership_fanout.outbox_factory(),
             )
             .await
             .map_err(ApiError::from)?;
         let target_uid = member.user_id;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self
             .user_service
@@ -2004,24 +1999,24 @@ impl AdminApiImpl {
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
-        let changed_by = *admin_user_id;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(UserId::MAX, *admin_user_id);
 
         let target_uid = self
             .room_service
-            .admin_reject_join_request(
+            .admin_reject_join_request_with_outbox(
                 rid,
                 *admin_user_id,
                 (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id),
                 &actor.username,
                 request_id,
                 reason_for_service,
+                prepared_membership_fanout.outbox_factory(),
             )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, &changed_by)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.log_admin_action(
             admin_user_id,
@@ -2082,26 +2077,28 @@ impl AdminApiImpl {
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         let updated_member = self
             .room_service
-            .member_service()
-            .admin_update_member(synctv_core::service::member::AdminMemberUpdate {
-                room_id: rid,
-                actor_id: *admin_user_id,
-                actor_username: admin_username,
-                target_user_id: target_uid,
-                role,
-                added_permissions,
-                removed_permissions,
-                admin_added_permissions,
-                admin_removed_permissions,
-            })
+            .admin_update_member_with_outbox(
+                synctv_core::service::member::AdminMemberUpdate {
+                    room_id: rid,
+                    actor_id: *admin_user_id,
+                    actor_username: admin_username,
+                    target_user_id: target_uid,
+                    role,
+                    added_permissions,
+                    removed_permissions,
+                    admin_added_permissions,
+                    admin_removed_permissions,
+                },
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, admin_user_id)
-            .await?;
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self
             .user_service
@@ -2175,22 +2172,24 @@ impl AdminApiImpl {
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         self.room_service
-            .member_service()
-            .admin_kick_member(rid, *admin_user_id, &admin_username, target_uid)
+            .admin_kick_member_with_outbox(
+                rid,
+                *admin_user_id,
+                target_uid,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
+        drop(admin_username);
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
             .await;
-
-        self.member_fanout
-            .publish_kick_user_from_room(&rid, &target_uid, "kicked");
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, admin_user_id)
-            .await?;
 
         self.room_service
             .permission_service()
@@ -2241,29 +2240,26 @@ impl AdminApiImpl {
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         self.room_service
-            .member_service()
-            .admin_ban_member(
+            .admin_ban_member_with_outbox(
                 rid,
                 *admin_user_id,
-                &admin_username,
                 target_uid,
                 persisted_banned_by,
                 reason.clone(),
+                prepared_membership_fanout.outbox_factory(),
             )
             .await
             .map_err(ApiError::from)?;
+        drop(admin_username);
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
             .await;
-
-        self.member_fanout
-            .publish_kick_user_from_room(&rid, &target_uid, "banned");
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, admin_user_id)
-            .await?;
 
         self.room_service
             .permission_service()
@@ -2303,15 +2299,20 @@ impl AdminApiImpl {
             .map_err(|_| ApiError::NotFound("User not found".to_string()))?
             .username;
 
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
         self.room_service
-            .member_service()
-            .admin_unban_member(rid, *admin_user_id, &admin_username, target_uid)
+            .admin_unban_member_with_outbox(
+                rid,
+                *admin_user_id,
+                target_uid,
+                prepared_membership_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        self.membership_event_fanout
-            .publish_permission_changed(&rid, &target_uid, admin_user_id)
-            .await?;
+        drop(admin_username);
+        prepared_membership_fanout.publish_after_outbox_commit();
 
         self.room_service
             .permission_service()
@@ -4615,6 +4616,7 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.publish_room_cache_invalidation(&rid);
 
@@ -4667,6 +4669,7 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.publish_room_cache_invalidation(&rid);
 
@@ -5126,20 +5129,24 @@ impl AdminApiImpl {
         let service_req =
             crate::impls::client::media::build_edit_media_request(req, &self.public_id_codec)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
+        let prepared_outbox_fanout = self.media_fanout.prepare_updated_outbox_fanout(
+            rid,
+            *admin_user_id,
+            actor.username.clone(),
+        );
         let media = self
             .room_service
             .media_service()
-            .admin_edit_media(rid, *admin_user_id, &actor.username, service_req)
+            .admin_edit_media_with_outbox(
+                rid,
+                *admin_user_id,
+                &actor.username,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        self.media_fanout.publish_updated(
-            &rid,
-            admin_user_id,
-            &actor.username,
-            &media.id,
-            &media.name,
-        );
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.publish_room_cache_invalidation(&rid);
 
@@ -5215,21 +5222,25 @@ impl AdminApiImpl {
             build_move_media_fanout_plan(self.room_service.media_service(), &rid, &service_req)
                 .await?;
 
+        let prepared_outbox_fanout = self.media_fanout.prepare_move_outbox_fanout(
+            rid,
+            *admin_user_id,
+            actor.username.clone(),
+            media_fanout_plan,
+        );
         let media = self
             .room_service
             .media_service()
-            .admin_move_media(rid, *admin_user_id, &actor.username, service_req)
+            .admin_move_media_with_outbox(
+                rid,
+                *admin_user_id,
+                &actor.username,
+                service_req,
+                prepared_outbox_fanout.outbox_factory(),
+            )
             .await
             .map_err(ApiError::from)?;
-
-        publish_move_media_fanout(
-            &self.media_fanout,
-            media_fanout_plan,
-            &rid,
-            admin_user_id,
-            &actor.username,
-            &media,
-        );
+        prepared_outbox_fanout.publish_after_outbox_commit();
 
         self.publish_room_cache_invalidation(&rid);
 
@@ -5639,13 +5650,13 @@ async fn active_room_stream_media_ids_for_infra(
     room_id: &RoomId,
 ) -> Vec<MediaId> {
     let connection_service: Arc<dyn RealtimeConnectionService> =
-        Arc::new(synctv_cluster::sync::ConnectionManager::new(
-            synctv_cluster::sync::ConnectionLimits::default(),
+        Arc::new(synctv_realtime::sync::ConnectionManager::new(
+            synctv_realtime::sync::ConnectionLimits::default(),
         ));
     let realtime_lifecycle = default_realtime_lifecycle_service(
         connection_service,
         live_streaming_infrastructure.cloned(),
-        crate::cluster_fanout::default_cluster_fanout_service(None, false),
+        crate::realtime_fanout::default_realtime_fanout_service(None, false),
     );
     realtime_lifecycle
         .active_room_stream_media_ids(room_id)
@@ -5848,7 +5859,6 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    use synctv_cluster::sync::{ClusterEvent, ConnectionLimits, ConnectionManager, PublishRequest};
     use synctv_core::models::{
         MemberStatus, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
     };
@@ -5870,6 +5880,9 @@ mod tests {
         api::{LiveStreamingInfrastructure, StreamTracker},
         livestream::{external_publish_manager::ExternalPublishManager, PullStreamManager},
     };
+    use synctv_realtime::sync::{
+        ConnectionLimits, ConnectionManager, PublishRequest, RealtimeEvent,
+    };
     use tokio::sync::mpsc;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5885,9 +5898,9 @@ mod tests {
         },
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct RecordingMembershipEventFanout {
-        calls: Mutex<Vec<MembershipEventFanoutCall>>,
+        calls: Arc<Mutex<Vec<MembershipEventFanoutCall>>>,
     }
 
     impl RecordingMembershipEventFanout {
@@ -5904,11 +5917,11 @@ mod tests {
         }
     }
 
-    async fn recv_matching_cluster_event(
+    async fn recv_matching_realtime_event(
         receiver: &mut mpsc::Receiver<PublishRequest>,
         description: &str,
-        mut predicate: impl FnMut(&ClusterEvent) -> bool,
-    ) -> ClusterEvent {
+        mut predicate: impl FnMut(&RealtimeEvent) -> bool,
+    ) -> RealtimeEvent {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
             let now = tokio::time::Instant::now();
@@ -5928,30 +5941,62 @@ mod tests {
 
     #[async_trait]
     impl MembershipEventFanoutService for RecordingMembershipEventFanout {
-        async fn publish_permission_changed(
+        fn prepare_permission_changed_outbox_fanout(
             &self,
-            room_id: &RoomId,
-            target_user_id: &UserId,
-            changed_by: &UserId,
-        ) -> Result<(), ApiError> {
-            self.push(MembershipEventFanoutCall::PublishPermissionChanged {
-                room_id: room_id.to_string(),
-                target_user_id: target_user_id.to_string(),
-                changed_by: changed_by.to_string(),
-            });
-            Ok(())
+            target_user_id: UserId,
+            changed_by: UserId,
+        ) -> crate::membership_event_fanout::PreparedPermissionChangedFanout {
+            crate::membership_event_fanout::PreparedPermissionChangedFanout::new(
+                Arc::new(self.clone()),
+                None,
+                target_user_id,
+                changed_by,
+            )
         }
 
-        async fn publish_user_left(
+        fn prepare_user_left_outbox_fanout(
             &self,
-            room_id: &RoomId,
-            user_id: &UserId,
-        ) -> Result<(), ApiError> {
-            self.push(MembershipEventFanoutCall::PublishUserLeft {
-                room_id: room_id.to_string(),
-                user_id: user_id.to_string(),
-            });
-            Ok(())
+        ) -> crate::membership_event_fanout::PreparedUserLeftFanout {
+            crate::membership_event_fanout::PreparedUserLeftFanout::new(Arc::new(self.clone()))
+        }
+    }
+
+    #[async_trait]
+    impl RealtimeFanoutService for RecordingMembershipEventFanout {
+        async fn try_publish(&self, _request: PublishRequest) -> bool {
+            true
+        }
+
+        fn outbox_event(
+            &self,
+            event: &RealtimeEvent,
+        ) -> Option<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent> {
+            match event {
+                RealtimeEvent::PermissionChanged {
+                    room_id,
+                    target_user_id,
+                    changed_by,
+                    ..
+                } => self.push(MembershipEventFanoutCall::PublishPermissionChanged {
+                    room_id: room_id.to_string(),
+                    target_user_id: target_user_id.to_string(),
+                    changed_by: changed_by.to_string(),
+                }),
+                RealtimeEvent::UserLeft {
+                    room_id, user_id, ..
+                } => self.push(MembershipEventFanoutCall::PublishUserLeft {
+                    room_id: room_id.to_string(),
+                    user_id: user_id.to_string(),
+                }),
+                _ => {}
+            }
+            None
+        }
+
+        fn publish_after_outbox_commit(&self, _event: RealtimeEvent) {}
+
+        fn is_distributed_enabled(&self) -> bool {
+            true
         }
     }
 
@@ -6010,7 +6055,7 @@ mod tests {
     #[test]
     fn test_map_batch_result_error_sanitizes_service_unavailable_error() {
         let message = map_batch_result_error(ApiError::ServiceUnavailable(
-            "Redis timeout while publishing cluster event".to_string(),
+            "Redis timeout while publishing realtime event".to_string(),
         ));
 
         assert_eq!(
@@ -6142,7 +6187,7 @@ mod tests {
         pool: sqlx::PgPool,
     ) -> (
         AdminApiImpl,
-        tokio::sync::mpsc::Receiver<synctv_cluster::sync::PublishRequest>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
         let user_service = Arc::new(make_user_service(pool.clone()));
         let mut room_service =
@@ -6196,7 +6241,7 @@ mod tests {
                 audit_service,
                 Arc::new(crate::PublicIdCodec::default_for_tests()),
             )
-            .with_cluster_fanout_service(crate::test_support::channel_cluster_fanout_service(
+            .with_realtime_fanout_service(crate::test_support::channel_realtime_fanout_service(
                 redis_publish_tx,
             ))
             .with_provider_stores(provider_stores),
@@ -6209,7 +6254,7 @@ mod tests {
     ) -> (
         AdminApiImpl,
         Arc<LiveStreamingInfrastructure>,
-        tokio::sync::mpsc::Receiver<synctv_cluster::sync::PublishRequest>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::PublishRequest>,
     ) {
         let user_service = Arc::new(make_user_service(pool.clone()));
         let room_service = Arc::new(synctv_core::service::RoomService::new(
@@ -6286,7 +6331,7 @@ mod tests {
                 audit_service,
                 Arc::new(crate::PublicIdCodec::default_for_tests()),
             )
-            .with_cluster_fanout_service(crate::test_support::channel_cluster_fanout_service(
+            .with_realtime_fanout_service(crate::test_support::channel_realtime_fanout_service(
                 redis_publish_tx,
             ))
             .with_provider_stores(provider_stores),
@@ -6332,8 +6377,8 @@ mod tests {
 
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
-            username: "global_admin_add_member_fanout".to_string(),
-            email: Some("global_admin_add_member_fanout@example.com".to_string()),
+            username: "global_admin_add_membership_outbox".to_string(),
+            email: Some("global_admin_add_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
@@ -6352,8 +6397,8 @@ mod tests {
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
-            username: "room_owner_add_member_fanout".to_string(),
-            email: Some("room_owner_add_member_fanout@example.com".to_string()),
+            username: "room_owner_add_membership_outbox".to_string(),
+            email: Some("room_owner_add_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6372,8 +6417,8 @@ mod tests {
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
-            username: "target_add_member_fanout".to_string(),
-            email: Some("target_add_member_fanout@example.com".to_string()),
+            username: "target_add_membership_outbox".to_string(),
+            email: Some("target_add_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6451,8 +6496,8 @@ mod tests {
 
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
-            username: "global_admin_update_member_fanout".to_string(),
-            email: Some("global_admin_update_member_fanout@example.com".to_string()),
+            username: "global_admin_update_membership_outbox".to_string(),
+            email: Some("global_admin_update_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
@@ -6471,8 +6516,8 @@ mod tests {
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
-            username: "room_owner_update_member_fanout".to_string(),
-            email: Some("room_owner_update_member_fanout@example.com".to_string()),
+            username: "room_owner_update_membership_outbox".to_string(),
+            email: Some("room_owner_update_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6491,8 +6536,8 @@ mod tests {
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
-            username: "target_update_member_fanout".to_string(),
-            email: Some("target_update_member_fanout@example.com".to_string()),
+            username: "target_update_membership_outbox".to_string(),
+            email: Some("target_update_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6562,8 +6607,8 @@ mod tests {
 
         let global_admin = synctv_core::models::User {
             id: UserId::new(),
-            username: "global_admin_kick_member_fanout".to_string(),
-            email: Some("global_admin_kick_member_fanout@example.com".to_string()),
+            username: "global_admin_kick_membership_outbox".to_string(),
+            email: Some("global_admin_kick_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::Root,
             status: UserStatus::Active,
@@ -6582,8 +6627,8 @@ mod tests {
         };
         let owner = synctv_core::models::User {
             id: UserId::new(),
-            username: "room_owner_kick_member_fanout".to_string(),
-            email: Some("room_owner_kick_member_fanout@example.com".to_string()),
+            username: "room_owner_kick_membership_outbox".to_string(),
+            email: Some("room_owner_kick_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6602,8 +6647,8 @@ mod tests {
         };
         let target = synctv_core::models::User {
             id: UserId::new(),
-            username: "target_kick_member_fanout".to_string(),
-            email: Some("target_kick_member_fanout@example.com".to_string()),
+            username: "target_kick_membership_outbox".to_string(),
+            email: Some("target_kick_membership_outbox@example.com".to_string()),
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -6926,7 +6971,7 @@ mod tests {
     #[tokio::test]
     async fn test_force_disconnect_user_publishes_cluster_kick_event() {
         let connection_service: Arc<dyn RealtimeConnectionService> = Arc::new(
-            ConnectionManager::new(synctv_cluster::sync::ConnectionLimits::default()),
+            ConnectionManager::new(synctv_realtime::sync::ConnectionLimits::default()),
         );
         connection_service.start();
 
@@ -6935,7 +6980,7 @@ mod tests {
         let realtime_lifecycle = default_realtime_lifecycle_service(
             connection_service,
             None,
-            crate::test_support::channel_cluster_fanout_service(publish_tx),
+            crate::test_support::channel_realtime_fanout_service(publish_tx),
         );
 
         realtime_lifecycle
@@ -6947,7 +6992,7 @@ mod tests {
             .await
             .expect("force_disconnect_user should publish a kick event");
         match published.event {
-            ClusterEvent::KickUser {
+            RealtimeEvent::KickUser {
                 user_id: published_user_id,
                 reason,
                 ..
@@ -7787,7 +7832,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_delete_user_publishes_kick_user_cluster_event() {
+    async fn test_delete_user_publishes_kick_user_realtime_event() {
         let (_postgres, pool) = create_test_pool().await;
         let admin_api = {
             let (admin_api, redis_publish_rx) =
@@ -7857,7 +7902,7 @@ mod tests {
                 .expect("publish request");
 
         match publish.event {
-            ClusterEvent::KickUser {
+            RealtimeEvent::KickUser {
                 user_id, reason, ..
             } => {
                 assert_eq!(user_id, target_user.id);
@@ -8066,7 +8111,7 @@ mod tests {
         )
         .await
         {
-            if let ClusterEvent::KickUser {
+            if let RealtimeEvent::KickUser {
                 user_id, reason, ..
             } = publish.event
             {
@@ -8176,7 +8221,7 @@ mod tests {
         .await
         {
             match publish.event {
-                ClusterEvent::RoomDeleted {
+                RealtimeEvent::RoomDeleted {
                     room_id,
                     deleted_by,
                     ..
@@ -8185,7 +8230,7 @@ mod tests {
                     assert_eq!(deleted_by, admin_user.id);
                     saw_room_deleted = true;
                 }
-                ClusterEvent::KickUser {
+                RealtimeEvent::KickUser {
                     user_id, reason, ..
                 } => {
                     assert_eq!(user_id, target_user.id);
@@ -8326,7 +8371,7 @@ mod tests {
         )
         .await
         {
-            if let ClusterEvent::KickUser {
+            if let RealtimeEvent::KickUser {
                 user_id, reason, ..
             } = publish.event
             {
@@ -8589,7 +8634,7 @@ mod tests {
                 .expect("disconnect signal must arrive before timeout")
                 .expect("disconnect channel must stay open");
 
-            if let synctv_cluster::sync::DisconnectSignal::Room(room_id) = signal {
+            if let synctv_realtime::sync::DisconnectSignal::Room(room_id) = signal {
                 assert_eq!(room_id, room.id, "owned room must be disconnected");
                 saw_room_disconnect = true;
                 break;
@@ -8690,7 +8735,7 @@ mod tests {
         )
         .await
         {
-            if let ClusterEvent::RoomOwnerInactive {
+            if let RealtimeEvent::RoomOwnerInactive {
                 room_id,
                 owner_id,
                 triggered_by,
@@ -8939,7 +8984,7 @@ mod tests {
         )
         .await
         {
-            if let ClusterEvent::RoomOwnerInactive {
+            if let RealtimeEvent::RoomOwnerInactive {
                 room_id,
                 owner_id,
                 triggered_by,
@@ -11016,16 +11061,16 @@ mod tests {
 
         while let Ok(request) = redis_publish_rx.try_recv() {
             match request.event {
-                ClusterEvent::PlaylistDeleted { playlist_id, .. } => {
+                RealtimeEvent::PlaylistDeleted { playlist_id, .. } => {
                     deleted_playlist_ids.push(playlist_id.to_string());
                 }
-                ClusterEvent::MediaRemoved { media_id, .. } => {
+                RealtimeEvent::MediaRemoved { media_id, .. } => {
                     deleted_media_ids.push(media_id.to_string());
                 }
-                ClusterEvent::KickPublisher { media_id, .. } => {
+                RealtimeEvent::KickPublisher { media_id, .. } => {
                     kicked_media_ids.push(media_id.to_string());
                 }
-                ClusterEvent::CacheInvalidate { .. } => {}
+                RealtimeEvent::CacheInvalidate { .. } => {}
                 other => panic!("unexpected admin delete_playlist cascade event: {other:?}"),
             }
         }
@@ -11498,14 +11543,14 @@ mod tests {
         assert_eq!(updated.id, public_media_id(&admin_api, media.id));
         assert_eq!(updated.name, "media-edited");
 
-        let event = recv_matching_cluster_event(
+        let event = recv_matching_realtime_event(
             &mut redis_publish_rx,
-            "admin edit_media MediaUpdated cluster event",
-            |event| matches!(event, ClusterEvent::MediaUpdated { .. }),
+            "admin edit_media MediaUpdated realtime event",
+            |event| matches!(event, RealtimeEvent::MediaUpdated { .. }),
         )
         .await;
         match event {
-            ClusterEvent::MediaUpdated {
+            RealtimeEvent::MediaUpdated {
                 media_id,
                 media_title,
                 ..
@@ -11826,7 +11871,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker"]
-    async fn test_ban_room_publishes_room_banned_cluster_event() {
+    async fn test_ban_room_publishes_room_banned_realtime_event() {
         let (_postgres, pool) = create_test_pool().await;
         let (admin_api, mut redis_publish_rx) =
             make_admin_api_for_delete_user_test(pool.clone()).await;
@@ -11877,7 +11922,7 @@ mod tests {
                 .expect("publish request");
 
         match publish.event {
-            ClusterEvent::RoomBanned {
+            RealtimeEvent::RoomBanned {
                 room_id, banned_by, ..
             } => {
                 assert_eq!(room_id, room.id);

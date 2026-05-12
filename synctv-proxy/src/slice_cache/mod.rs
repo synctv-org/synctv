@@ -48,7 +48,7 @@ pub mod range;
 pub mod status;
 pub mod store;
 
-// Re-export public items so that `synctv_proxy::slice_cache::Foo` still works.
+// Public slice-cache API.
 pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::{CacheBackendConfig, SliceCacheConfig};
 pub use etag::{CachedResourceMeta, StoredEntry};

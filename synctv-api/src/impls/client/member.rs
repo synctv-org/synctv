@@ -567,60 +567,30 @@ impl ClientApiImpl {
                 }
             }
 
-            // All validation passed — apply mutations now.
-
-            // Handle role update if provided (non-zero = specified).
-            if role_is_changing {
-                let new_role = proto_role_to_room_role(role)?;
-                let prepared_membership_fanout = self
-                    .membership_event_fanout
-                    .prepare_permission_changed_outbox_fanout(target_uid, uid);
-                self.room_service
-                    .set_member_role_with_outbox(
-                        rid,
-                        uid,
-                        target_uid,
-                        new_role,
-                        prepared_membership_fanout.outbox_factory(),
-                    )
-                    .await
-                    .map_err(ApiError::from)?;
-                prepared_membership_fanout.publish_after_outbox_commit();
-            }
-
-            // Handle permission updates
-            if should_apply_permission_update {
-                // The service layer (set_member_permissions) already enforces
-                // GRANT_PERMISSION as the single source of truth via
-                // check_permission_no_cache.
-                let added = if effective_is_admin {
-                    admin_added_permissions
-                } else {
-                    added_permissions
-                };
-
-                let removed = if effective_is_admin {
-                    admin_removed_permissions
-                } else {
-                    removed_permissions
-                };
-
-                let prepared_membership_fanout = self
-                    .membership_event_fanout
-                    .prepare_permission_changed_outbox_fanout(target_uid, uid);
-                self.room_service
-                    .set_member_permission_with_outbox(
-                        rid,
-                        uid,
-                        target_uid,
-                        added,
-                        removed,
-                        prepared_membership_fanout.outbox_factory(),
-                    )
-                    .await
-                    .map_err(ApiError::from)?;
-                prepared_membership_fanout.publish_after_outbox_commit();
-            }
+            let new_role = if role_is_changing {
+                Some(proto_role_to_room_role(role)?)
+            } else {
+                None
+            };
+            let prepared_membership_fanout = self
+                .membership_event_fanout
+                .prepare_permission_changed_outbox_fanout(target_uid, uid);
+            self.room_service
+                .update_member_with_outbox(
+                    rid,
+                    uid,
+                    target_uid,
+                    new_role,
+                    should_apply_permission_update,
+                    added_permissions,
+                    removed_permissions,
+                    admin_added_permissions,
+                    admin_removed_permissions,
+                    prepared_membership_fanout.outbox_factory(),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            prepared_membership_fanout.publish_after_outbox_commit();
         }
 
         // Get updated member directly instead of fetching all members
@@ -701,16 +671,27 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, uid);
+        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid,
+            user_id: target_uid,
+            reason: "kicked".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
         self.room_service
             .kick_member_with_outbox(
                 rid,
                 uid,
                 target_uid,
                 prepared_membership_fanout.outbox_factory(),
+                lifecycle_outbox_event,
             )
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
+        self.realtime_fanout
+            .publish_after_outbox_commit(lifecycle_event);
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
@@ -744,6 +725,15 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, uid);
+        let lifecycle_reason = reason.clone().unwrap_or_else(|| "banned".to_string());
+        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid,
+            user_id: target_uid,
+            reason: lifecycle_reason,
+            timestamp: chrono::Utc::now(),
+        };
+        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
         self.room_service
             .ban_member_with_outbox(
                 rid,
@@ -751,10 +741,13 @@ impl ClientApiImpl {
                 target_uid,
                 reason,
                 prepared_membership_fanout.outbox_factory(),
+                lifecycle_outbox_event,
             )
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
+        self.realtime_fanout
+            .publish_after_outbox_commit(lifecycle_event);
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)

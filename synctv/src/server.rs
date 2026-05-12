@@ -766,6 +766,33 @@ fn spawn_admin_event_listener(
                                     .kick_user_room_publishers(&room_id_string, &user_id_string)
                                     .await;
                             }
+                            RealtimeEvent::RoomDeleted { room_id, .. } => {
+                                info!(
+                                    room_id = %room_id,
+                                    "Received replica-wide room deletion"
+                                );
+                                infra
+                                    .kick_room_publishers(&room_id.to_string())
+                                    .await;
+                            }
+                            RealtimeEvent::RoomBanned { room_id, .. } => {
+                                info!(
+                                    room_id = %room_id,
+                                    "Received replica-wide room ban"
+                                );
+                                infra
+                                    .kick_room_publishers(&room_id.to_string())
+                                    .await;
+                            }
+                            RealtimeEvent::RoomOwnerInactive { room_id, .. } => {
+                                info!(
+                                    room_id = %room_id,
+                                    "Received replica-wide inactive-owner room lifecycle event"
+                                );
+                                infra
+                                    .kick_room_publishers(&room_id.to_string())
+                                    .await;
+                            }
                             _ => {}
                         },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

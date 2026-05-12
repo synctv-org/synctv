@@ -38,10 +38,10 @@ pub struct DnsPeer {
 /// Resolves the headless service DNS name to discover peer pod IPs,
 /// then constructs shared API addresses using the shared API port.
 ///
-/// **Redis is still required.** DNS discovery only handles peer IP resolution.
-/// All cluster functionality -- pub/sub event synchronization, health monitoring,
-/// leader election, stream-based catch-up, and connection load balancing -- depends
-/// on Redis. Without Redis, nodes discovered via DNS cannot communicate or coordinate.
+/// **Redis is required for shared topology.** DNS discovery only handles peer IP
+/// resolution. Registry-backed health monitoring, leader election, and connection
+/// load balancing depend on Redis. Without Redis, nodes discovered via DNS cannot
+/// participate in shared cluster coordination.
 /// Configure `REDIS_URL` alongside the K8s DNS environment variables.
 #[derive(Clone)]
 pub struct K8sDnsDiscovery {

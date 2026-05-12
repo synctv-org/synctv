@@ -250,6 +250,17 @@ enum SelectResult {
     StreamEnded,
 }
 
+fn is_replica_wide_admin_event(event: &RealtimeEvent) -> bool {
+    matches!(
+        event,
+        RealtimeEvent::KickPublisher { .. }
+            | RealtimeEvent::KickUserFromRoom { .. }
+            | RealtimeEvent::RoomDeleted { .. }
+            | RealtimeEvent::RoomBanned { .. }
+            | RealtimeEvent::RoomOwnerInactive { .. }
+    )
+}
+
 /// Redis Pub/Sub service for cross-node event synchronization
 ///
 /// This service enables multi-replica deployments by:
@@ -1844,10 +1855,31 @@ impl RedisPubSub {
             return;
         }
 
-        // Handle admin channel events (no room_id)
+        // Handle admin channel events. Some critical room-scoped lifecycle
+        // events intentionally use the admin channel so every replica receives
+        // stream/member cleanup even when it has no active room subscribers.
         if self.is_admin_channel(channel) {
-            self.handle_remote_event(None, &event).await;
-            let _ = self.admin_event_tx.send(event);
+            let room_id = event.room_id().copied();
+            self.handle_remote_event(room_id, &event).await;
+            let _ = self.admin_event_tx.send(event.clone());
+            if let Some(room_id) = room_id {
+                if matches!(
+                    &event,
+                    RealtimeEvent::RoomDeleted { .. }
+                        | RealtimeEvent::RoomBanned { .. }
+                        | RealtimeEvent::RoomOwnerInactive { .. }
+                ) {
+                    let sent_count = self.message_hub.broadcast_reliably(&room_id, event).await;
+                    self.message_hub.remove_room(&room_id);
+                    info!(
+                        room_id = %room_id,
+                        notified = sent_count,
+                        "Handled terminal room lifecycle event from admin channel"
+                    );
+                } else {
+                    let _ = self.message_hub.broadcast(&room_id, &event);
+                }
+            }
             return;
         }
 
@@ -1958,7 +1990,10 @@ impl RedisPubSub {
         room_stream_ttl_secs: u64,
         stream_max_length: usize,
     ) -> Result<usize> {
-        let channel = if let Some(room_id) = event.room_id() {
+        let force_admin_channel = is_replica_wide_admin_event(&event);
+        let channel = if force_admin_channel {
+            format!("{key_prefix}admin:events")
+        } else if let Some(room_id) = event.room_id() {
             format!("{key_prefix}room:{room_id}")
         } else {
             format!("{key_prefix}admin:events")
@@ -1975,12 +2010,16 @@ impl RedisPubSub {
 
         // Stream key for reliable delivery (catch-up after disconnect)
         // Room events go to {prefix}room:{room_id}:events, admin events to {prefix}admin:events:stream
-        let stream_key = if let Some(room_id) = event.room_id() {
+        let stream_key = if force_admin_channel {
+            format!("{key_prefix}admin:events:stream")
+        } else if let Some(room_id) = event.room_id() {
             format!("{key_prefix}room:{room_id}:events")
         } else {
             format!("{key_prefix}admin:events:stream")
         };
-        let stream_ttl_secs = event.room_id().map(|_| room_stream_ttl_secs);
+        let stream_ttl_secs = (!force_admin_channel)
+            .then(|| event.room_id().map(|_| room_stream_ttl_secs))
+            .flatten();
 
         let is_critical = event.is_critical();
 

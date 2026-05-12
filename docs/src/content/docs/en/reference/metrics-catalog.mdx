@@ -71,8 +71,9 @@ Disabled or unused features may not emit their metrics. Do not expose the metric
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `synctv_cluster_connections_total` | gauge | none | Cluster connections on this node |
-| `synctv_cluster_events_published_total` | counter | `event_type` | Published cluster events |
-| `synctv_cluster_events_dropped_total` | counter | `reason` | Dropped cluster events |
+| `synctv_realtime_events_published_total` | counter | `event_type` | Published realtime events |
+| `synctv_realtime_events_received_total` | counter | `event_type` | Received realtime events |
+| `synctv_realtime_events_dropped_total` | counter | `reason` | Dropped realtime events |
 | `synctv_cluster_heartbeat_failures` | gauge | none | Consecutive heartbeat failures |
 | `synctv_node_active_rooms` | gauge | none | Active rooms on this node |
 | `synctv_cluster_node_health_status` | gauge | none | Node health status; 1 means healthy |

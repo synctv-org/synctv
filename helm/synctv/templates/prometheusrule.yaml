@@ -62,13 +62,13 @@ spec:
             description: "Stream error rate >1/sec for 3 minutes"
         - alert: SyncTVRealtimeEventDrops
           expr: |
-            rate(synctv_cluster_events_dropped_total[5m]) > 0
+            rate(synctv_realtime_events_dropped_total[5m]) > 0
           for: 1m
           labels:
             severity: critical
           annotations:
-            summary: "Cluster events being dropped"
-            description: "Cluster Pub/Sub channel full, events dropped"
+            summary: "Realtime events being dropped"
+            description: "Realtime fanout path is dropping events"
         - alert: SyncTVCacheHitRateDrop
           expr: |
             sum(rate(cache_hits_total[5m]))

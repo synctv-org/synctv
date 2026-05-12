@@ -650,7 +650,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cluster_event_serialization() {
+    fn test_realtime_event_serialization() {
         let event = RealtimeEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: RoomId::expect_positive(10_000_140),
@@ -693,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_event_deserialization_requires_event_id() {
+    fn test_realtime_event_deserialization_requires_event_id() {
         let json = serde_json::json!({
             "type": "chat_message",
             "room_id": 123,
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_event_deserialization_rejects_unknown_type() {
+    fn test_realtime_event_deserialization_rejects_unknown_type() {
         let json = serde_json::json!({
             "type": "future_event_type",
             "event_id": synctv_common::snanoid!(16),
@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_event_room_id() {
+    fn test_realtime_event_room_id() {
         let event = RealtimeEvent::UserJoined {
             event_id: synctv_common::snanoid!(16),
             room_id: RoomId::expect_positive(10_000_140),

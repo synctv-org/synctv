@@ -530,7 +530,7 @@ pub struct StreamMessageHandler {
     event_service: Arc<dyn RealtimeEventService>,
     /// Optional notification service for direct real-time push to connected clients.
     /// When set, the handler subscribes to notification events and pushes them
-    /// without depending on the gRPC notification-to-cluster bridge.
+    /// without depending on the gRPC notification-to-realtime bridge.
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     connection_service: Arc<dyn RealtimeConnectionService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
@@ -920,7 +920,7 @@ impl StreamMessageHandler {
     ///
     /// When set, the handler subscribes to `UserNotificationService::subscribe_events()`
     /// and pushes notifications directly to the connected client without depending on
-    /// the gRPC notification-to-cluster bridge task.
+    /// the gRPC notification-to-realtime bridge task.
     #[must_use]
     pub fn with_notification_service(
         mut self,

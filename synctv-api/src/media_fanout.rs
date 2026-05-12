@@ -450,12 +450,25 @@ impl MediaFanoutService for DefaultMediaFanoutService {
                 if media_ids.is_empty() {
                     Vec::new()
                 } else {
-                    vec![media_removed_batch_event(
+                    let mut events = Vec::with_capacity(media_ids.len() + 1);
+                    events.push(media_removed_batch_event(
                         &room_id,
                         &user_id,
                         &username,
                         media_ids.to_vec(),
-                    )]
+                    ));
+                    events.extend(
+                        media_ids
+                            .iter()
+                            .map(|media_id| RealtimeEvent::KickPublisher {
+                                event_id: synctv_common::snanoid!(16),
+                                room_id,
+                                media_id: *media_id,
+                                reason: "media_deleted".to_string(),
+                                timestamp: chrono::Utc::now(),
+                            }),
+                    );
+                    events
                 }
             }),
             events: Arc::new(std::sync::Mutex::new(Vec::new())),

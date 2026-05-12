@@ -19,6 +19,8 @@ pub struct DeletedRoomAfterCommitFanout {
 pub trait RealtimeLifecycleService: Send + Sync {
     async fn kick_stream(&self, room_id: &RoomId, media_id: &MediaId, reason: &str);
 
+    async fn kick_local_stream(&self, room_id: &RoomId, media_id: &MediaId);
+
     async fn active_room_stream_media_ids(&self, room_id: &RoomId) -> Vec<MediaId>;
 
     async fn disconnect_room(&self, room_id: &RoomId, publisher_reason: &str);
@@ -76,18 +78,7 @@ impl std::fmt::Debug for DefaultRealtimeLifecycleService {
 #[async_trait]
 impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
     async fn kick_stream(&self, room_id: &RoomId, media_id: &MediaId, reason: &str) {
-        let room_id_key = room_id.to_string();
-        let media_id_key = media_id.to_string();
-        if let Some(infra) = &self.live_streaming_infrastructure {
-            if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key) {
-                tracing::warn!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    error = %error,
-                    "Failed to kick local publisher"
-                );
-            }
-        }
+        self.kick_local_stream(room_id, media_id).await;
 
         if !self
             .realtime_fanout
@@ -108,6 +99,21 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 media_id = %media_id,
                 "Failed to send replica-wide kick event after bounded retry"
             );
+        }
+    }
+
+    async fn kick_local_stream(&self, room_id: &RoomId, media_id: &MediaId) {
+        let room_id_key = room_id.to_string();
+        let media_id_key = media_id.to_string();
+        if let Some(infra) = &self.live_streaming_infrastructure {
+            if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key) {
+                tracing::warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    error = %error,
+                    "Failed to kick local publisher"
+                );
+            }
         }
     }
 
@@ -159,13 +165,9 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         media_ids.into_iter().collect()
     }
 
-    async fn disconnect_room(&self, room_id: &RoomId, publisher_reason: &str) {
+    async fn disconnect_room(&self, room_id: &RoomId, _publisher_reason: &str) {
         self.connection_service.disconnect_room(room_id);
         let room_id_key = room_id.to_string();
-
-        for media_id in &self.active_room_stream_media_ids(room_id).await {
-            self.kick_stream(room_id, media_id, publisher_reason).await;
-        }
 
         if let Some(infra) = &self.live_streaming_infrastructure {
             infra.kick_room_publishers(&room_id_key).await;

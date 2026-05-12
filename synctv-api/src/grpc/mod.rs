@@ -1119,7 +1119,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                     tokio::select! {
                         // Honour the server-wide shutdown signal.
                         () = shutdown_future => {
-                            tracing::info!("Notification-to-cluster bridge task stopping (shutdown signal)");
+                            tracing::info!("Notification-to-realtime bridge task stopping (shutdown signal)");
                             break;
                         }
                         result = notification_rx.recv() => {
@@ -1139,14 +1139,14 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                                         RealtimeDeliveryRequirement::DistributedIfAvailable,
                                     ) {
                                         tracing::error!(
-                                            "Notification-to-cluster bridge failed to reach the distributed fan-out path"
+                                            "Notification-to-realtime bridge failed to reach the distributed fan-out path"
                                         );
                                     }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                     tracing::warn!(
                                         lagged = n,
-                                        "Notification-to-cluster bridge lagged, some notifications may not have been pushed in real time"
+                                        "Notification-to-realtime bridge lagged, some notifications may not have been pushed in real time"
                                     );
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -1159,7 +1159,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 }
             });
             tracing::info!(
-                "Notification-to-cluster bridge task spawned for real-time WebSocket push"
+                "Notification-to-realtime bridge task spawned for real-time WebSocket push"
             );
         }
     }

@@ -877,12 +877,13 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Update member role inside an existing transaction.
-    pub async fn update_role_with_executor(
+    /// Update member role inside an existing transaction with optimistic locking.
+    pub async fn update_role_with_version_executor(
         &self,
         room_id: &RoomId,
         user_id: &UserId,
         role: RoomRole,
+        current_version: i64,
         executor: impl sqlx::PgExecutor<'_>,
     ) -> Result<RoomMember> {
         let sql = format!(
@@ -890,21 +891,20 @@ impl RoomMemberRepository {
              SET
                 role = $3,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL
+             WHERE room_id = $1 AND user_id = $2 AND version = $4 AND left_at IS NULL
              RETURNING {ROOM_MEMBER_RETURNING_COLUMNS}"
         );
         let member = sqlx::query_as::<_, RoomMember>(&sql)
             .bind(room_id)
             .bind(user_id)
             .bind(role)
+            .bind(current_version)
             .fetch_optional(executor)
             .await?;
 
         match member {
             Some(m) => Ok(m),
-            None => Err(Error::NotFound(
-                "User is not an active member of this room".to_string(),
-            )),
+            None => Err(Error::OptimisticLockConflict),
         }
     }
 

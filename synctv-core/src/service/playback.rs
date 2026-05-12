@@ -214,7 +214,7 @@ pub struct PlaybackService {
     permission_service: PermissionService,
     media_service: MediaService,
     user_service: UserService,
-    /// Optional cluster broadcaster for cross-replica sync (interior mutability
+    /// Optional realtime broadcaster for cross-replica sync (interior mutability
     /// so the broadcaster can be wired after Arc<RoomService> is already cloned)
     realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by `room_id`
@@ -311,7 +311,7 @@ impl PlaybackService {
         }
     }
 
-    /// Set the cluster broadcaster for cross-replica playback state sync.
+    /// Set the realtime broadcaster for cross-replica playback state sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
     pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaybackBroadcaster>) {
         *self.realtime_broadcaster.write() = Some(broadcaster);
@@ -575,13 +575,13 @@ impl PlaybackService {
     /// publishes to Redis for remote replicas in one step.
     ///
     /// The `notification_service` path is intentionally not used here: calling
-    /// it in addition to the cluster broadcaster would cause local clients to
+    /// it in addition to the realtime broadcaster would cause local clients to
     /// receive the same `PlaybackStateChanged` event twice.
     ///
     /// Returns `BroadcastResult` indicating whether the broadcast succeeded.
     /// Logs warnings on partial/complete failure for monitoring.
     fn broadcast_state_change(&self, state: &RoomPlaybackState) -> BroadcastResult {
-        // Single broadcast path: cluster broadcaster handles both local delivery
+        // Single broadcast path: realtime broadcaster handles both local delivery
         // (via the in-process message hub) and remote delivery (via Redis pub/sub).
         // Do NOT also call notification_service here — that would send the event
         // to local WebSocket clients a second time.

@@ -80,7 +80,7 @@ pub use global_settings::{
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
 };
-pub use member::{AddMemberOptions, MemberEventBroadcaster, MemberService};
+pub use member::{AddMemberOptions, MemberService};
 pub use notification::{NotificationService, RoomEvent};
 pub use notification_partition_manager::{
     ensure_notification_partitions_on_startup, NotificationPartitionHealth,

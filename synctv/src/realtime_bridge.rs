@@ -1,8 +1,8 @@
-//! Adapter bridging `synctv-cluster` and `synctv-core` broadcasting traits.
+//! Adapter bridging runtime realtime delivery and `synctv-core` broadcasting traits.
 //!
 //! `RealtimePlaybackBroadcaster` implements the `PlaybackBroadcaster` trait from
 //! `synctv-core` by delegating to `RealtimeManager`, keeping the core crate
-//! decoupled from cluster-specific types.
+//! decoupled from runtime-specific types.
 
 use std::sync::Arc;
 use synctv_realtime::sync::{RealtimeEvent, RealtimeManager};
@@ -227,39 +227,6 @@ impl synctv_core::service::PlaybackBroadcaster for RealtimePlaybackBroadcaster {
             redis_sent: result.redis_sent,
             single_node,
         }
-    }
-}
-
-/// Adapter that implements `MemberEventBroadcaster` by delegating to `RealtimeManager`.
-pub struct RealtimeMemberEventBroadcaster {
-    pub realtime_manager: Arc<RealtimeManager>,
-}
-
-impl synctv_core::service::MemberEventBroadcaster for RealtimeMemberEventBroadcaster {
-    fn broadcast_kick_from_room(
-        &self,
-        room_id: &synctv_core::models::RoomId,
-        user_id: &synctv_core::models::UserId,
-        reason: &str,
-    ) {
-        let _ = self
-            .realtime_manager
-            .broadcast(RealtimeEvent::KickUserFromRoom {
-                event_id: synctv_common::snanoid!(16),
-                room_id: *room_id,
-                user_id: *user_id,
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
-            });
-    }
-
-    fn broadcast_kick_user(&self, user_id: &synctv_core::models::UserId, reason: &str) {
-        let _ = self.realtime_manager.broadcast(RealtimeEvent::KickUser {
-            event_id: synctv_common::snanoid!(16),
-            user_id: *user_id,
-            reason: reason.to_string(),
-            timestamp: chrono::Utc::now(),
-        });
     }
 }
 

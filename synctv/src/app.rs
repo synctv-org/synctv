@@ -52,8 +52,8 @@ use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
 use crate::realtime_bridge::{
-    room_event_to_realtime_event, LocalPlaylistBroadcaster, RealtimeMemberEventBroadcaster,
-    RealtimePlaybackBroadcaster, RealtimePlaylistBroadcaster,
+    room_event_to_realtime_event, LocalPlaylistBroadcaster, RealtimePlaybackBroadcaster,
+    RealtimePlaylistBroadcaster,
 };
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
@@ -436,14 +436,11 @@ fn wire_room_service_realtime_broadcasters(
     playlist_broadcaster: Option<Arc<dyn synctv_core::service::PlaylistBroadcaster>>,
 ) {
     room_service.set_playback_realtime_broadcaster(Arc::new(RealtimePlaybackBroadcaster {
-        realtime_manager: realtime_manager.clone(),
+        realtime_manager,
     }));
     if let Some(playlist_broadcaster) = playlist_broadcaster {
         room_service.set_playlist_realtime_broadcaster(playlist_broadcaster);
     }
-    room_service.set_member_event_broadcaster(Arc::new(RealtimeMemberEventBroadcaster {
-        realtime_manager,
-    }));
 }
 
 fn start_room_notification_bridge(
@@ -1246,7 +1243,7 @@ impl Application {
             manager: realtime_manager.clone(),
         });
 
-        // Wire cluster broadcaster into PlaybackService
+        // Wire realtime broadcasters into playback and playlist services.
         wire_room_service_realtime_broadcasters(
             &core.services.room_service,
             realtime_manager.clone(),
@@ -1254,7 +1251,7 @@ impl Application {
                 realtime_manager: realtime_manager.clone(),
             })),
         );
-        info!("PlaybackService wired with cluster broadcaster");
+        info!("PlaybackService wired with realtime broadcaster");
 
         // Cluster discovery (NodeRegistry, HealthMonitor) requires Redis.
         // When cluster is explicitly enabled, discovery failures are fatal.
@@ -1840,7 +1837,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_wire_room_service_realtime_broadcasters_sets_member_runtime_bridge() {
+    async fn test_wire_room_service_realtime_broadcasters_sets_runtime_bridges() {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let room_service = Arc::new(synctv_core::service::RoomService::new(
             pool.clone(),
@@ -1877,12 +1874,8 @@ mod tests {
         );
 
         assert!(
-            room_service.has_member_event_broadcaster(),
-            "cluster broadcaster wiring must cover member kicks/bans in addition to playback"
-        );
-        assert!(
             room_service.has_playlist_realtime_broadcaster(),
-            "cluster broadcaster wiring must cover playlist lifecycle broadcasts"
+            "realtime broadcaster wiring must cover playlist lifecycle broadcasts"
         );
 
         realtime_manager.shutdown().await;

@@ -138,7 +138,7 @@ pub struct PlaylistService {
     credential_encryption: Option<crate::service::CredentialEncryption>,
     credential_repo: Option<Arc<UserProviderCredentialRepository>>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
-    /// Optional cluster broadcaster for cross-replica playlist sync
+    /// Optional realtime broadcaster for cross-replica playlist sync
     realtime_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaylistBroadcaster>>>>,
 }
 
@@ -211,7 +211,7 @@ impl PlaylistService {
         self.realtime_outbox = realtime_outbox;
     }
 
-    /// Set the cluster broadcaster for cross-replica playlist sync
+    /// Set the realtime broadcaster for cross-replica playlist sync
     pub fn set_realtime_broadcaster(&self, broadcaster: Arc<dyn PlaylistBroadcaster>) {
         *self.realtime_broadcaster.write() = Some(broadcaster);
     }

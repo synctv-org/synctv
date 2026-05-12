@@ -11,6 +11,7 @@ use synctv_core::models::{
     UserId,
 };
 use synctv_core::provider::DynamicListQuery;
+use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::media::AddMediaRequest as CoreAddMediaRequest;
 use synctv_core::service::media::MoveMediaRequest as CoreMoveMediaRequest;
 use synctv_core::service::room::{
@@ -27,6 +28,7 @@ use super::convert::{
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playlist_fanout::{PlaylistFanoutService, PreparedPlaylistDeletedFanout};
+use crate::realtime_fanout::RealtimeFanoutService;
 
 #[derive(Debug)]
 struct AddMediaBatchBuildResult {
@@ -42,6 +44,7 @@ pub enum MoveMediaFanoutStep {
 pub(crate) struct PreparedDeleteEntriesOutboxFanout {
     media_fanout: Arc<dyn MediaFanoutService>,
     playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_id: RoomId,
     user_id: UserId,
     username: String,
@@ -51,6 +54,7 @@ pub(crate) struct PreparedDeleteEntriesOutboxFanout {
 enum PreparedDeleteEntriesEvent {
     MediaRemoved(PreparedMediaRemovedFanout),
     PlaylistDeleted(PreparedPlaylistDeletedFanout),
+    KickPublisher(synctv_realtime::sync::RealtimeEvent),
 }
 
 impl PreparedDeleteEntriesOutboxFanout {
@@ -58,15 +62,18 @@ impl PreparedDeleteEntriesOutboxFanout {
     pub(crate) fn outbox_factory(&self) -> RealtimeOutboxDeleteEntriesEventFactory {
         let media_fanout = self.media_fanout.clone();
         let playlist_fanout = self.playlist_fanout.clone();
+        let realtime_fanout = self.realtime_fanout.clone();
         let room_id = self.room_id;
         let user_id = self.user_id;
         let username = self.username.clone();
         let events = self.events.clone();
         Arc::new(move |plan: &DeleteEntriesPlan| {
-            let mut prepared_events =
-                Vec::with_capacity(plan.deleted_media_ids.len() + plan.deleted_playlist_ids.len());
-            let mut outbox_events =
-                Vec::with_capacity(plan.deleted_media_ids.len() + plan.deleted_playlist_ids.len());
+            let mut prepared_events = Vec::with_capacity(
+                plan.deleted_media_ids.len() * 2 + plan.deleted_playlist_ids.len(),
+            );
+            let mut outbox_events: Vec<NewRealtimeOutboxEvent> = Vec::with_capacity(
+                plan.deleted_media_ids.len() * 2 + plan.deleted_playlist_ids.len(),
+            );
 
             for media_id in &plan.deleted_media_ids {
                 let prepared = media_fanout
@@ -75,6 +82,18 @@ impl PreparedDeleteEntriesOutboxFanout {
                     outbox_events.push(outbox_event);
                 }
                 prepared_events.push(PreparedDeleteEntriesEvent::MediaRemoved(prepared));
+
+                let kick_event = synctv_realtime::sync::RealtimeEvent::KickPublisher {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id,
+                    media_id: *media_id,
+                    reason: "media_deleted".to_string(),
+                    timestamp: chrono::Utc::now(),
+                };
+                if let Some(outbox_event) = realtime_fanout.outbox_event(&kick_event) {
+                    outbox_events.push(outbox_event);
+                }
+                prepared_events.push(PreparedDeleteEntriesEvent::KickPublisher(kick_event));
             }
 
             for playlist_id in &plan.deleted_playlist_ids {
@@ -113,6 +132,9 @@ impl PreparedDeleteEntriesOutboxFanout {
                 PreparedDeleteEntriesEvent::PlaylistDeleted(event) => {
                     event.publish_after_outbox_commit();
                 }
+                PreparedDeleteEntriesEvent::KickPublisher(event) => {
+                    self.realtime_fanout.publish_after_outbox_commit(event);
+                }
             }
         }
     }
@@ -121,6 +143,7 @@ impl PreparedDeleteEntriesOutboxFanout {
 pub(crate) fn prepare_delete_entries_outbox_fanout(
     media_fanout: Arc<dyn MediaFanoutService>,
     playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
     room_id: RoomId,
     user_id: UserId,
     username: String,
@@ -128,6 +151,7 @@ pub(crate) fn prepare_delete_entries_outbox_fanout(
     PreparedDeleteEntriesOutboxFanout {
         media_fanout,
         playlist_fanout,
+        realtime_fanout,
         room_id,
         user_id,
         username,
@@ -650,6 +674,7 @@ impl ClientApiImpl {
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
             rid,
             uid,
             username.clone(),
@@ -670,7 +695,7 @@ impl ClientApiImpl {
 
         for media_id in &result.deleted_media_ids {
             self.realtime_lifecycle
-                .kick_stream(&rid, media_id, "media_deleted")
+                .kick_local_stream(&rid, media_id)
                 .await;
         }
 
@@ -759,6 +784,12 @@ impl ClientApiImpl {
         // events. The distributed copy is written transactionally by core.
         prepared_outbox_fanout.publish_after_outbox_commit();
         self.room_cache_fanout.publish_invalidation(&rid);
+
+        for media_id in &result.deleted_media_ids {
+            self.realtime_lifecycle
+                .kick_local_stream(&rid, media_id)
+                .await;
+        }
 
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,

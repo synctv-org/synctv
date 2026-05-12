@@ -2175,17 +2175,28 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid,
+            user_id: target_uid,
+            reason: "kicked".to_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
         self.room_service
             .admin_kick_member_with_outbox(
                 rid,
                 *admin_user_id,
                 target_uid,
                 prepared_membership_fanout.outbox_factory(),
+                lifecycle_outbox_event,
             )
             .await
             .map_err(ApiError::from)?;
         drop(admin_username);
         prepared_membership_fanout.publish_after_outbox_commit();
+        self.realtime_fanout
+            .publish_after_outbox_commit(lifecycle_event);
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
@@ -2243,6 +2254,15 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(target_uid, *admin_user_id);
+        let lifecycle_reason = reason.clone().unwrap_or_else(|| "banned".to_string());
+        let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
+            event_id: synctv_common::snanoid!(16),
+            room_id: rid,
+            user_id: target_uid,
+            reason: lifecycle_reason,
+            timestamp: chrono::Utc::now(),
+        };
+        let lifecycle_outbox_event = self.realtime_fanout.outbox_event(&lifecycle_event);
         self.room_service
             .admin_ban_member_with_outbox(
                 rid,
@@ -2251,11 +2271,14 @@ impl AdminApiImpl {
                 persisted_banned_by,
                 reason.clone(),
                 prepared_membership_fanout.outbox_factory(),
+                lifecycle_outbox_event,
             )
             .await
             .map_err(ApiError::from)?;
         drop(admin_username);
         prepared_membership_fanout.publish_after_outbox_commit();
+        self.realtime_fanout
+            .publish_after_outbox_commit(lifecycle_event);
 
         self.realtime_lifecycle
             .disconnect_user_from_room(&rid, &target_uid)
@@ -4705,6 +4728,7 @@ impl AdminApiImpl {
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
             rid,
             *admin_user_id,
             actor.username().to_string(),
@@ -4730,7 +4754,7 @@ impl AdminApiImpl {
 
         for media_id in &result.deleted_media_ids {
             self.realtime_lifecycle
-                .kick_stream(&rid, media_id, "media_deleted")
+                .kick_local_stream(&rid, media_id)
                 .await;
         }
 
@@ -5172,6 +5196,7 @@ impl AdminApiImpl {
         let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
             self.media_fanout.clone(),
             self.playlist_fanout.clone(),
+            self.realtime_fanout.clone(),
             rid,
             *admin_user_id,
             actor.username().to_string(),
@@ -5197,7 +5222,7 @@ impl AdminApiImpl {
 
         for media_id in &result.deleted_media_ids {
             self.realtime_lifecycle
-                .kick_stream(&rid, media_id, "media_deleted")
+                .kick_local_stream(&rid, media_id)
                 .await;
         }
 

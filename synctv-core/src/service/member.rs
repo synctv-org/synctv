@@ -3,8 +3,6 @@
 //! Handles room member operations including joining, leaving, kicking,
 //! and role management with Allow/Deny permission pattern.
 
-use std::sync::Arc;
-
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
@@ -18,18 +16,7 @@ use crate::{
     Error, Result,
 };
 
-/// Trait for broadcasting member events to realtime replicas.
-///
-/// This abstracts over the realtime transport so that `synctv-core` does not
-/// depend on the runtime implementation. The implementation lives in the
-/// application wiring layer.
-pub trait MemberEventBroadcaster: Send + Sync {
-    /// Broadcast a kick event for a user from a specific room to all realtime replicas.
-    fn broadcast_kick_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str);
-
-    /// Broadcast a ban event for a user (disconnect from all rooms) to all realtime replicas.
-    fn broadcast_kick_user(&self, user_id: &UserId, reason: &str);
-}
+use std::sync::Arc;
 
 /// Options for adding a member to a room
 ///
@@ -139,7 +126,6 @@ pub struct MemberService {
     audit_service: Option<Arc<AuditService>>,
     cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     notification_service: NotificationService,
-    event_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn MemberEventBroadcaster>>>>,
 }
 
 pub struct AdminMemberUpdate {
@@ -192,7 +178,6 @@ impl MemberService {
             audit_service: None,
             cache_invalidation: None,
             notification_service,
-            event_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -215,7 +200,6 @@ impl MemberService {
             audit_service,
             cache_invalidation,
             notification_service,
-            event_broadcaster: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -229,23 +213,6 @@ impl MemberService {
         self.permission_service
             .set_invalidation_service(Arc::clone(&service));
         self.cache_invalidation = Some(service);
-    }
-
-    /// Set the realtime event broadcaster for cross-replica kick/ban propagation.
-    pub fn set_event_broadcaster(&self, broadcaster: Arc<dyn MemberEventBroadcaster>) {
-        *self.event_broadcaster.write() = Some(broadcaster);
-    }
-
-    #[doc(hidden)]
-    pub fn has_event_broadcaster(&self) -> bool {
-        self.event_broadcaster.read().is_some()
-    }
-
-    #[doc(hidden)]
-    pub fn broadcast_kick_from_room(&self, room_id: &RoomId, user_id: &UserId, reason: &str) {
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(room_id, user_id, reason);
-        }
     }
 
     async fn notify_permission_changed(
@@ -415,11 +382,6 @@ impl MemberService {
             .invalidate_cache(&room_id, &user_id)
             .await;
 
-        // Broadcast kick event for cross-replica disconnect.
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(&room_id, &user_id, "removed");
-        }
-
         Ok(())
     }
 
@@ -475,11 +437,6 @@ impl MemberService {
             );
         }
 
-        // Broadcast kick event to all realtime replicas for cross-replica disconnect.
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
-        }
-
         // Audit log
         self.audit_log(
             &kicker_id,
@@ -532,10 +489,6 @@ impl MemberService {
                 user_id = %target_user_id,
                 "Failed to notify local clients of admin member kick"
             );
-        }
-
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         }
 
         self.audit_log(
@@ -1171,17 +1124,6 @@ impl MemberService {
             );
         }
 
-        // Broadcast kick event to all realtime replicas for cross-replica disconnect.
-        // The realtime event system handles propagation asynchronously; no need to
-        // wait here as receivers process events independently.
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(
-                &room_id,
-                &target_user_id,
-                reason.as_deref().unwrap_or("banned"),
-            );
-        }
-
         // Audit log
         self.audit_log(
             &admin_id,
@@ -1238,14 +1180,6 @@ impl MemberService {
                 room_id = %room_id,
                 user_id = %target_user_id,
                 "Failed to notify local clients of admin member ban"
-            );
-        }
-
-        if let Some(ref broadcaster) = *self.event_broadcaster.read() {
-            broadcaster.broadcast_kick_from_room(
-                &room_id,
-                &target_user_id,
-                reason.as_deref().unwrap_or("banned"),
             );
         }
 

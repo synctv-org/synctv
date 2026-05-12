@@ -71,8 +71,9 @@ curl -fsS \
 | 指标 | 类型 | Labels | 含义 |
 | --- | --- | --- | --- |
 | `synctv_cluster_connections_total` | gauge | none | 当前节点的集群连接 |
-| `synctv_cluster_events_published_total` | counter | `event_type` | 已发布集群事件 |
-| `synctv_cluster_events_dropped_total` | counter | `reason` | 被丢弃的集群事件 |
+| `synctv_realtime_events_published_total` | counter | `event_type` | 已发布实时事件 |
+| `synctv_realtime_events_received_total` | counter | `event_type` | 已接收实时事件 |
+| `synctv_realtime_events_dropped_total` | counter | `reason` | 被丢弃的实时事件 |
 | `synctv_cluster_heartbeat_failures` | gauge | none | 连续 heartbeat 失败数 |
 | `synctv_node_active_rooms` | gauge | none | 当前节点活跃房间 |
 | `synctv_cluster_node_health_status` | gauge | none | 节点健康状态，1 表示 healthy |

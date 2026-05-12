@@ -77,7 +77,8 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
         if let Some(event_service) = &self.event_service {
             if let Some(room_id) = event.room_id() {
                 event_service.broadcast_local(room_id, &event);
-            } else if is_admin_channel_event(&event) {
+            }
+            if is_admin_channel_event(&event) {
                 event_service.broadcast_admin_local(&event);
             }
         }
@@ -106,7 +107,8 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
         if let Some(event_service) = &self.event_service {
             if let Some(room_id) = event.room_id() {
                 event_service.broadcast_local(room_id, &event);
-            } else if is_admin_channel_event(&event) {
+            }
+            if is_admin_channel_event(&event) {
                 event_service.broadcast_admin_local(&event);
             }
         }
@@ -133,6 +135,11 @@ fn is_admin_channel_event(event: &RealtimeEvent) -> bool {
     matches!(
         event,
         RealtimeEvent::KickUser { .. }
+            | RealtimeEvent::KickPublisher { .. }
+            | RealtimeEvent::KickUserFromRoom { .. }
+            | RealtimeEvent::RoomDeleted { .. }
+            | RealtimeEvent::RoomBanned { .. }
+            | RealtimeEvent::RoomOwnerInactive { .. }
             | RealtimeEvent::UserNotification { .. }
             | RealtimeEvent::ProviderCredentialChanged { .. }
             | RealtimeEvent::CacheInvalidate { .. }

@@ -34,7 +34,7 @@ description: Short definitions for common SyncTV security, deployment, media, re
 | leader election | Mechanism that selects one node to run certain background jobs | cluster and background tasks |
 | Redis Stream catch-up | Mechanism for replaying missed events after a short node disconnect | cluster realtime events |
 | publisher-node proxy | HLS model where non-publisher nodes read segments from the publishing node over gRPC | multi-replica livestreaming |
-| fail-closed | Rejecting a business request when a critical dependency or event write fails, avoiding split database/cache state | write operations, cluster events, transactional outbox |
+| fail-closed | Rejecting a business request when a critical dependency or event write fails, avoiding split database/cache state | write operations, realtime events, transactional outbox |
 | fanout | Distributing one business change to local connections, nodes, or subscribers | WebSocket and cluster realtime events |
 
 ## Continue Reading

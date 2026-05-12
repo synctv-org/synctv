@@ -792,7 +792,7 @@ impl RoomService {
         self.cache_invalidation = Some(service);
     }
 
-    /// Set the cluster broadcaster on the inner playback service for cross-replica sync.
+    /// Set the realtime broadcaster on the inner playback service for cross-replica sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
     pub fn set_playback_realtime_broadcaster(
         &self,
@@ -801,16 +801,7 @@ impl RoomService {
         self.playback_service.set_realtime_broadcaster(broadcaster);
     }
 
-    /// Set the cluster broadcaster on the inner member service for cross-replica kick/ban sync.
-    /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_member_event_broadcaster(
-        &self,
-        broadcaster: Arc<dyn crate::service::MemberEventBroadcaster>,
-    ) {
-        self.member_service.set_event_broadcaster(broadcaster);
-    }
-
-    /// Set the cluster broadcaster on the inner playlist service for cross-replica sync.
+    /// Set the realtime broadcaster on the inner playlist service for cross-replica sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
     pub fn set_playlist_realtime_broadcaster(
         &self,
@@ -1045,11 +1036,6 @@ impl RoomService {
     }
 
     #[doc(hidden)]
-    pub fn has_member_event_broadcaster(&self) -> bool {
-        self.member_service.has_event_broadcaster()
-    }
-
-    #[doc(hidden)]
     pub fn has_playlist_realtime_broadcaster(&self) -> bool {
         self.playlist_service.has_realtime_broadcaster()
     }
@@ -1115,16 +1101,37 @@ impl RoomService {
             .unwrap_or_else(|| user_id.to_string()))
     }
 
-    async fn permission_changed_snapshot(
+    async fn membership_snapshot_username_tx(
+        tx: &mut Transaction<'_, Postgres>,
+        user_id: &UserId,
+    ) -> Result<String> {
+        if *user_id == UserId::MAX {
+            return Ok("local-management".to_string());
+        }
+
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT username FROM users WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .unwrap_or_else(|| user_id.to_string()))
+    }
+
+    async fn permission_changed_snapshot_tx(
         &self,
+        tx: &mut Transaction<'_, Postgres>,
         room_id: RoomId,
         target_user_id: UserId,
         changed_by: UserId,
         member: Option<&RoomMember>,
     ) -> Result<PermissionChangedOutboxSnapshot> {
-        let target_username = self.membership_snapshot_username(&target_user_id).await?;
-        let changed_by_username = self.membership_snapshot_username(&changed_by).await?;
-        let room_settings = self.room_settings_repo.get(&room_id).await?;
+        let target_username = Self::membership_snapshot_username_tx(tx, &target_user_id).await?;
+        let changed_by_username = Self::membership_snapshot_username_tx(tx, &changed_by).await?;
+        let room_settings = self
+            .room_settings_repo
+            .get_for_update(&room_id, &mut **tx)
+            .await?;
 
         let (
             new_permissions,
@@ -1133,7 +1140,7 @@ impl RoomService {
             removed_permissions,
             admin_added_permissions,
             admin_removed_permissions,
-        ) = if let Some(member) = member {
+        ) = if let Some(member) = member.filter(|member| member.is_active()) {
             let role_default = self
                 .permission_service
                 .calculate_role_default_permissions(&member.role, &room_settings);
@@ -1193,6 +1200,17 @@ impl RoomService {
             if let Some(outbox) = &self.realtime_outbox {
                 outbox.insert_with_executor(&event, &mut **tx).await?;
             }
+        }
+        Ok(())
+    }
+
+    async fn insert_realtime_outbox_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        outbox_event: Option<&NewRealtimeOutboxEvent>,
+    ) -> Result<()> {
+        if let (Some(outbox), Some(event)) = (&self.realtime_outbox, outbox_event) {
+            outbox.insert_with_executor(event, &mut **tx).await?;
         }
         Ok(())
     }
@@ -1609,14 +1627,27 @@ impl RoomService {
 
         let updated_current_owner = self
             .member_repo
-            .update_role_with_executor(&room_id, &current_owner_id, RoomRole::Admin, &mut *tx)
+            .update_role_with_version_executor(
+                &room_id,
+                &current_owner_id,
+                RoomRole::Admin,
+                current_owner_member.version,
+                &mut *tx,
+            )
             .await?;
         let updated_new_owner = self
             .member_repo
-            .update_role_with_executor(&room_id, &new_owner_id, RoomRole::Creator, &mut *tx)
+            .update_role_with_version_executor(
+                &room_id,
+                &new_owner_id,
+                RoomRole::Creator,
+                new_owner_member.version,
+                &mut *tx,
+            )
             .await?;
         let current_owner_snapshot = self
-            .permission_changed_snapshot(
+            .permission_changed_snapshot_tx(
+                &mut tx,
                 room_id,
                 current_owner_id,
                 current_owner_id,
@@ -1630,7 +1661,8 @@ impl RoomService {
         )
         .await?;
         let new_owner_snapshot = self
-            .permission_changed_snapshot(
+            .permission_changed_snapshot_tx(
+                &mut tx,
                 room_id,
                 new_owner_id,
                 current_owner_id,
@@ -1914,17 +1946,28 @@ impl RoomService {
                     user_id = %user_id,
                     "User is already a member of the room (idempotent join)"
                 );
-                self.member_repo
-                    .get(&room_id, &user_id)
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Internal("Member disappeared after AlreadyExists".to_string())
-                    })?
+                tx.rollback().await?;
+                let existing_member =
+                    self.member_repo
+                        .get(&room_id, &user_id)
+                        .await?
+                        .ok_or_else(|| {
+                            Error::Internal("Member disappeared after AlreadyExists".to_string())
+                        })?;
+                let members = self.member_service.list_members(&room_id).await?;
+                self.touch_room_activity(room_id).await;
+                return Ok((room, existing_member, members));
             }
             Err(e) => return Err(e),
         };
         let snapshot = self
-            .permission_changed_snapshot(room_id, user_id, user_id, Some(&created_member))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                user_id,
+                user_id,
+                Some(&created_member),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2266,7 +2309,13 @@ impl RoomService {
             )
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&created))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&created),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2352,7 +2401,13 @@ impl RoomService {
             )
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&updated))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&updated),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2424,7 +2479,7 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, None)
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2520,7 +2575,13 @@ impl RoomService {
             )
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&created))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&created),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2604,7 +2665,13 @@ impl RoomService {
             )
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&updated))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&updated),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2698,7 +2765,7 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, None)
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -2801,9 +2868,6 @@ impl RoomService {
         self.permission_service
             .invalidate_cache(&room_id, &user_id)
             .await;
-
-        self.member_service
-            .broadcast_kick_from_room(&room_id, &user_id, "removed");
 
         // Notify room members with username
         let username = snapshot.username;
@@ -4302,7 +4366,8 @@ impl RoomService {
                         .await?
                 };
                 let snapshot = self
-                    .permission_changed_snapshot(
+                    .permission_changed_snapshot_tx(
+                        &mut tx,
                         room_id,
                         target_user_id,
                         granter_id,
@@ -4362,12 +4427,29 @@ impl RoomService {
         }
 
         let mut tx = self.pool.begin().await?;
+        let member = self
+            .member_repo
+            .get(&room_id, &target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
         let updated_member = self
             .member_repo
-            .update_role_with_executor(&room_id, &target_user_id, role, &mut *tx)
+            .update_role_with_version_executor(
+                &room_id,
+                &target_user_id,
+                role,
+                member.version,
+                &mut *tx,
+            )
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, creator_id, Some(&updated_member))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                creator_id,
+                Some(&updated_member),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -4388,7 +4470,7 @@ impl RoomService {
         kicker_id: UserId,
         target_user_id: UserId,
     ) -> Result<()> {
-        self.kick_member_with_outbox(room_id, kicker_id, target_user_id, None)
+        self.kick_member_with_outbox(room_id, kicker_id, target_user_id, None, None)
             .await
     }
 
@@ -4398,6 +4480,7 @@ impl RoomService {
         kicker_id: UserId,
         target_user_id: UserId,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         self.permission_service
             .check_permission_no_cache(&room_id, &kicker_id, PermissionBits::KICK_MEMBER)
@@ -4407,9 +4490,6 @@ impl RoomService {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
 
-        let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, kicker_id, None)
-            .await?;
         let mut tx = self.pool.begin().await?;
         let removed = self
             .member_repo
@@ -4421,7 +4501,12 @@ impl RoomService {
                     .to_string(),
             ));
         }
+        let snapshot = self
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, kicker_id, None)
+            .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
             .await?;
         tx.commit().await?;
 
@@ -4439,8 +4524,6 @@ impl RoomService {
                 "Failed to notify local clients of member kick"
             );
         }
-        self.member_service
-            .broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         Ok(())
     }
 
@@ -4451,14 +4534,12 @@ impl RoomService {
         target_user_id: UserId,
         reason: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         self.permission_service
             .check_permission_no_cache(&room_id, &admin_id, PermissionBits::BAN_MEMBER)
             .await?;
 
-        let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, admin_id, None)
-            .await?;
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
         self.member_repo
@@ -4471,7 +4552,12 @@ impl RoomService {
                 &mut tx,
             )
             .await?;
+        let snapshot = self
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, admin_id, None)
+            .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
             .await?;
         tx.commit().await?;
 
@@ -4489,11 +4575,6 @@ impl RoomService {
                 "Failed to notify local clients of member ban"
             );
         }
-        self.member_service.broadcast_kick_from_room(
-            &room_id,
-            &target_user_id,
-            reason.as_deref().unwrap_or("banned"),
-        );
         Ok(())
     }
 
@@ -4514,7 +4595,13 @@ impl RoomService {
             .unban_member_with_executor(&room_id, &target_user_id, &mut tx)
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, admin_id, Some(&member))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                admin_id,
+                Some(&member),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -4598,7 +4685,13 @@ impl RoomService {
         if let Some(new_role) = role {
             updated = self
                 .member_repo
-                .update_role_with_executor(&room_id, &target_user_id, new_role, &mut *tx)
+                .update_role_with_version_executor(
+                    &room_id,
+                    &target_user_id,
+                    new_role,
+                    updated.version,
+                    &mut *tx,
+                )
                 .await?;
         }
 
@@ -4633,7 +4726,159 @@ impl RoomService {
         }
 
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&updated))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&updated),
+            )
+            .await?;
+        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        tx.commit().await?;
+
+        self.permission_service
+            .invalidate_cache(&room_id, &target_user_id)
+            .await;
+        if role.is_some() {
+            self.notify_room_settings_invalidation(&room_id).await;
+        }
+        Ok(updated)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_member_with_outbox(
+        &self,
+        room_id: RoomId,
+        actor_id: UserId,
+        target_user_id: UserId,
+        role: Option<RoomRole>,
+        apply_permission_update: bool,
+        added_permissions: u64,
+        removed_permissions: u64,
+        admin_added_permissions: u64,
+        admin_removed_permissions: u64,
+        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+    ) -> Result<crate::models::RoomMember> {
+        if !PermissionBits::includes_only_assignable_in_room(added_permissions)
+            || !PermissionBits::includes_only_assignable_in_room(removed_permissions)
+            || !PermissionBits::includes_only_assignable_in_room(admin_added_permissions)
+            || !PermissionBits::includes_only_assignable_in_room(admin_removed_permissions)
+        {
+            return Err(Error::InvalidInput(
+                "Permission set includes lifecycle-only permissions that cannot be delegated within a room"
+                    .to_string(),
+            ));
+        }
+
+        let current = self
+            .member_repo
+            .get(&room_id, &target_user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+        let effective_role = role.unwrap_or(current.role);
+        let effective_is_admin = matches!(effective_role, RoomRole::Admin);
+
+        if let Some(new_role) = role {
+            if new_role == RoomRole::Creator {
+                return Err(Error::InvalidInput(
+                    "Creator role is bound to room ownership and cannot be assigned via set_member_role"
+                        .to_string(),
+                ));
+            }
+            let room = self
+                .room_repo
+                .get_by_id(&room_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+            if room.created_by != actor_id {
+                return Err(Error::Authorization(
+                    "Only room creator can change member roles".to_string(),
+                ));
+            }
+
+            if target_user_id == room.created_by {
+                return Err(Error::InvalidInput(
+                    "Cannot change the role of the room creator via set_member_role".to_string(),
+                ));
+            }
+        }
+
+        if apply_permission_update {
+            self.permission_service
+                .check_permission_no_cache(
+                    &room_id,
+                    &actor_id,
+                    PermissionBits::SET_MEMBER_PERMISSIONS,
+                )
+                .await?;
+
+            if effective_is_admin && (added_permissions > 0 || removed_permissions > 0) {
+                return Err(Error::Authorization(
+                    "Admin members must use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
+                ));
+            }
+            if !effective_is_admin && (admin_added_permissions > 0 || admin_removed_permissions > 0)
+            {
+                return Err(Error::Authorization(
+                    "Only admin members use admin_added_permissions/admin_removed_permissions"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let mut updated = current;
+        if let Some(new_role) = role {
+            updated = self
+                .member_repo
+                .update_role_with_version_executor(
+                    &room_id,
+                    &target_user_id,
+                    new_role,
+                    updated.version,
+                    &mut *tx,
+                )
+                .await?;
+        }
+
+        if apply_permission_update {
+            updated = if effective_is_admin {
+                self.member_repo
+                    .update_admin_permissions_with_executor(
+                        &room_id,
+                        &target_user_id,
+                        admin_added_permissions,
+                        admin_removed_permissions,
+                        updated.version,
+                        &mut *tx,
+                    )
+                    .await?
+            } else {
+                self.member_repo
+                    .update_permissions_with_executor(
+                        &room_id,
+                        &target_user_id,
+                        added_permissions,
+                        removed_permissions,
+                        updated.version,
+                        &mut *tx,
+                    )
+                    .await?
+            };
+        }
+
+        let snapshot = self
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&updated),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
@@ -4654,14 +4899,12 @@ impl RoomService {
         actor_id: UserId,
         target_user_id: UserId,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         if actor_id == target_user_id {
             return Err(Error::InvalidInput("Cannot kick yourself".to_string()));
         }
 
-        let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, None)
-            .await?;
         let mut tx = self.pool.begin().await?;
         let removed = self
             .member_repo
@@ -4672,7 +4915,12 @@ impl RoomService {
                 "User is not an active member of this room".to_string(),
             ));
         }
+        let snapshot = self
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
+            .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
             .await?;
         tx.commit().await?;
 
@@ -4690,8 +4938,6 @@ impl RoomService {
                 "Failed to notify local clients of admin member kick"
             );
         }
-        self.member_service
-            .broadcast_kick_from_room(&room_id, &target_user_id, "kicked");
         Ok(())
     }
 
@@ -4703,14 +4949,12 @@ impl RoomService {
         persisted_banned_by: Option<UserId>,
         reason: Option<String>,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        lifecycle_outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         if actor_id == target_user_id {
             return Err(Error::InvalidInput("Cannot ban yourself".to_string()));
         }
 
-        let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, None)
-            .await?;
         let now = chrono::Utc::now();
         let mut tx = self.pool.begin().await?;
         self.member_repo
@@ -4723,7 +4967,12 @@ impl RoomService {
                 &mut tx,
             )
             .await?;
+        let snapshot = self
+            .permission_changed_snapshot_tx(&mut tx, room_id, target_user_id, actor_id, None)
+            .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
+            .await?;
+        self.insert_realtime_outbox_tx(&mut tx, lifecycle_outbox_event.as_ref())
             .await?;
         tx.commit().await?;
 
@@ -4741,11 +4990,6 @@ impl RoomService {
                 "Failed to notify local clients of admin member ban"
             );
         }
-        self.member_service.broadcast_kick_from_room(
-            &room_id,
-            &target_user_id,
-            reason.as_deref().unwrap_or("banned"),
-        );
         Ok(())
     }
 
@@ -4762,7 +5006,13 @@ impl RoomService {
             .unban_member_with_executor(&room_id, &target_user_id, &mut tx)
             .await?;
         let snapshot = self
-            .permission_changed_snapshot(room_id, target_user_id, actor_id, Some(&member))
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(&member),
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;

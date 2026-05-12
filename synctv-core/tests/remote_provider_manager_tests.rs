@@ -1158,7 +1158,12 @@ async fn scenario_health_check_reports_enabled_instance_with_invalid_secret_as_u
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
+    let manager = RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
+        Arc::new(repo),
+        None,
+        HashMap::new(),
+        synctv_common::ssrf::SsrfGuard::disabled(),
+    );
 
     let mut invalid = make_test_instance("test-instance-7c-invalid-secret");
     invalid.jwt_secret = Some("shared\nsecret".to_string());
@@ -1470,7 +1475,12 @@ async fn scenario_tls_configuration_insecure() {
     let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
+    let manager = RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
+        Arc::new(repo),
+        None,
+        HashMap::new(),
+        synctv_common::ssrf::SsrfGuard::disabled(),
+    );
 
     // insecure TLS (connect_with_connector), so use a short timeout to avoid
     // waiting for the remote to respond. The test exercises the TLS code path.
@@ -2481,9 +2491,9 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
     let _ = health_handle.await;
 }
 
-// ─── Test 21: Default-disabled SSRF no longer blocks internal endpoints ─────
+// ─── Test 21: Explicit disabled SSRF no longer blocks internal endpoints ─────
 
-async fn scenario_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled() {
+async fn scenario_internal_ips_fail_connectivity_validation_when_ssrf_is_explicitly_disabled() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let _redis_conn = Some(Arc::new(RwLock::new(
@@ -2492,9 +2502,14 @@ async fn scenario_internal_ips_fail_connectivity_validation_when_default_ssrf_is
     let _redis_client = Some(infra.redis_client.clone());
 
     let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
+    let manager = RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
+        Arc::new(repo),
+        None,
+        HashMap::new(),
+        synctv_common::ssrf::SsrfGuard::disabled(),
+    );
 
-    // Try to create instance with an internal IP. With default SSRF disabled,
+    // Try to create instance with an internal IP. With SSRF explicitly disabled,
     // static validation no longer rejects it, but the live health check still
     // fails because nothing is listening on that endpoint.
     let mut instance = make_test_instance("test-instance-21");
@@ -3490,9 +3505,9 @@ async fn test_init_pre_warms_cache() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled() {
+async fn test_internal_ips_fail_connectivity_validation_when_ssrf_is_explicitly_disabled() {
     install_rustls_provider_once();
-    scenario_internal_ips_fail_connectivity_validation_when_default_ssrf_is_disabled().await;
+    scenario_internal_ips_fail_connectivity_validation_when_ssrf_is_explicitly_disabled().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

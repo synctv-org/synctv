@@ -7,8 +7,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use synctv_common::ssrf::SsrfGuard;
 
-fn is_ip_blocked_by_default(ip: &IpAddr) -> bool {
-    SsrfGuard::shared_default().is_ip_blocked(ip)
+fn is_ip_blocked_by_disabled_policy(ip: &IpAddr) -> bool {
+    SsrfGuard::disabled().is_ip_blocked(ip)
 }
 
 fn is_ip_blocked_by_strict_policy(ip: &IpAddr) -> bool {
@@ -16,11 +16,15 @@ fn is_ip_blocked_by_strict_policy(ip: &IpAddr) -> bool {
 }
 
 #[test]
-fn test_shared_default_policy_is_disabled() {
-    assert!(SsrfGuard::shared_default().acl().is_none());
-    assert!(SsrfGuard::shared_default().dns_resolver().is_none());
-    assert!(!is_ip_blocked_by_default(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-    assert!(!is_ip_blocked_by_default(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+fn test_disabled_policy_has_no_acl() {
+    assert!(SsrfGuard::disabled().acl().is_none());
+    assert!(SsrfGuard::disabled().dns_resolver().is_none());
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V4(
+        Ipv4Addr::LOCALHOST
+    )));
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V6(
+        Ipv6Addr::LOCALHOST
+    )));
 }
 
 // Teredo IPv6 (2001:0000::/32) blocking
@@ -157,8 +161,8 @@ fn test_ipv6_multicast_blocked() {
 fn test_ipv6_global_unicast_allowed() {
     let cloudflare = Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111);
     assert!(
-        !is_ip_blocked_by_default(&IpAddr::V6(cloudflare)),
-        "Global unicast IPv6 should be allowed by the default policy"
+        !is_ip_blocked_by_disabled_policy(&IpAddr::V6(cloudflare)),
+        "Global unicast IPv6 should be allowed by the disabled policy"
     );
     assert!(
         !is_ip_blocked_by_strict_policy(&IpAddr::V6(cloudflare)),
@@ -166,7 +170,7 @@ fn test_ipv6_global_unicast_allowed() {
     );
 
     let public = Ipv6Addr::new(0x2400, 0xcb00, 0, 0, 0, 0, 0, 1);
-    assert!(!is_ip_blocked_by_default(&IpAddr::V6(public)));
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V6(public)));
     assert!(!is_ip_blocked_by_strict_policy(&IpAddr::V6(public)));
 }
 
@@ -174,13 +178,15 @@ fn test_ipv6_global_unicast_allowed() {
 
 #[test]
 fn test_is_ip_blocked_v4() {
-    assert!(!is_ip_blocked_by_default(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V4(
+        Ipv4Addr::LOCALHOST
+    )));
     assert!(is_ip_blocked_by_strict_policy(&IpAddr::V4(
         Ipv4Addr::LOCALHOST
     )));
-    assert!(!is_ip_blocked_by_default(&IpAddr::V4(Ipv4Addr::new(
-        8, 8, 8, 8
-    ))));
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V4(
+        Ipv4Addr::new(8, 8, 8, 8)
+    )));
     assert!(!is_ip_blocked_by_strict_policy(&IpAddr::V4(Ipv4Addr::new(
         8, 8, 8, 8
     ))));
@@ -188,7 +194,9 @@ fn test_is_ip_blocked_v4() {
 
 #[test]
 fn test_is_ip_blocked_v6() {
-    assert!(!is_ip_blocked_by_default(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    assert!(!is_ip_blocked_by_disabled_policy(&IpAddr::V6(
+        Ipv6Addr::LOCALHOST
+    )));
     assert!(is_ip_blocked_by_strict_policy(&IpAddr::V6(
         Ipv6Addr::LOCALHOST
     )));

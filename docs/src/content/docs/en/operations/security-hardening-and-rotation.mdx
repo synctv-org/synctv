@@ -23,7 +23,7 @@ Production deployments should have:
 | `jwt.secret` | Existing tokens become invalid | Medium | Plan rotation and expect re-login |
 | `security.opaque_server_setup_secret` | OPAQUE password records may fail | High | Do not routinely rotate; back it up |
 | `security.credential_encryption_key` | Encrypted Provider credentials cannot be decrypted | High | Migrate credentials before replacement |
-| `server.cluster_secret` | Node-to-node auth fails | Medium | Coordinate all replicas |
+| `cluster.secret` | Node-to-node auth fails | Medium | Coordinate all replicas |
 | `management.auth_token` | CLI/management TCP auth | Low | Rotate regularly if TCP is used |
 | `metrics.auth.bearer_token` | Metrics scrape auth | Low | Sync monitoring config |
 | SMTP/OAuth2/Provider credentials | Email, login, or media failures | Medium | Follow upstream rotation policy |

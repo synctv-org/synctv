@@ -1,10 +1,7 @@
 //! Tests for proxy client behavior and explicit SSRF ACL semantics.
 //!
-//! Runtime proxy clients now use the shared default SSRF policy, which is
-//! intentionally disabled unless callers opt into a strict policy.
-//! These tests therefore distinguish:
-//! - runtime behavior of the default proxy client
-//! - explicit blocking behavior of `SsrfGuard::strict_policy()`
+//! Runtime proxy clients receive an explicit SSRF policy from the application.
+//! These tests distinguish disabled test behavior from strict-policy checks.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -12,7 +9,8 @@ use std::net::TcpListener;
 use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 
 fn proxy_client() -> reqwest::Client {
-    synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
+    synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::disabled())
+        .expect("proxy HTTP client should build for tests")
 }
 
 // DNS-level SSRF protection tests
@@ -29,8 +27,10 @@ async fn test_proxy_client_loopback_target_fails_without_listener() {
     drop(listener);
 
     let client = proxy_client();
+    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let url = format!("http://127.0.0.1:{unused_port}/admin");
     let cfg = ProxyConfig {
+        ssrf_guard: &ssrf_guard,
         client: &client,
         url: &url,
         provider_headers: &HashMap::new(),
@@ -41,19 +41,16 @@ async fn test_proxy_client_loopback_target_fails_without_listener() {
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
         result.is_err(),
-        "loopback target without a listener should fail even when default SSRF is disabled"
+        "loopback target without a listener should fail when SSRF is explicitly disabled"
     );
 }
 
-/// Verify that the shared default policy is disabled for proxy clients.
+/// Verify that the explicit disabled policy has no ACL resolver.
 #[test]
-fn test_shared_default_ssrf_policy_is_disabled() {
-    assert!(synctv_common::ssrf::SsrfGuard::shared_default()
-        .acl()
-        .is_none());
-    assert!(synctv_common::ssrf::SsrfGuard::shared_default()
-        .dns_resolver()
-        .is_none());
+fn test_disabled_ssrf_policy_has_no_acl_resolver() {
+    let guard = synctv_common::ssrf::SsrfGuard::disabled();
+    assert!(guard.acl().is_none());
+    assert!(guard.dns_resolver().is_none());
 }
 
 /// Verify that `strict_policy()` correctly identifies blocked IPs.

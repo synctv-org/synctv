@@ -82,6 +82,10 @@ jwt:
 security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  ssrf:
+    allow_private_network_targets: false
+    allowed_hosts: []
+    allowed_ip_ranges: []
 
 management:
   enabled: true
@@ -126,12 +130,14 @@ server:
     - "192.168.0.0/16"
   cors_allowed_origins:
     - "https://app.example.com"
-  cluster_secret: ""
-  cluster_secret_file: "/run/secrets/cluster_secret"
   advertise_host: "synctv-0.synctv-headless.default.svc.cluster.local"
   shutdown_drain_timeout_seconds: 30
   grpc_max_message_size_bytes: 16777216
   grpc_compression_enabled: true
+
+cluster:
+  secret: ""
+  secret_file: "/run/secrets/cluster_secret"
 
 time:
   timezone: "Asia/Shanghai"
@@ -146,6 +152,10 @@ security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
   opaque_server_setup_secret: ""
   opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
+  ssrf:
+    allow_private_network_targets: false
+    allowed_hosts: []
+    allowed_ip_ranges: []
 
 data_dir: "/var/lib/synctv"
 
@@ -459,7 +469,7 @@ synctv --config /etc/synctv/synctv.yaml config validate
 检查内容：
 
 - 必要 secret 是否为空或仍为默认值。
-- `cluster.enabled=true` 时 Redis 和 `server.cluster_secret` 是否满足要求。
+- `cluster.enabled=true` 时 Redis 和 `cluster.secret` 是否满足要求。
 - TCP management 是否配置了 `management.auth_token`。
 - CORS origin、gRPC message size、WebAuthn origin 等字段是否合法。
 - 路径类配置能否解析。

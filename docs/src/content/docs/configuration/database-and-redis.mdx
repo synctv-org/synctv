@@ -137,14 +137,12 @@ redis:
 
 ## 集群依赖
 
-`cluster.enabled=true` 时必须配置 Redis 和 `server.cluster_secret`。
+`cluster.enabled=true` 时必须配置 Redis 和 `cluster.secret`。
 
 ```yaml
 cluster:
   enabled: true
-
-server:
-  cluster_secret_file: "/run/secrets/cluster_secret"
+  secret_file: "/run/secrets/cluster_secret"
 
 redis:
   url_file: "/run/secrets/redis_url"

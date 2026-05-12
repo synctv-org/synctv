@@ -569,6 +569,21 @@ pub async fn request_email_login(
     }))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/email/request",
+        tag = "Auth",
+        request_body = RequestMfaEmailCodeRequest,
+        responses(
+            (status = 200, description = "MFA email code request accepted", body = RequestMfaEmailCodeResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Email service unavailable", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn request_mfa_email_code(
     State(state): State<AppState>,
     request: Request,
@@ -595,6 +610,22 @@ pub async fn request_mfa_email_code(
     Ok(Json(result))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/email/verify",
+        tag = "Auth",
+        request_body = VerifyMfaEmailCodeRequest,
+        responses(
+            (status = 200, description = "MFA email code verified", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid MFA challenge or code", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc),
+            (status = 503, description = "Email service unavailable", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn verify_mfa_email_code(
     State(state): State<AppState>,
     request: Request,
@@ -630,6 +661,20 @@ pub async fn verify_mfa_email_code(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/passkeys/start",
+        tag = "Auth",
+        request_body = StartMfaPasskeyRequest,
+        responses(
+            (status = 200, description = "MFA passkey challenge created", body = StartMfaPasskeyResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn start_mfa_passkey(
     State(state): State<AppState>,
     request: Request,
@@ -653,6 +698,21 @@ pub async fn start_mfa_passkey(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/passkeys/finish",
+        tag = "Auth",
+        request_body = FinishMfaPasskeyRequest,
+        responses(
+            (status = 200, description = "MFA passkey verified", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid MFA challenge or credential", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn finish_mfa_passkey(
     State(state): State<AppState>,
     request: Request,
@@ -679,6 +739,21 @@ pub async fn finish_mfa_passkey(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/auth/mfa/password/verify",
+        tag = "Auth",
+        request_body = VerifyMfaPasswordRequest,
+        responses(
+            (status = 200, description = "MFA password verified", body = LoginResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid MFA challenge or password", body = crate::openapi::ErrorResponseDoc),
+            (status = 429, description = "Rate limited", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub async fn verify_mfa_password(
     State(state): State<AppState>,
     request: Request,

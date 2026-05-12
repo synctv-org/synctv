@@ -23,7 +23,7 @@ cluster:
   enabled: true
 ```
 
-启用后，Redis 和 `server.cluster_secret` 必填。
+启用后，Redis 和 `cluster.secret` 必填。
 
 ## 设计目标
 
@@ -37,7 +37,7 @@ cluster:
     Redis 保存 ephemeral/shared state：节点注册、pub/sub、Redis Stream catch-up、leader election、限流和短期认证状态。
   </Card>
   <Card title="节点间信任" icon="setting">
-    `server.cluster_secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
+    `cluster.secret` 用于节点间 gRPC 调用认证。所有节点必须一致，且不能暴露给客户端。
   </Card>
   <Card title="直播可达性" icon="youtube">
     RTMP publisher 可能在任意节点上，观众请求也可能落到任意节点；因此直播需要 publisher registry、HLS gRPC proxy 和明确的 HLS 存储边界。
@@ -63,7 +63,7 @@ cluster:
 </Steps>
 
 <Aside type="caution">
-集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `server.cluster_secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，OSS 则提供对象存储分片。
+集群模式不能修复底层依赖不一致。多个副本必须共享同一个 PostgreSQL、Redis 和 `cluster.secret`。HLS 本地 backend 可以通过 publisher-node proxy 工作，因此 publisher 节点不可达、重启或网络分区时，远端节点读取分片会受影响；`shared_file` 会让 TS 分片从当前节点挂载的共享路径读取，OSS 则提供对象存储分片。
 </Aside>
 
 ## 部署形态
@@ -80,7 +80,7 @@ cluster:
 
 - 所有节点连接同一个 PostgreSQL。
 - 所有节点连接同一个 Redis。
-- 所有节点使用同一个 `server.cluster_secret`。
+- 所有节点使用同一个 `cluster.secret`。
 - 节点之间能访问彼此的 API/gRPC 地址。
 
 ## 事件通道容量
@@ -214,6 +214,6 @@ Helm chart 默认不启用集群模式。扩容前显式设置 `config.cluster.e
 扩容前必须确认：
 
 - Redis 可用。
-- `server.cluster_secret` 稳定且所有副本一致。
+- `cluster.secret` 稳定且所有副本一致。
 - HLS 模型已明确：小规模使用本地 backend + publisher-node proxy；需要持久共享存储时使用 `shared_file + RWX/PVC` 或 `oss`。
 - gRPC Service/Ingress 与内部节点访问符合你的网络设计。

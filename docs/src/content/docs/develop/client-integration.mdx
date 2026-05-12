@@ -186,7 +186,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirect_url=<callback>`，这类请求需要当前用户认证上下文。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
+绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirect_url=<callback>`。绑定发起请求和后续 `POST /api/oauth2/{provider}/exchange` 都必须携带当前用户 access token；exchange 时 token 用户必须与 OAuth2 state 中记录的用户一致。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
 
 ## gRPC 示例
 

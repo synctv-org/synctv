@@ -230,7 +230,7 @@ fn build_cluster_peer_discovery_driver(
     match config.cluster.discovery_mode {
         ClusterDiscoveryMode::K8sDns => Box::new(K8sClusterPeerDiscoveryDriver {
             api_port: config.server.port,
-            cluster_secret: config.server.cluster_secret.clone(),
+            cluster_secret: config.cluster.secret.clone(),
             shutdown_token,
         }),
         ClusterDiscoveryMode::Static => {
@@ -281,7 +281,7 @@ fn build_static_cluster_peer_discovery_driver(
             peers,
             probe_interval_secs: 10,
             connect_timeout: Duration::from_secs(3),
-            cluster_secret: config.server.cluster_secret.clone(),
+            cluster_secret: config.cluster.secret.clone(),
             default_api_port: config.server.port,
         },
         cancel_token: shutdown_token,
@@ -307,7 +307,7 @@ pub fn init_cluster_components(
             15,
             &cm.cancel_token(),
             HealthProbeConfig {
-                cluster_secret: config.server.cluster_secret.clone(),
+                cluster_secret: config.cluster.secret.clone(),
                 ..HealthProbeConfig::default()
             },
         ),
@@ -410,7 +410,7 @@ mod tests {
         let mut config = Config::default();
         config.server.host = "127.0.0.1".to_string();
         config.server.port = 8080;
-        config.server.cluster_secret.clear();
+        config.cluster.secret.clear();
         config.redis.url = "redis://127.0.0.1:6379".to_string();
         config.cluster.discovery_mode = ClusterDiscoveryMode::K8sDns;
         config

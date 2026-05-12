@@ -65,8 +65,12 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
 }
 
 #[cfg(test)]
-fn build_ssrf_safe_provider_client(timeout: Duration) -> Result<reqwest::Client, Error> {
+fn build_ssrf_safe_provider_client(
+    timeout: Duration,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<reqwest::Client, Error> {
     synctv_common::http::SsrfSafeClientBuilder::new()
+        .ssrf_guard(ssrf_guard.clone())
         .connect_timeout(Duration::from_secs(10))
         .request_timeout(timeout)
         .pool_max_idle_per_host(10)
@@ -74,10 +78,13 @@ fn build_ssrf_safe_provider_client(timeout: Duration) -> Result<reqwest::Client,
         .internal_with_err("Failed to build HTTP client")
 }
 
-pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Error> {
+pub(super) fn validate_provider_url(
+    url: &str,
+    context: &str,
+    guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Url, Error> {
     let parsed = Url::parse(url)
         .map_err(|err| Error::InvalidInput(format!("{context}: invalid URL: {err}")))?;
-    let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
     if let Some(acl) = guard.acl() {
         if acl.is_scheme_allowed(parsed.scheme()).is_denied() {
@@ -125,9 +132,12 @@ pub(super) fn validate_provider_url(url: &str, context: &str) -> Result<Url, Err
     Ok(parsed)
 }
 
-pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
+pub(super) fn build_provider_http_client(
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Arc<Client>, Error> {
     Ok(Arc::new(
         synctv_common::http::SsrfSafeClientBuilder::new()
+            .ssrf_guard(ssrf_guard.clone())
             .connect_timeout(std::time::Duration::from_secs(10))
             .disable_request_timeout()
             .pool_max_idle_per_host(10)
@@ -139,15 +149,19 @@ pub(super) fn build_provider_http_client() -> Result<Arc<Client>, Error> {
 #[cfg(test)]
 pub(super) fn build_oauth2_http_client_with_timeout(
     timeout: Duration,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<OAuth2HttpClient, Error> {
-    build_ssrf_safe_provider_client(timeout)
+    build_ssrf_safe_provider_client(timeout, ssrf_guard)
         .map(OAuth2HttpClient::new)
         .internal_with_err("Failed to build OAuth2 HTTP client")
 }
 
-pub(super) fn build_oauth2_http_client() -> Result<Arc<OAuth2HttpClient>, Error> {
+pub(super) fn build_oauth2_http_client(
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Arc<OAuth2HttpClient>, Error> {
     Ok(Arc::new(
         synctv_common::http::SsrfSafeClientBuilder::new()
+            .ssrf_guard(ssrf_guard.clone())
             .connect_timeout(std::time::Duration::from_secs(10))
             .disable_request_timeout()
             .pool_max_idle_per_host(10)
@@ -177,12 +191,30 @@ where
 
 /// Build a registry populated with all built-in `OAuth2` providers.
 #[must_use]
-pub fn provider_registry() -> crate::oauth2::ProviderRegistry {
+pub fn provider_registry(
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
+) -> crate::oauth2::ProviderRegistry {
     let registry = crate::oauth2::ProviderRegistry::new();
-    registry.register("github", github::github_factory);
-    registry.register("google", google::google_factory);
-    registry.register("logto", logto::logto_factory);
-    registry.register("oidc", oidc::oidc_factory);
+    let github_guard = ssrf_guard.clone();
+    registry.register(
+        "github",
+        Arc::new(move |config| github::github_factory_with_ssrf_guard(config, &github_guard)),
+    );
+    let google_guard = ssrf_guard.clone();
+    registry.register(
+        "google",
+        Arc::new(move |config| google::google_factory_with_ssrf_guard(config, &google_guard)),
+    );
+    let logto_guard = ssrf_guard.clone();
+    registry.register(
+        "logto",
+        Arc::new(move |config| logto::logto_factory_with_ssrf_guard(config, &logto_guard)),
+    );
+    let oidc_guard = ssrf_guard;
+    registry.register(
+        "oidc",
+        Arc::new(move |config| oidc::oidc_factory_with_ssrf_guard(config, &oidc_guard)),
+    );
     registry
 }
 
@@ -197,17 +229,26 @@ mod tests {
     use tokio::time::Duration;
 
     #[test]
-    fn validate_provider_url_allows_loopback_ips_when_default_ssrf_is_disabled() {
-        let parsed =
-            validate_provider_url("http://127.0.0.1:8080/userinfo", "Unsafe userinfo endpoint")
-                .expect("default SSRF policy should allow loopback IPs");
+    fn validate_provider_url_allows_loopback_ips_when_ssrf_is_explicitly_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let parsed = validate_provider_url(
+            "http://127.0.0.1:8080/userinfo",
+            "Unsafe userinfo endpoint",
+            &guard,
+        )
+        .expect("disabled SSRF policy should allow loopback IPs");
         assert_eq!(parsed.as_str(), "http://127.0.0.1:8080/userinfo");
     }
 
     #[test]
-    fn validate_provider_url_allows_localhost_when_default_ssrf_is_disabled() {
-        let parsed = validate_provider_url("http://localhost:8080/token", "Unsafe token endpoint")
-            .expect("default SSRF policy should allow localhost");
+    fn validate_provider_url_allows_localhost_when_ssrf_is_explicitly_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let parsed = validate_provider_url(
+            "http://localhost:8080/token",
+            "Unsafe token endpoint",
+            &guard,
+        )
+        .expect("disabled SSRF policy should allow localhost");
         assert_eq!(parsed.as_str(), "http://localhost:8080/token");
     }
 
@@ -223,7 +264,9 @@ mod tests {
 
     #[tokio::test]
     async fn token_exchange_client_allows_localhost_but_request_still_fails_without_server() {
-        let http_client = build_oauth2_http_client_with_timeout(Duration::from_millis(50)).unwrap();
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let http_client =
+            build_oauth2_http_client_with_timeout(Duration::from_millis(50), &guard).unwrap();
 
         let client = BasicClient::new(ClientId::new("client_id".to_string()))
             .set_client_secret(ClientSecret::new("client_secret".to_string()))

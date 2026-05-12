@@ -23,7 +23,9 @@ use std::time::Duration;
 /// The external URL is stored in `source_config.url` and validated on creation.
 /// Playback URLs point to synctv's own HLS/FLV endpoints. Internal room/media
 /// identity is injected at playback time through `ProviderContext`.
-pub struct LiveProxyProvider {}
+pub struct LiveProxyProvider {
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
+}
 
 impl Default for LiveProxyProvider {
     fn default() -> Self {
@@ -34,11 +36,19 @@ impl Default for LiveProxyProvider {
 impl LiveProxyProvider {
     pub const NAME: &'static str = "live_proxy";
 
-    pub const fn new() -> Self {
-        Self {}
+    pub fn new() -> Self {
+        Self::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::strict_policy())
     }
 
-    fn validate_live_source_url(url: &str) -> Result<(), ProviderError> {
+    #[must_use]
+    pub const fn new_with_ssrf_guard(ssrf_guard: synctv_common::ssrf::SsrfGuard) -> Self {
+        Self { ssrf_guard }
+    }
+
+    fn validate_live_source_url(
+        url: &str,
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<(), ProviderError> {
         // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
         // Use URL path parsing to avoid false positives from `.flv` appearing
         // in query parameters or other URL parts.
@@ -57,8 +67,6 @@ impl LiveProxyProvider {
             let host = parsed_url.host_str().ok_or_else(|| {
                 ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
             })?;
-            let guard = synctv_common::ssrf::SsrfGuard::shared_default();
-
             if guard.is_host_blocked(host) {
                 return Err(ProviderError::InvalidConfig(format!(
                     "LiveProxy source host '{host}' is blocked by SSRF policy"
@@ -199,7 +207,7 @@ impl MediaProvider for LiveProxyProvider {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
-        Self::validate_live_source_url(source_url)?;
+        Self::validate_live_source_url(source_url, &self.ssrf_guard)?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
         let redacted_host = url::Url::parse(source_url)
@@ -232,7 +240,7 @@ impl MediaProvider for LiveProxyProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
-        Self::validate_live_source_url(url)
+        Self::validate_live_source_url(url, &self.ssrf_guard)
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
@@ -370,9 +378,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_live_proxy_validate_source_config_allows_blocked_hosts_when_default_ssrf_is_disabled(
+    async fn test_live_proxy_validate_source_config_allows_blocked_hosts_when_ssrf_is_explicitly_disabled(
     ) {
-        let provider = LiveProxyProvider::new();
+        let provider =
+            LiveProxyProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let ctx = ProviderContext::new("test");
 
         for config in [
@@ -386,7 +395,7 @@ mod tests {
             provider
                 .validate_source_config(&ctx, SourceConfig::media(&config))
                 .await
-                .expect("default SSRF policy should allow blocked live source URLs");
+                .expect("disabled SSRF policy should allow blocked live source URLs");
         }
     }
 

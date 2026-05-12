@@ -2,9 +2,6 @@
 //!
 //! Pure HTTP client for Alist API, no dependency on `MediaProvider`
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
 use reqwest::{
     header::{
         HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER,
@@ -13,6 +10,7 @@ use reqwest::{
     Client,
 };
 use serde_json::json;
+use std::collections::HashMap;
 
 use super::error::{check_response, json_with_limit, AlistError};
 use super::types::{
@@ -66,19 +64,6 @@ fn effective_user_agent(headers: &HashMap<String, String>) -> &str {
     header_value(headers, USER_AGENT.as_str()).unwrap_or(crate::error::PROVIDER_USER_AGENT)
 }
 
-/// Shared HTTP client for all Alist requests (connection pooling).
-/// Redirect-safe by default. Private-network SSRF blocking follows SyncTV's
-/// runtime SSRF policy, which is permissive unless a strict guard is configured.
-static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
-    LazyLock::new(crate::build_provider_http_client);
-
-fn shared_client() -> Result<Client, AlistError> {
-    SHARED_CLIENT
-        .as_ref()
-        .map(Clone::clone)
-        .map_err(|err| AlistError::Network(err.to_string()))
-}
-
 /// Alist HTTP Client
 ///
 /// Provides methods for interacting with Alist API:
@@ -93,7 +78,11 @@ pub struct AlistClient {
 impl AlistClient {
     /// Create a new Alist client (reuses shared connection pool and per-host rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, AlistError> {
-        Self::with_http_client(host, shared_client()?)
+        Self::with_http_client(
+            host,
+            crate::build_provider_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+                .map_err(|err| AlistError::Network(err.to_string()))?,
+        )
     }
 
     /// Create a new Alist client with a prebuilt HTTP client.
@@ -110,7 +99,12 @@ impl AlistClient {
         host: impl Into<String>,
         token: impl Into<String>,
     ) -> Result<Self, AlistError> {
-        Self::with_token_and_http_client(host, token, shared_client()?)
+        Self::with_token_and_http_client(
+            host,
+            token,
+            crate::build_provider_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+                .map_err(|err| AlistError::Network(err.to_string()))?,
+        )
     }
 
     /// Create a new Alist client with token and a prebuilt HTTP client.

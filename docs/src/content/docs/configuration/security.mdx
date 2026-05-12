@@ -161,13 +161,37 @@ server:
 
 只添加你控制的代理 IP 或 CIDR。为空时，SyncTV 使用 socket peer address。
 
-## SSRF 默认策略
+## SSRF 出站策略
 
-SyncTV 默认允许访问私有网络媒体源、代理目标和远程视频源。自托管场景中，Alist、Emby、NAS、IPTV 和反向代理经常位于内网。
+SyncTV 使用全局 `security.ssrf` 策略控制服务端发起的 HTTP、代理、Provider、OAuth2、远程 Provider 和直播拉流请求。默认策略阻断 private、loopback、link-local、reserved 和云 metadata 网络目标。
 
-这意味着私有地址 SSRF 拦截不是全局默认安全边界。需要严格出站控制的调用点应显式使用 strict policy。
+```yaml
+security:
+  ssrf:
+    allow_private_network_targets: false
+    allowed_hosts:
+      - "alist.internal"
+    allowed_ip_ranges:
+      - "192.168.1.10/32"
+      - "10.0.8.0/24"
+```
 
-公网部署应通过反向代理、NetworkPolicy、防火墙和 Provider 凭据范围限制可达网络。不要把内部管理端点作为普通媒体源暴露给不可信用户。
+字段含义：
+
+- `allow_private_network_targets=false`：默认值，阻断本地/内网/metadata 目标。
+- `allowed_hosts`：按主机名放行已知内部服务。
+- `allowed_ip_ranges`：按 IP 或 CIDR 放行已知内部网段或单个服务。
+- `allow_private_network_targets=true`：显式放开所有 private/non-global 目标，仅适合可信内网部署。
+
+环境变量：
+
+```bash
+SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false
+SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS=nas.example.internal,alist.internal
+SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES=192.168.1.10/32,10.0.8.0/24
+```
+
+公网部署不要把内部管理端点作为普通媒体源暴露给不可信用户。优先使用最小 allowlist，而不是直接打开 `allow_private_network_targets`。
 
 ## WebAuthn 和 2FA
 

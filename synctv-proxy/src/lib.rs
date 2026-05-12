@@ -88,8 +88,11 @@ const RETRYABLE_STATUS_CODES: &[u16] = &[500, 502, 503, 504];
 ///
 /// Callers are expected to build this once during startup and inject it into
 /// the proxy/cache layers rather than relying on hidden process-global state.
-pub fn build_proxy_http_client() -> Result<reqwest::Client, anyhow::Error> {
+pub fn build_proxy_http_client(
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
+) -> Result<reqwest::Client, anyhow::Error> {
     synctv_common::http::SsrfSafeClientBuilder::new()
+        .ssrf_guard(ssrf_guard)
         .connect_timeout(Duration::from_secs(10))
         .disable_request_timeout()
         .disable_read_timeout()
@@ -101,6 +104,8 @@ pub fn build_proxy_http_client() -> Result<reqwest::Client, anyhow::Error> {
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {
+    /// SSRF policy used for static URL checks and redirect validation.
+    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
     /// Shared outbound HTTP client.
     pub client: &'a reqwest::Client,
     /// The remote URL to fetch.
@@ -271,12 +276,16 @@ pub async fn proxy_head_and_forward(cfg: ProxyConfig<'_>) -> Result<Response, an
 
     let parsed_url = url::Url::parse(cfg.url)
         .map_err(|e| ProxyError::InvalidRequest(format!("invalid URL: {e}")))?;
-    validate_target_url_against_ssrf(&parsed_url)?;
+    validate_target_url_against_ssrf(&parsed_url, cfg.ssrf_guard)?;
 
     let request = build_proxy_request_with_method(&cfg, reqwest::Method::HEAD)?;
-    let proxy_result =
-        send_head_with_redirect_validation_with_control(cfg.client, request, cfg.request_control)
-            .await?;
+    let proxy_result = send_head_with_redirect_validation_with_control(
+        cfg.client,
+        request,
+        cfg.ssrf_guard,
+        cfg.request_control,
+    )
+    .await?;
 
     build_head_response(&proxy_result.response)
 }
@@ -358,12 +367,13 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     let parsed_url = url::Url::parse(cfg.url)
         .map_err(|e| ProxyError::InvalidRequest(format!("invalid URL: {e}")))?;
-    validate_target_url_against_ssrf(&parsed_url)?;
+    validate_target_url_against_ssrf(&parsed_url, cfg.ssrf_guard)?;
 
     let request = build_proxy_request(&cfg)?;
     let proxy_result = send_with_redirect_validation_with_control_and_timeout(
         cfg.client,
         request,
+        cfg.ssrf_guard,
         cfg.request_control,
         cfg.upstream_header_timeout,
     )
@@ -390,6 +400,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             let retry_result = send_with_redirect_validation_with_control_and_timeout(
                 cfg.client,
                 retry_req,
+                cfg.ssrf_guard,
                 cfg.request_control,
                 cfg.upstream_header_timeout,
             )
@@ -504,15 +515,18 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 /// `proxy_base`, and return the rewritten content.
 pub async fn proxy_m3u8_and_rewrite<S: BuildHasher>(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String, S>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
-    proxy_m3u8_and_rewrite_with_control(client, url, provider_headers, proxy_base, None).await
+    proxy_m3u8_and_rewrite_with_control(client, ssrf_guard, url, provider_headers, proxy_base, None)
+        .await
 }
 
 pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String, S>,
     proxy_base: &str,
@@ -523,13 +537,14 @@ pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
     if scheme != "http" && scheme != "https" {
         return Err(anyhow::anyhow!("M3U8 URL has disallowed scheme: {scheme}"));
     }
-    validate_target_url_against_ssrf(&parsed)
+    validate_target_url_against_ssrf(&parsed, ssrf_guard)
         .map_err(|e| anyhow::anyhow!("M3U8 SSRF validation failed: {e}"))?;
 
     let request = apply_provider_headers(client.get(url), url, provider_headers)?;
 
     let proxy_result =
-        send_with_redirect_validation_with_control(client, request, request_control).await?;
+        send_with_redirect_validation_with_control(client, request, ssrf_guard, request_control)
+            .await?;
     let proxy_response = proxy_result.response;
 
     if !proxy_response.status().is_success() {
@@ -680,13 +695,11 @@ mod tests {
     #[test]
     fn test_ssrf_acl_allows_public_ips() {
         use std::net::IpAddr;
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
         let allowed: &[&str] = &["1.1.1.1", "8.8.8.8"];
         for ip_str in allowed {
             let ip: IpAddr = ip_str.parse().unwrap();
-            assert!(
-                !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
-                "IP {ip} should be allowed"
-            );
+            assert!(!guard.is_ip_blocked(&ip), "IP {ip} should be allowed");
         }
     }
 
@@ -696,7 +709,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_file_scheme() {
         let provider_headers = HashMap::new();
         let client = test_proxy_client();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: "file:///etc/passwd",
             provider_headers: &provider_headers,
@@ -719,7 +734,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_ftp_scheme() {
         let provider_headers = HashMap::new();
         let client = test_proxy_client();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: "ftp://example.com/file.txt",
             provider_headers: &provider_headers,
@@ -742,7 +759,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_javascript_scheme() {
         let provider_headers = HashMap::new();
         let client = test_proxy_client();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: "javascript:alert(1)",
             provider_headers: &provider_headers,
@@ -765,7 +784,9 @@ mod tests {
     async fn test_proxy_fetch_rejects_data_scheme() {
         let provider_headers = HashMap::new();
         let client = test_proxy_client();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: "data:text/plain,hello",
             provider_headers: &provider_headers,
@@ -806,7 +827,9 @@ mod tests {
             .expect("client should build");
         let provider_headers = HashMap::new();
         let request_control = ExecutionControl::from_timeout(Some(Duration::from_millis(50)));
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: &format!("{public_origin}/slow.mp4"),
             provider_headers: &provider_headers,
@@ -843,7 +866,9 @@ mod tests {
             .build()
             .expect("client should build");
         let provider_headers = HashMap::new();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
         let cfg = ProxyConfig {
+            ssrf_guard: &ssrf_guard,
             client: &client,
             url: &format!("{public_origin}/encoded.bin"),
             provider_headers: &provider_headers,
@@ -915,7 +940,8 @@ mod tests {
             .expect("client should build");
         let request = client.get(format!("{public_origin}/start"));
 
-        let result = send_with_redirect_validation(&client, request).await;
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let result = send_with_redirect_validation(&client, request, &ssrf_guard).await;
         assert!(
             result.is_ok(),
             "relative redirects should resolve against original URL"
@@ -933,7 +959,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_with_redirect_validation_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
+    async fn test_send_with_redirect_validation_redirect_to_loopback_without_listener_fails_with_disabled_ssrf(
     ) {
         let server = wiremock::MockServer::start().await;
 
@@ -952,7 +978,8 @@ mod tests {
             .expect("client should build");
         let request = client.get(format!("{}/start", server.uri()));
 
-        let result = send_with_redirect_validation(&client, request).await;
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let result = send_with_redirect_validation(&client, request, &ssrf_guard).await;
         let Err(err) = result else {
             panic!("redirect to loopback without a listener must fail");
         };
@@ -967,7 +994,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_when_default_ssrf_is_disabled(
+    async fn test_send_with_redirect_validation_initial_loopback_fails_by_connection_with_disabled_ssrf(
     ) {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -975,7 +1002,8 @@ mod tests {
             .expect("client should build");
         let request = client.get("http://127.0.0.1:12345/private");
 
-        let Err(err) = send_with_redirect_validation(&client, request).await else {
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let Err(err) = send_with_redirect_validation(&client, request, &ssrf_guard).await else {
             panic!("initial loopback target without a listener must fail");
         };
         let proxy_err = err
@@ -989,15 +1017,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_when_default_ssrf_is_disabled(
-    ) {
+    async fn test_proxy_m3u8_and_rewrite_initial_loopback_fails_by_connection_with_disabled_ssrf() {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client should build");
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
         let err = proxy_m3u8_and_rewrite(
             &client,
+            &ssrf_guard,
             "http://127.0.0.1:12345/private.m3u8",
             &HashMap::new(),
             "/proxy",

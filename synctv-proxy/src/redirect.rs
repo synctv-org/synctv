@@ -46,12 +46,14 @@ pub(crate) struct ProxyResponse {
 pub(crate) async fn send_head_with_redirect_validation_with_control(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     request_control: Option<&ExecutionControl>,
 ) -> Result<ProxyResponse, anyhow::Error> {
     send_with_redirect_validation_inner(
         client,
         request,
         reqwest::Method::HEAD,
+        ssrf_guard,
         request_control,
         None,
     )
@@ -71,22 +73,31 @@ pub(crate) async fn send_head_with_redirect_validation_with_control(
 pub(crate) async fn send_with_redirect_validation(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_with_control(client, request, None).await
+    send_with_redirect_validation_with_control(client, request, ssrf_guard, None).await
 }
 
 pub(crate) async fn send_with_redirect_validation_with_control(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     request_control: Option<&ExecutionControl>,
 ) -> Result<ProxyResponse, anyhow::Error> {
-    send_with_redirect_validation_with_control_and_timeout(client, request, request_control, None)
-        .await
+    send_with_redirect_validation_with_control_and_timeout(
+        client,
+        request,
+        ssrf_guard,
+        request_control,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn send_with_redirect_validation_with_control_and_timeout(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     request_control: Option<&ExecutionControl>,
     header_timeout: Option<Duration>,
 ) -> Result<ProxyResponse, anyhow::Error> {
@@ -94,6 +105,7 @@ pub(crate) async fn send_with_redirect_validation_with_control_and_timeout(
         client,
         request,
         reqwest::Method::GET,
+        ssrf_guard,
         request_control,
         header_timeout,
     )
@@ -104,13 +116,14 @@ async fn send_with_redirect_validation_inner(
     client: &reqwest::Client,
     request: reqwest::RequestBuilder,
     redirect_method: reqwest::Method,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     request_control: Option<&ExecutionControl>,
     header_timeout: Option<Duration>,
 ) -> Result<ProxyResponse, anyhow::Error> {
     let built = request
         .build()
         .map_err(|e| ProxyError::InvalidRequest(format!("failed to build proxy request: {e}")))?;
-    validate_target_url_against_ssrf(built.url())?;
+    validate_target_url_against_ssrf(built.url(), ssrf_guard)?;
 
     let original_origin = built.url().origin().ascii_serialization();
 
@@ -163,7 +176,7 @@ async fn send_with_redirect_validation_inner(
 
         let is_cross_origin = location.origin().ascii_serialization() != original_origin;
         if is_cross_origin {
-            validate_target_url_against_ssrf(&location)?;
+            validate_target_url_against_ssrf(&location, ssrf_guard)?;
         }
 
         let mut redirect_req = client.request(redirect_method.clone(), location.clone());
@@ -191,18 +204,21 @@ async fn send_with_redirect_validation_inner(
     })
 }
 
-pub(crate) fn validate_target_url_against_ssrf(url: &url::Url) -> Result<(), ProxyError> {
+pub(crate) fn validate_target_url_against_ssrf(
+    url: &url::Url,
+    guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<(), ProxyError> {
     let host = url
         .host_str()
         .ok_or_else(|| ProxyError::InvalidRequest("URL host is required".to_string()))?;
 
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip) {
+        if guard.is_ip_blocked(&ip) {
             return Err(ProxyError::Ssrf(format!(
                 "target host `{host}` is blocked by SSRF policy"
             )));
         }
-    } else if synctv_common::ssrf::SsrfGuard::shared_default().is_host_blocked(host) {
+    } else if guard.is_host_blocked(host) {
         return Err(ProxyError::Ssrf(format!(
             "target host `{host}` is blocked by SSRF policy"
         )));

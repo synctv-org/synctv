@@ -58,7 +58,7 @@ import { Aside } from '@astrojs/starlight/components';
 | Provider 凭据 | 凭据通过 secret 或受控管理流程写入，不出现在仓库。 |
 | Slice cache 文件后端 | 缓存目录有容量规划和清理策略。 |
 | 直播 HLS | 单机已确认本地存储；多副本已选择 publisher-node proxy、`shared_file` 或 OSS。 |
-| 集群模式 | 所有副本共享 PostgreSQL、Redis、`redis.key_prefix` 和 `server.cluster_secret`。 |
+| 集群模式 | 所有副本共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。 |
 | OpenAPI | 已决定生产是否暴露 `/swagger-ui/` 和 `/api-docs/openapi.json`。 |
 
 ## 验证命令

@@ -15,6 +15,7 @@ use crate::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_common::ssrf::SsrfGuard;
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use tracing::{debug, error, info, warn};
@@ -71,6 +72,8 @@ pub struct ExternalPublishManager {
     /// Shared HTTP client for FLV connections. Built once with TLS (rustls) support
     /// and reused across all external publish streams to avoid per-stream TLS setup cost.
     http_client: reqwest::Client,
+    /// Explicit SSRF policy injected by the application layer.
+    ssrf_guard: SsrfGuard,
     /// Maximum number of concurrent pull streams.
     /// Prevents memory exhaustion from unlimited stream creation.
     max_concurrent_streams: usize,
@@ -82,12 +85,14 @@ impl ExternalPublishManager {
         registry: Arc<dyn StreamRegistryTrait>,
         local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
+        ssrf_guard: SsrfGuard,
     ) -> StreamResult<Self> {
         Self::with_timeouts(
             registry,
             local_node_id,
             String::new(),
             stream_hub_event_sender,
+            ssrf_guard,
             60,
             300,
         )
@@ -135,14 +140,14 @@ impl ExternalPublishManager {
         local_node_id: String,
         local_api_address: String,
         stream_hub_event_sender: StreamHubEventSender,
+        ssrf_guard: SsrfGuard,
         cleanup_check_interval_secs: u64,
         idle_timeout_secs: u64,
     ) -> StreamResult<Self> {
         // Build a shared reqwest::Client with TLS (rustls) support.
         // Reused across all HTTP-FLV pull streams to amortize TLS setup.
-        // SSRF enforcement follows the active shared policy; with the current
-        // runtime default this client does not inject a DNS resolver.
         let http_client = synctv_common::http::SsrfSafeClientBuilder::new()
+            .ssrf_guard(ssrf_guard.clone())
             .connect_timeout(Duration::from_secs(10))
             .disable_request_timeout()
             .disable_read_timeout()
@@ -166,6 +171,7 @@ impl ExternalPublishManager {
             local_api_address,
             stream_hub_event_sender,
             http_client,
+            ssrf_guard,
             max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS,
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         })
@@ -281,6 +287,7 @@ impl ExternalPublishManager {
             source_url.to_string(),
             self.stream_hub_event_sender.clone(),
             self.http_client.clone(),
+            self.ssrf_guard.clone(),
             self.max_flv_tag_size_bytes,
         ));
 
@@ -428,6 +435,7 @@ pub struct ExternalPublishStream {
     unpublish_sent: AtomicBool,
     /// Shared HTTP client for FLV connections (supports TLS via rustls).
     http_client: reqwest::Client,
+    ssrf_guard: SsrfGuard,
     max_flv_tag_size_bytes: usize,
 }
 
@@ -449,6 +457,7 @@ impl ExternalPublishStream {
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
         http_client: reqwest::Client,
+        ssrf_guard: SsrfGuard,
         max_flv_tag_size_bytes: usize,
     ) -> Self {
         Self {
@@ -459,6 +468,7 @@ impl ExternalPublishStream {
             lifecycle: StreamLifecycle::new(),
             unpublish_sent: AtomicBool::new(false),
             http_client,
+            ssrf_guard,
             max_flv_tag_size_bytes,
         }
     }
@@ -477,6 +487,7 @@ impl ExternalPublishStream {
         let source_url = self.source_url.clone();
         let stream_hub_sender = self.stream_hub_event_sender.clone();
         let http_client = self.http_client.clone();
+        let ssrf_guard = self.ssrf_guard.clone();
         let max_flv_tag_size_bytes = self.max_flv_tag_size_bytes;
         // Clone the is_running flag so the task can mark itself unhealthy on exit
         let is_running_flag = self.lifecycle.is_running_clone();
@@ -493,6 +504,7 @@ impl ExternalPublishStream {
                 media_id.clone(),
                 source_url,
                 stream_hub_sender,
+                ssrf_guard,
             )
             .await
             {
@@ -698,7 +710,13 @@ mod tests {
         let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender).unwrap();
+        let manager = ExternalPublishManager::new(
+            registry,
+            "node-1".to_string(),
+            sender,
+            SsrfGuard::disabled(),
+        )
+        .unwrap();
         assert_eq!(manager.pool.streams.len(), 0);
     }
 
@@ -707,7 +725,13 @@ mod tests {
         let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let manager = ExternalPublishManager::new(registry, "node-1".to_string(), sender).unwrap();
+        let manager = ExternalPublishManager::new(
+            registry,
+            "node-1".to_string(),
+            sender,
+            SsrfGuard::disabled(),
+        )
+        .unwrap();
         let request = manager
             .http_client
             .get("http://192.168.1.10:8080/stream.flv")
@@ -736,6 +760,7 @@ mod tests {
             "rtmp://example.com/live/stream".to_string(),
             sender,
             reqwest::Client::new(),
+            SsrfGuard::disabled(),
             ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
         );
 

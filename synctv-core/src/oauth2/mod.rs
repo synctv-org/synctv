@@ -71,7 +71,8 @@ pub struct OAuth2UserInfo {
 /// Each provider type registers a factory function that knows how to
 /// create instances of that provider with configuration.
 /// All parameters (`client_id`, `client_secret`, `redirect_url`, etc.) are in config.
-pub type ProviderFactory = fn(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error>;
+pub type ProviderFactory =
+    Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Provider>, Error> + Send + Sync>;
 
 /// Instance-based provider registry.
 ///
@@ -107,7 +108,7 @@ impl ProviderRegistry {
     #[must_use]
     pub fn get_factory(&self, provider_type: &str) -> Option<ProviderFactory> {
         let registry = self.factories.read();
-        registry.get(provider_type).copied()
+        registry.get(provider_type).cloned()
     }
 
     /// Create a provider instance with configuration.

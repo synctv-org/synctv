@@ -87,6 +87,8 @@ async fn read_exact_slice_body(
 /// ETag/Last-Modified validation and conditional requests.
 pub struct SliceCache {
     pub(super) config: SliceCacheConfig,
+    /// SSRF policy used for cache fill and revalidation requests.
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
     /// Shared outbound HTTP client for cache fill and revalidation requests.
     client: reqwest::Client,
     /// The cache backend (memory or file).
@@ -164,6 +166,7 @@ impl Clone for SliceCache {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
+            ssrf_guard: self.ssrf_guard.clone(),
             client: self.client.clone(),
             backend: Arc::clone(&self.backend),
             locks: Arc::clone(&self.locks),
@@ -306,10 +309,11 @@ impl SliceCache {
             }
         }
 
-        let resp = match send_with_redirect_validation(&self.client, request).await {
-            Ok(proxy_response) => proxy_response.response,
-            Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
-        };
+        let resp =
+            match send_with_redirect_validation(&self.client, request, &self.ssrf_guard).await {
+                Ok(proxy_response) => proxy_response.response,
+                Err(e) => return Err(anyhow::anyhow!("Slice fetch failed: {e}")),
+            };
 
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             let _ = resp.bytes().await;
@@ -323,11 +327,13 @@ impl SliceCache {
             let mut retry_request = self.client.get(url);
             retry_request = apply_provider_headers(retry_request, url, provider_headers)?;
             retry_request = retry_request.header("Range", &range_header);
-            let retry_resp = match send_with_redirect_validation(&self.client, retry_request).await
-            {
-                Ok(proxy_response) => proxy_response.response,
-                Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
-            };
+            let retry_resp =
+                match send_with_redirect_validation(&self.client, retry_request, &self.ssrf_guard)
+                    .await
+                {
+                    Ok(proxy_response) => proxy_response.response,
+                    Err(e) => return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}")),
+                };
             self.process_slice_response(
                 retry_resp,
                 url,
@@ -372,9 +378,17 @@ impl SliceCache {
     /// [`try_new`](Self::try_new) instead.
     #[must_use]
     pub fn new(config: SliceCacheConfig) -> Self {
-        let client =
-            crate::build_proxy_http_client().expect("proxy HTTP client must build for SliceCache");
-        Self::new_with_client(config, client)
+        Self::new_with_ssrf_guard(config, synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    #[must_use]
+    pub fn new_with_ssrf_guard(
+        config: SliceCacheConfig,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        let client = crate::build_proxy_http_client(ssrf_guard.clone())
+            .expect("proxy HTTP client must build for SliceCache");
+        Self::new_with_client_and_ssrf_guard(config, client, ssrf_guard)
     }
 
     /// Create a new in-memory `SliceCache` with an explicit outbound HTTP client.
@@ -383,6 +397,19 @@ impl SliceCache {
     /// shares one injected client instance.
     #[must_use]
     pub fn new_with_client(config: SliceCacheConfig, client: reqwest::Client) -> Self {
+        Self::new_with_client_and_ssrf_guard(
+            config,
+            client,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_client_and_ssrf_guard(
+        config: SliceCacheConfig,
+        client: reqwest::Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
         assert!(
             matches!(config.backend, CacheBackendConfig::Memory),
             "SliceCache::new() only supports the Memory backend; \
@@ -392,21 +419,41 @@ impl SliceCache {
             config.max_cache_size,
             Duration::from_hours(1),
         ));
-        Self::with_backend(config, client, backend)
+        Self::with_backend(config, client, ssrf_guard, backend)
     }
 
     /// Create a new `SliceCache`, initializing the backend from the
     /// configuration.  This is the async variant that supports both
     /// memory and file backends.
     pub async fn try_new(config: SliceCacheConfig) -> anyhow::Result<Self> {
-        let client = crate::build_proxy_http_client()?;
-        Self::try_new_with_client(config, client).await
+        Self::try_new_with_ssrf_guard(config, synctv_common::ssrf::SsrfGuard::strict_policy()).await
+    }
+
+    pub async fn try_new_with_ssrf_guard(
+        config: SliceCacheConfig,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> anyhow::Result<Self> {
+        let client = crate::build_proxy_http_client(ssrf_guard.clone())?;
+        Self::try_new_with_client_and_ssrf_guard(config, client, ssrf_guard).await
     }
 
     /// Create a new `SliceCache` with an explicit outbound HTTP client.
     pub async fn try_new_with_client(
         config: SliceCacheConfig,
         client: reqwest::Client,
+    ) -> anyhow::Result<Self> {
+        Self::try_new_with_client_and_ssrf_guard(
+            config,
+            client,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .await
+    }
+
+    pub async fn try_new_with_client_and_ssrf_guard(
+        config: SliceCacheConfig,
+        client: reqwest::Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> anyhow::Result<Self> {
         let backend = match &config.backend {
             CacheBackendConfig::Memory => {
@@ -424,7 +471,7 @@ impl SliceCache {
                 CacheBackend::File(fb)
             }
         };
-        Ok(Self::with_backend(config, client, backend))
+        Ok(Self::with_backend(config, client, ssrf_guard, backend))
     }
 
     /// Internal helper: assemble a `SliceCache` from an already-created
@@ -432,6 +479,7 @@ impl SliceCache {
     fn with_backend(
         config: SliceCacheConfig,
         client: reqwest::Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
         backend: CacheBackend,
     ) -> Self {
         // seen_keys uses a moka cache with a TTL slightly longer than
@@ -444,6 +492,7 @@ impl SliceCache {
 
         Self {
             config,
+            ssrf_guard,
             client,
             backend: Arc::new(backend),
             locks: Arc::new(dashmap::DashMap::new()),
@@ -470,6 +519,11 @@ impl SliceCache {
     #[must_use]
     pub const fn client(&self) -> &reqwest::Client {
         &self.client
+    }
+
+    #[must_use]
+    pub const fn ssrf_guard(&self) -> &synctv_common::ssrf::SsrfGuard {
+        &self.ssrf_guard
     }
 
     /// Return an operational snapshot of the cache backend and runtime state.
@@ -751,6 +805,7 @@ impl SliceCache {
         let resp = crate::send_head_with_redirect_validation_with_control(
             &self.client,
             request,
+            &self.ssrf_guard,
             request_control,
         )
         .await
@@ -1030,6 +1085,7 @@ impl SliceCache {
         let resp = match send_with_redirect_validation_with_control(
             &self.client,
             request,
+            &self.ssrf_guard,
             request_control,
         )
         .await
@@ -1074,6 +1130,7 @@ impl SliceCache {
             let resp2 = match send_with_redirect_validation_with_control(
                 &self.client,
                 request2,
+                &self.ssrf_guard,
                 request_control,
             )
             .await

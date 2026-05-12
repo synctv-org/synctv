@@ -26,7 +26,7 @@ Most fields can keep their defaults. Production launch should prioritize secrets
 | `metrics.*` | Prometheus or alerting is used | Exposing `/metrics` publicly | Restart required | Use auth and network isolation |
 | `webauthn.*` | Passkeys are enabled | `rp_origin` does not match the real origin | Restart required | Use only production HTTPS origins |
 | `email.*` | Email verification, password reset, email MFA, notifications | TLS/port/from address mismatch | Restart required | Verify with `synctv settings test-email` |
-| `cluster.*` / `server.cluster_secret` | Multi-replica cluster | Cluster enabled without Redis or cluster secret | Restart required | All replicas share PostgreSQL, Redis, and secrets |
+| `cluster.*` / `cluster.secret` | Multi-replica cluster | Cluster enabled without Redis or cluster secret | Restart required | All replicas share PostgreSQL, Redis, and secrets |
 | `livestream.*` | RTMP/FLV/HLS livestreaming | HLS storage model differs between replicas | Restart required | Use shared filesystem or OSS for high traffic |
 | `proxy_slice_cache.*` | Proxy Range slice cache is needed | Expecting full-file cache | Restart required | Mount enough storage; only Range slices are cached |
 
@@ -95,7 +95,7 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `server.enable_reflection` | boolean | `false` | Enable public gRPC reflection |
 | `server.trusted_proxies` | string array | `[]` | Trusted reverse proxy IPs/CIDRs |
 | `server.cors_allowed_origins` | string array | `[]` | Frontend origins allowed by startup CORS |
-| `server.cluster_secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
+| `cluster.secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
 | `server.advertise_host` | string | `""` | Address other nodes use to reach this node |
 | `server.shutdown_drain_timeout_seconds` | seconds | `30` | Graceful shutdown drain timeout |
 | `server.grpc_max_message_size_bytes` | bytes | `16777216` | Maximum gRPC message size |
@@ -111,6 +111,9 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `public_ids.sqids.min_length` | integer | `12` | Minimum sqids length |
 | `security.credential_encryption_key` | 64-character hex secret | `""` | Provider credential encryption key |
 | `security.opaque_server_setup_secret` | secret string | `""` | Stable OPAQUE server setup secret |
+| `security.ssrf.allow_private_network_targets` | boolean | `false` | Allow server-side outbound requests to private/loopback/link-local/reserved/metadata targets |
+| `security.ssrf.allowed_hosts` | string array | `[]` | Additional hostnames allowed by the global SSRF policy |
+| `security.ssrf.allowed_ip_ranges` | IP/CIDR string array | `[]` | Additional IPs or CIDR ranges allowed by the global SSRF policy |
 
 ## `metrics`
 

@@ -687,6 +687,7 @@ mod tests {
                 registry.clone(),
                 local_node_id.to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );
@@ -739,6 +740,7 @@ mod tests {
                 registry.clone(),
                 "node-local".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );
@@ -842,6 +844,7 @@ mod tests {
                 registry.clone(),
                 "node-local".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );
@@ -913,6 +916,7 @@ mod tests {
                 registry.clone(),
                 "node-local".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );
@@ -1009,6 +1013,7 @@ mod tests {
                 registry.clone(),
                 "node-local".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );
@@ -1113,6 +1118,7 @@ mod tests {
                 registry.clone(),
                 "node-local".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("external publish manager should build"),
         );

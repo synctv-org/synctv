@@ -89,13 +89,13 @@ server:
 SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
 ```
 
-### `server.cluster_secret`
+### `cluster.secret`
 
 集群内部 gRPC 共享密钥。`cluster.enabled=true` 时必填。
 
 ```yaml
-server:
-  cluster_secret_file: "/run/secrets/cluster_secret"
+cluster:
+  secret_file: "/run/secrets/cluster_secret"
 ```
 
 生成：

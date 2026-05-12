@@ -46,8 +46,10 @@ pub struct AlistService {
 impl AlistService {
     pub fn new() -> Self {
         Self {
-            client: crate::build_provider_http_client()
-                .expect("default provider HTTP client should build"),
+            client: crate::build_provider_http_client(
+                synctv_common::ssrf::SsrfGuard::strict_policy(),
+            )
+            .expect("default provider HTTP client should build"),
         }
     }
 

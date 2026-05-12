@@ -8923,7 +8923,7 @@ mod tests {
         config.jwt.secret = "jwt-secret-123456789012345678901234".into();
         config.security.opaque_server_setup_secret =
             "opaque-server-setup-secret-123456789012345678901234".into();
-        config.server.cluster_secret = "cluster-secret-value".into();
+        config.cluster.secret = "cluster-secret-value".into();
         config.management.auth_token = "management-auth-token".into();
         config.metrics.auth.bearer_token = "metrics-bearer-token".into();
         config.metrics.auth.basic_password = "metrics-basic-password".into();

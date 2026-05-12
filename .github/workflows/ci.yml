@@ -154,6 +154,11 @@ jobs:
         run: |
           cargo nextest run --workspace --locked --run-ignored default --nff
 
+      - name: Run documentation tests
+        timeout-minutes: 20
+        run: |
+          cargo test --workspace --doc --locked
+
   # Test ignored cases
   test-ignored:
     name: Test Ignored (${{ matrix.os }})

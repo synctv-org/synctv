@@ -23,7 +23,7 @@ cluster:
   enabled: true
 ```
 
-Redis and `server.cluster_secret` become required.
+Redis and `cluster.secret` become required.
 
 ## Design Goal
 
@@ -37,7 +37,7 @@ Cluster mode solves runtime consistency when multiple SyncTV processes serve the
     Redis stores ephemeral shared state: node registration, pub/sub, Redis Stream catch-up, leader election, rate limits, and short-lived auth state.
   </Card>
   <Card title="Inter-Node Trust" icon="setting">
-    `server.cluster_secret` authenticates inter-node gRPC calls. It must be identical across replicas and must not be exposed to clients.
+    `cluster.secret` authenticates inter-node gRPC calls. It must be identical across replicas and must not be exposed to clients.
   </Card>
   <Card title="Livestream Reachability" icon="youtube">
     RTMP publishers can land on any node, and viewers can hit any node; livestreaming therefore needs a publisher registry, HLS gRPC proxying, and an explicit HLS storage boundary.
@@ -63,7 +63,7 @@ Cluster mode solves runtime consistency when multiple SyncTV processes serve the
 </Steps>
 
 <Aside type="caution">
-Cluster mode cannot compensate for inconsistent dependencies. Replicas must share the same PostgreSQL, Redis, and `server.cluster_secret`. Local HLS backends work through publisher-node proxying, so publisher-node restarts, reachability issues, or network partitions affect remote segment reads. `shared_file` improves TS segment routing by reading from the current node's shared mount; OSS gives object-storage-backed segment storage.
+Cluster mode cannot compensate for inconsistent dependencies. Replicas must share the same PostgreSQL, Redis, and `cluster.secret`. Local HLS backends work through publisher-node proxying, so publisher-node restarts, reachability issues, or network partitions affect remote segment reads. `shared_file` improves TS segment routing by reading from the current node's shared mount; OSS gives object-storage-backed segment storage.
 </Aside>
 
 ## Deployment Shapes
@@ -82,7 +82,7 @@ All nodes must:
 
 - Connect to the same PostgreSQL database.
 - Connect to the same Redis deployment.
-- Use the same `server.cluster_secret`.
+- Use the same `cluster.secret`.
 - Be able to reach each other's API/gRPC address.
 
 ## Channel Capacity
@@ -214,7 +214,7 @@ The Helm chart does not enable cluster mode by default. Before scaling replicas,
 Before scaling replicas:
 
 - Redis is configured and reachable.
-- `server.cluster_secret` is stable and shared by every replica.
+- `cluster.secret` is stable and shared by every replica.
 - The HLS model is explicit: local backend with publisher-node proxying for small deployments; `shared_file + RWX/PVC` or `oss` when durable shared segment storage is required.
 - HTTP and gRPC Services/Ingresses match your network design.
 - Leader election mode matches your platform.

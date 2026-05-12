@@ -37,6 +37,7 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
             registry.clone(),
             "test-node".to_string(),
             event_sender.clone(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
         )
         .expect("failed to create ExternalPublishManager"),
     );

@@ -159,6 +159,7 @@ fn check_stream_active(request_control: Option<&ExecutionControl>) -> Result<(),
 
 async fn discover_content_length_via_range_get(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String>,
     request_control: Option<&ExecutionControl>,
@@ -166,10 +167,11 @@ async fn discover_content_length_via_range_get(
     let mut request = client.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
     request = request.header("Range", "bytes=0-0");
-    let resp = send_with_redirect_validation_with_control(client, request, request_control)
-        .await
-        .map_err(|e| anyhow::anyhow!("Range GET fallback failed: {e}"))?
-        .response;
+    let resp =
+        send_with_redirect_validation_with_control(client, request, ssrf_guard, request_control)
+            .await
+            .map_err(|e| anyhow::anyhow!("Range GET fallback failed: {e}"))?
+            .response;
 
     match resp.status() {
         StatusCode::PARTIAL_CONTENT => {
@@ -197,10 +199,15 @@ async fn stream_original_range_with_learned_meta(
     request = apply_provider_headers(request, url, provider_headers)?;
     request = request.header("Range", range_str);
 
-    let resp = send_with_redirect_validation_with_control(cache.client(), request, request_control)
-        .await
-        .map_err(|e| anyhow::anyhow!("Upstream range request failed: {e}"))?
-        .response;
+    let resp = send_with_redirect_validation_with_control(
+        cache.client(),
+        request,
+        cache.ssrf_guard(),
+        request_control,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Upstream range request failed: {e}"))?
+    .response;
 
     if resp.status() == StatusCode::PARTIAL_CONTENT {
         if let Some(total_size) = parse_total_size_from_content_range(&resp)? {
@@ -243,29 +250,37 @@ async fn stream_original_range_with_learned_meta(
 #[allow(clippy::implicit_hasher)]
 pub async fn head_content_length(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String>,
 ) -> Result<u64, anyhow::Error> {
-    head_content_length_with_control(client, url, provider_headers, None).await
+    head_content_length_with_control(client, ssrf_guard, url, provider_headers, None).await
 }
 
 #[allow(clippy::implicit_hasher)]
 pub async fn head_content_length_with_control(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String>,
     request_control: Option<&ExecutionControl>,
 ) -> Result<u64, anyhow::Error> {
     let mut request = client.head(url);
     request = apply_provider_headers(request, url, provider_headers)?;
-    let resp = send_head_with_redirect_validation_with_control(client, request, request_control)
-        .await
-        .map_err(|e| anyhow::anyhow!("HEAD request failed: {e}"))?
-        .response;
+    let resp = send_head_with_redirect_validation_with_control(
+        client,
+        request,
+        ssrf_guard,
+        request_control,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("HEAD request failed: {e}"))?
+    .response;
 
     if !resp.status().is_success() {
         return discover_content_length_via_range_get(
             client,
+            ssrf_guard,
             url,
             provider_headers,
             request_control,
@@ -277,7 +292,14 @@ pub async fn head_content_length_with_control(
         return Ok(content_length);
     }
 
-    discover_content_length_via_range_get(client, url, provider_headers, request_control).await
+    discover_content_length_via_range_get(
+        client,
+        ssrf_guard,
+        url,
+        provider_headers,
+        request_control,
+    )
+    .await
 }
 
 // proxy_with_cache  --  main entry point
@@ -357,6 +379,7 @@ pub async fn proxy_with_cache_enabled_with_control(
     if !cache_enabled {
         return stream_through_with_status(
             cache.client(),
+            cache.ssrf_guard(),
             url,
             provider_headers,
             range_header,
@@ -420,6 +443,7 @@ pub async fn proxy_head_with_cache_enabled_with_control(
     if !cache_enabled {
         return stream_head_through_with_status(
             cache.client(),
+            cache.ssrf_guard(),
             url,
             provider_headers,
             range_header,
@@ -642,6 +666,7 @@ async fn no_range_slice_cache_path(
                 .await;
                 return stream_through_with_status(
                     cache.client(),
+                    cache.ssrf_guard(),
                     url,
                     provider_headers,
                     None,
@@ -760,6 +785,7 @@ fn stream_existing_response_with_status(
 /// `X-Cache-Status` header.
 pub(super) async fn stream_through_with_status(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String>,
     range_header: Option<&str>,
@@ -773,16 +799,18 @@ pub(super) async fn stream_through_with_status(
         request = request.header("Range", range);
     }
 
-    let resp = send_with_redirect_validation_with_control(client, request, request_control)
-        .await
-        .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
-        .response;
+    let resp =
+        send_with_redirect_validation_with_control(client, request, ssrf_guard, request_control)
+            .await
+            .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?
+            .response;
 
     stream_existing_response_with_status(resp, cache_status)
 }
 
 async fn stream_head_through_with_status(
     client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     url: &str,
     provider_headers: &HashMap<String, String>,
     range_header: Option<&str>,
@@ -796,10 +824,15 @@ async fn stream_head_through_with_status(
         request = request.header("Range", range);
     }
 
-    let resp = send_head_with_redirect_validation_with_control(client, request, request_control)
-        .await
-        .map_err(|e| anyhow::anyhow!("Upstream HEAD request failed: {e}"))?
-        .response;
+    let resp = send_head_with_redirect_validation_with_control(
+        client,
+        request,
+        ssrf_guard,
+        request_control,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Upstream HEAD request failed: {e}"))?
+    .response;
 
     build_head_cache_response(&HeadResourceResult {
         status: resp.status(),

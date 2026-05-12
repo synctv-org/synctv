@@ -1,19 +1,12 @@
 //! SSRF (Server-Side Request Forgery) protection using `http-acl`.
 //!
 //! Provides [`SsrfGuard`], a configurable SSRF protection guard that wraps
-//! `HttpAcl` and provides DNS resolver + IP/host checking when enabled.
+//! `HttpAcl` and provides DNS resolver + IP/host checking.
 //!
 //! # Quick Start
 //!
-//! Use the shared default guard for the runtime default:
-//! ```
-//! let guard = synctv_common::ssrf::SsrfGuard::shared_default();
-//! let resolver = guard.dns_resolver();
-//! let blocked = guard.is_ip_blocked(&"127.0.0.1".parse().unwrap());
-//! ```
-//!
-//! Or use [`SsrfGuard::strict_policy`] / [`SsrfGuard::builder`] for explicit
-//! SSRF protection:
+//! Build a guard explicitly from application configuration and pass it to
+//! outbound clients or validators:
 //! ```
 //! use synctv_common::ssrf::SsrfGuard;
 //!
@@ -43,6 +36,38 @@ const DEFAULT_EXTRA_DENIED_RANGES: &[&str] = &[
     "2002::/16",   // 6to4 (deprecated, SSRF vector)
 ];
 
+/// Non-global ranges that remain denied when selected private CIDRs are allowlisted.
+///
+/// `http-acl` checks the broad non-global gate before user allow rules. To allow
+/// a specific private CIDR without allowing every non-global address, we enable
+/// that broad gate and then re-add the non-global ranges as explicit deny rules.
+const DEFAULT_NON_GLOBAL_DENIED_RANGES: &[&str] = &[
+    "0.0.0.0/8",       // current network
+    "10.0.0.0/8",      // private
+    "100.64.0.0/10",   // carrier-grade NAT
+    "127.0.0.0/8",     // loopback
+    "169.254.0.0/16",  // link-local / cloud metadata
+    "172.16.0.0/12",   // private
+    "192.0.0.0/24",    // IETF protocol assignments
+    "192.0.2.0/24",    // documentation
+    "192.88.99.0/24",  // 6to4 relay anycast
+    "192.168.0.0/16",  // private
+    "198.18.0.0/15",   // benchmarking
+    "198.51.100.0/24", // documentation
+    "203.0.113.0/24",  // documentation
+    "240.0.0.0/4",     // reserved
+    "255.255.255.255/32",
+    "::/128",        // unspecified
+    "::1/128",       // loopback
+    "::ffff:0:0/96", // IPv4-mapped
+    "64:ff9b::/96",  // IPv4/IPv6 translation
+    "100::/64",      // discard-only
+    "2001::/32",     // Teredo
+    "2001:db8::/32", // documentation
+    "fc00::/7",      // unique local
+    "fe80::/10",     // link-local
+];
+
 /// Default denied hostnames.
 const DEFAULT_DENIED_HOSTS: &[&str] = &[
     "localhost",
@@ -54,27 +79,19 @@ const DEFAULT_DENIED_HOSTS: &[&str] = &[
 /// Configurable SSRF protection guard.
 ///
 /// Wraps [`HttpAcl`] and [`HttpAclMiddleware`] to provide DNS resolver
-/// integration and IP/host checking. Use [`SsrfGuard::default_policy()`]
-/// for production defaults or [`SsrfGuard::builder()`] for custom policies.
+/// integration and IP/host checking. Application code should build one guard
+/// from startup configuration and inject it into outbound clients or validators.
 #[derive(Clone)]
 pub struct SsrfGuard {
-    acl: Option<HttpAcl>,
-    middleware: Option<HttpAclMiddleware>,
+    inner: Option<Arc<SsrfGuardInner>>,
+}
+
+struct SsrfGuardInner {
+    acl: HttpAcl,
+    middleware: HttpAclMiddleware,
 }
 
 impl SsrfGuard {
-    /// Create the runtime default policy.
-    ///
-    /// SyncTV defaults to **disabled SSRF protection** unless callers
-    /// explicitly opt into a strict policy.
-    #[must_use]
-    pub fn default_policy() -> Self {
-        Self {
-            acl: None,
-            middleware: None,
-        }
-    }
-
     /// Create an explicit strict SSRF policy.
     ///
     /// Blocks private/reserved/multicast/metadata IPs and known internal
@@ -84,16 +101,13 @@ impl SsrfGuard {
         Self::builder().build()
     }
 
-    /// Access the shared default SSRF policy.
+    /// Create an explicit disabled policy.
     ///
-    /// This is the canonical production entry point when custom policy
-    /// configuration is not required.
+    /// Use only when a trusted deployment intentionally allows private-network
+    /// outbound targets.
     #[must_use]
-    pub fn shared_default() -> &'static Self {
-        static DEFAULT_GUARD: std::sync::LazyLock<SsrfGuard> =
-            std::sync::LazyLock::new(SsrfGuard::default_policy);
-
-        &DEFAULT_GUARD
+    pub const fn disabled() -> Self {
+        Self { inner: None }
     }
 
     /// Create from builder for custom policies.
@@ -105,9 +119,9 @@ impl SsrfGuard {
     /// Get a reqwest DNS resolver that enforces this guard's policy.
     #[must_use]
     pub fn dns_resolver(&self) -> Option<Arc<dyn reqwest::dns::Resolve>> {
-        self.middleware
+        self.inner
             .as_ref()
-            .map(|middleware| middleware.dns_resolver() as Arc<dyn reqwest::dns::Resolve>)
+            .map(|inner| inner.middleware.dns_resolver() as Arc<dyn reqwest::dns::Resolve>)
     }
 
     /// Check if an IP is blocked by this guard's policy.
@@ -116,23 +130,23 @@ impl SsrfGuard {
     /// cannot be injected.
     #[must_use]
     pub fn is_ip_blocked(&self, ip: &IpAddr) -> bool {
-        self.acl
+        self.inner
             .as_ref()
-            .is_some_and(|acl| acl.is_ip_allowed(ip).is_denied())
+            .is_some_and(|inner| inner.acl.is_ip_allowed(ip).is_denied())
     }
 
     /// Check if a hostname is blocked by this guard's policy.
     #[must_use]
     pub fn is_host_blocked(&self, host: &str) -> bool {
-        self.acl
+        self.inner
             .as_ref()
-            .is_some_and(|acl| acl.is_host_allowed(host).is_denied())
+            .is_some_and(|inner| inner.acl.is_host_allowed(host).is_denied())
     }
 
     /// Access the underlying ACL for advanced use.
     #[must_use]
-    pub const fn acl(&self) -> Option<&HttpAcl> {
-        self.acl.as_ref()
+    pub fn acl(&self) -> Option<&HttpAcl> {
+        self.inner.as_ref().map(|inner| &inner.acl)
     }
 }
 
@@ -145,6 +159,7 @@ pub struct SsrfGuardBuilder {
     extra_denied_hosts: Vec<String>,
     extra_allowed_ip_ranges: Vec<IpNet>,
     extra_allowed_hosts: Vec<String>,
+    allow_private_network_targets: bool,
     allow_http: bool,
     allow_https: bool,
 }
@@ -156,6 +171,7 @@ impl SsrfGuardBuilder {
             extra_denied_hosts: Vec::new(),
             extra_allowed_ip_ranges: Vec::new(),
             extra_allowed_hosts: Vec::new(),
+            allow_private_network_targets: false,
             allow_http: true,
             allow_https: true,
         }
@@ -189,6 +205,14 @@ impl SsrfGuardBuilder {
         self
     }
 
+    /// Allow private, loopback, link-local, reserved, and metadata-network
+    /// targets globally.
+    #[must_use]
+    pub const fn allow_private_network_targets(mut self, allow: bool) -> Self {
+        self.allow_private_network_targets = allow;
+        self
+    }
+
     /// Set whether HTTP is allowed (default: true).
     #[must_use]
     pub const fn allow_http(mut self, allow: bool) -> Self {
@@ -207,12 +231,21 @@ impl SsrfGuardBuilder {
     #[must_use]
     #[allow(clippy::unwrap_used)] // Parsing constant CIDR strings cannot fail
     pub fn build(self) -> SsrfGuard {
+        let allow_non_global_ip_ranges =
+            self.allow_private_network_targets || !self.extra_allowed_ip_ranges.is_empty();
         let mut builder = HttpAcl::builder();
 
         // Apply default denied ranges
         for range_str in DEFAULT_EXTRA_DENIED_RANGES {
             let range: IpNet = range_str.parse().unwrap();
             builder = builder.add_denied_ip_range(range).expect("valid IP range");
+        }
+
+        if !self.allow_private_network_targets && allow_non_global_ip_ranges {
+            for range_str in DEFAULT_NON_GLOBAL_DENIED_RANGES {
+                let range: IpNet = range_str.parse().unwrap();
+                builder = builder.add_denied_ip_range(range).expect("valid IP range");
+            }
         }
 
         // Apply default denied hosts
@@ -243,6 +276,7 @@ impl SsrfGuardBuilder {
         }
 
         let acl = builder
+            .non_global_ip_ranges(allow_non_global_ip_ranges)
             .ip_acl_default(true)
             .host_acl_default(true)
             .http(self.allow_http)
@@ -253,8 +287,7 @@ impl SsrfGuardBuilder {
         let middleware = HttpAclMiddleware::new(acl.clone());
 
         SsrfGuard {
-            acl: Some(acl),
-            middleware: Some(middleware),
+            inner: Some(Arc::new(SsrfGuardInner { acl, middleware })),
         }
     }
 }
@@ -412,8 +445,8 @@ mod tests {
     }
 
     #[test]
-    fn test_default_policy_disables_ssrf_checks() {
-        let guard = SsrfGuard::default_policy();
+    fn test_disabled_policy_disables_ssrf_checks() {
+        let guard = SsrfGuard::disabled();
         assert!(guard.acl().is_none());
         assert!(guard.dns_resolver().is_none());
         assert!(!guard.is_host_blocked("localhost"));

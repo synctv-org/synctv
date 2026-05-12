@@ -1,19 +1,19 @@
-//! HTTP client builder with optional SSRF enforcement.
+//! HTTP client builder with injectable SSRF enforcement.
 //!
-//! Clients can enforce SSRF protection through an explicit [`crate::ssrf::SsrfGuard`]
-//! stored on the builder and always disable automatic redirects.
+//! Callers pass a [`crate::ssrf::SsrfGuard`] that was built from their startup
+//! configuration. Automatic redirects are always disabled.
 
 use std::time::Duration;
 
 use crate::ssrf::SsrfGuard;
 
-/// Builder for [`reqwest::Client`] instances with optional SSRF enforcement.
+/// Builder for [`reqwest::Client`] instances with explicit SSRF enforcement.
 ///
 /// Every client built through this builder automatically gets:
 /// - Redirect policy set to `none` (prevents redirect-based SSRF)
 ///
-/// SSRF DNS enforcement is opt-in because many SyncTV deployments intentionally
-/// use private-network media sources.
+/// SSRF DNS enforcement is opt-in at this low layer so application code must
+/// pass the policy it loaded from configuration.
 pub struct SsrfSafeClientBuilder {
     connect_timeout: Duration,
     request_timeout: Option<Duration>,

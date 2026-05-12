@@ -15,15 +15,22 @@ use std::time::Duration;
 use url::{Host, Url};
 
 /// Direct URL `MediaProvider`
-pub struct DirectUrlProvider {}
+pub struct DirectUrlProvider {
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
+}
 
 impl DirectUrlProvider {
     /// Provider type name constant.
     pub const NAME: &'static str = "direct_url";
 
     #[must_use]
-    pub const fn new() -> Self {
-        Self {}
+    pub fn new() -> Self {
+        Self::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    #[must_use]
+    pub const fn new_with_ssrf_guard(ssrf_guard: synctv_common::ssrf::SsrfGuard) -> Self {
+        Self { ssrf_guard }
     }
 
     /// Forbidden header names that must not be set via user-supplied config.
@@ -100,11 +107,13 @@ impl DirectUrlProvider {
         .to_string()
     }
 
-    fn validate_source_url(url: &str) -> Result<Url, ProviderError> {
+    fn validate_source_url(
+        url: &str,
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Url, ProviderError> {
         let parsed = Url::parse(url).map_err(|error| {
             ProviderError::InvalidConfig(format!("DirectUrl URL is invalid: {error}"))
         })?;
-        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
         if parsed.scheme() != "http" && parsed.scheme() != "https" {
             return Err(ProviderError::InvalidConfig(
@@ -437,7 +446,7 @@ impl MediaProvider for DirectUrlProvider {
 
         let config = DirectUrlSourceConfig::try_from(source_config.value())?;
 
-        Self::validate_source_url(&config.url)?;
+        Self::validate_source_url(&config.url, &self.ssrf_guard)?;
 
         // Validate custom headers: reject forbidden header names that could be
         // used for request smuggling or credential injection.
@@ -458,7 +467,7 @@ impl MediaProvider for DirectUrlProvider {
         }
 
         let config = DirectUrlSourceConfig::try_from(source_config)?;
-        Self::validate_source_url(&config.url)?;
+        Self::validate_source_url(&config.url, &self.ssrf_guard)?;
 
         let cache_key = Self::playback_cache_key(&config);
         let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
@@ -818,9 +827,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_source_config_allows_blocked_hosts_and_ips_when_default_ssrf_is_disabled(
+    async fn test_validate_source_config_allows_blocked_hosts_and_ips_when_ssrf_is_explicitly_disabled(
     ) {
-        let provider = DirectUrlProvider::new();
+        let provider =
+            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let ctx = ProviderContext::new("synctv");
 
         for url in [
@@ -831,20 +841,22 @@ mod tests {
             provider
                 .validate_source_config(&ctx, SourceConfig::media(&json!({ "url": url })))
                 .await
-                .expect("default SSRF policy should allow blocked hosts and IP literals");
+                .expect("disabled SSRF policy should allow blocked hosts and IP literals");
         }
     }
 
     #[tokio::test]
-    async fn test_validate_source_config_allows_non_default_ports_when_default_ssrf_is_disabled() {
-        let provider = DirectUrlProvider::new();
+    async fn test_validate_source_config_allows_non_default_ports_when_ssrf_is_explicitly_disabled()
+    {
+        let provider =
+            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         provider
             .validate_source_config(
                 &ProviderContext::new("synctv"),
                 SourceConfig::media(&json!({ "url": "http://example.com:8080/video.mp4" })),
             )
             .await
-            .expect("default SSRF policy should allow non-default ports");
+            .expect("disabled SSRF policy should allow non-default ports");
     }
 
     #[tokio::test]
@@ -892,15 +904,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_playback_allows_blocked_hosts_when_default_ssrf_is_disabled() {
-        let provider = DirectUrlProvider::new();
+    async fn test_generate_playback_allows_blocked_hosts_when_ssrf_is_explicitly_disabled() {
+        let provider =
+            DirectUrlProvider::new_with_ssrf_guard(synctv_common::ssrf::SsrfGuard::disabled());
         let result = provider
             .generate_playback(
                 &ProviderContext::new("synctv"),
                 &json!({ "url": "http://localhost/video.mp4" }),
             )
             .await
-            .expect("default SSRF policy should allow blocked hosts");
+            .expect("disabled SSRF policy should allow blocked hosts");
         assert_eq!(
             result.playback_infos["direct"].urls,
             vec!["http://localhost/video.mp4"]

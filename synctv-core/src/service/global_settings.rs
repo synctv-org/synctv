@@ -349,13 +349,15 @@ impl OAuth2ProviderConfigs {
                 )));
             }
             let provider_config = provider_config.provider_config_value();
-            crate::oauth2::providers::provider_registry()
-                .create_provider(provider_type, &provider_config)
-                .map_err(|error| {
-                    crate::Error::InvalidInput(format!(
-                        "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
-                    ))
-                })?;
+            crate::oauth2::providers::provider_registry(
+                synctv_common::ssrf::SsrfGuard::strict_policy(),
+            )
+            .create_provider(provider_type, &provider_config)
+            .map_err(|error| {
+                crate::Error::InvalidInput(format!(
+                    "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"
+                ))
+            })?;
         }
         Ok(())
     }
@@ -509,7 +511,6 @@ pub struct SettingsRegistry {
     // Proxy settings
     pub movie_proxy: Setting<bool>,
     pub live_proxy: Setting<bool>,
-    pub allow_proxy_to_local: Setting<bool>,
 
     // RTMP settings
     pub custom_publish_host: Setting<String>,
@@ -702,12 +703,6 @@ impl SettingsRegistry {
             // Proxy settings
             movie_proxy: setting!(bool, "proxy.movie_proxy", storage.clone(), true),
             live_proxy: setting!(bool, "proxy.live_proxy", storage.clone(), true),
-            allow_proxy_to_local: setting!(
-                bool,
-                "proxy.allow_proxy_to_local",
-                storage.clone(),
-                true
-            ),
             // RTMP settings
             custom_publish_host: setting!(
                 String,

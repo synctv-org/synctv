@@ -13766,7 +13766,8 @@ pub mod o_auth2_service_client {
     ///
     /// Authentication:
     ///
-    /// * GetAuthorizationUrl, ExchangeAuthorizationCode: None (public)
+    /// * GetAuthorizationUrl: None (public)
+    /// * ExchangeAuthorizationCode: None for login flow; bind flow requires JWT matching OAuth2 state user
     /// * GetAuthorizationUrlForBind: JWT Authorization header (user_id)
     /// * ListAvailableProviders: None (public)
     /// * UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
@@ -13911,8 +13912,9 @@ pub mod o_auth2_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Exchange authorization code for JWT token
-        /// Frontend calls this after receiving code and state from OAuth2 provider redirect
+        /// Exchange authorization code for JWT token or complete a bind flow.
+        /// Public for login flow. Bind flow requires authentication and the token's
+        /// user ID must match the user stored in the OAuth2 state.
         pub async fn exchange_authorization_code(
             &mut self,
             request: impl tonic::IntoRequest<super::ExchangeAuthorizationCodeRequest>,
@@ -14059,8 +14061,9 @@ pub mod o_auth2_service_server {
             tonic::Response<super::GetAuthorizationUrlForBindResponse>,
             tonic::Status,
         >;
-        /// Exchange authorization code for JWT token
-        /// Frontend calls this after receiving code and state from OAuth2 provider redirect
+        /// Exchange authorization code for JWT token or complete a bind flow.
+        /// Public for login flow. Bind flow requires authentication and the token's
+        /// user ID must match the user stored in the OAuth2 state.
         async fn exchange_authorization_code(
             &self,
             request: tonic::Request<super::ExchangeAuthorizationCodeRequest>,
@@ -14109,7 +14112,8 @@ pub mod o_auth2_service_server {
     ///
     /// Authentication:
     ///
-    /// * GetAuthorizationUrl, ExchangeAuthorizationCode: None (public)
+    /// * GetAuthorizationUrl: None (public)
+    /// * ExchangeAuthorizationCode: None for login flow; bind flow requires JWT matching OAuth2 state user
     /// * GetAuthorizationUrlForBind: JWT Authorization header (user_id)
     /// * ListAvailableProviders: None (public)
     /// * UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)

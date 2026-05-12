@@ -146,7 +146,6 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | --- | --- | --- | --- |
 | `proxy.movie_proxy` | bool | `true` | 是否允许电影/媒体代理路径 |
 | `proxy.live_proxy` | bool | `true` | 是否允许直播代理路径 |
-| `proxy.allow_proxy_to_local` | bool | `true` | 是否允许代理访问本地/内网目标 |
 
 这些是业务代理策略，不等同于启动配置 `proxy_slice_cache.enabled`。slice cache 启用只能在启动时配置。
 

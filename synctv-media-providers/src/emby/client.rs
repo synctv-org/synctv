@@ -60,25 +60,12 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
     Ok(())
 }
 
-/// Shared HTTP client for all Emby requests (connection pooling).
-/// Redirect-safe by default. Private-network SSRF blocking follows SyncTV's
-/// runtime SSRF policy, which is permissive unless a strict guard is configured.
-static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
-    LazyLock::new(crate::build_provider_http_client);
-
 static API_PREFIX_CACHE: LazyLock<moka::future::Cache<String, String>> = LazyLock::new(|| {
     moka::future::Cache::builder()
         .max_capacity(1024)
         .time_to_live(Duration::from_hours(1))
         .build()
 });
-
-fn shared_client() -> Result<Client, EmbyError> {
-    SHARED_CLIENT
-        .as_ref()
-        .map(Clone::clone)
-        .map_err(|err| EmbyError::Network(err.to_string()))
-}
 
 const X_EMBY_TOKEN: &str = "X-Emby-Token";
 
@@ -109,7 +96,11 @@ pub struct PlaybackInfoRequest<'a> {
 impl EmbyClient {
     /// Create a new Emby client (reuses shared connection pool and per-host rate limiter)
     pub fn new(host: impl Into<String>) -> Result<Self, EmbyError> {
-        Self::with_http_client(host, shared_client()?)
+        Self::with_http_client(
+            host,
+            crate::build_provider_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+                .map_err(|err| EmbyError::Network(err.to_string()))?,
+        )
     }
 
     /// Create a new Emby client with a prebuilt HTTP client.
@@ -130,7 +121,13 @@ impl EmbyClient {
         token: impl Into<String>,
         user_id: impl Into<String>,
     ) -> Result<Self, EmbyError> {
-        Self::with_credentials_and_http_client(host, token, user_id, shared_client()?)
+        Self::with_credentials_and_http_client(
+            host,
+            token,
+            user_id,
+            crate::build_provider_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+                .map_err(|err| EmbyError::Network(err.to_string()))?,
+        )
     }
 
     /// Create a new Emby client with credentials and a prebuilt HTTP client.

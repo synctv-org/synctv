@@ -46,15 +46,6 @@ server:
   #
   # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
-  # Shared secret for authenticating cluster gRPC calls between nodes.
-  # REQUIRED when cluster.enabled is true — startup fails if this is empty in cluster mode.
-  # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
-  # Not required in standalone mode even when Redis is configured.
-  # Generate a secret with: openssl rand -hex 32
-  # Environment variable: SYNCTV_SERVER_CLUSTER_SECRET
-  # Environment file variable: SYNCTV_SERVER_CLUSTER_SECRET_FILE
-  # File-based secret: server.cluster_secret_file: "/run/secrets/cluster_secret"
-  cluster_secret: ""
   # Advertise host for cluster node registration (address other nodes use to reach this instance).
   # Falls back to POD_IP env var, then system hostname if empty.
   # In Kubernetes, set via SYNCTV_SERVER_ADVERTISE_HOST or downward API (status.podIP).
@@ -104,6 +95,18 @@ security:
   #   SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE
   # opaque_server_setup_secret_file: "/run/secrets/opaque_server_setup_secret"
   opaque_server_setup_secret: ""
+  # Global SSRF policy for server-side outbound requests.
+  # Private, loopback, link-local, reserved, and metadata targets are blocked by default.
+  # Prefer allowed_hosts / allowed_ip_ranges for known internal media endpoints.
+  # Set allow_private_network_targets=true only in a trusted private deployment.
+  # Environment variables:
+  #   SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS
+  #   SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS
+  #   SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES
+  ssrf:
+    allow_private_network_targets: false
+    allowed_hosts: []
+    allowed_ip_ranges: []
 
 metrics:
   # Dedicated metrics listener. When enabled, /metrics is not served on the API port.
@@ -481,24 +484,33 @@ bootstrap:
   #
   # Controls multi-node cluster mode and internal channel buffer sizes.
   #
-  # When enabled=true, Redis is MANDATORY and cluster_secret must be set.
+  # When enabled=true, Redis is MANDATORY and cluster.secret must be set.
   # When enabled=false (default), this is a standalone single-node deployment
   # and Redis is optional.
 
 cluster:
   # Enable cluster mode for multi-node deployments.
-  # When true, Redis is required and cluster_secret must be set.
+  # When true, Redis is required and cluster.secret must be set.
   # When false (default), runs as a standalone single-node instance.
   # Environment variable: SYNCTV_CLUSTER_ENABLED
   enabled: false
+  # Shared secret for authenticating cluster gRPC calls between nodes.
+  # REQUIRED when cluster.enabled is true — startup fails if this is empty in cluster mode.
+  # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
+  # Not required in standalone mode even when Redis is configured.
+  # Generate a secret with: openssl rand -hex 32
+  # Environment variable: SYNCTV_CLUSTER_SECRET
+  # Environment file variable: SYNCTV_CLUSTER_SECRET_FILE
+  # File-based secret: cluster.secret_file: "/run/secrets/cluster_secret"
+  secret: ""
   # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
   # Critical events are never dropped; senders block when full.
   critical_channel_capacity: 1000
   # Capacity for normal-priority Redis publish channel.
   # Normal events are dropped with a warning when full.
   publish_channel_capacity: 10000
-  # Discovery mode: "redis" (default) or "k8s_dns" (requires HEADLESS_SERVICE_NAME
-  # and POD_NAMESPACE env vars).
+  # Discovery mode: "redis" (default), "static", or "k8s_dns" (requires
+  # HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars).
   #
   # IMPORTANT: "k8s_dns" mode still requires Redis for health monitoring, load
   # balancing, and cluster pub/sub. DNS only supplements peer discovery by detecting

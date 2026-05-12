@@ -17,7 +17,7 @@ SyncTV 把安全边界拆成几层：
 - **访问 token**：登录完成后签发，用于 HTTP/gRPC 业务 API。
 - **management 控制面**：CLI 使用的管理端点，独立于普通用户 token。
 - **Provider 上游访问**：Provider 自己决定上游 header 和凭据，不由 proxy 猜测客户端 header。
-- **集群内部认证**：节点间 gRPC 使用 `server.cluster_secret`。
+- **集群内部认证**：节点间 gRPC 使用 `cluster.secret`。
 
 <Diagram
   light={securityAuthBoundaryDiagramLight}

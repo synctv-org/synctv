@@ -176,11 +176,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_JWT_SECRET
-            - name: SYNCTV_SERVER_CLUSTER_SECRET
+            - name: SYNCTV_CLUSTER_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_SERVER_CLUSTER_SECRET
+                  key: SYNCTV_CLUSTER_SECRET
             {{- if .Values.config.email.smtpHost }}
             - name: SYNCTV_EMAIL_SMTP_USERNAME
               valueFrom:

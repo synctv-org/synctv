@@ -129,7 +129,7 @@ Provider header 是边界设计的一部分。这样可以避免底层 proxy 猜
 
 ## 集群模型
 
-集群模式适合多副本部署。开启 `cluster.enabled=true` 后，Redis 和 `server.cluster_secret` 都是必需项。
+集群模式适合多副本部署。开启 `cluster.enabled=true` 后，Redis 和 `cluster.secret` 都是必需项。
 
 关键配置：
 
@@ -138,7 +138,7 @@ Provider header 是边界设计的一部分。这样可以避免底层 proxy 猜
 | `cluster.discovery_mode` | 节点发现方式，支持 `redis`、`static`、`k8s_dns` |
 | `cluster.leader_election_mode` | 后台任务 leader 选举方式，支持 `redis`、`k8s_lease` |
 | `server.advertise_host` | 其他节点连接当前节点时使用的地址 |
-| `server.cluster_secret` | 节点间 gRPC 调用认证 |
+| `cluster.secret` | 节点间 gRPC 调用认证 |
 | `cluster.catchup_window_secs` | 节点短暂断开后事件回放窗口 |
 
 多副本时还要确认：

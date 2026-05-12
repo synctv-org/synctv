@@ -144,22 +144,34 @@ cargo run -p synctv --bin synctv -- db status
 
 ## 测试
 
-全 workspace 测试：
+CI 等价的非 ignored 测试：
 
 ```bash
-cargo test --workspace --all-targets
+cargo nextest run --workspace --locked --run-ignored default --nff
+```
+
+文档测试：
+
+```bash
+cargo test --workspace --doc --locked
+```
+
+需要 Docker/PostgreSQL/Redis 的 ignored 测试：
+
+```bash
+cargo nextest run --workspace --locked --run-ignored only --nff
 ```
 
 只跑某个 crate：
 
 ```bash
-cargo test -p synctv-api
+cargo nextest run -p synctv-api --locked --run-ignored default --nff
 ```
 
 只跑某个测试：
 
 ```bash
-cargo test -p synctv-api test_name
+cargo nextest run -p synctv-api test_name --locked --run-ignored default --nff
 ```
 
 格式检查：
@@ -201,7 +213,7 @@ docker compose -f docker-compose.dev.yml up -d postgres redis
 
 SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
 SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
-SYNCTV_SERVER_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
+SYNCTV_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
 SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
 SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
 cargo run -p synctv --bin synctv -- db migrate

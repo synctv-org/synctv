@@ -184,7 +184,7 @@ existingSecret: "my-external-synctv-secret"
 - `SYNCTV_DATABASE_PASSWORD`，除非 PostgreSQL 使用 KubeBlocks 模式。
 - `SYNCTV_REDIS_PASSWORD`，Redis 使用 standard 模式时必需；external 模式只在外部 Redis 需要密码时提供；KubeBlocks 模式不需要提供。
 - `SYNCTV_JWT_SECRET`
-- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD`，如果 `config.bootstrap.createRootUser=true`。
@@ -331,7 +331,7 @@ secrets:
       secretAccessKey: "..."
 ```
 
-只要开启 `config.cluster.enabled=true`，应用启动校验还要求 Redis 可用、`SYNCTV_SERVER_CLUSTER_SECRET` 稳定且所有副本一致，并且每个 Pod 具备可用于节点互联的 `SYNCTV_SERVER_ADVERTISE_HOST`。Helm 默认会注入 Redis 连接、自动生成 cluster secret，并用 Pod IP 作为 advertise host；如果你裁剪 values 或使用外部 Secret，需要保留这些条件。直播 HLS 选择本地 backend 时，还要确保 Pod 间 gRPC 路径可达，因为远端分片读取依赖 publisher-node proxy。
+只要开启 `config.cluster.enabled=true`，应用启动校验还要求 Redis 可用、`SYNCTV_CLUSTER_SECRET` 稳定且所有副本一致，并且每个 Pod 具备可用于节点互联的 `SYNCTV_SERVER_ADVERTISE_HOST`。Helm 默认会注入 Redis 连接、自动生成 cluster secret，并用 Pod IP 作为 advertise host；如果你裁剪 values 或使用外部 Secret，需要保留这些条件。直播 HLS 选择本地 backend 时，还要确保 Pod 间 gRPC 路径可达，因为远端分片读取依赖 publisher-node proxy。
 
 如果 `config.cluster.discoveryMode=k8s_dns`，Chart 会自动渲染 headless Service，并注入 `HEADLESS_SERVICE_NAME` 和 `POD_NAMESPACE`。如果 `config.cluster.leaderElectionMode=k8s_lease`，Chart 会注入 `POD_NAME` 和 `POD_NAMESPACE`。这两种模式都要求镜像构建包含 `k8s` feature。
 

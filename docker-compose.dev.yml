@@ -53,7 +53,7 @@ services:
       SYNCTV_SERVER_HOST: 0.0.0.0
       SYNCTV_SERVER_PORT: 8080
       SYNCTV_JWT_SECRET: dev-jwt-secret-please-change-in-production-1234567890
-      SYNCTV_SERVER_CLUSTER_SECRET: dev-cluster-secret-please-change-in-production-1234567890
+      SYNCTV_CLUSTER_SECRET: dev-cluster-secret-please-change-in-production-1234567890
       SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
       SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET: dev-opaque-server-setup-secret-please-change-1234567890
       SYNCTV_BOOTSTRAP_CREATE_ROOT_USER: "true"

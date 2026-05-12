@@ -19,6 +19,7 @@ use opaque_ke::{
     ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
 };
 use sqlx::{PgPool, Row};
+use synctv_common::ssrf::SsrfGuard;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
@@ -2437,7 +2438,7 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
-        synctv_core::oauth2::providers::provider_registry(),
+        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
         false,
     )
     .expect("OAuth2 service should initialize");
@@ -2556,7 +2557,7 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
-        synctv_core::oauth2::providers::provider_registry(),
+        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
         false,
     )
     .expect("OAuth2 service should initialize")
@@ -2630,7 +2631,7 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
     let oauth_service = OAuth2Service::new(
         UserOAuthProviderRepository::new(pool.clone()),
         local_oauth_state_store(),
-        synctv_core::oauth2::providers::provider_registry(),
+        synctv_core::oauth2::providers::provider_registry(SsrfGuard::strict_policy()),
         false,
     )
     .expect("OAuth2 service should initialize")

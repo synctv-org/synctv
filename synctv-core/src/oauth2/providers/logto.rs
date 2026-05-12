@@ -58,14 +58,30 @@ impl LogtoProvider {
         redirect_url: String,
         endpoint: &str,
     ) -> Result<Self, Error> {
+        Self::create_with_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            endpoint,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    pub fn create_with_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        endpoint: &str,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let endpoint = endpoint.trim_end_matches('/');
-        validate_provider_url(endpoint, "Invalid Logto endpoint")?;
+        validate_provider_url(endpoint, "Invalid Logto endpoint", ssrf_guard)?;
         let auth_url_str = format!("{endpoint}/oidc/auth");
         let token_url_str = format!("{endpoint}/oidc/token");
         let userinfo_url = format!("{endpoint}/oidc/me");
-        validate_provider_url(&auth_url_str, "Invalid Logto auth URL")?;
-        validate_provider_url(&token_url_str, "Invalid Logto token URL")?;
-        validate_provider_url(&userinfo_url, "Invalid Logto user info URL")?;
+        validate_provider_url(&auth_url_str, "Invalid Logto auth URL", ssrf_guard)?;
+        validate_provider_url(&token_url_str, "Invalid Logto token URL", ssrf_guard)?;
+        validate_provider_url(&userinfo_url, "Invalid Logto user info URL", ssrf_guard)?;
         let auth_url = AuthUrl::new(auth_url_str)
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto auth URL: {e}")))?;
         let token_url = TokenUrl::new(token_url_str)
@@ -83,8 +99,8 @@ impl LogtoProvider {
         Ok(Self {
             client,
             endpoint: endpoint.to_string(),
-            oauth2_http_client: build_oauth2_http_client()?,
-            http_client: build_provider_http_client()?,
+            oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
+            http_client: build_provider_http_client(ssrf_guard)?,
         })
     }
 }
@@ -153,14 +169,22 @@ impl Provider for LogtoProvider {
 
 /// Factory function for Logto provider
 pub fn logto_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
+    logto_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
+}
+
+pub fn logto_factory_with_ssrf_guard(
+    config: &serde_json::Value,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
     let config: LogtoConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::InvalidInput(format!("Invalid Logto config: {e}")))?;
 
-    Ok(Box::new(LogtoProvider::create(
+    Ok(Box::new(LogtoProvider::create_with_ssrf_guard(
         config.client_id,
         config.client_secret,
         config.redirect_url,
         &config.endpoint,
+        ssrf_guard,
     )?))
 }
 
@@ -222,12 +246,14 @@ mod tests {
     }
 
     #[test]
-    fn test_create_provider_allows_loopback_endpoint_when_default_ssrf_is_disabled() {
-        let result = LogtoProvider::create(
+    fn test_create_provider_allows_loopback_endpoint_when_ssrf_is_explicitly_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let result = LogtoProvider::create_with_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "http://127.0.0.1:8443",
+            &guard,
         );
 
         assert!(result.is_ok());

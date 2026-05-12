@@ -249,7 +249,7 @@ async fn test_redirect_single_hop_via_wiremock() {
 fn test_public_ip_allowed_by_acl() {
     let ip: std::net::IpAddr = "93.184.216.34".parse().unwrap();
     assert!(
-        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
+        !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
         "Public IP should be allowed by SSRF ACL"
     );
 }

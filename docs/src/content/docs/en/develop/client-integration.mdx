@@ -180,7 +180,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-Use `GET /api/oauth2/{provider}/bind?redirect_url=<callback>` when binding a provider to an existing authenticated account. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+Use `GET /api/oauth2/{provider}/bind?redirect_url=<callback>` when binding a provider to an existing authenticated account. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
 
 ## gRPC Examples
 

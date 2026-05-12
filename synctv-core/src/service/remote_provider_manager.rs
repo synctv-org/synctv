@@ -82,12 +82,16 @@ pub struct RemoteProviderManager {
     /// Exact-host address overrides used by tests to route synthetic hostnames
     /// to in-process servers without weakening the production SSRF policy.
     address_overrides: Arc<HashMap<String, SocketAddr>>,
+
+    /// Global SSRF policy for remote provider gRPC endpoints.
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
 
 impl std::fmt::Debug for RemoteProviderManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteProviderManager")
             .field("invalidation_enabled", &self.cache_invalidation.is_some())
+            .field("ssrf_enabled", &self.ssrf_guard.acl().is_some())
             .finish()
     }
 }
@@ -306,7 +310,12 @@ impl RemoteProviderManager {
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     ) -> Self {
-        Self::new_with_options(repository, cache_invalidation, HashMap::new())
+        Self::new_with_options(
+            repository,
+            cache_invalidation,
+            HashMap::new(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
     }
 
     #[must_use]
@@ -315,13 +324,34 @@ impl RemoteProviderManager {
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         address_overrides: HashMap<String, SocketAddr>,
     ) -> Self {
-        Self::new_with_options(repository, cache_invalidation, address_overrides)
+        Self::new_with_options(
+            repository,
+            cache_invalidation,
+            address_overrides,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_address_overrides_and_ssrf_guard(
+        repository: Arc<ProviderInstanceRepository>,
+        cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+        address_overrides: HashMap<String, SocketAddr>,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        Self::new_with_options(
+            repository,
+            cache_invalidation,
+            address_overrides,
+            ssrf_guard,
+        )
     }
 
     fn new_with_options(
         repository: Arc<ProviderInstanceRepository>,
         cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
         address_overrides: HashMap<String, SocketAddr>,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> Self {
         if cache_invalidation.is_none() {
             tracing::warn!(
@@ -341,6 +371,7 @@ impl RemoteProviderManager {
             invalidation_cancel: tokio_util::sync::CancellationToken::new(),
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
             address_overrides: Arc::new(address_overrides),
+            ssrf_guard,
         }
     }
 
@@ -365,7 +396,7 @@ impl RemoteProviderManager {
                 continue;
             }
 
-            Self::validate_config(&config)?;
+            Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
             match self.create_grpc_channel(&config).await {
                 Ok(channel) => match Self::build_remote_connection(&config, channel) {
@@ -555,7 +586,10 @@ impl RemoteProviderManager {
     /// and VPN/proxy environments may return unexpected IPs for public hostnames.
     /// SyncTV's default policy is permissive for self-hosted/private deployments;
     /// strict private-address blocking only happens when the shared guard is strict.
-    fn validate_endpoint_ssrf(endpoint: &str) -> crate::Result<()> {
+    fn validate_endpoint_ssrf(
+        endpoint: &str,
+        guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> crate::Result<()> {
         let url = url::Url::parse(endpoint).map_err(|e| {
             crate::Error::InvalidInput(format!("SSRF validation: invalid URL: {e}"))
         })?;
@@ -572,8 +606,6 @@ impl RemoteProviderManager {
         let host = url.host_str().ok_or_else(|| {
             crate::Error::InvalidInput("SSRF validation: missing host".to_string())
         })?;
-
-        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
 
         // Check if the configured policy blocks the hostname itself.
         if guard.is_host_blocked(host) {
@@ -642,7 +674,10 @@ impl RemoteProviderManager {
     }
 
     /// Validate endpoint and timeout without creating or connecting a channel.
-    fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
+    fn validate_config_with_ssrf_guard(
+        config: &ProviderInstance,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> crate::Result<()> {
         validate_provider_instance_name(&config.name).map_err(crate::Error::InvalidInput)?;
         config.parse_timeout().map_err(crate::Error::Internal)?;
         for provider in &config.providers {
@@ -656,7 +691,7 @@ impl RemoteProviderManager {
             }
         }
         if Self::requires_remote_connection(config) {
-            Self::validate_endpoint_ssrf(&config.endpoint)?;
+            Self::validate_endpoint_ssrf(&config.endpoint, ssrf_guard)?;
             let endpoint = url::Url::parse(&config.endpoint).map_err(|e| {
                 crate::Error::InvalidInput(format!("Remote provider endpoint is invalid: {e}"))
             })?;
@@ -693,6 +728,14 @@ impl RemoteProviderManager {
                 .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn validate_config(config: &ProviderInstance) -> crate::Result<()> {
+        Self::validate_config_with_ssrf_guard(
+            config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
     }
 
     fn requires_remote_connection(config: &ProviderInstance) -> bool {
@@ -882,7 +925,7 @@ impl RemoteProviderManager {
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
     async fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
         // Apply the configured SSRF policy to the endpoint before connecting.
-        Self::validate_endpoint_ssrf(&config.endpoint)?;
+        Self::validate_endpoint_ssrf(&config.endpoint, &self.ssrf_guard)?;
 
         // Parse timeout
         let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
@@ -961,7 +1004,7 @@ impl RemoteProviderManager {
             }
         }
 
-        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+        let guard = self.ssrf_guard.clone();
         let address_overrides = Arc::clone(&self.address_overrides);
         let connector = tower::service_fn(move |uri: Uri| {
             let guard = guard.clone();
@@ -1054,7 +1097,7 @@ impl RemoteProviderManager {
             }
         }
 
-        let guard = synctv_common::ssrf::SsrfGuard::shared_default();
+        let guard = self.ssrf_guard.clone();
         let address_overrides = Arc::clone(&self.address_overrides);
 
         let tls_config = ClientConfig::builder()
@@ -1263,7 +1306,7 @@ impl RemoteProviderManager {
         config: ProviderInstance,
         control: Option<&ExecutionControl>,
     ) -> crate::Result<()> {
-        Self::validate_config(&config)?;
+        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
             Some(
@@ -1331,7 +1374,7 @@ impl RemoteProviderManager {
             })?;
         let previous_connection = self.channel_cache.get(&config.name).await;
 
-        Self::validate_config(&config)?;
+        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
         let connection = if config.enabled && Self::requires_remote_connection(&config) {
             Some(
@@ -1453,7 +1496,7 @@ impl RemoteProviderManager {
             return Ok(());
         }
 
-        Self::validate_config(&config)?;
+        Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
         config.enabled = true;
         if Self::requires_remote_connection(&config) {

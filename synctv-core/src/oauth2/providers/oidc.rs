@@ -32,6 +32,14 @@ pub struct OidcConfig {
     pub userinfo_url: Option<String>,
 }
 
+/// Optional static OIDC endpoints.
+#[derive(Debug, Clone)]
+pub struct OidcEndpointOverrides {
+    pub auth_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+}
+
 /// Discovered OIDC endpoints from .well-known/openid-configuration
 #[derive(Debug, Clone, Deserialize)]
 struct OidcDiscoveryDocument {
@@ -58,6 +66,7 @@ pub struct OidcProvider {
     init_config: OidcInitConfig,
     oauth2_http_client: Arc<super::OAuth2HttpClient>,
     http_client: Arc<Client>,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
 
 /// Internal config stored for lazy OIDC discovery
@@ -100,8 +109,24 @@ impl OidcProvider {
         redirect_url: String,
         issuer: &str,
     ) -> Result<Self, Error> {
+        Self::create_with_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            issuer,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    pub fn create_with_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        issuer: &str,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let issuer = issuer.trim_end_matches('/');
-        validate_provider_url(issuer, "Invalid OIDC issuer URL")?;
+        validate_provider_url(issuer, "Invalid OIDC issuer URL", ssrf_guard)?;
         Ok(Self {
             resolved: OnceCell::new(),
             init_config: OidcInitConfig {
@@ -111,8 +136,9 @@ impl OidcProvider {
                 issuer: issuer.to_string(),
                 static_endpoints: None,
             },
-            oauth2_http_client: build_oauth2_http_client()?,
-            http_client: build_provider_http_client()?,
+            oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
+            http_client: build_provider_http_client(ssrf_guard)?,
+            ssrf_guard: ssrf_guard.clone(),
         })
     }
 
@@ -129,16 +155,43 @@ impl OidcProvider {
         token_url: Option<String>,
         userinfo_url: Option<String>,
     ) -> Result<Self, Error> {
+        let endpoints = OidcEndpointOverrides {
+            auth_url,
+            token_url,
+            userinfo_url,
+        };
+        Self::create_with_endpoints_and_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            issuer,
+            endpoints,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    pub fn create_with_endpoints_and_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        issuer: &str,
+        endpoints: OidcEndpointOverrides,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let issuer_trimmed = issuer.trim_end_matches('/');
         if !issuer_trimmed.is_empty() {
-            validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL")?;
+            validate_provider_url(issuer_trimmed, "Invalid OIDC issuer URL", ssrf_guard)?;
         }
-        let auth = auth_url.unwrap_or_else(|| format!("{issuer_trimmed}/authorize"));
-        let token = token_url.unwrap_or_else(|| format!("{issuer_trimmed}/token"));
-        validate_provider_url(&auth, "Invalid OIDC auth URL")?;
-        validate_provider_url(&token, "Invalid OIDC token URL")?;
-        if let Some(userinfo) = userinfo_url.as_deref() {
-            validate_provider_url(userinfo, "Invalid OIDC userinfo URL")?;
+        let auth = endpoints
+            .auth_url
+            .unwrap_or_else(|| format!("{issuer_trimmed}/authorize"));
+        let token = endpoints
+            .token_url
+            .unwrap_or_else(|| format!("{issuer_trimmed}/token"));
+        validate_provider_url(&auth, "Invalid OIDC auth URL", ssrf_guard)?;
+        validate_provider_url(&token, "Invalid OIDC token URL", ssrf_guard)?;
+        if let Some(userinfo) = endpoints.userinfo_url.as_deref() {
+            validate_provider_url(userinfo, "Invalid OIDC userinfo URL", ssrf_guard)?;
         }
         Ok(Self {
             resolved: OnceCell::new(),
@@ -150,11 +203,12 @@ impl OidcProvider {
                 static_endpoints: Some(StaticEndpoints {
                     auth,
                     token,
-                    userinfo: userinfo_url,
+                    userinfo: endpoints.userinfo_url,
                 }),
             },
-            oauth2_http_client: build_oauth2_http_client()?,
-            http_client: build_provider_http_client()?,
+            oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
+            http_client: build_provider_http_client(ssrf_guard)?,
+            ssrf_guard: ssrf_guard.clone(),
         })
     }
 
@@ -176,7 +230,11 @@ impl OidcProvider {
                     // Perform .well-known/openid-configuration discovery
                     let discovery_url =
                         format!("{}/.well-known/openid-configuration", config.issuer);
-                    validate_provider_url(&discovery_url, "Invalid OIDC discovery document URL")?;
+                    validate_provider_url(
+                        &discovery_url,
+                        "Invalid OIDC discovery document URL",
+                        &self.ssrf_guard,
+                    )?;
                     tracing::info!("OIDC: fetching discovery document from {}", discovery_url);
 
                     let resp = self
@@ -208,10 +266,18 @@ impl OidcProvider {
                         doc.userinfo
                     );
 
-                    validate_provider_url(&doc.authorization, "Invalid OIDC auth URL")?;
-                    validate_provider_url(&doc.token, "Invalid OIDC token URL")?;
+                    validate_provider_url(
+                        &doc.authorization,
+                        "Invalid OIDC auth URL",
+                        &self.ssrf_guard,
+                    )?;
+                    validate_provider_url(&doc.token, "Invalid OIDC token URL", &self.ssrf_guard)?;
                     if let Some(userinfo) = doc.userinfo.as_deref() {
-                        validate_provider_url(userinfo, "Invalid OIDC userinfo URL")?;
+                        validate_provider_url(
+                            userinfo,
+                            "Invalid OIDC userinfo URL",
+                            &self.ssrf_guard,
+                        )?;
                     }
 
                     (doc.authorization, doc.token, doc.userinfo)
@@ -310,6 +376,13 @@ impl Provider for OidcProvider {
 
 /// Factory function for OIDC provider
 pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
+    oidc_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
+}
+
+pub fn oidc_factory_with_ssrf_guard(
+    config: &serde_json::Value,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
     let config: OidcConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::InvalidInput(format!("Invalid OIDC config: {e}")))?;
 
@@ -328,21 +401,25 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
 
     // Use create_with_endpoints if any custom endpoint is specified
     let provider = if has_custom_endpoints {
-        OidcProvider::create_with_endpoints(
+        OidcProvider::create_with_endpoints_and_ssrf_guard(
             config.client_id,
             config.client_secret,
             config.redirect_url,
             &config.issuer,
-            config.auth_url,
-            config.token_url,
-            config.userinfo_url,
+            OidcEndpointOverrides {
+                auth_url: config.auth_url,
+                token_url: config.token_url,
+                userinfo_url: config.userinfo_url,
+            },
+            ssrf_guard,
         )?
     } else {
-        OidcProvider::create(
+        OidcProvider::create_with_ssrf_guard(
             config.client_id,
             config.client_secret,
             config.redirect_url,
             &config.issuer,
+            ssrf_guard,
         )?
     };
 
@@ -365,12 +442,14 @@ mod tests {
     }
 
     #[test]
-    fn test_create_provider_allows_loopback_issuer_when_default_ssrf_is_disabled() {
-        let provider = OidcProvider::create(
+    fn test_create_provider_allows_loopback_issuer_when_ssrf_is_explicitly_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let provider = OidcProvider::create_with_ssrf_guard(
             "oidc_client_id".to_string(),
             "oidc_secret".to_string(),
             "https://example.com/callback".to_string(),
             "http://127.0.0.1:8443",
+            &guard,
         );
 
         assert!(provider.is_ok());
@@ -411,15 +490,19 @@ mod tests {
     }
 
     #[test]
-    fn test_create_with_endpoints_allows_loopback_token_url_when_default_ssrf_is_disabled() {
-        let provider = OidcProvider::create_with_endpoints(
+    fn test_create_with_endpoints_allows_loopback_token_url_when_ssrf_is_explicitly_disabled() {
+        let guard = synctv_common::ssrf::SsrfGuard::disabled();
+        let provider = OidcProvider::create_with_endpoints_and_ssrf_guard(
             "id".to_string(),
             "secret".to_string(),
             "https://example.com/cb".to_string(),
             "https://issuer.example.com",
-            Some("https://issuer.example.com/authorize".to_string()),
-            Some("http://127.0.0.1:8443/token".to_string()),
-            Some("https://issuer.example.com/userinfo".to_string()),
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/authorize".to_string()),
+                token_url: Some("http://127.0.0.1:8443/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/userinfo".to_string()),
+            },
+            &guard,
         );
 
         assert!(provider.is_ok());

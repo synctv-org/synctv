@@ -171,10 +171,9 @@ pub async fn init_livestream(
             cleanup_check_interval_seconds: config.livestream.cleanup_check_interval_seconds,
             stream_timeout_seconds: config.livestream.stream_timeout_seconds,
             distributed_enabled: config.cluster_runtime_enabled(),
-            cluster_secret: if config.cluster_runtime_enabled()
-                && !config.server.cluster_secret.is_empty()
+            cluster_secret: if config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
             {
-                Some(config.server.cluster_secret.clone())
+                Some(config.cluster.secret.clone())
             } else {
                 None
             },
@@ -186,6 +185,7 @@ pub async fn init_livestream(
             hls_storage_backend: config.livestream.hls_storage_backend,
             hls_storage_path: config.livestream.hls_storage_path.clone(),
             hls_oss: config.livestream.hls_oss.clone(),
+            ssrf_guard: config.security.ssrf_guard(),
         },
         publisher_registry,
         user_stream_tracker,

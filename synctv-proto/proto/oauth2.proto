@@ -19,7 +19,8 @@ import "proto/common.proto";
 // 8. Backend returns JWT token to frontend
 //
 // Authentication:
-// - GetAuthorizationUrl, ExchangeAuthorizationCode: None (public)
+// - GetAuthorizationUrl: None (public)
+// - ExchangeAuthorizationCode: None for login flow; bind flow requires JWT matching OAuth2 state user
 // - GetAuthorizationUrlForBind: JWT Authorization header (user_id)
 // - ListAvailableProviders: None (public)
 // - UnlinkProvider, GetLinkedProviders: JWT Authorization header (user_id)
@@ -34,8 +35,9 @@ service OAuth2Service {
     // Requires authentication
     rpc GetAuthorizationUrlForBind(GetAuthorizationUrlForBindRequest) returns (GetAuthorizationUrlForBindResponse);
 
-    // Exchange authorization code for JWT token
-    // Frontend calls this after receiving code and state from OAuth2 provider redirect
+    // Exchange authorization code for JWT token or complete a bind flow.
+    // Public for login flow. Bind flow requires authentication and the token's
+    // user ID must match the user stored in the OAuth2 state.
     rpc ExchangeAuthorizationCode(ExchangeAuthorizationCodeRequest) returns (ExchangeAuthorizationCodeResponse);
 
     // List all available OAuth2 provider instances

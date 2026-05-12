@@ -115,12 +115,25 @@ pub struct Services {
     pub credential_encryption: Option<crate::service::CredentialEncryption>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InitServicesOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
+    pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub credential_encryption_key_override: Option<String>,
     pub password_hasher_override: Option<Arc<dyn crate::service::auth::PasswordHasherService>>,
     pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+}
+
+impl Default for InitServicesOptions {
+    fn default() -> Self {
+        Self {
+            provider_address_overrides: HashMap::new(),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
+            credential_encryption_key_override: None,
+            password_hasher_override: None,
+            realtime_outbox: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for InitServicesOptions {
@@ -130,6 +143,7 @@ impl std::fmt::Debug for InitServicesOptions {
                 "provider_address_overrides",
                 &self.provider_address_overrides,
             )
+            .field("ssrf_enabled", &self.ssrf_guard.acl().is_some())
             .field(
                 "credential_encryption_key_override",
                 &self
@@ -259,7 +273,10 @@ async fn build_providers_manager(
     config: &Config,
     provider_instance_manager: Arc<RemoteProviderManager>,
 ) -> Result<Arc<ProvidersManager>, anyhow::Error> {
-    let providers_manager = ProvidersManager::new(provider_instance_manager);
+    let providers_manager = ProvidersManager::new_with_ssrf_guard(
+        provider_instance_manager,
+        config.security.ssrf_guard(),
+    );
     let default_provider_count = providers_manager
         .create_builtin_defaults_with_config(&config.media_providers)
         .await
@@ -462,11 +479,14 @@ pub async fn init_services_with_options(
 
     // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation when available)
     info!("Initializing RemoteProviderManager...");
-    let provider_instance_manager = Arc::new(RemoteProviderManager::new_with_address_overrides(
-        provider_instance_repo.clone(),
-        Some(cache_invalidation.clone()),
-        options.provider_address_overrides,
-    ));
+    let provider_instance_manager = Arc::new(
+        RemoteProviderManager::new_with_address_overrides_and_ssrf_guard(
+            provider_instance_repo.clone(),
+            Some(cache_invalidation.clone()),
+            options.provider_address_overrides,
+            options.ssrf_guard.clone(),
+        ),
+    );
 
     // Pre-warm cache with all enabled provider instances from database
     handle_provider_manager_init_result(provider_instance_manager.init().await)?;
@@ -572,8 +592,12 @@ pub async fn init_services_with_options(
 
     let settings_registry = Arc::new(settings_registry);
 
-    let oauth2_service =
-        init_oauth2_service(&pool, Arc::clone(&settings_registry), &shared_state_profile)?;
+    let oauth2_service = init_oauth2_service(
+        &pool,
+        Arc::clone(&settings_registry),
+        &shared_state_profile,
+        options.ssrf_guard.clone(),
+    )?;
     info!("OAuth2 service initialized");
 
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
@@ -727,8 +751,9 @@ fn init_oauth2_service(
     pool: &PgPool,
     settings_registry: Arc<SettingsRegistry>,
     profile: &SharedStateProfile,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
-    let provider_registry = crate::oauth2::providers::provider_registry();
+    let provider_registry = crate::oauth2::providers::provider_registry(ssrf_guard);
     info!("OAuth2 provider registry initialized");
 
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
@@ -1588,7 +1613,7 @@ mod tests {
     fn test_cluster_enabled_without_redis_fails_at_config_validation_layer() {
         let mut config = Config::default();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "cluster-secret".to_string();
+        config.cluster.secret = "cluster-secret".to_string();
         config.redis.url.clear();
 
         let errors = config
@@ -1625,8 +1650,13 @@ mod tests {
         let settings_registry = test_settings_registry(pool.clone());
 
         let profile = SharedStateProfile::from_runtime(None, "synctv:", true);
-        let error = init_oauth2_service(&pool, settings_registry, &profile)
-            .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
+        let error = init_oauth2_service(
+            &pool,
+            settings_registry,
+            &profile,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect_err("cluster bootstrap must not fall back to in-memory OAuth2 state store");
 
         assert!(
             error
@@ -1641,8 +1671,13 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
         let settings_registry = test_settings_registry(pool.clone());
         let profile = SharedStateProfile::from_runtime(None, "synctv:", false);
-        let service = init_oauth2_service(&pool, settings_registry, &profile)
-            .expect("OAuth2 service should start before runtime providers are configured");
+        let service = init_oauth2_service(
+            &pool,
+            settings_registry,
+            &profile,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .expect("OAuth2 service should start before runtime providers are configured");
         assert!(service.is_some());
     }
 

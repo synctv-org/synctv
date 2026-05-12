@@ -165,17 +165,37 @@ server:
 
 Only add proxy IPs or CIDRs that you control. If this list is empty, SyncTV uses the socket peer address and does not trust forwarded client IP headers.
 
-## SSRF Default Policy
+## SSRF Outbound Policy
 
-SyncTV allows private-network media providers, proxy targets, and remote video sources by default. This is intentional for self-hosted deployments where Alist, Emby, reverse proxies, NAS systems, IPTV sources, or other media endpoints often live on a LAN.
+SyncTV uses the global `security.ssrf` policy for server-side outbound HTTP, proxy, provider, OAuth2, remote-provider, and livestream pull requests. The default policy blocks private, loopback, link-local, reserved, and cloud metadata network targets.
 
-That means private-address SSRF blocking is not a global default security boundary. The codebase still has an explicit strict policy for call sites that need it, but the default product behavior favors private media source compatibility.
+```yaml
+security:
+  ssrf:
+    allow_private_network_targets: false
+    allowed_hosts:
+      - "alist.internal"
+    allowed_ip_ranges:
+      - "192.168.1.10/32"
+      - "10.0.8.0/24"
+```
 
-Operational guidance:
+Field behavior:
 
-- For public deployments, restrict reachable networks through reverse proxies, network policies, firewalls, and provider credential scope.
-- Do not expose privileged internal admin endpoints as ordinary media sources for untrusted users.
-- Custom providers or outbound HTTP integrations should explicitly decide whether to enable the strict SSRF guard.
+- `allow_private_network_targets=false`: default; block local, private, and metadata targets.
+- `allowed_hosts`: allow known internal services by hostname.
+- `allowed_ip_ranges`: allow known internal services or subnets by IP/CIDR.
+- `allow_private_network_targets=true`: allow all private/non-global targets; use only in trusted private deployments.
+
+Environment variables:
+
+```bash
+SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS=false
+SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS=nas.example.internal,alist.internal
+SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES=192.168.1.10/32,10.0.8.0/24
+```
+
+For public deployments, do not expose privileged internal admin endpoints as ordinary media sources for untrusted users. Prefer minimal allowlists over enabling `allow_private_network_targets`.
 
 ## WebAuthn and 2FA
 

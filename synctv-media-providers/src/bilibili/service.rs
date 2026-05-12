@@ -94,14 +94,18 @@ pub trait BilibiliInterface: Send + Sync {
 pub struct BilibiliService {
     client: Client,
     wbi_state: Arc<super::client::WbiState>,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
 
 impl BilibiliService {
     pub fn new() -> Self {
         Self {
-            client: crate::build_provider_http_client()
-                .expect("default provider HTTP client should build"),
+            client: crate::build_provider_http_client(
+                synctv_common::ssrf::SsrfGuard::strict_policy(),
+            )
+            .expect("default provider HTTP client should build"),
             wbi_state: Arc::new(super::client::WbiState::default()),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
         }
     }
 
@@ -110,6 +114,19 @@ impl BilibiliService {
         Self {
             client,
             wbi_state: Arc::new(super::client::WbiState::default()),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_client_and_ssrf_guard(
+        client: Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        Self {
+            client,
+            wbi_state: Arc::new(super::client::WbiState::default()),
+            ssrf_guard,
         }
     }
 }
@@ -124,12 +141,14 @@ fn client_from_cookies_and_state(
     client: Client,
     cookies: &HashMap<String, String>,
     wbi_state: Arc<super::client::WbiState>,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> BilibiliClient {
     if cookies.is_empty() {
         BilibiliClient::new_with_transport(
             client,
             super::client::BilibiliEndpoints::default(),
             wbi_state,
+            ssrf_guard,
         )
     } else {
         BilibiliClient::with_cookies_and_transport(
@@ -137,6 +156,7 @@ fn client_from_cookies_and_state(
             client,
             super::client::BilibiliEndpoints::default(),
             wbi_state,
+            ssrf_guard,
         )
     }
 }
@@ -168,6 +188,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let (url, key) = client.new_qr_code().await?;
         Ok(NewQrCodeResp { url, key })
@@ -181,6 +202,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let (raw_status, cookies) = client.login_with_qr_code(&request.key).await?;
 
@@ -197,6 +219,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let (token, gt, challenge) = client.new_captcha().await?;
 
@@ -212,6 +235,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let captcha_key = client
             .new_sms(
@@ -233,6 +257,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let cookies = client
             .login_with_sms(&request.phone, &request.code, &request.captcha_key)
@@ -249,6 +274,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let page_info = client.parse_video_page(request.aid, &request.bvid).await?;
         Ok(to_proto_page_info(page_info))
@@ -259,6 +285,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let quality = if request.quality == 0 {
             None
@@ -295,6 +322,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let (dash, hevc_dash) = client
             .get_dash_video_url(request.aid, &request.bvid, request.cid)
@@ -318,6 +346,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let subtitles = client
             .get_subtitles(request.aid, &request.bvid, request.cid)
@@ -333,6 +362,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let page_info = client.parse_pgc_page(request.epid, request.ssid).await?;
         Ok(to_proto_page_info(page_info))
@@ -343,6 +373,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let quality = if request.quality == 0 {
             None
@@ -379,6 +410,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let (dash, hevc_dash) = client.get_dash_pgc_url(request.epid, request.cid).await?;
 
@@ -397,6 +429,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let user_info = client.user_info().await?;
 
@@ -424,6 +457,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let streams = client.get_live_streams(request.cid, request.hls).await?;
 
@@ -447,6 +481,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let page_info = client.parse_live_page(request.room_id).await?;
         Ok(to_proto_page_info(page_info))
@@ -460,6 +495,7 @@ impl BilibiliInterface for BilibiliService {
             self.client.clone(),
             &request.cookies,
             self.wbi_state.clone(),
+            self.ssrf_guard.clone(),
         );
         let danmu_info = client.get_live_danmu_info(request.room_id).await?;
 
@@ -536,11 +572,13 @@ mod tests {
             service.client.clone(),
             &std::collections::HashMap::new(),
             service.wbi_state.clone(),
+            service.ssrf_guard.clone(),
         );
         let client_b = super::client_from_cookies_and_state(
             service.client.clone(),
             &std::collections::HashMap::new(),
             service.wbi_state.clone(),
+            service.ssrf_guard.clone(),
         );
 
         assert_eq!(

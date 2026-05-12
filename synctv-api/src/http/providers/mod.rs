@@ -53,6 +53,7 @@ fn set_default_cache_control(
 /// Translates the abstract action into concrete `synctv-proxy` calls.
 pub(crate) async fn execute_proxy_action(
     proxy_http_client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     action: ProxyAction,
     _client_headers: &axum::http::HeaderMap,
     request_control: Option<&ExecutionControl>,
@@ -69,6 +70,7 @@ pub(crate) async fn execute_proxy_action(
             range_header,
         } => {
             let cfg = synctv_proxy::ProxyConfig {
+                ssrf_guard,
                 client: proxy_http_client,
                 url: &url,
                 provider_headers: &headers,
@@ -86,6 +88,7 @@ pub(crate) async fn execute_proxy_action(
             proxy_base,
         } => synctv_proxy::proxy_m3u8_and_rewrite_with_control(
             proxy_http_client,
+            ssrf_guard,
             &url,
             &headers,
             &proxy_base,
@@ -165,6 +168,7 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
                 }
 
                 let cfg = synctv_proxy::ProxyConfig {
+                    ssrf_guard: &state.ssrf_guard,
                     client: &state.proxy_http_client,
                     url: &url,
                     provider_headers: &headers,
@@ -196,6 +200,7 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
 
             execute_proxy_action(
                 &state.proxy_http_client,
+                &state.ssrf_guard,
                 ProxyAction::FetchAndForward {
                     url,
                     headers,
@@ -213,6 +218,7 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
             let proxy_control = proxy_execution_control(request_control);
             execute_proxy_action(
                 &state.proxy_http_client,
+                &state.ssrf_guard,
                 other,
                 client_headers,
                 proxy_control.as_ref(),
@@ -745,9 +751,15 @@ mod tests {
         let mut client_headers = HeaderMap::new();
         client_headers.insert(header::RANGE, "bytes=0-3".parse().unwrap());
 
-        let response = execute_proxy_action(&client, action, &client_headers, None)
-            .await
-            .expect("raw client Range should be ignored unless provider selects it");
+        let response = execute_proxy_action(
+            &client,
+            &synctv_common::ssrf::SsrfGuard::disabled(),
+            action,
+            &client_headers,
+            None,
+        )
+        .await
+        .expect("raw client Range should be ignored unless provider selects it");
 
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -864,8 +876,11 @@ mod tests {
             builtin_stun_url: None,
             credential_encryption: None,
             proxy_slice_cache,
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
+            proxy_http_client: synctv_proxy::build_proxy_http_client(
+                synctv_common::ssrf::SsrfGuard::disabled(),
+            )
+            .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -980,8 +995,11 @@ mod tests {
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     SliceCacheConfig::default(),
                 )),
-                proxy_http_client: synctv_proxy::build_proxy_http_client()
-                    .expect("proxy HTTP client should build for tests"),
+                ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
+                proxy_http_client: synctv_proxy::build_proxy_http_client(
+                    synctv_common::ssrf::SsrfGuard::disabled(),
+                )
+                .expect("proxy HTTP client should build for tests"),
                 messaging_rate_limit_config: RateLimitConfig::default(),
                 heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
                 providers_manager: None,

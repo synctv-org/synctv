@@ -564,11 +564,16 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
 
     let url = format!("{public_origin}/video.mp4");
     let provider_headers = HashMap::new();
+    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
-    let total =
-        synctv_proxy::slice_cache::filter::head_content_length(&client, &url, &provider_headers)
-            .await
-            .unwrap();
+    let total = synctv_proxy::slice_cache::filter::head_content_length(
+        &client,
+        &ssrf_guard,
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(total, total_size);
 }
@@ -882,6 +887,7 @@ async fn test_head_content_length_falls_back_to_range_get_when_head_is_not_suppo
 
     let total = synctv_proxy::slice_cache::filter::head_content_length(
         &client,
+        &synctv_common::ssrf::SsrfGuard::disabled(),
         &mock_public_url(&mock_server, "/head-405.mp4"),
         &HashMap::new(),
     )
@@ -917,6 +923,7 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
 
     let total = synctv_proxy::slice_cache::filter::head_content_length(
         &client,
+        &synctv_common::ssrf::SsrfGuard::disabled(),
         &mock_public_url(&mock_server, "/head-no-cl.mp4"),
         &HashMap::new(),
     )
@@ -927,12 +934,14 @@ async fn test_head_content_length_falls_back_when_head_omits_content_length() {
 }
 
 #[tokio::test]
-async fn test_head_content_length_loopback_without_listener_fails_when_default_ssrf_is_disabled() {
+async fn test_head_content_length_loopback_without_listener_fails_with_disabled_ssrf() {
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config);
+    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
     let err = synctv_proxy::slice_cache::filter::head_content_length(
         cache.client(),
+        &ssrf_guard,
         "http://127.0.0.1:12345/private",
         &HashMap::new(),
     )
@@ -945,13 +954,12 @@ async fn test_head_content_length_loopback_without_listener_fails_when_default_s
     );
     assert!(
         err.to_string().contains("Connection failed"),
-        "HEAD path should surface the connection failure when default SSRF is disabled: {err}"
+        "HEAD path should surface the connection failure when SSRF is disabled: {err}"
     );
 }
 
 #[tokio::test]
-async fn test_head_content_length_redirect_to_loopback_without_listener_fails_when_default_ssrf_is_disabled(
-) {
+async fn test_head_content_length_redirect_to_loopback_without_listener_fails_with_disabled_ssrf() {
     let mock_server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -964,9 +972,11 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wh
 
     let config = SliceCacheConfig::default();
     let cache = SliceCache::new(config);
+    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
 
     let err = synctv_proxy::slice_cache::filter::head_content_length(
         cache.client(),
+        &ssrf_guard,
         &format!("{}/start", mock_server.uri()),
         &HashMap::new(),
     )
@@ -979,7 +989,7 @@ async fn test_head_content_length_redirect_to_loopback_without_listener_fails_wh
     );
     assert!(
         err.to_string().contains("Connection failed"),
-        "HEAD redirect path should surface the connection failure when default SSRF is disabled: {err}"
+        "HEAD redirect path should surface the connection failure when SSRF is disabled: {err}"
     );
 }
 
@@ -3259,8 +3269,7 @@ async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_redirect_to_loopback_without_listener_fails_on_slice_fetch_when_default_ssrf_is_disabled(
-) {
+async fn test_proxy_with_cache_redirect_to_loopback_is_blocked_on_slice_fetch() {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(SliceCacheConfig::default(), &mock_server);
 
@@ -3280,17 +3289,16 @@ async fn test_proxy_with_cache_redirect_to_loopback_without_listener_fails_on_sl
         &HashMap::new(),
     )
     .await
-    .expect_err("range fetch redirect to loopback without a listener must fail");
+    .expect_err("range fetch redirect to loopback must be blocked by SSRF policy");
 
     assert!(
-        err.to_string().contains("Connection failed"),
-        "slice fetch path should surface the connection failure when default SSRF is disabled: {err}"
+        err.to_string().contains("blocked by SSRF policy"),
+        "slice fetch path should block loopback redirect before connecting: {err}"
     );
 }
 
 #[tokio::test]
-async fn test_proxy_with_cache_disabled_redirect_to_loopback_without_listener_fails_on_bypass_path_when_default_ssrf_is_disabled(
-) {
+async fn test_proxy_with_cache_disabled_redirect_to_loopback_is_blocked_on_bypass_path() {
     let mock_server = MockServer::start().await;
     let cache = slice_cache_for_mock(
         SliceCacheConfig {
@@ -3316,11 +3324,11 @@ async fn test_proxy_with_cache_disabled_redirect_to_loopback_without_listener_fa
         &HashMap::new(),
     )
     .await
-    .expect_err("disabled-cache bypass path redirect to loopback without a listener must fail");
+    .expect_err("disabled-cache bypass path redirect to loopback must be blocked by SSRF policy");
 
     assert!(
-        err.to_string().contains("Connection failed"),
-        "bypass path should surface the connection failure when default SSRF is disabled: {err}"
+        err.to_string().contains("blocked by SSRF policy"),
+        "bypass path should block loopback redirect before connecting: {err}"
     );
 }
 

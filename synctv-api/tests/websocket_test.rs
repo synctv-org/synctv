@@ -962,8 +962,11 @@ mod websocket_e2e {
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
             )),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
+            proxy_http_client: synctv_proxy::build_proxy_http_client(
+                synctv_common::ssrf::SsrfGuard::disabled(),
+            )
+            .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_millis(400),
@@ -4645,8 +4648,11 @@ mod websocket_connection_limit_timing {
             proxy_slice_cache: std::sync::Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                 synctv_proxy::slice_cache::SliceCacheConfig::default(),
             )),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::disabled(),
+            proxy_http_client: synctv_proxy::build_proxy_http_client(
+                synctv_common::ssrf::SsrfGuard::disabled(),
+            )
+            .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
             heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::for_tests(
                 std::time::Duration::from_millis(400),

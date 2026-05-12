@@ -184,7 +184,7 @@ Required keys include:
 - `SYNCTV_DATABASE_PASSWORD`, unless PostgreSQL uses KubeBlocks mode.
 - `SYNCTV_REDIS_PASSWORD`, required for Redis standard mode; provide it in external mode only when the external Redis requires password authentication; not needed for KubeBlocks mode.
 - `SYNCTV_JWT_SECRET`
-- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`
@@ -325,7 +325,7 @@ secrets:
       secretAccessKey: "..."
 ```
 
-Whenever `config.cluster.enabled=true`, application startup validation also requires Redis, a stable `SYNCTV_SERVER_CLUSTER_SECRET` shared by every replica, and a usable `SYNCTV_SERVER_ADVERTISE_HOST` for node-to-node communication. Helm defaults inject Redis connection details, generate the cluster secret, and use the Pod IP as the advertise host; preserve those conditions when trimming values or using external Secrets. If livestream HLS uses a local backend, Pod-to-Pod gRPC reachability is also required because remote segment reads depend on publisher-node proxying.
+Whenever `config.cluster.enabled=true`, application startup validation also requires Redis, a stable `SYNCTV_CLUSTER_SECRET` shared by every replica, and a usable `SYNCTV_SERVER_ADVERTISE_HOST` for node-to-node communication. Helm defaults inject Redis connection details, generate the cluster secret, and use the Pod IP as the advertise host; preserve those conditions when trimming values or using external Secrets. If livestream HLS uses a local backend, Pod-to-Pod gRPC reachability is also required because remote segment reads depend on publisher-node proxying.
 
 When `config.cluster.discoveryMode=k8s_dns`, the chart automatically renders a headless Service and injects `HEADLESS_SERVICE_NAME` plus `POD_NAMESPACE`. When `config.cluster.leaderElectionMode=k8s_lease`, the chart injects `POD_NAME` and `POD_NAMESPACE`. Both modes require an image built with the `k8s` feature.
 

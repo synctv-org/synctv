@@ -111,7 +111,7 @@ Environment variable form:
 SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
 ```
 
-### `server.cluster_secret`
+### `cluster.secret`
 
 Shared secret for internal cluster gRPC calls. Required when `cluster.enabled=true`.
 
@@ -124,8 +124,8 @@ openssl rand -hex 32
 Recommended:
 
 ```yaml
-server:
-  cluster_secret_file: "/run/secrets/cluster_secret"
+cluster:
+  secret_file: "/run/secrets/cluster_secret"
 ```
 
 ### `server.advertise_host`

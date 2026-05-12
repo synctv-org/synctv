@@ -285,7 +285,7 @@ fn test_ssrf_acl_public_ip_allowed() {
     let allowed: Vec<IpAddr> = vec!["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()];
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
             "IP {ip} should be allowed"
         );
     }
@@ -622,7 +622,7 @@ fn test_max_proxy_body_size_constant() {
     // Verify the ACL allows public IPs that would serve large files.
     use std::net::IpAddr;
     let ip: IpAddr = "93.184.216.34".parse().unwrap();
-    assert!(!synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip));
+    assert!(!synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip));
 }
 
 // Proxy SSRF ACL - additional edge cases
@@ -652,7 +652,7 @@ fn test_ssrf_acl_ipv6_public_allowed() {
     use std::net::IpAddr;
     let ip: IpAddr = "2606:4700:4700::1111".parse().unwrap();
     assert!(
-        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip),
+        !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(&ip),
         "Public IPv6 should be allowed"
     );
 }
@@ -1006,7 +1006,7 @@ fn test_m3u8_ssrf_public_ip_allowed_by_acl() {
 
     for ip in &allowed {
         assert!(
-            !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(ip),
+            !synctv_common::ssrf::SsrfGuard::strict_policy().is_ip_blocked(ip),
             "Public IP {ip} should be allowed by SSRF ACL"
         );
     }

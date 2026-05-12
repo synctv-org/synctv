@@ -48,6 +48,20 @@ impl GoogleProvider {
         client_secret: String,
         redirect_url: String,
     ) -> Result<Self, Error> {
+        Self::create_with_ssrf_guard(
+            client_id,
+            client_secret,
+            redirect_url,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    pub fn create_with_ssrf_guard(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> Result<Self, Error> {
         let redirect = RedirectUrl::new(redirect_url)
             .map_err(|e| Error::InvalidInput(format!("Invalid Google OAuth2 redirect URL: {e}")))?;
         let client = Arc::new(
@@ -66,8 +80,8 @@ impl GoogleProvider {
 
         Ok(Self {
             client,
-            oauth2_http_client: build_oauth2_http_client()?,
-            http_client: build_provider_http_client()?,
+            oauth2_http_client: build_oauth2_http_client(ssrf_guard)?,
+            http_client: build_provider_http_client(ssrf_guard)?,
         })
     }
 }
@@ -134,13 +148,21 @@ impl Provider for GoogleProvider {
 
 /// Factory function for Google provider
 pub fn google_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
+    google_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
+}
+
+pub fn google_factory_with_ssrf_guard(
+    config: &serde_json::Value,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
     let config: GoogleConfig = serde_json::from_value(config.clone())
         .map_err(|e| Error::InvalidInput(format!("Invalid Google config: {e}")))?;
 
-    Ok(Box::new(GoogleProvider::create(
+    Ok(Box::new(GoogleProvider::create_with_ssrf_guard(
         config.client_id,
         config.client_secret,
         config.redirect_url,
+        ssrf_guard,
     )?))
 }
 

@@ -129,7 +129,7 @@ Provider-owned headers are an intentional boundary. They keep proxy behavior pre
 
 ## Cluster Model
 
-Cluster mode is for multi-replica deployments. When `cluster.enabled=true`, Redis and `server.cluster_secret` are required.
+Cluster mode is for multi-replica deployments. When `cluster.enabled=true`, Redis and `cluster.secret` are required.
 
 Key settings:
 
@@ -138,7 +138,7 @@ Key settings:
 | `cluster.discovery_mode` | Node discovery: `redis`, `static`, or `k8s_dns` |
 | `cluster.leader_election_mode` | Background task leader election: `redis` or `k8s_lease` |
 | `server.advertise_host` | Address other nodes use to reach this node |
-| `server.cluster_secret` | Authentication for inter-node gRPC calls |
+| `cluster.secret` | Authentication for inter-node gRPC calls |
 | `cluster.catchup_window_secs` | Event replay window after short disconnects |
 
 For multi-replica deployments, also confirm:

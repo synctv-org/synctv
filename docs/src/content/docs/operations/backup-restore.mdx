@@ -86,7 +86,7 @@ pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
 | `jwt.secret` | Secret Manager、Kubernetes Secret、密码管理器 |
 | `security.opaque_server_setup_secret` | Secret Manager、离线加密备份 |
 | `security.credential_encryption_key` | Secret Manager、离线加密备份 |
-| `server.cluster_secret` | Kubernetes Secret 或 Secret Manager |
+| `cluster.secret` | Kubernetes Secret 或 Secret Manager |
 | `management.auth_token` | Secret Manager |
 | `metrics.auth.*` | 监控系统 secret |
 | `email.smtp_password` | Secret Manager |

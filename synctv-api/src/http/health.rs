@@ -1053,7 +1053,7 @@ mod tests {
 
         let mut clustered = synctv_core::Config::default();
         clustered.cluster.enabled = true;
-        clustered.server.cluster_secret = "shared-secret".to_string();
+        clustered.cluster.secret = "shared-secret".to_string();
         assert!(
             clustered.cluster_runtime_enabled(),
             "cluster-enabled config should be treated as distributed mode"

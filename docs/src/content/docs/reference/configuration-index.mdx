@@ -26,7 +26,7 @@ OAuth2 provider 实例属于 [Runtime settings](../runtime-settings/#oauth2)。�
 | `metrics.*` | 接入 Prometheus 或告警 | `/metrics` 裸露公网 | 需要重启 | 启用鉴权和网络隔离 |
 | `webauthn.*` | 启用 passkey | `rp_origin` 与真实访问 origin 不一致 | 需要重启 | 只使用 HTTPS 生产 origin |
 | `email.*` | 邮箱验证、找回密码、邮箱 MFA、通知 | TLS/端口/from_email 不匹配 | 需要重启 | 用 `synctv settings test-email` 验证 |
-| `cluster.*` / `server.cluster_secret` | 多副本集群 | 开了集群但没 Redis 或 cluster secret | 需要重启 | 所有副本共享 PostgreSQL、Redis、secret |
+| `cluster.*` / `cluster.secret` | 多副本集群 | 开了集群但没 Redis 或 cluster secret | 需要重启 | 所有副本共享 PostgreSQL、Redis、secret |
 | `livestream.*` | RTMP/FLV/HLS 直播 | 多副本 HLS 存储模型不一致 | 需要重启 | 高流量使用共享文件系统或 OSS |
 | `proxy_slice_cache.*` | 需要代理 Range slice 缓存 | 误以为会缓存完整文件 | 需要重启 | 挂载容量足够的目录，只缓存 Range slice |
 
@@ -95,7 +95,7 @@ curl -fsS http://localhost:8080/health/ready
 | `server.enable_reflection` | 布尔值 | `false` | 是否开启公开 gRPC reflection |
 | `server.trusted_proxies` | 字符串数组 | `[]` | 可信反向代理 IP/CIDR |
 | `server.cors_allowed_origins` | 字符串数组 | `[]` | 允许跨域访问的前端 origin |
-| `server.cluster_secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
+| `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
 | `server.advertise_host` | 字符串 | `""` | 其他节点连接本节点时使用的地址 |
 | `server.shutdown_drain_timeout_seconds` | 秒数 | `30` | 关闭时等待连接 drain 的时间 |
 | `server.grpc_max_message_size_bytes` | 字节数 | `16777216` | gRPC 消息最大大小 |
@@ -111,6 +111,9 @@ curl -fsS http://localhost:8080/health/ready
 | `public_ids.sqids.min_length` | 整数 | `12` | sqids 最小长度 |
 | `security.credential_encryption_key` | 64 个十六进制字符 | `""` | Provider 凭据加密 key |
 | `security.opaque_server_setup_secret` | secret 字符串 | `""` | OPAQUE 密码认证服务端 setup secret |
+| `security.ssrf.allow_private_network_targets` | 布尔值 | `false` | 是否允许服务端出站访问 private/loopback/link-local/reserved/metadata 目标 |
+| `security.ssrf.allowed_hosts` | 字符串数组 | `[]` | 全局 SSRF 策略额外允许的主机名 |
+| `security.ssrf.allowed_ip_ranges` | IP/CIDR 字符串数组 | `[]` | 全局 SSRF 策略额外允许的 IP 或网段 |
 
 ## `metrics`
 

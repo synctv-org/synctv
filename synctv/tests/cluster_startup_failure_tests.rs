@@ -26,7 +26,6 @@ fn standalone_test_config() -> Config {
             grpc_compression_enabled: true,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
-            cluster_secret: String::new(), // No cluster secret for standalone mode
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
         },
@@ -115,7 +114,6 @@ fn cluster_test_config() -> Config {
             grpc_compression_enabled: true,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
-            cluster_secret: "test-cluster-secret-key-1234567890".to_string(),
             advertise_host: "127.0.0.1".to_string(),
             shutdown_drain_timeout_seconds: 30,
         },
@@ -159,6 +157,7 @@ fn cluster_test_config() -> Config {
         },
         cluster: ClusterChannelConfig {
             enabled: true, // Cluster mode explicitly enabled
+            secret: "test-cluster-secret-key-1234567890".to_string(),
             ..ClusterChannelConfig::default()
         },
         password_complexity: PasswordComplexityConfig::default(),
@@ -262,25 +261,25 @@ fn test_cluster_mode_requires_redis_url() {
     );
 }
 
-/// Test distributed mode requires `cluster_secret`
+/// Test distributed mode requires `cluster.secret`.
 #[test]
 fn test_cluster_mode_requires_cluster_secret() {
     let mut config = cluster_test_config();
-    config.server.cluster_secret = String::new(); // Clear the cluster secret
+    config.cluster.secret = String::new(); // Clear the cluster secret
 
-    // This should fail validation because cluster.enabled=true requires cluster_secret
+    // This should fail validation because cluster.enabled=true requires cluster.secret.
     let result = config.validate();
     assert!(
         result.is_err(),
-        "cluster.enabled=true with empty cluster_secret should fail validation"
+        "cluster.enabled=true with empty cluster.secret should fail validation"
     );
 
     let errors = result.unwrap_err();
     let error_messages: Vec<_> = errors.iter().collect();
-    let has_secret_error = error_messages.iter().any(|e| e.contains("cluster_secret"));
+    let has_secret_error = error_messages.iter().any(|e| e.contains("cluster.secret"));
     assert!(
         has_secret_error,
-        "Error message should mention cluster_secret requirement, got: {error_messages:?}"
+        "Error message should mention cluster.secret requirement, got: {error_messages:?}"
     );
 }
 

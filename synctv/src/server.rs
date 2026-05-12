@@ -138,37 +138,17 @@ impl SharedProviderPlaybackRuntime {
     }
 }
 
-fn build_proxy_slice_cache_config(config: &Config) -> synctv_proxy::slice_cache::SliceCacheConfig {
-    let backend = if config.proxy_slice_cache.file_backend_enabled {
-        synctv_proxy::slice_cache::CacheBackendConfig::File {
-            cache_dir: std::path::PathBuf::from(&config.proxy_slice_cache.file_cache_dir),
-            dir_levels: (2, 2),
-        }
-    } else {
-        synctv_proxy::slice_cache::CacheBackendConfig::Memory
-    };
-
-    synctv_proxy::slice_cache::SliceCacheConfig {
-        enabled: config.proxy_slice_cache.enabled,
-        slice_size: config.proxy_slice_cache.slice_size_bytes,
-        max_cache_size: config.proxy_slice_cache.max_cache_size_bytes,
-        segment_ttl: Duration::from_secs(config.proxy_slice_cache.segment_ttl_seconds),
-        stale_max_age: Duration::from_secs(config.proxy_slice_cache.stale_max_age_seconds),
-        stale_while_revalidate: config.proxy_slice_cache.stale_while_revalidate,
-        backend,
-        eviction_interval: Duration::from_secs(config.proxy_slice_cache.eviction_interval_seconds),
-        watermark_ratio: config.proxy_slice_cache.watermark_ratio,
-    }
-}
-
 async fn build_proxy_slice_cache(
     config: &Config,
     proxy_http_client: Client,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> anyhow::Result<Arc<synctv_proxy::slice_cache::SliceCache>> {
-    let slice_cache_config = build_proxy_slice_cache_config(config);
-    let cache = synctv_proxy::slice_cache::SliceCache::try_new_with_client(
+    let slice_cache_config =
+        synctv_api::config_adapters::proxy_slice_cache_config_from_app_config(config);
+    let cache = synctv_proxy::slice_cache::SliceCache::try_new_with_client_and_ssrf_guard(
         slice_cache_config,
         proxy_http_client,
+        ssrf_guard,
     )
     .await
     .context("failed to initialize proxy slice cache backend")?;
@@ -1424,9 +1404,11 @@ impl SyncTvServer {
         &self,
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
     ) -> anyhow::Result<(axum::Router, Arc<synctv_api::http::AppState>)> {
-        let proxy_http_client = synctv_proxy::build_proxy_http_client()?;
+        let ssrf_guard = self.config.security.ssrf_guard();
+        let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())?;
         let proxy_slice_cache =
-            build_proxy_slice_cache(&self.config, proxy_http_client.clone()).await?;
+            build_proxy_slice_cache(&self.config, proxy_http_client.clone(), ssrf_guard.clone())
+                .await?;
 
         let (http_router, http_state) = synctv_api::http::create_router_with_state_from_config(
             synctv_api::http::RouterConfig {
@@ -1467,6 +1449,7 @@ impl SyncTvServer {
                 }),
                 credential_encryption: self.services.credential_encryption.clone(),
                 proxy_slice_cache,
+                ssrf_guard,
                 proxy_http_client,
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig {
                     chat_per_second: self.config.messaging_rate_limits.chat_per_second,
@@ -1654,7 +1637,7 @@ impl SyncTvServer {
             .node_registry
             .as_ref()
             .filter(|_| self.config.cluster_runtime_enabled())
-            .filter(|_| !self.config.server.cluster_secret.is_empty())
+            .filter(|_| !self.config.cluster.secret.is_empty())
             .map(|node_registry| {
                 Arc::new(synctv_cluster::grpc::ClusterClient::from_runtime(
                     node_registry.clone(),
@@ -1750,8 +1733,8 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_runtime_server_shutdown, await_task_shutdown, build_proxy_slice_cache_config,
-        cleanup_partial_startup, livestream_shutdown_timeout_secs, management_apis_from_http_state,
+        await_runtime_server_shutdown, await_task_shutdown, cleanup_partial_startup,
+        livestream_shutdown_timeout_secs, management_apis_from_http_state,
         map_background_task_exit, map_runtime_server_exit, shutdown_after_startup_failure,
         shutdown_livestream_state, shutdown_metrics_connection_tasks, shutdown_runtime_phase,
         spawn_admin_event_listener, LivestreamShutdown, SharedProviderPlaybackRuntime,
@@ -1880,8 +1863,11 @@ mod tests {
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),
                 )),
-                proxy_http_client: synctv_proxy::build_proxy_http_client()
-                    .expect("proxy HTTP client should build for tests"),
+                ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
+                proxy_http_client: synctv_proxy::build_proxy_http_client(
+                    synctv_common::ssrf::SsrfGuard::strict_policy(),
+                )
+                .expect("proxy HTTP client should build for tests"),
                 messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
                 heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::production(),
                 providers_manager: Some(providers_manager),
@@ -2065,74 +2051,6 @@ mod tests {
                 panic!("Expected binding to port 0 (OS-assigned) to succeed, got: {error}")
             }
         }
-    }
-
-    #[tokio::test]
-    async fn test_proxy_slice_cache_config_controls_startup_enablement() {
-        let mut app_config = Config::default();
-
-        let enabled_config = build_proxy_slice_cache_config(&app_config);
-        assert!(
-            enabled_config.enabled,
-            "proxy slice cache should be enabled by default at startup"
-        );
-
-        app_config.proxy_slice_cache.enabled = false;
-        let disabled_config = build_proxy_slice_cache_config(&app_config);
-        assert!(
-            !disabled_config.enabled,
-            "startup config must be able to disable proxy slice cache"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_proxy_slice_cache_config_uses_file_backend_when_enabled() {
-        let mut config = Config::default();
-        config.proxy_slice_cache.file_backend_enabled = true;
-        config.proxy_slice_cache.file_cache_dir = "/tmp/synctv-proxy-cache".to_string();
-
-        let slice_cache_config = build_proxy_slice_cache_config(&config);
-
-        match slice_cache_config.backend {
-            synctv_proxy::slice_cache::CacheBackendConfig::File {
-                cache_dir,
-                dir_levels,
-            } => {
-                assert_eq!(
-                    cache_dir,
-                    std::path::PathBuf::from("/tmp/synctv-proxy-cache")
-                );
-                assert_eq!(dir_levels, (2, 2));
-            }
-            synctv_proxy::slice_cache::CacheBackendConfig::Memory => {
-                panic!("expected file backend")
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_proxy_slice_cache_config_maps_runtime_tuning_fields() {
-        let mut config = Config::default();
-        config.proxy_slice_cache.slice_size_bytes = 4 * 1024 * 1024;
-        config.proxy_slice_cache.max_cache_size_bytes = 1024 * 1024 * 1024;
-        config.proxy_slice_cache.segment_ttl_seconds = 600;
-        config.proxy_slice_cache.stale_max_age_seconds = 120;
-        config.proxy_slice_cache.stale_while_revalidate = false;
-        config.proxy_slice_cache.eviction_interval_seconds = 30;
-        config.proxy_slice_cache.watermark_ratio = 0.75;
-
-        let slice_cache_config = build_proxy_slice_cache_config(&config);
-
-        assert_eq!(slice_cache_config.slice_size, 4 * 1024 * 1024);
-        assert_eq!(slice_cache_config.max_cache_size, 1024 * 1024 * 1024);
-        assert_eq!(slice_cache_config.segment_ttl, Duration::from_mins(10));
-        assert_eq!(slice_cache_config.stale_max_age, Duration::from_mins(2));
-        assert!(!slice_cache_config.stale_while_revalidate);
-        assert_eq!(
-            slice_cache_config.eviction_interval,
-            Duration::from_secs(30)
-        );
-        assert!((slice_cache_config.watermark_ratio - 0.75).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -2551,6 +2469,7 @@ mod tests {
                 registry.clone(),
                 "test-node".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("failed to create ExternalPublishManager"),
         );
@@ -2622,6 +2541,7 @@ mod tests {
                 registry.clone(),
                 "test-node".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("failed to create ExternalPublishManager"),
         );
@@ -2771,6 +2691,7 @@ mod tests {
                 registry.clone(),
                 "test-node".to_string(),
                 event_sender.clone(),
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("failed to create ExternalPublishManager"),
         );

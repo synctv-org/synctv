@@ -239,7 +239,7 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
     let key_path = join_config_key_path(current_path, base_key);
     matches!(
         key_path.as_str(),
-        "server.cluster_secret"
+        "cluster.secret"
             | "security.credential_encryption_key"
             | "security.opaque_server_setup_secret"
             | "management.auth_token"
@@ -526,6 +526,42 @@ pub struct SecurityConfig {
     /// otherwise existing OPAQUE password records cannot be used. Prefer
     /// `opaque_server_setup_secret_file` in config files.
     pub opaque_server_setup_secret: String,
+    /// Global SSRF policy for all outbound server-side requests.
+    pub ssrf: SsrfConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SsrfConfig {
+    /// Allow outbound server-side requests to private, loopback, link-local,
+    /// reserved, and metadata-network targets.
+    ///
+    /// Defaults to `false` so SSRF-sensitive paths are closed unless a trusted
+    /// private-network deployment explicitly opts in.
+    pub allow_private_network_targets: bool,
+    /// Additional hostnames allowed by the global SSRF policy.
+    pub allowed_hosts: Vec<String>,
+    /// Additional IP/CIDR ranges allowed by the global SSRF policy.
+    pub allowed_ip_ranges: Vec<String>,
+}
+
+impl SecurityConfig {
+    #[must_use]
+    pub fn ssrf_guard(&self) -> synctv_common::ssrf::SsrfGuard {
+        let mut builder = synctv_common::ssrf::SsrfGuard::builder();
+        if self.ssrf.allow_private_network_targets {
+            builder = builder.allow_private_network_targets(true);
+        }
+        for host in &self.ssrf.allowed_hosts {
+            builder = builder.extra_allowed_host(host.clone());
+        }
+        for range in &self.ssrf.allowed_ip_ranges {
+            if let Ok(range) = range.parse() {
+                builder = builder.extra_allowed_ip_range(range);
+            }
+        }
+        builder.build()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -581,10 +617,6 @@ pub struct ServerConfig {
     /// CORS allowed origins. Must be set to specific domains.
     /// Example: `["https://app.example.com", "https://admin.example.com"]`
     pub cors_allowed_origins: Vec<String>,
-    /// Shared secret for authenticating cluster gRPC calls between nodes.
-    /// When set, all inter-node gRPC requests must include this secret in the
-    /// `x-cluster-secret` metadata header. If empty, cluster endpoints are disabled.
-    pub cluster_secret: String,
     /// Advertise host for cluster node registration.
     /// This is the address other nodes use to reach this instance.
     /// Reads from `SYNCTV_SERVER_ADVERTISE_HOST` env var. In Kubernetes, set this
@@ -612,7 +644,6 @@ impl Default for ServerConfig {
             enable_reflection: false,
             trusted_proxies: Vec::new(),
             cors_allowed_origins: Vec::new(),
-            cluster_secret: String::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
             grpc_max_message_size_bytes: 16 * 1024 * 1024, // 16 MB default
@@ -2042,6 +2073,18 @@ impl Config {
             "security.opaque_server_setup_secret",
             &mut self.security.opaque_server_setup_secret,
         )?;
+        env_override_bool(
+            "SYNCTV_SECURITY_SSRF_ALLOW_PRIVATE_NETWORK_TARGETS",
+            &mut self.security.ssrf.allow_private_network_targets,
+        )?;
+        env_override_json_or_csv(
+            "SYNCTV_SECURITY_SSRF_ALLOWED_HOSTS",
+            &mut self.security.ssrf.allowed_hosts,
+        );
+        env_override_json_or_csv(
+            "SYNCTV_SECURITY_SSRF_ALLOWED_IP_RANGES",
+            &mut self.security.ssrf.allowed_ip_ranges,
+        );
 
         env_override_str("SYNCTV_DATA_DIR", &mut self.data_dir);
 
@@ -2059,14 +2102,11 @@ impl Config {
             "SYNCTV_SERVER_CORS_ALLOWED_ORIGINS",
             &mut self.server.cors_allowed_origins,
         );
-        env_override_str(
-            "SYNCTV_SERVER_CLUSTER_SECRET",
-            &mut self.server.cluster_secret,
-        );
+        env_override_str("SYNCTV_CLUSTER_SECRET", &mut self.cluster.secret);
         env_override_str_file(
-            "SYNCTV_SERVER_CLUSTER_SECRET_FILE",
-            "server.cluster_secret",
-            &mut self.server.cluster_secret,
+            "SYNCTV_CLUSTER_SECRET_FILE",
+            "cluster.secret",
+            &mut self.cluster.secret,
         )?;
         env_override_str(
             "SYNCTV_SERVER_ADVERTISE_HOST",
@@ -3101,6 +3141,13 @@ impl Config {
                 opaque_secret.len()
             ));
         }
+        for range in &self.security.ssrf.allowed_ip_ranges {
+            if range.parse::<ipnet::IpNet>().is_err() {
+                errors.push(format!(
+                    "security.ssrf.allowed_ip_ranges contains invalid CIDR/IP range: {range}"
+                ));
+            }
+        }
 
         // Validate database pool settings
         if self.database.min_connections > self.database.max_connections {
@@ -3827,29 +3874,29 @@ impl Config {
             );
         }
 
-        // Require cluster_secret when distributed mode is enabled.
-        // An empty `cluster_secret` means that ANY node claiming to be part of the
+        // Require cluster.secret when distributed mode is enabled.
+        // An empty `cluster.secret` means that ANY node claiming to be part of the
         // cluster can call inter-node gRPC endpoints without authentication.
-        // In standalone mode, `cluster_secret` is not required even with Redis
+        // In standalone mode, `cluster.secret` is not required even with Redis
         // configured, because there are no inter-node gRPC endpoints to protect.
-        if self.cluster.enabled && self.server.cluster_secret.is_empty() {
+        if self.cluster.enabled && self.cluster.secret.is_empty() {
             errors.push(
-                "server.cluster_secret must be set when distributed mode is enabled. \
-                 An empty cluster_secret leaves inter-node gRPC endpoints unauthenticated. \
+                "cluster.secret must be set when distributed mode is enabled. \
+                 An empty cluster.secret leaves inter-node gRPC endpoints unauthenticated. \
                  Generate a secret with: openssl rand -hex 32 \
-                 and set it as SYNCTV_SERVER_CLUSTER_SECRET or server.cluster_secret in your config."
+                 and set it as SYNCTV_CLUSTER_SECRET or cluster.secret in your config."
                     .to_string(),
             );
         }
 
-        // Validate cluster_secret strength when set.
-        if !self.server.cluster_secret.is_empty() {
+        // Validate cluster.secret strength when set.
+        if !self.cluster.secret.is_empty() {
             const MIN_CLUSTER_SECRET_LEN: usize = 16;
-            if self.server.cluster_secret.len() < MIN_CLUSTER_SECRET_LEN {
+            if self.cluster.secret.len() < MIN_CLUSTER_SECRET_LEN {
                 errors.push(format!(
-                    "server.cluster_secret is too short ({} chars, minimum {}). \
+                    "cluster.secret is too short ({} chars, minimum {}). \
                          Use: openssl rand -hex 16",
-                    self.server.cluster_secret.len(),
+                    self.cluster.secret.len(),
                     MIN_CLUSTER_SECRET_LEN
                 ));
             }
@@ -4126,6 +4173,11 @@ pub struct ClusterChannelConfig {
     /// multi-replica deployments, set this to true.
     pub enabled: bool,
 
+    /// Shared secret for authenticating cluster gRPC calls between nodes.
+    /// When set, all inter-node gRPC requests must include this secret in the
+    /// `x-cluster-secret` metadata header. If empty, cluster endpoints are disabled.
+    pub secret: String,
+
     /// Capacity for the high-priority critical event channel.
     /// Critical events (`KickPublisher`, `KickUser`, `PermissionChanged`) are never dropped;
     /// when this channel is full, senders block until space is available.
@@ -4140,7 +4192,8 @@ pub struct ClusterChannelConfig {
 
     /// Discovery mode for cluster node registration.
     /// - `redis`: Use Redis-based node registry (default, works everywhere)
-    /// - "`k8s_dns"`: Use Kubernetes headless service DNS for peer discovery
+    /// - `static`: Use the configured `cluster.peers` list
+    /// - `k8s_dns`: Use Kubernetes headless service DNS for peer discovery
     ///   (requires `HEADLESS_SERVICE_NAME` and `POD_NAMESPACE` env vars).
     ///   NOTE: K8s DNS mode still requires Redis for health monitoring, load
     ///   balancing, and cluster pub/sub. DNS only supplements peer discovery
@@ -4181,6 +4234,7 @@ impl Default for ClusterChannelConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            secret: String::new(),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
             discovery_mode: ClusterDiscoveryMode::Redis,
@@ -4545,7 +4599,6 @@ mod tests {
                 grpc_compression_enabled: true,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
-                cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
@@ -4878,7 +4931,6 @@ mod tests {
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
-                cluster_secret: "test-cluster-secret-for-validation".to_string(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
@@ -4928,7 +4980,10 @@ mod tests {
                 root_email: "admin@example.com".to_string(),
                 root_password: "StrongPwd12345!".to_string(),
             },
-            cluster: ClusterChannelConfig::default(),
+            cluster: ClusterChannelConfig {
+                secret: "test-cluster-secret-for-validation".to_string(),
+                ..ClusterChannelConfig::default()
+            },
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
@@ -4962,11 +5017,11 @@ mod tests {
 
     #[test]
     fn test_validate_standalone_mode_allows_hls_local_storage() {
-        // In standalone mode (no cluster_secret and cluster.enabled=false),
+        // In standalone mode (no cluster.secret and cluster.enabled=false),
         // local file storage should be allowed.
         let mut config = valid_prod_config();
-        // Disable cluster mode by clearing cluster_secret and ensuring cluster.enabled is false
-        config.server.cluster_secret = String::new();
+        // Disable cluster mode by clearing cluster.secret and ensuring cluster.enabled is false.
+        config.cluster.secret = String::new();
         config.cluster.enabled = false;
         // Remove Redis to ensure cluster mode is fully disabled
         config.redis.url = String::new();
@@ -5185,8 +5240,8 @@ media_providers:
             &config_path,
             r#"
 data_dir: "./state"
-server:
-  cluster_secret_file: "./cluster.secret"
+cluster:
+  secret_file: "./cluster.secret"
 management:
   transport: "unix"
   auth_token_file: "./management.token"
@@ -5233,7 +5288,7 @@ bootstrap:
             "supported _file keys should not be treated as unknown: {unknown_keys:?}"
         );
         assert_eq!(config.jwt.secret, "jwt-secret-from-file");
-        assert_eq!(config.server.cluster_secret, "cluster-secret-from-file");
+        assert_eq!(config.cluster.secret, "cluster-secret-from-file");
         assert_eq!(config.management.auth_token, "management-token-from-file");
         assert_eq!(config.metrics.auth.basic_password, "metrics-basic-password");
         assert_eq!(config.metrics.auth.bearer_token, "metrics-bearer-token");
@@ -6093,7 +6148,7 @@ jwt:
     fn test_validate_webauthn_requires_redis_in_cluster_mode() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "cluster-secret-long-enough".to_string();
+        config.cluster.secret = "cluster-secret-long-enough".to_string();
         config.server.advertise_host = "10.0.0.12".to_string();
         config.redis.url.clear();
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -6145,7 +6200,7 @@ jwt:
                 jwt_secret.to_str().expect("utf-8 path"),
             ),
             (
-                "SYNCTV_SERVER_CLUSTER_SECRET_FILE",
+                "SYNCTV_CLUSTER_SECRET_FILE",
                 cluster_secret.to_str().expect("utf-8 path"),
             ),
             (
@@ -6192,7 +6247,7 @@ jwt:
         .expect("secret file env overrides should parse");
 
         assert_eq!(config.jwt.secret, "jwt-secret-from-env-file");
-        assert_eq!(config.server.cluster_secret, "cluster-secret-from-env-file");
+        assert_eq!(config.cluster.secret, "cluster-secret-from-env-file");
         assert_eq!(
             config.security.credential_encryption_key,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
@@ -6687,7 +6742,7 @@ jwt:
     fn test_validate_webrtc_p2p_mode_allowed_in_cluster() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.cluster.secret = "shared-secret-123".to_string();
         config.server.advertise_host = "10.0.0.12".to_string();
         config.webrtc.mode = WebRTCMode::PeerToPeer;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -6698,7 +6753,7 @@ jwt:
     fn test_validate_webrtc_signaling_only_mode_allowed_in_cluster() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "shared-secret-123".to_string();
+        config.cluster.secret = "shared-secret-123".to_string();
         config.server.advertise_host = "10.0.0.12".to_string();
         config.webrtc.mode = WebRTCMode::SignalingOnly;
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
@@ -6810,14 +6865,14 @@ jwt:
     #[test]
     fn test_validate_cluster_secret_without_cluster_enabled_is_standalone() {
         let mut config = valid_prod_config();
-        // cluster_secret alone must not implicitly enable cluster mode
-        config.server.cluster_secret = "shared-secret-long-enough".to_string();
+        // cluster.secret alone must not implicitly enable cluster mode.
+        config.cluster.secret = "shared-secret-long-enough".to_string();
         config.redis.url = String::new();
         config.livestream.hls_storage_backend = HlsStorageBackend::File;
         config.webrtc.stun_external_addr = String::new();
         assert!(
             config.validate().is_ok(),
-            "cluster_secret alone should not require cluster runtime services"
+            "cluster.secret alone should not require cluster runtime services"
         );
     }
 
@@ -6915,55 +6970,55 @@ jwt:
 
     #[test]
     fn test_validate_cluster_enabled_requires_cluster_secret() {
-        // cluster.enabled=true + cluster_secret empty → must be an error
+        // cluster.enabled=true + cluster.secret empty must be an error.
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = String::new(); // clear the secret
+        config.cluster.secret = String::new(); // clear the secret
         let errors = config.validate().unwrap_err();
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("cluster_secret must be set when distributed mode is enabled")),
-            "Expected cluster_secret error, got: {errors:?}"
+                .any(|e| e.contains("cluster.secret must be set when distributed mode is enabled")),
+            "Expected cluster.secret error, got: {errors:?}"
         );
     }
 
     #[test]
     fn test_validate_standalone_redis_without_cluster_secret_ok() {
-        // Standalone mode (cluster.enabled=false) with Redis but no cluster_secret → OK
+        // Standalone mode (cluster.enabled=false) with Redis but no cluster.secret is OK.
         let mut config = valid_prod_config();
         config.cluster.enabled = false;
-        config.server.cluster_secret = String::new();
+        config.cluster.secret = String::new();
         assert!(
             config.validate().is_ok(),
-            "Expected Ok in standalone mode without cluster_secret"
+            "Expected Ok in standalone mode without cluster.secret"
         );
     }
 
     #[test]
     fn test_validate_cluster_enabled_with_cluster_secret_ok() {
-        // cluster.enabled=true + cluster_secret set → should pass
+        // cluster.enabled=true + cluster.secret set should pass.
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
         config.server.advertise_host = "10.0.0.12".to_string();
         assert!(
             config.validate().is_ok(),
-            "Expected Ok with cluster mode + cluster_secret set"
+            "Expected Ok with cluster mode + cluster.secret set"
         );
     }
 
     #[test]
     fn test_validate_cluster_secret_too_short_rejected() {
-        // cluster_secret too short must be rejected
+        // cluster.secret too short must be rejected.
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "short".to_string();
+        config.cluster.secret = "short".to_string();
         let errors = config.validate().unwrap_err();
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("cluster_secret is too short")),
-            "Expected short cluster_secret error, got: {errors:?}"
+                .any(|e| e.contains("cluster.secret is too short")),
+            "Expected short cluster.secret error, got: {errors:?}"
         );
     }
 
@@ -7129,7 +7184,7 @@ jwt:
     fn test_validate_oss_hls_storage_requires_required_fields() {
         let mut config = valid_prod_config();
         config.cluster.enabled = false;
-        config.server.cluster_secret.clear();
+        config.cluster.secret.clear();
         config.livestream.hls_storage_backend = HlsStorageBackend::Oss;
         config.livestream.hls_oss = HlsOssConfig::default();
 

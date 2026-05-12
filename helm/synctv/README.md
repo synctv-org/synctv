@@ -229,7 +229,7 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_DATABASE_PASSWORD` unless PostgreSQL is in KubeBlocks mode
 - `SYNCTV_REDIS_PASSWORD` unless Redis is in KubeBlocks mode
 - `SYNCTV_JWT_SECRET`
-- `SYNCTV_SERVER_CLUSTER_SECRET`
+- `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`
 - `SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET`
 - `SYNCTV_BOOTSTRAP_ROOT_PASSWORD` when `config.bootstrap.createRootUser=true`

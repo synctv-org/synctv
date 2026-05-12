@@ -99,6 +99,7 @@ async fn test_external_publish_manager_stop_all_clears_pool() {
             registry,
             "test-node".to_string(),
             event_sender,
+            synctv_common::ssrf::SsrfGuard::disabled(),
         )
         .expect("failed to create ExternalPublishManager"),
     );
@@ -132,6 +133,7 @@ async fn test_livestream_handle_drop_spawns_stop_all_task() {
             registry.clone(),
             "test-node".to_string(),
             event_sender,
+            synctv_common::ssrf::SsrfGuard::disabled(),
         )
         .expect("failed to create ExternalPublishManager"),
     );
@@ -237,6 +239,7 @@ async fn test_drop_behavior_simulation() {
             registry.clone(),
             "test-node".to_string(),
             event_sender,
+            synctv_common::ssrf::SsrfGuard::disabled(),
         )
         .expect("failed to create ExternalPublishManager"),
     );
@@ -280,6 +283,7 @@ async fn test_stop_all_task_completes_after_scope_exit() {
                 registry.clone(),
                 "test-node".to_string(),
                 event_sender,
+                synctv_common::ssrf::SsrfGuard::disabled(),
             )
             .expect("failed to create ExternalPublishManager"),
         );

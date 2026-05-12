@@ -60,6 +60,21 @@ pub async fn get_me(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/preferences",
+        tag = "User",
+        responses(
+            (status = 200, description = "Current user preferences", body = GetUserPreferencesResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn get_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -81,6 +96,23 @@ pub async fn get_user_preferences(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/user/preferences",
+        tag = "User",
+        request_body = UpdateUserPreferencesRequest,
+        responses(
+            (status = 200, description = "User preferences updated", body = UpdateUserPreferencesResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn update_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -176,6 +208,23 @@ pub async fn update_user(
     }))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/opaque-password/update/start",
+        tag = "User",
+        request_body = StartOpaquePasswordUpdateRequest,
+        responses(
+            (status = 200, description = "OPAQUE password update challenge created", body = StartOpaquePasswordUpdateResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn start_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -202,6 +251,23 @@ pub async fn start_opaque_password_update(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/opaque-password/update/finish",
+        tag = "User",
+        request_body = FinishOpaquePasswordUpdateRequest,
+        responses(
+            (status = 200, description = "OPAQUE password update completed", body = FinishOpaquePasswordUpdateResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn finish_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -228,6 +294,23 @@ pub async fn finish_opaque_password_update(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/passkeys/bind/start",
+        tag = "User",
+        request_body = StartPasskeyBindRequest,
+        responses(
+            (status = 200, description = "Passkey bind challenge created", body = StartPasskeyBindResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn start_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -250,6 +333,23 @@ pub async fn start_passkey_bind(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/user/passkeys/bind/finish",
+        tag = "User",
+        request_body = FinishPasskeyBindRequest,
+        responses(
+            (status = 200, description = "Passkey bound to current user", body = PasskeyCredentialResponse),
+            (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -276,6 +376,21 @@ pub async fn finish_passkey_bind(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/user/passkeys",
+        tag = "User",
+        responses(
+            (status = 200, description = "Passkeys for current user", body = ListPasskeysResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn list_passkeys(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
@@ -297,6 +412,25 @@ pub async fn list_passkeys(
     Ok(Json(response))
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/user/passkeys/{credential_id}",
+        tag = "User",
+        params(
+            ("credential_id" = String, Path, description = "Passkey credential id")
+        ),
+        responses(
+            (status = 200, description = "Passkey deleted", body = DeletePasskeyResponse),
+            (status = 401, description = "Authentication required", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Passkey not found", body = crate::openapi::ErrorResponseDoc)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
 pub async fn delete_passkey(
     request_meta: RequestMetadata,
     State(state): State<AppState>,

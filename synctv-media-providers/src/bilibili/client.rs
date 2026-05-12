@@ -47,19 +47,10 @@ const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
-/// Shared HTTP client for all Bilibili requests (connection pooling).
-/// Redirect-safe by default. Private-network SSRF blocking follows SyncTV's
-/// runtime SSRF policy, which is permissive unless a strict guard is configured.
-static SHARED_CLIENT: LazyLock<Result<Client, reqwest::Error>> = LazyLock::new(|| {
-    crate::provider_http_client_builder()
+fn shared_client() -> Result<Client, BilibiliError> {
+    crate::provider_http_client_builder(synctv_common::ssrf::SsrfGuard::strict_policy())
         .user_agent(USER_AGENT)
         .build()
-});
-
-fn shared_client() -> Result<Client, BilibiliError> {
-    SHARED_CLIENT
-        .as_ref()
-        .map(Clone::clone)
         .map_err(|err| BilibiliError::Network(err.to_string()))
 }
 
@@ -369,6 +360,7 @@ pub struct BilibiliClient {
     cookies: Option<HashMap<String, String>>,
     wbi_state: Arc<WbiState>,
     endpoints: BilibiliEndpoints,
+    ssrf_guard: SsrfGuard,
 }
 
 impl BilibiliClient {
@@ -382,6 +374,7 @@ impl BilibiliClient {
             shared_client()?,
             BilibiliEndpoints::default(),
             wbi_state,
+            SsrfGuard::strict_policy(),
         ))
     }
 
@@ -389,12 +382,14 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
+        ssrf_guard: SsrfGuard,
     ) -> Self {
         Self {
             client,
             cookies: None,
             wbi_state,
             endpoints,
+            ssrf_guard,
         }
     }
 
@@ -406,6 +401,7 @@ impl BilibiliClient {
             client,
             endpoints,
             Arc::new(WbiState::default()),
+            SsrfGuard::strict_policy(),
         ))
     }
 
@@ -423,6 +419,7 @@ impl BilibiliClient {
             shared_client()?,
             BilibiliEndpoints::default(),
             wbi_state,
+            SsrfGuard::strict_policy(),
         ))
     }
 
@@ -431,12 +428,14 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
+        ssrf_guard: SsrfGuard,
     ) -> Self {
         Self {
             client,
             cookies: Some(cookies),
             wbi_state,
             endpoints,
+            ssrf_guard,
         }
     }
 
@@ -450,6 +449,7 @@ impl BilibiliClient {
             client,
             endpoints,
             Arc::new(WbiState::default()),
+            SsrfGuard::strict_policy(),
         ))
     }
 
@@ -2011,7 +2011,8 @@ impl BilibiliClient {
 
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
-        let validated_addr = resolve_validated_danmaku_addr(&host.host, host.wss_port).await?;
+        let validated_addr =
+            resolve_validated_danmaku_addr(&host.host, host.wss_port, &self.ssrf_guard).await?;
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);
@@ -2998,6 +2999,7 @@ pub struct LiveDanmuInfo {
 async fn resolve_validated_danmaku_addr(
     hostname: &str,
     port: u32,
+    guard: &SsrfGuard,
 ) -> Result<std::net::SocketAddr, BilibiliError> {
     let port = u16::try_from(port).map_err(|_| {
         BilibiliError::Parse(format!(
@@ -3005,7 +3007,6 @@ async fn resolve_validated_danmaku_addr(
         ))
     })?;
 
-    let guard = SsrfGuard::shared_default();
     if guard.is_host_blocked(hostname) {
         return Err(BilibiliError::Network(format!(
             "WebSocket host is blocked by SSRF policy: {hostname}"
@@ -4117,32 +4118,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_validated_danmaku_addr_allows_localhost_when_default_ssrf_is_disabled() {
-        let addr = resolve_validated_danmaku_addr("localhost", 443)
+    async fn test_resolve_validated_danmaku_addr_blocks_localhost_with_strict_ssrf() {
+        let guard = SsrfGuard::strict_policy();
+        let err = resolve_validated_danmaku_addr("localhost", 443, &guard)
             .await
-            .expect("default SSRF-disabled runtime should allow localhost");
-        assert_eq!(addr.port(), 443);
+            .expect_err("strict SSRF policy should block localhost");
         assert!(
-            addr.ip().is_loopback(),
-            "unexpected localhost resolution: {addr}"
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {err}"
         );
     }
 
     #[tokio::test]
-    async fn test_resolve_validated_danmaku_addr_allows_private_ip_literal_when_default_ssrf_is_disabled(
-    ) {
-        let addr = resolve_validated_danmaku_addr("127.0.0.1", 443)
+    async fn test_resolve_validated_danmaku_addr_blocks_private_ip_literal_with_strict_ssrf() {
+        let guard = SsrfGuard::strict_policy();
+        let err = resolve_validated_danmaku_addr("127.0.0.1", 443, &guard)
             .await
-            .expect("default SSRF-disabled runtime should allow loopback IP literals");
-        assert_eq!(
-            addr,
-            "127.0.0.1:443".parse::<std::net::SocketAddr>().unwrap()
+            .expect_err("strict SSRF policy should block loopback IP literals");
+        assert!(
+            err.to_string().contains("blocked by SSRF policy"),
+            "unexpected error: {err}"
         );
     }
 
     #[tokio::test]
     async fn test_resolve_validated_danmaku_addr_accepts_public_ip_literal() {
-        let addr = resolve_validated_danmaku_addr("93.184.216.34", 443)
+        let guard = SsrfGuard::strict_policy();
+        let addr = resolve_validated_danmaku_addr("93.184.216.34", 443, &guard)
             .await
             .expect("public IP literal should pass SSRF validation");
         assert_eq!(
@@ -4153,7 +4155,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_validated_danmaku_addr_rejects_out_of_range_port() {
-        let err = resolve_validated_danmaku_addr("93.184.216.34", u32::from(u16::MAX) + 1)
+        let guard = SsrfGuard::strict_policy();
+        let err = resolve_validated_danmaku_addr("93.184.216.34", u32::from(u16::MAX) + 1, &guard)
             .await
             .expect_err("invalid WebSocket port must be rejected");
         assert!(

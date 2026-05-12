@@ -139,14 +139,12 @@ For clustered SyncTV, prefer a stable single Redis endpoint, a managed Redis ser
 
 ## Cluster Dependency
 
-When `cluster.enabled=true`, Redis must be configured. Cluster mode also requires `server.cluster_secret`.
+When `cluster.enabled=true`, Redis must be configured. Cluster mode also requires `cluster.secret`.
 
 ```yaml
 cluster:
   enabled: true
-
-server:
-  cluster_secret_file: "/run/secrets/cluster_secret"
+  secret_file: "/run/secrets/cluster_secret"
 
 redis:
   url_file: "/run/secrets/redis_url"

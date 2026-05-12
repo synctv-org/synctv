@@ -23,7 +23,7 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 | `jwt.secret` | 旧 token 失效，用户需要重新登录 | 中 | 可计划轮换，低峰发布 |
 | `security.opaque_server_setup_secret` | OPAQUE 密码记录可能无法验证 | 高 | 不要常规轮换，必须备份 |
 | `security.credential_encryption_key` | 已加密 Provider 凭据无法解密 | 高 | 不要直接替换，先迁移凭据 |
-| `server.cluster_secret` | 节点间认证失败 | 中 | 多副本需滚动协调 |
+| `cluster.secret` | 节点间认证失败 | 中 | 多副本需滚动协调 |
 | `management.auth_token` | CLI/management TCP 鉴权 | 低 | 可定期轮换 |
 | `metrics.auth.bearer_token` | metrics 抓取鉴权 | 低 | 同步监控系统配置 |
 | SMTP/OAuth2/Provider 凭据 | 邮件、登录或媒体能力异常 | 中 | 按外部系统策略轮换 |

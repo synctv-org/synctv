@@ -1,9 +1,7 @@
 //! Proxy tests around runtime behavior and explicit SSRF policies.
 //!
-//! The runtime proxy client uses the shared default SSRF policy, which is
-//! intentionally disabled unless callers opt into a strict policy.
-//! These tests therefore avoid assuming default runtime blocking and instead
-//! cover deterministic runtime failures plus explicit strict-policy checks.
+//! Runtime proxy clients receive an explicit SSRF policy from the application.
+//! These tests cover deterministic runtime failures plus strict-policy checks.
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
@@ -11,14 +9,17 @@ use std::collections::HashMap;
 use synctv_proxy::{proxy_fetch_and_forward, NoopMetrics, ProxyConfig};
 
 fn proxy_client() -> reqwest::Client {
-    synctv_proxy::build_proxy_http_client().expect("proxy HTTP client should build for tests")
+    synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::disabled())
+        .expect("proxy HTTP client should build for tests")
 }
 
 /// Verify that a loopback target still fails when nothing is listening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_loopback_target_without_listener_returns_error() {
     let client = proxy_client();
+    let ssrf_guard = synctv_common::ssrf::SsrfGuard::disabled();
     let cfg = ProxyConfig {
+        ssrf_guard: &ssrf_guard,
         client: &client,
         url: "http://127.0.0.1:8080/admin",
         provider_headers: &HashMap::new(),
@@ -29,18 +30,15 @@ async fn test_proxy_loopback_target_without_listener_returns_error() {
     let result = proxy_fetch_and_forward(cfg, &NoopMetrics).await;
     assert!(
         result.is_err(),
-        "loopback target without a listener should fail even when default SSRF is disabled"
+        "loopback target without a listener should fail when SSRF is explicitly disabled"
     );
 }
 
 #[test]
-fn test_proxy_shared_default_ssrf_policy_is_disabled() {
-    assert!(
-        synctv_common::ssrf::SsrfGuard::shared_default()
-            .dns_resolver()
-            .is_none(),
-        "default proxy runtime should not inject an SSRF DNS resolver"
-    );
+fn test_proxy_disabled_ssrf_policy_has_no_dns_resolver() {
+    assert!(synctv_common::ssrf::SsrfGuard::disabled()
+        .dns_resolver()
+        .is_none());
 }
 
 #[test]

@@ -712,15 +712,15 @@ impl ManagementServiceImpl {
     }
 
     fn attach_cluster_secret<T>(&self, request: &mut Request<T>) -> Result<(), Status> {
-        if self.config.server.cluster_secret.is_empty() {
+        if self.config.cluster.secret.is_empty() {
             return Err(Status::failed_precondition(
                 "cluster secret is required for remote slice cache operations",
             ));
         }
         let value = self
             .config
-            .server
-            .cluster_secret
+            .cluster
+            .secret
             .parse::<MetadataValue<tonic::metadata::Ascii>>()
             .map_err(|_| Status::failed_precondition("invalid cluster secret configuration"))?;
         request.metadata_mut().insert("x-cluster-secret", value);

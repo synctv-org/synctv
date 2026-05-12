@@ -155,9 +155,9 @@ mod ssrf_tests {
     }
 
     #[test]
-    fn test_shared_default_policy_is_disabled() {
-        assert!(!SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(!SsrfGuard::shared_default().is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    fn test_disabled_policy_does_not_block_ips() {
+        assert!(!SsrfGuard::disabled().is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!SsrfGuard::disabled().is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]

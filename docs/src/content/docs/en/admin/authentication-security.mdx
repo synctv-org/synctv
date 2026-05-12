@@ -17,7 +17,7 @@ SyncTV separates security into several boundaries:
 - **Access tokens**: issued after login completion for HTTP/gRPC business APIs.
 - **Management control plane**: the CLI management endpoint, separate from user tokens.
 - **Provider upstream access**: providers own upstream headers and credentials; the proxy does not guess client headers.
-- **Cluster internal authentication**: inter-node gRPC uses `server.cluster_secret`.
+- **Cluster internal authentication**: inter-node gRPC uses `cluster.secret`.
 
 <Diagram
   light={securityAuthBoundaryDiagramLight}

@@ -19,6 +19,7 @@ use crate::{
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use synctv_common::ssrf::SsrfGuard;
 use synctv_core::config::{HlsOssConfig, HlsStorageBackend};
 use synctv_core::service::LeaderCheck;
 use synctv_xiu::hls::segment_manager::CleanupAuthority;
@@ -127,6 +128,8 @@ pub struct LivestreamConfig {
     pub hls_storage_path: String,
     /// S3-compatible object storage settings for the OSS backend.
     pub hls_oss: HlsOssConfig,
+    /// Global SSRF policy for outbound livestream pull requests.
+    pub ssrf_guard: SsrfGuard,
 }
 
 fn build_hls_storage(config: &LivestreamConfig) -> StreamResult<Arc<dyn HlsStorage>> {
@@ -997,6 +1000,7 @@ impl LivestreamServer {
                 self.config.node_id.clone(),
                 self.config.api_address.clone(),
                 event_sender.clone(),
+                self.config.ssrf_guard.clone(),
                 self.config.cleanup_check_interval_seconds,
                 self.config.stream_timeout_seconds,
             )?
@@ -1145,6 +1149,7 @@ mod tests {
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
+            ssrf_guard: SsrfGuard::strict_policy(),
         }
     }
 
@@ -1551,6 +1556,7 @@ mod tests {
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
+            ssrf_guard: SsrfGuard::strict_policy(),
         };
 
         let server =
@@ -1593,6 +1599,7 @@ mod tests {
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
+            ssrf_guard: SsrfGuard::strict_policy(),
         };
 
         let server =
@@ -1639,6 +1646,7 @@ mod tests {
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
             hls_oss: HlsOssConfig::default(),
+            ssrf_guard: SsrfGuard::strict_policy(),
         };
 
         let server =

@@ -796,6 +796,7 @@ impl Application {
             cache_invalidation_listener_task,
             InitServicesOptions {
                 provider_address_overrides: options.provider_address_overrides.clone(),
+                ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
                 realtime_outbox: realtime_outbox.clone(),
@@ -1521,7 +1522,6 @@ mod tests {
                 grpc_compression_enabled: true,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
-                cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
@@ -1655,11 +1655,11 @@ mod tests {
     #[test]
     fn test_cluster_runtime_enabled_depends_only_on_cluster_flag() {
         let mut config = Config::default();
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         assert!(
             !cluster_runtime_enabled(&config),
-            "cluster_secret alone must not activate realtime runtime"
+            "cluster.secret alone must not activate realtime runtime"
         );
 
         config.cluster.enabled = true;
@@ -1683,7 +1683,7 @@ mod tests {
     #[test]
     fn test_startup_partition_initialization_runs_in_all_modes() {
         let mut config = Config::default();
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         assert!(
             should_run_startup_partition_initialization(&config),
@@ -1784,7 +1784,7 @@ mod tests {
     fn test_validate_startup_config_rejects_cluster_mode_without_redis_before_bootstrap() {
         let mut config = minimal_valid_startup_config();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "test-cluster-secret-key-1234567890".to_string();
+        config.cluster.secret = "test-cluster-secret-key-1234567890".to_string();
         config.redis.url.clear();
 
         let error = validate_startup_config(&config)

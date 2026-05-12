@@ -1,7 +1,7 @@
 //! SSRF ACL tests.
 //!
 //! Verifies that SyncTV's SSRF policies match the intended runtime behavior:
-//! the shared default policy is disabled, while the strict policy blocks
+//! the explicit disabled policy allows all targets, while the strict policy blocks
 //! private/internal IPs and hostnames.
 
 #![allow(clippy::unwrap_used)]
@@ -39,19 +39,19 @@ const ALLOWED_IPV4: &[(u8, u8, u8, u8)] = &[
 // Tests
 
 #[test]
-fn shared_default_policy_is_disabled() {
-    let guard = SsrfGuard::shared_default();
+fn disabled_policy_is_disabled() {
+    let guard = SsrfGuard::disabled();
     assert!(guard.acl().is_none());
     assert!(guard.dns_resolver().is_none());
 }
 
 #[test]
-fn shared_default_policy_allows_blocked_ipv4() {
+fn disabled_policy_allows_blocked_ipv4() {
     for &(a, b, c, d) in BLOCKED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
         assert!(
-            !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "shared_default should not block {ip}"
+            !SsrfGuard::disabled().is_ip_blocked(&ip),
+            "disabled policy should not block {ip}"
         );
     }
 }
@@ -72,8 +72,8 @@ fn allowed_ipv4_are_allowed_by_both_policies() {
     for &(a, b, c, d) in ALLOWED_IPV4 {
         let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
         assert!(
-            !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "shared_default should allow {ip}"
+            !SsrfGuard::disabled().is_ip_blocked(&ip),
+            "disabled policy should allow {ip}"
         );
         assert!(
             !SsrfGuard::strict_policy().is_ip_blocked(&ip),
@@ -83,7 +83,7 @@ fn allowed_ipv4_are_allowed_by_both_policies() {
 }
 
 #[test]
-fn shared_default_policy_allows_blocked_ipv6() {
+fn disabled_policy_allows_blocked_ipv6() {
     let blocked: Vec<Ipv6Addr> = vec![
         Ipv6Addr::LOCALHOST,
         Ipv6Addr::UNSPECIFIED,
@@ -95,8 +95,8 @@ fn shared_default_policy_allows_blocked_ipv6() {
     for ipv6 in &blocked {
         let ip = IpAddr::V6(*ipv6);
         assert!(
-            !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "shared_default should not block {ip}"
+            !SsrfGuard::disabled().is_ip_blocked(&ip),
+            "disabled policy should not block {ip}"
         );
     }
 }
@@ -130,8 +130,8 @@ fn allowed_ipv6_are_allowed_by_both_policies() {
     for ipv6 in &allowed {
         let ip = IpAddr::V6(*ipv6);
         assert!(
-            !SsrfGuard::shared_default().is_ip_blocked(&ip),
-            "shared_default should allow {ip}"
+            !SsrfGuard::disabled().is_ip_blocked(&ip),
+            "disabled policy should allow {ip}"
         );
         assert!(
             !SsrfGuard::strict_policy().is_ip_blocked(&ip),

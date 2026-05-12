@@ -183,6 +183,8 @@ pub struct RouterConfig {
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Shared proxy slice cache instance managed by the runtime.
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
+    /// Global SSRF policy used by proxy handlers.
+    pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     /// Shared outbound HTTP client used by proxy handlers and cache fills.
     pub proxy_http_client: reqwest::Client,
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
@@ -1404,9 +1406,12 @@ mod tests {
             shared_proxy_signing_key: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             proxy_slice_cache: Arc::new(SliceCache::new(SliceCacheConfig::default())),
-            proxy_http_client: synctv_proxy::build_proxy_http_client()
-                .expect("proxy HTTP client should build for tests"),
+            proxy_http_client: synctv_proxy::build_proxy_http_client(
+                synctv_common::ssrf::SsrfGuard::strict_policy(),
+            )
+            .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: None,
@@ -1580,8 +1585,9 @@ mod tests {
         let injected_proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
             b"test-secret-key-for-http-router-tests-minimum-32-chars",
         ));
-        let injected_proxy_http_client = synctv_proxy::build_proxy_http_client()
-            .expect("proxy HTTP client should build for tests");
+        let injected_proxy_http_client =
+            synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
+                .expect("proxy HTTP client should build for tests");
 
         let state = build_app_state(RouterConfig {
             config: Arc::new(synctv_core::Config::default()),
@@ -1628,6 +1634,7 @@ mod tests {
             builtin_stun_url: None,
             credential_encryption: None,
             proxy_slice_cache: injected_cache.clone(),
+            ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             proxy_http_client: injected_proxy_http_client,
             messaging_rate_limit_config: RateLimitConfig::default(),
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),

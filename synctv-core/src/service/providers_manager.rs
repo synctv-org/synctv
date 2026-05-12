@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 
 fn provider_http_client_from_config(
     config: &Value,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> std::result::Result<Option<reqwest::Client>, crate::Error> {
     let request_timeout_seconds = config
         .get("request_timeout_seconds")
@@ -36,7 +37,7 @@ fn provider_http_client_from_config(
     let connect_timeout_seconds = connect_timeout_seconds
         .unwrap_or_else(|| LocalProviderHttpConfig::default().connect_timeout_seconds);
 
-    let client = synctv_media_providers::provider_http_client_builder()
+    let client = synctv_media_providers::provider_http_client_builder(ssrf_guard.clone())
         .request_timeout(std::time::Duration::from_secs(request_timeout_seconds))
         .read_timeout(std::time::Duration::from_secs(request_timeout_seconds))
         .connect_timeout(std::time::Duration::from_secs(connect_timeout_seconds))
@@ -90,6 +91,7 @@ pub struct ProvidersManager {
     /// Default injected local provider clients used by provider instances
     /// when they do not specify a per-instance HTTP transport override.
     default_client_manager: Arc<ProviderClientManager>,
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
 
 impl ProvidersManager {
@@ -100,9 +102,26 @@ impl ProvidersManager {
     /// Create a new `ProvidersManager`
     #[must_use]
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
-        let default_provider_http_client = synctv_media_providers::build_provider_http_client()
-            .expect("default provider HTTP client should build");
-        Self::new_with_provider_http_client(instance_manager, default_provider_http_client)
+        Self::new_with_ssrf_guard(
+            instance_manager,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    /// Create a new manager with an explicit global SSRF guard.
+    #[must_use]
+    pub fn new_with_ssrf_guard(
+        instance_manager: Arc<RemoteProviderManager>,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        let default_provider_http_client =
+            synctv_media_providers::build_provider_http_client(ssrf_guard.clone())
+                .expect("default provider HTTP client should build");
+        Self::new_with_provider_http_client_and_ssrf_guard(
+            instance_manager,
+            default_provider_http_client,
+            ssrf_guard,
+        )
     }
 
     /// Create a new manager with an explicit default local provider HTTP client.
@@ -110,6 +129,20 @@ impl ProvidersManager {
     pub fn new_with_provider_http_client(
         instance_manager: Arc<RemoteProviderManager>,
         default_provider_http_client: reqwest::Client,
+    ) -> Self {
+        Self::new_with_provider_http_client_and_ssrf_guard(
+            instance_manager,
+            default_provider_http_client,
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+    }
+
+    /// Create a new manager with explicit local provider transport and SSRF guard.
+    #[must_use]
+    pub fn new_with_provider_http_client_and_ssrf_guard(
+        instance_manager: Arc<RemoteProviderManager>,
+        default_provider_http_client: reqwest::Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> Self {
         let default_client_manager = Arc::new(
             ProviderClientManager::new_with_provider_http_client(default_provider_http_client),
@@ -119,6 +152,7 @@ impl ProvidersManager {
             instances: Arc::new(RwLock::new(HashMap::new())),
             instance_manager,
             default_client_manager,
+            ssrf_guard,
         };
 
         // Register all built-in providers
@@ -136,12 +170,14 @@ impl ProvidersManager {
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
         let default_client_manager = Arc::clone(&self.default_client_manager);
+        let ssrf_guard = self.ssrf_guard.clone();
         // Alist factory - reads local Alist config.
         self.register_factory(
             AlistProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) = provider_http_client_from_config(config)? {
-                    AlistProvider::with_client_manager(
+                let provider =
+                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
+                        AlistProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
                             crate::provider::ProviderClientManager::new_with_provider_http_client(
@@ -149,23 +185,25 @@ impl ProvidersManager {
                             ),
                         ),
                     )
-                } else {
-                    AlistProvider::with_client_manager(
-                        instance_manager,
-                        Arc::clone(&default_client_manager),
-                    )
-                };
+                    } else {
+                        AlistProvider::with_client_manager(
+                            instance_manager,
+                            Arc::clone(&default_client_manager),
+                        )
+                    };
                 Ok(Arc::new(provider))
             }),
         );
 
         // Bilibili factory - reads local Bilibili config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
+        let ssrf_guard = self.ssrf_guard.clone();
         self.register_factory(
             BilibiliProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) = provider_http_client_from_config(config)? {
-                    BilibiliProvider::with_client_manager(
+                let provider =
+                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
+                        BilibiliProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
                             crate::provider::ProviderClientManager::new_with_provider_http_client(
@@ -173,23 +211,25 @@ impl ProvidersManager {
                             ),
                         ),
                     )
-                } else {
-                    BilibiliProvider::with_client_manager(
-                        instance_manager,
-                        Arc::clone(&default_client_manager),
-                    )
-                };
+                    } else {
+                        BilibiliProvider::with_client_manager(
+                            instance_manager,
+                            Arc::clone(&default_client_manager),
+                        )
+                    };
                 Ok(Arc::new(provider))
             }),
         );
 
         // Emby factory - reads local Emby config.
         let default_client_manager = Arc::clone(&self.default_client_manager);
+        let ssrf_guard = self.ssrf_guard.clone();
         self.register_factory(
             EmbyProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider = if let Some(client) = provider_http_client_from_config(config)? {
-                    EmbyProvider::with_client_manager(
+                let provider =
+                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
+                        EmbyProvider::with_client_manager(
                         instance_manager,
                         Arc::new(
                             crate::provider::ProviderClientManager::new_with_provider_http_client(
@@ -197,12 +237,12 @@ impl ProvidersManager {
                             ),
                         ),
                     )
-                } else {
-                    EmbyProvider::with_client_manager(
-                        instance_manager,
-                        Arc::clone(&default_client_manager),
-                    )
-                };
+                    } else {
+                        EmbyProvider::with_client_manager(
+                            instance_manager,
+                            Arc::clone(&default_client_manager),
+                        )
+                    };
                 Ok(Arc::new(provider))
             }),
         );
@@ -214,18 +254,24 @@ impl ProvidersManager {
         );
 
         // DirectUrl factory
+        let ssrf_guard = self.ssrf_guard.clone();
         self.register_factory(
             DirectUrlProvider::NAME,
-            Box::new(|_instance_id, _config, _instance_manager| {
-                Ok(Arc::new(DirectUrlProvider::new()))
+            Box::new(move |_instance_id, _config, _instance_manager| {
+                Ok(Arc::new(DirectUrlProvider::new_with_ssrf_guard(
+                    ssrf_guard.clone(),
+                )))
             }),
         );
 
         // LiveProxy factory
+        let ssrf_guard = self.ssrf_guard.clone();
         self.register_factory(
             LiveProxyProvider::NAME,
-            Box::new(|_instance_id, _config, _instance_manager| {
-                Ok(Arc::new(LiveProxyProvider::new()))
+            Box::new(move |_instance_id, _config, _instance_manager| {
+                Ok(Arc::new(LiveProxyProvider::new_with_ssrf_guard(
+                    ssrf_guard.clone(),
+                )))
             }),
         );
     }
@@ -572,11 +618,13 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_media_providers::provider_http_client_builder()
-            .connect_timeout(std::time::Duration::from_secs(4))
-            .request_timeout(std::time::Duration::from_secs(12))
-            .build()
-            .unwrap();
+        let client = synctv_media_providers::provider_http_client_builder(
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .request_timeout(std::time::Duration::from_secs(12))
+        .build()
+        .unwrap();
 
         let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
 
@@ -590,11 +638,13 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_media_providers::provider_http_client_builder()
-            .connect_timeout(std::time::Duration::from_secs(4))
-            .request_timeout(std::time::Duration::from_secs(12))
-            .build()
-            .unwrap();
+        let client = synctv_media_providers::provider_http_client_builder(
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .request_timeout(std::time::Duration::from_secs(12))
+        .build()
+        .unwrap();
 
         let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let expected_marker = manager.default_client_manager_marker();
@@ -622,11 +672,13 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = Arc::new(ProviderInstanceRepository::new(pool));
         let instance_manager = Arc::new(RemoteProviderManager::new_with_invalidation(repo, None));
-        let client = synctv_media_providers::provider_http_client_builder()
-            .connect_timeout(std::time::Duration::from_secs(4))
-            .request_timeout(std::time::Duration::from_secs(12))
-            .build()
-            .unwrap();
+        let client = synctv_media_providers::provider_http_client_builder(
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
+        )
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .request_timeout(std::time::Duration::from_secs(12))
+        .build()
+        .unwrap();
 
         let manager = ProvidersManager::new_with_provider_http_client(instance_manager, client);
         let default_marker = manager.default_client_manager_marker();

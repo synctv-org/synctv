@@ -58,7 +58,7 @@ Use this checklist before launch. For field definitions, see [Configuration Inde
 | Provider credentials | Credentials are stored through secrets or controlled admin flows, not in the repository. |
 | File-backed slice cache | Cache directory has capacity planning and cleanup policy. |
 | Livestream HLS | Single-node storage is confirmed; multi-replica mode uses publisher-node proxy, `shared_file`, or OSS. |
-| Cluster mode | All replicas share PostgreSQL, Redis, `redis.key_prefix`, and `server.cluster_secret`. |
+| Cluster mode | All replicas share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`. |
 | OpenAPI | Production exposure of `/swagger-ui/` and `/api-docs/openapi.json` has been decided. |
 
 ## Verification Commands

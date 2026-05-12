@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
-use synctv_common;
+use synctv_common::{self, ssrf::SsrfGuard};
 use synctv_xiu::rtmp::session::client_session::{ClientSession, ClientSessionType};
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::rtmp::utils::RtmpUrlParser;
@@ -115,6 +115,8 @@ pub struct ExternalStreamPuller {
     cancel_token: CancellationToken,
     /// Maximum FLV tag data size accepted from external HTTP-FLV sources.
     max_flv_tag_size_bytes: usize,
+    /// Explicit SSRF policy injected by the application layer.
+    ssrf_guard: SsrfGuard,
 }
 
 impl ExternalStreamPuller {
@@ -127,12 +129,14 @@ impl ExternalStreamPuller {
         media_id: String,
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
+        ssrf_guard: SsrfGuard,
     ) -> Result<Self> {
         Self::new_async_with_resolver(
             room_id,
             media_id,
             source_url,
             stream_hub_event_sender,
+            ssrf_guard,
             |host, port| async move {
                 let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
                     .await
@@ -149,6 +153,7 @@ impl ExternalStreamPuller {
         media_id: String,
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
+        ssrf_guard: SsrfGuard,
         resolver: F,
     ) -> Result<Self>
     where
@@ -180,9 +185,15 @@ impl ExternalStreamPuller {
         });
 
         if !host.is_empty() {
+            if ssrf_guard.is_host_blocked(host) {
+                return Err(anyhow::anyhow!(
+                    "SSRF protection blocked host: {host} is denied by policy"
+                ));
+            }
+
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                 // Literal IP address - check directly
-                if synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&ip) {
+                if ssrf_guard.is_ip_blocked(&ip) {
                     return Err(anyhow::anyhow!(
                         "SSRF protection blocked IP: {ip} is private/reserved"
                     ));
@@ -195,9 +206,7 @@ impl ExternalStreamPuller {
                 // Filter out blocked IPs
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| {
-                        !synctv_common::ssrf::SsrfGuard::shared_default().is_ip_blocked(&addr.ip())
-                    })
+                    .filter(|addr| !ssrf_guard.is_ip_blocked(&addr.ip()))
                     .collect();
 
                 if safe_addrs.is_empty() {
@@ -221,6 +230,7 @@ impl ExternalStreamPuller {
             resolved_addr,
             cancel_token: CancellationToken::new(),
             max_flv_tag_size_bytes: Self::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+            ssrf_guard,
         })
     }
 
@@ -640,7 +650,12 @@ impl ExternalStreamPuller {
             )
         })?;
 
-        let client = build_http_flv_client(&self.source_url, addr, self.http_client.as_ref())?;
+        let client = build_http_flv_client(
+            &self.source_url,
+            addr,
+            self.http_client.as_ref(),
+            &self.ssrf_guard,
+        )?;
 
         let mut response =
             send_http_flv_request(&client, &self.source_url, HTTP_FLV_REQUEST_START_TIMEOUT)
@@ -914,6 +929,7 @@ fn build_http_flv_client(
     source_url: &str,
     resolved_addr: std::net::SocketAddr,
     shared_client: Option<&reqwest::Client>,
+    ssrf_guard: &SsrfGuard,
 ) -> Result<reqwest::Client> {
     let parsed = reqwest::Url::parse(source_url)?;
     let host = parsed
@@ -929,6 +945,7 @@ fn build_http_flv_client(
     }
 
     let mut builder = synctv_common::http::SsrfSafeClientBuilder::new()
+        .ssrf_guard(ssrf_guard.clone())
         .connect_timeout(std::time::Duration::from_secs(10))
         .disable_request_timeout()
         .disable_read_timeout()
@@ -1214,6 +1231,7 @@ mod tests {
             resolved_addr: Some(addr),
             cancel_token: CancellationToken::new(),
             max_flv_tag_size_bytes: ExternalStreamPuller::DEFAULT_MAX_FLV_TAG_SIZE_BYTES,
+            ssrf_guard: SsrfGuard::disabled(),
         }
     }
 
@@ -1314,6 +1332,7 @@ mod tests {
             "media456".to_string(),
             "rtmp://93.184.216.34/app/stream".to_string(),
             sender,
+            SsrfGuard::strict_policy(),
         )
         .await;
 
@@ -1338,6 +1357,7 @@ mod tests {
             "media456".to_string(),
             "http://93.184.216.34/app/stream.flv".to_string(),
             sender,
+            SsrfGuard::strict_policy(),
         )
         .await;
 
@@ -1359,6 +1379,7 @@ mod tests {
             "media456".to_string(),
             "http://example.com/video.mp4".to_string(),
             sender,
+            SsrfGuard::strict_policy(),
         )
         .await;
 
@@ -1374,6 +1395,7 @@ mod tests {
             "media456".to_string(),
             "https://live.example.com/app/stream/index.m3u8".to_string(),
             sender,
+            SsrfGuard::strict_policy(),
         )
         .await;
 
@@ -1394,6 +1416,7 @@ mod tests {
             "media456".to_string(),
             "rtmp://example.com/app/stream".to_string(),
             sender,
+            SsrfGuard::strict_policy(),
             move |host, port| {
                 let expected = resolved;
                 async move {
@@ -1434,6 +1457,7 @@ mod tests {
             &format!("http://example.com:{}/stream.flv", addr.port()),
             addr,
             Some(&shared_client),
+            &SsrfGuard::disabled(),
         )
         .expect("pinned HTTP-FLV client should build");
 
@@ -1458,6 +1482,7 @@ mod tests {
             &format!("http://example.com:{}/stream.flv", addr.port()),
             addr,
             None,
+            &SsrfGuard::disabled(),
         )
         .expect("redirect-safe HTTP-FLV client should build");
 
@@ -1477,6 +1502,7 @@ mod tests {
             "http://example.com:8080/stream.flv",
             std::net::SocketAddr::from(([203, 0, 113, 10], 8080)),
             None,
+            &SsrfGuard::strict_policy(),
         )
         .expect("HTTP-FLV client should build");
 
@@ -1506,8 +1532,13 @@ mod tests {
                 .await
                 .expect("test server should start");
 
-        let client = build_http_flv_client(&format!("http://{addr}/stream.flv"), addr, None)
-            .expect("HTTP-FLV client should build");
+        let client = build_http_flv_client(
+            &format!("http://{addr}/stream.flv"),
+            addr,
+            None,
+            &SsrfGuard::disabled(),
+        )
+        .expect("HTTP-FLV client should build");
 
         let err = send_http_flv_request(
             &client,
@@ -1524,37 +1555,39 @@ mod tests {
         server_handle.abort();
     }
 
-    /// With the runtime default SSRF policy disabled, `new_async()` no longer
-    /// rejects localhost/private addresses during async construction.
+    /// With an explicit disabled SSRF policy, `new_async()` allows
+    /// localhost/private addresses during async construction.
     #[tokio::test]
-    async fn test_external_puller_async_creation_allows_private_addresses_when_default_ssrf_is_disabled(
+    async fn test_external_puller_async_creation_allows_private_addresses_when_ssrf_is_explicitly_disabled(
     ) {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        // Localhost is allowed when the default SSRF policy is disabled.
+        // Localhost is allowed when the injected SSRF policy is disabled.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
             "rtmp://localhost/app/stream".to_string(),
             sender.clone(),
+            SsrfGuard::disabled(),
         )
         .await;
         assert!(
             puller.is_ok(),
-            "localhost should be allowed when default SSRF protection is disabled"
+            "localhost should be allowed when SSRF protection is explicitly disabled"
         );
 
-        // Literal loopback IPs are also allowed by the default-disabled policy.
+        // Literal loopback IPs are also allowed by the disabled policy.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
             "http://127.0.0.1/stream.flv".to_string(),
             sender.clone(),
+            SsrfGuard::disabled(),
         )
         .await;
         assert!(
             puller.is_ok(),
-            "127.0.0.1 should be allowed when default SSRF protection is disabled"
+            "127.0.0.1 should be allowed when SSRF protection is explicitly disabled"
         );
 
         // Private IPs are likewise allowed unless a strict SSRF policy is injected.
@@ -1563,11 +1596,12 @@ mod tests {
             "media456".to_string(),
             "rtmp://192.168.1.1/app/stream".to_string(),
             sender.clone(),
+            SsrfGuard::disabled(),
         )
         .await;
         assert!(
             puller.is_ok(),
-            "192.168.1.1 should be allowed when default SSRF protection is disabled"
+            "192.168.1.1 should be allowed when SSRF protection is explicitly disabled"
         );
     }
 }

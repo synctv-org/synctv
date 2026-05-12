@@ -244,9 +244,7 @@ const fn should_register_cluster_grpc_service(
     config: &synctv_core::Config,
     node_registry_available: bool,
 ) -> bool {
-    config.cluster_runtime_enabled()
-        && !config.server.cluster_secret.is_empty()
-        && node_registry_available
+    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty() && node_registry_available
 }
 
 const fn should_register_livestream_relay_service(
@@ -254,16 +252,16 @@ const fn should_register_livestream_relay_service(
     live_streaming_infrastructure_available: bool,
 ) -> bool {
     config.cluster_runtime_enabled()
-        && !config.server.cluster_secret.is_empty()
+        && !config.cluster.secret.is_empty()
         && live_streaming_infrastructure_available
 }
 
 const fn should_register_proxy_slice_cache_service(config: &synctv_core::Config) -> bool {
-    config.cluster_runtime_enabled() && !config.server.cluster_secret.is_empty()
+    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
 }
 
 const fn should_register_realtime_presence_service(config: &synctv_core::Config) -> bool {
-    config.cluster_runtime_enabled() && !config.server.cluster_secret.is_empty()
+    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
 }
 
 const fn should_mark_livestream_relay_serving(
@@ -606,9 +604,9 @@ fn validate_cluster_grpc_runtime_requirements(
     config: &synctv_core::Config,
     node_registry_available: bool,
 ) -> anyhow::Result<()> {
-    if config.cluster_runtime_enabled() && config.server.cluster_secret.is_empty() {
+    if config.cluster_runtime_enabled() && config.cluster.secret.is_empty() {
         return Err(anyhow::anyhow!(
-            "cluster.enabled=true requires server.cluster_secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"
+            "cluster.enabled=true requires cluster.secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"
         ));
     }
 
@@ -642,35 +640,6 @@ use synctv_core::service::{
     SettingsRegistry, SettingsService, UserService as CoreUserService,
 };
 use synctv_core::Config;
-
-fn proxy_slice_cache_config_from_app_config(
-    config: &Config,
-) -> synctv_proxy::slice_cache::SliceCacheConfig {
-    let backend = if config.proxy_slice_cache.file_backend_enabled {
-        synctv_proxy::slice_cache::CacheBackendConfig::File {
-            cache_dir: std::path::PathBuf::from(&config.proxy_slice_cache.file_cache_dir),
-            dir_levels: (2, 2),
-        }
-    } else {
-        synctv_proxy::slice_cache::CacheBackendConfig::Memory
-    };
-
-    synctv_proxy::slice_cache::SliceCacheConfig {
-        enabled: config.proxy_slice_cache.enabled,
-        slice_size: config.proxy_slice_cache.slice_size_bytes,
-        max_cache_size: config.proxy_slice_cache.max_cache_size_bytes,
-        segment_ttl: std::time::Duration::from_secs(config.proxy_slice_cache.segment_ttl_seconds),
-        stale_max_age: std::time::Duration::from_secs(
-            config.proxy_slice_cache.stale_max_age_seconds,
-        ),
-        stale_while_revalidate: config.proxy_slice_cache.stale_while_revalidate,
-        backend,
-        eviction_interval: std::time::Duration::from_secs(
-            config.proxy_slice_cache.eviction_interval_seconds,
-        ),
-        watermark_ratio: config.proxy_slice_cache.watermark_ratio,
-    }
-}
 
 /// Configuration for the gRPC server
 pub struct GrpcServerConfig<'a> {
@@ -803,9 +772,11 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
         rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
         live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
     };
-    let proxy_http_client =
-        synctv_proxy::build_proxy_http_client().expect("gRPC proxy HTTP client should build");
-    let proxy_slice_cache_config = proxy_slice_cache_config_from_app_config(deps.config.as_ref());
+    let ssrf_guard = deps.config.security.ssrf_guard();
+    let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())
+        .expect("gRPC proxy HTTP client should build");
+    let proxy_slice_cache_config =
+        crate::config_adapters::proxy_slice_cache_config_from_app_config(deps.config.as_ref());
 
     Arc::new(crate::http::create_app_state_from_config(
         crate::http::RouterConfig {
@@ -839,10 +810,14 @@ fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::h
             shared_proxy_signing_key: Some(deps.proxy_signing_key),
             builtin_stun_url: deps.builtin_stun_url,
             credential_encryption: deps.credential_encryption,
-            proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new_with_client(
-                proxy_slice_cache_config,
-                proxy_http_client.clone(),
-            )),
+            proxy_slice_cache: Arc::new(
+                synctv_proxy::slice_cache::SliceCache::new_with_client_and_ssrf_guard(
+                    proxy_slice_cache_config,
+                    proxy_http_client.clone(),
+                    ssrf_guard.clone(),
+                ),
+            ),
+            ssrf_guard,
             proxy_http_client,
             messaging_rate_limit_config: deps.messaging_rate_limit_config,
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
@@ -1279,17 +1254,17 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
         }
     } else if !config.cluster_runtime_enabled() {
         tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
-    } else if config.server.cluster_secret.is_empty() {
+    } else if config.cluster.secret.is_empty() {
         tracing::error!(
-            "cluster_secret is empty — cluster gRPC service will NOT be registered. \
-             Cluster coordination will be disabled. Set cluster_secret in config to enable."
+            "cluster.secret is empty — cluster gRPC service will NOT be registered. \
+             Cluster coordination will be disabled. Set cluster.secret or SYNCTV_CLUSTER_SECRET to enable."
         );
     } else if should_register_cluster_grpc_service(config, node_registry.is_some()) {
         let nr = node_registry
             .as_ref()
             .expect("node_registry presence checked by should_register_cluster_grpc_service");
         let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
-            .with_cluster_secret(config.server.cluster_secret.clone());
+            .with_cluster_secret(config.cluster.secret.clone());
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1309,7 +1284,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             connection_service.clone(),
             cluster_node_id.clone(),
         )
-        .with_cluster_secret(config.server.cluster_secret.clone());
+        .with_cluster_secret(config.cluster.secret.clone());
         routes.add_service(
             RealtimePresenceServiceServer::new(service)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1325,7 +1300,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             shared_http_app_state.proxy_slice_cache.clone(),
             cluster_node_id.clone(),
         )
-        .with_cluster_secret(config.server.cluster_secret.clone());
+        .with_cluster_secret(config.cluster.secret.clone());
         routes.add_service(
             synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1348,7 +1323,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
             live_infra.stream_hub_event_sender.clone(),
             tokio_util::sync::CancellationToken::new(),
         )
-        .with_cluster_secret(config.server.cluster_secret.clone());
+        .with_cluster_secret(config.cluster.secret.clone());
 
         let relay_service = if let Some(segment_manager) = live_infra.segment_manager.clone() {
             relay_service.with_segment_manager(segment_manager)
@@ -1363,7 +1338,7 @@ pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Res
                 relay_service
             };
 
-        let relay_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
+        let relay_interceptor = ClusterAuthInterceptor::new(config.cluster.secret.clone());
         routes.add_service(tonic::codegen::InterceptedService::new(
             synctv_livestream::grpc::StreamRelayServiceServer::new(relay_service)
                 .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
@@ -1714,8 +1689,11 @@ mod tests {
                 proxy_slice_cache: Arc::new(synctv_proxy::slice_cache::SliceCache::new(
                     synctv_proxy::slice_cache::SliceCacheConfig::default(),
                 )),
-                proxy_http_client: synctv_proxy::build_proxy_http_client()
-                    .expect("proxy HTTP client should build for tests"),
+                ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
+                proxy_http_client: synctv_proxy::build_proxy_http_client(
+                    synctv_common::ssrf::SsrfGuard::strict_policy(),
+                )
+                .expect("proxy HTTP client should build for tests"),
                 messaging_rate_limit_config: RateLimitConfig::default(),
                 heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
                 providers_manager: None,
@@ -2052,11 +2030,11 @@ mod tests {
     #[test]
     fn test_cluster_grpc_service_requires_cluster_mode() {
         let mut config = synctv_core::Config::default();
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         assert!(
             !should_register_cluster_grpc_service(&config, true),
-            "cluster_secret alone must not enable cluster gRPC"
+            "cluster.secret alone must not enable cluster gRPC"
         );
 
         config.cluster.enabled = true;
@@ -2070,7 +2048,7 @@ mod tests {
     fn test_cluster_grpc_service_requires_node_registry() {
         let mut config = synctv_core::Config::default();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         assert!(
             !should_register_cluster_grpc_service(&config, false),
@@ -2082,7 +2060,7 @@ mod tests {
     fn test_cluster_grpc_runtime_requires_node_registry() {
         let mut config = synctv_core::Config::default();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         let err = validate_cluster_grpc_runtime_requirements(&config, false)
             .expect_err("realtime runtime must fail closed without NodeRegistry");
@@ -2099,10 +2077,10 @@ mod tests {
         config.cluster.enabled = true;
 
         let err = validate_cluster_grpc_runtime_requirements(&config, true)
-            .expect_err("realtime runtime must fail closed without cluster_secret");
+            .expect_err("realtime runtime must fail closed without cluster.secret");
 
         assert!(
-            err.to_string().contains("server.cluster_secret"),
+            err.to_string().contains("cluster.secret"),
             "unexpected error: {err}"
         );
     }
@@ -2211,7 +2189,7 @@ mod tests {
             "distributed mode without a secret must fail closed"
         );
 
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
         assert!(
             !should_register_livestream_relay_service(&config, false),
             "relay service must not be registered before livestream infra is ready"
@@ -2313,7 +2291,7 @@ mod tests {
     fn test_cluster_grpc_service_mark_serving_matches_registration() {
         let mut config = synctv_core::Config::default();
         config.cluster.enabled = true;
-        config.server.cluster_secret = "shared-secret".to_string();
+        config.cluster.secret = "shared-secret".to_string();
 
         assert!(
             should_mark_cluster_service_serving(&config, true),

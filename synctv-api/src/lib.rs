@@ -6,6 +6,7 @@
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 pub mod client_ip;
+pub mod config_adapters;
 pub mod fanout;
 pub mod grpc;
 pub mod http;

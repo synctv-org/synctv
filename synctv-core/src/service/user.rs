@@ -945,7 +945,7 @@ impl std::fmt::Debug for UserService {
 
 impl UserService {
     fn opaque_credential_identifier_for_new_user(username: &str) -> Vec<u8> {
-        format!("synctv:user:{}", username.trim()).into_bytes()
+        format!("synctv:user:{}", Self::canonical_username(username)).into_bytes()
     }
 
     fn opaque_credential_identifier_for_user_id(user_id: &UserId) -> Vec<u8> {
@@ -983,8 +983,18 @@ impl UserService {
         if trimmed.contains('@') {
             trimmed.to_ascii_lowercase()
         } else {
-            trimmed.to_string()
+            Self::canonical_username(trimmed)
         }
+    }
+
+    fn canonical_username(username: &str) -> String {
+        username.trim().to_lowercase()
+    }
+
+    fn normalize_username_for_storage(username: &str) -> Result<String> {
+        let username = Self::canonical_username(username);
+        Self::validate_username(&username)?;
+        Ok(username)
     }
 
     async fn get_by_login_identifier(&self, identifier: &str) -> Result<Option<User>> {
@@ -1805,7 +1815,7 @@ impl UserService {
             .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
             .collect::<String>()
             .trim()
-            .to_string();
+            .to_lowercase();
 
         let base_username = if sanitized_username.is_empty() {
             format!(
@@ -1999,18 +2009,18 @@ impl UserService {
         username: &str,
         email: Option<&str>,
     ) -> Result<bool> {
-        let exists = sqlx::query_scalar!(
+        let exists = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS (
                 SELECT 1
                 FROM user_registration_requests
                 WHERE reviewed_at IS NULL
-                  AND (username = $1 OR ($2::TEXT IS NOT NULL AND email = $2))
-            ) AS "exists!"
+                  AND (LOWER(username) = LOWER($1) OR ($2::TEXT IS NOT NULL AND email = $2))
+            )
             "#,
-            username,
-            email,
         )
+        .bind(username)
+        .bind(email)
         .fetch_one(self.repository.pool())
         .await?;
 
@@ -2424,11 +2434,15 @@ impl UserService {
             )
             .await?;
 
-        if let Err(error) = Self::validate_username(username) {
-            self.record_registration_bruteforce_failure(client_ip, control)
-                .await;
-            return Err(error);
-        }
+        let username = match Self::normalize_username_for_storage(username) {
+            Ok(username) => username,
+            Err(error) => {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
+            }
+        };
+
         if let Some(email_addr) = email {
             if let Err(error) = Self::validate_email(email_addr) {
                 self.record_registration_bruteforce_failure(client_ip, control)
@@ -2464,7 +2478,7 @@ impl UserService {
             }
         }
 
-        if self.repository.get_by_username(username).await?.is_some() {
+        if self.repository.get_by_username(&username).await?.is_some() {
             return Err(Error::AlreadyExists(
                 synctv_common::messages::USERNAME_OR_EMAIL_ALREADY_TAKEN.to_string(),
             ));
@@ -2477,7 +2491,7 @@ impl UserService {
             }
         }
         if self
-            .has_pending_registration_request(username, email)
+            .has_pending_registration_request(&username, email)
             .await?
         {
             return Err(Error::AlreadyExists(
@@ -2588,21 +2602,16 @@ impl UserService {
             )
             .await?;
 
-        // Validate input - record failures for validation errors (potential attacks)
-        if let Err(e) = Self::validate_username(&username) {
-            if let Err(err) = self
-                .brute_force
-                .record_failure_with_control(
-                    synctv_common::reserved::REGISTRATION_BRUTE_FORCE_SCOPE,
-                    client_ip,
-                    control,
-                )
-                .await
-            {
-                tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+        let username = match Self::normalize_username_for_storage(&username) {
+            Ok(username) => username,
+            Err(error) => {
+                self.record_registration_bruteforce_failure(client_ip, control)
+                    .await;
+                return Err(error);
             }
-            return Err(e);
-        }
+        };
+
+        // Validate input - record failures for validation errors (potential attacks)
         if let Some(ref email) = email {
             if let Err(e) = Self::validate_email(email) {
                 if let Err(err) = self
@@ -2798,6 +2807,7 @@ impl UserService {
         control: Option<&ExecutionControl>,
     ) -> Result<OpaqueRegistrationStartChallenge> {
         self.ensure_registration_review_supported(RegistrationMode::Password)?;
+        let username = Self::normalize_username_for_storage(&username)?;
 
         self.validate_registration_identity_with_control(
             &username,
@@ -2848,6 +2858,7 @@ impl UserService {
         let OpaqueRegistrationPurpose::Account { username, email } = session.purpose else {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
+        let username = Self::normalize_username_for_storage(&username)?;
 
         self.validate_registration_identity_with_control(
             &username,
@@ -2938,7 +2949,7 @@ impl UserService {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        Self::validate_username(&username)?;
+        let username = Self::normalize_username_for_storage(&username)?;
         if let Some(ref email) = email {
             Self::validate_email(email)?;
         }
@@ -2980,7 +2991,7 @@ impl UserService {
         status: Option<crate::models::UserStatus>,
         banned_by: Option<&UserId>,
     ) -> Result<User> {
-        Self::validate_username(&username)?;
+        let username = Self::normalize_username_for_storage(&username)?;
         if let Some(ref email) = email {
             Self::validate_email(email)?;
         }
@@ -3669,13 +3680,13 @@ impl UserService {
 
     /// Get user by username.
     pub async fn get_user_by_username(&self, username: &str) -> Result<User> {
-        let username = username.trim();
+        let username = Self::canonical_username(username);
         if username.is_empty() {
             return Err(Error::InvalidInput("Username is empty".to_string()));
         }
 
         self.repository
-            .get_by_username(username)
+            .get_by_username(&username)
             .await?
             .ok_or_else(|| Error::NotFound("User not found".to_string()))
     }
@@ -3699,6 +3710,7 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
         let mut candidate = user.clone();
+        candidate.username = Self::normalize_username_for_storage(&candidate.username)?;
 
         if current.signup_method == SignupMethod::Email {
             if candidate.email.is_none() {
@@ -4111,7 +4123,9 @@ impl UserService {
             ));
         }
 
-        let new_username = new_username.map(|username| username.trim().to_string());
+        let new_username = new_username
+            .map(|username| Self::normalize_username_for_storage(&username))
+            .transpose()?;
 
         if new_password.is_some() && old_password.is_none() {
             return Err(Error::InvalidInput(
@@ -4120,7 +4134,7 @@ impl UserService {
         }
 
         if let Some(ref username) = new_username {
-            Self::validate_username(username)?;
+            debug_assert!(Self::validate_username(username).is_ok());
         }
         if let Some(ref password) = new_password {
             self.validate_password(password)?;

@@ -13,11 +13,114 @@ use tracing::{info, warn};
 
 use crate::{
     cache::{CacheInvalidationRuntime, InvalidationMessage},
-    models::{PermissionBits, RoomId, RoomSettings, UserId},
+    models::{
+        PermissionBits, RoomId, RoomMember, RoomMemberWithUser, RoomRole, RoomSettings, UserId,
+    },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::SettingsRegistry,
     Error, Result,
 };
+
+/// Runtime permission defaults captured at the composition boundary of a check.
+///
+/// Keeping this as plain data lets transaction helpers, response builders, and
+/// `PermissionService` all feed the same pure calculator without depending on
+/// cache state or repository access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimePermissionDefaults {
+    pub admin: PermissionBits,
+    pub member: PermissionBits,
+    pub guest: PermissionBits,
+}
+
+impl RuntimePermissionDefaults {
+    #[must_use]
+    pub const fn compiled() -> Self {
+        Self {
+            admin: PermissionBits(PermissionBits::DEFAULT_ADMIN),
+            member: PermissionBits(PermissionBits::DEFAULT_MEMBER),
+            guest: PermissionBits(PermissionBits::DEFAULT_GUEST),
+        }
+    }
+
+    #[must_use]
+    pub const fn for_role(self, role: &RoomRole) -> PermissionBits {
+        match role {
+            RoomRole::Creator => PermissionBits(PermissionBits::ALL),
+            RoomRole::Admin => self.admin,
+            RoomRole::Member => self.member,
+            RoomRole::Guest => self.guest,
+        }
+    }
+}
+
+/// Pure effective permission calculator.
+///
+/// Inputs are deliberately explicit: runtime defaults, room settings, and the
+/// member row. This keeps every permission snapshot path on the same semantics.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectivePermissionCalculator {
+    defaults: RuntimePermissionDefaults,
+}
+
+impl EffectivePermissionCalculator {
+    #[must_use]
+    pub const fn new(defaults: RuntimePermissionDefaults) -> Self {
+        Self { defaults }
+    }
+
+    #[must_use]
+    pub const fn compiled_defaults() -> Self {
+        Self::new(RuntimePermissionDefaults::compiled())
+    }
+
+    #[must_use]
+    pub const fn role_default(
+        &self,
+        role: &RoomRole,
+        room_settings: &RoomSettings,
+    ) -> PermissionBits {
+        match role {
+            RoomRole::Creator => PermissionBits(PermissionBits::ALL),
+            RoomRole::Admin => room_settings.admin_permissions(self.defaults.admin),
+            RoomRole::Member => room_settings.member_permissions(self.defaults.member),
+            RoomRole::Guest => room_settings.guest_permissions(self.defaults.guest),
+        }
+    }
+
+    #[must_use]
+    pub const fn effective_for_member(
+        &self,
+        member: &RoomMember,
+        room_settings: &RoomSettings,
+    ) -> PermissionBits {
+        member.effective_permissions(self.role_default(&member.role, room_settings))
+    }
+
+    #[must_use]
+    pub fn effective_for_member_with_user(
+        &self,
+        member: &RoomMemberWithUser,
+        room_settings: &RoomSettings,
+    ) -> PermissionBits {
+        member.effective_permissions(self.role_default(&member.role, room_settings))
+    }
+
+    #[must_use]
+    pub const fn has_permission(
+        &self,
+        member: &RoomMember,
+        room_settings: &RoomSettings,
+        permission: u64,
+    ) -> bool {
+        if !member.has_permission(permission, PermissionBits(PermissionBits::ALL)) {
+            return false;
+        }
+
+        self.effective_for_member(member, room_settings)
+            .has_all(permission)
+    }
+}
 
 /// Permission management service
 ///
@@ -608,6 +711,40 @@ impl PermissionService {
         }
     }
 
+    #[must_use]
+    pub fn runtime_permission_defaults(&self) -> RuntimePermissionDefaults {
+        RuntimePermissionDefaults {
+            admin: self.get_global_default_permissions(&RoomRole::Admin),
+            member: self.get_global_default_permissions(&RoomRole::Member),
+            guest: self.get_global_default_permissions(&RoomRole::Guest),
+        }
+    }
+
+    #[must_use]
+    pub fn effective_permission_calculator(&self) -> EffectivePermissionCalculator {
+        EffectivePermissionCalculator::new(self.runtime_permission_defaults())
+    }
+
+    #[must_use]
+    pub fn effective_member_permissions(
+        &self,
+        member: &RoomMember,
+        room_settings: &RoomSettings,
+    ) -> PermissionBits {
+        self.effective_permission_calculator()
+            .effective_for_member(member, room_settings)
+    }
+
+    #[must_use]
+    pub fn effective_member_with_user_permissions(
+        &self,
+        member: &RoomMemberWithUser,
+        room_settings: &RoomSettings,
+    ) -> PermissionBits {
+        self.effective_permission_calculator()
+            .effective_for_member_with_user(member, room_settings)
+    }
+
     /// Calculate role default permissions with room-level overrides applied
     ///
     /// This combines:
@@ -619,14 +756,22 @@ impl PermissionService {
         role: &crate::models::RoomRole,
         room_settings: &RoomSettings,
     ) -> PermissionBits {
-        let global_default = self.get_global_default_permissions(role);
+        self.effective_permission_calculator()
+            .role_default(role, room_settings)
+    }
 
-        match role {
-            crate::models::RoomRole::Creator => PermissionBits(crate::models::PermissionBits::ALL),
-            crate::models::RoomRole::Admin => room_settings.admin_permissions(global_default),
-            crate::models::RoomRole::Member => room_settings.member_permissions(global_default),
-            crate::models::RoomRole::Guest => room_settings.guest_permissions(global_default),
-        }
+    #[must_use]
+    pub fn calculate_role_default_permissions_from_base(
+        role: &crate::models::RoomRole,
+        room_settings: &RoomSettings,
+        global_default: PermissionBits,
+    ) -> PermissionBits {
+        let defaults = RuntimePermissionDefaults {
+            admin: global_default,
+            member: global_default,
+            guest: global_default,
+        };
+        EffectivePermissionCalculator::new(defaults).role_default(role, room_settings)
     }
 
     /// Generate cache key for room + user with namespace prefix
@@ -744,11 +889,7 @@ impl PermissionService {
             RoomSettings::default()
         };
 
-        // Calculate role default permissions (global + room-level overrides)
-        let role_default = self.calculate_role_default_permissions(&member.role, &room_settings);
-
-        // Apply member-level overrides
-        Ok(member.effective_permissions(role_default))
+        Ok(self.effective_member_permissions(&member, &room_settings))
     }
 
     /// Get user's effective permissions in a room (with caching)
@@ -789,11 +930,7 @@ impl PermissionService {
             RoomSettings::default()
         };
 
-        // Calculate role default permissions (global + room-level overrides)
-        let role_default = self.calculate_role_default_permissions(&member.role, &room_settings);
-
-        // Apply member-level overrides
-        let permissions = member.effective_permissions(role_default);
+        let permissions = self.effective_member_permissions(&member, &room_settings);
 
         // Update cache
         self.cache.insert(cache_key, permissions).await;
@@ -838,11 +975,7 @@ impl PermissionService {
             RoomSettings::default()
         };
 
-        // Calculate role default permissions (global + room-level overrides)
-        let role_default = self.calculate_role_default_permissions(&member.role, &room_settings);
-
-        // Apply member-level overrides
-        let permissions = member.effective_permissions(role_default);
+        let permissions = self.effective_member_permissions(&member, &room_settings);
 
         // Update degraded cache with short TTL
         self.degraded_cache.insert(cache_key, permissions).await;

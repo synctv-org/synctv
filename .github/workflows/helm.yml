@@ -122,11 +122,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate chart
-        run: |
-          helm lint ./helm/synctv
-          helm template synctv ./helm/synctv --namespace synctv >/tmp/synctv-default.yaml
-          helm template synctv ./helm/synctv --namespace synctv --set ingress.grpc.enabled=true >/tmp/synctv-grpc.yaml
-          helm template synctv ./helm/synctv --namespace synctv --set postgresql.mode=kubeblocks --set redis.mode=kubeblocks >/tmp/synctv-kubeblocks.yaml
+        run: ./scripts/validate-helm.sh
 
       - name: Package chart
         run: |

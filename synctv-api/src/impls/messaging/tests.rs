@@ -1246,27 +1246,42 @@ async fn create_start_handler_fixture(
     let room_service = test_room_service(pool.clone());
     let user_service = room_service.user_service().clone();
 
-    let user = user_service
+    let owner = user_service
         .register(
-            bounded_fixture_username(node_id),
-            Some(format!("fixture-{node_id}@test.invalid")),
+            bounded_fixture_username(&format!("{node_id}_owner")),
+            Some(format!("fixture-{node_id}-owner@test.invalid")),
             "Password123!".to_string(),
             None,
         )
         .await
-        .expect("fixture user should register")
+        .expect("fixture owner should register")
         .0;
 
     let (room, _) = room_service
         .create_room(
             format!("Fixture Room {node_id}"),
             "test".to_string(),
-            user.id,
+            owner.id,
             None,
             None,
         )
         .await
         .expect("fixture room should be created");
+
+    let user = user_service
+        .register(
+            bounded_fixture_username(&format!("{node_id}_member")),
+            Some(format!("fixture-{node_id}-member@test.invalid")),
+            "Password123!".to_string(),
+            None,
+        )
+        .await
+        .expect("fixture member should register")
+        .0;
+    room_service
+        .join_room(room.id, user.id, None)
+        .await
+        .expect("fixture member should join room");
 
     let handler = StreamMessageHandler::new(
         room.id,
@@ -1412,10 +1427,43 @@ async fn prepare_handler_for_run_after_join(
         .join_room(&handler.connection_id, handler.room_id)
         .await
         .expect("join_room should succeed");
+    let initial_join_state = if handler.principal.is_guest() {
+        InitialRealtimeJoinState {
+            member: None,
+            room_settings: None,
+        }
+    } else {
+        InitialRealtimeJoinState {
+            member: Some(RoomMember::new(
+                handler.room_id,
+                handler.user_id,
+                synctv_core::models::RoomRole::Member,
+            )),
+            room_settings: Some(RoomSettings::default()),
+        }
+    };
+    handler
+        .cache_initial_realtime_join_state(initial_join_state)
+        .await
+        .expect("initial join state should cache before run_after_join");
     handler
         .cache_room_event_subscription()
         .await
         .expect("room subscription should cache before run_after_join");
+}
+
+async fn grant_handler_member_permission(
+    fixture: &StartTestFixture,
+    permission: u64,
+) -> synctv_core::models::RoomMember {
+    RoomMemberRepository::new(fixture.pool.clone())
+        .grant_permission_atomic(
+            &fixture.handler.room_id,
+            &fixture.handler.user_id,
+            permission,
+        )
+        .await
+        .expect("fixture member permission grant should succeed")
 }
 
 async fn wait_for_start_cleanup(
@@ -1578,6 +1626,66 @@ async fn test_start_does_not_broadcast_presence_events_when_initial_send_fails()
     );
 
     event_service.unsubscribe(&conn_id);
+    wait_for_start_cleanup(
+        handler,
+        connection_service,
+        event_service,
+        &cancel_token,
+        true,
+    )
+    .await;
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_start_user_joined_payload_uses_room_permission_overrides() {
+    let sender = RecordingMessageSender::new();
+    let fixture =
+        create_start_handler_fixture("start_joined_room_permission_overrides", sender.clone())
+            .await;
+    let StartTestFixture {
+        handler,
+        connection_service,
+        event_service,
+        ..
+    } = &fixture;
+
+    let mut settings = handler
+        .room_service
+        .get_room_settings(&handler.room_id)
+        .await
+        .expect("room settings should load");
+    settings.member_removed_permissions =
+        synctv_core::models::room_settings::MemberRemovedPermissions(PermissionBits::ADD_MEDIA);
+    handler
+        .room_service
+        .set_room_settings(&handler.room_id, &settings)
+        .await
+        .expect("room settings should update");
+
+    let (_tx, cancel_token) = handler.start().await.expect("start should return");
+
+    let messages = sender.sent_messages();
+    let joined = messages
+        .iter()
+        .find_map(|message| match &message.message {
+            Some(Message::UserJoined(joined)) => Some(joined),
+            _ => None,
+        })
+        .expect("initial UserJoined payload should be sent");
+    let member = joined.member.as_ref().expect("joined member should be set");
+
+    assert!(
+        PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::ADD_MEDIA),
+        "static member defaults include ADD_MEDIA, so the payload must prove it used room overrides"
+    );
+    assert!(
+        !PermissionBits(member.permissions).has(PermissionBits::ADD_MEDIA),
+        "initial UserJoined payload must apply room-level permission removals"
+    );
+
+    cancel_token.cancel();
     wait_for_start_cleanup(
         handler,
         connection_service,
@@ -2277,6 +2385,7 @@ async fn test_observed_playback_snapshot_refreshes_when_current_media_is_updated
         event_service,
         ..
     } = &fixture;
+    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
 
     let media = synctv_core::repository::MediaRepository::new(fixture.pool.clone())
         .create(&synctv_core::models::Media {
@@ -2587,6 +2696,7 @@ async fn test_observed_playback_snapshot_refreshes_when_target_changes_at_same_v
         event_service,
         ..
     } = &fixture;
+    grant_handler_member_permission(&fixture, PermissionBits::PLAY_CONTROL).await;
 
     let snapshot_service = SequencedPlaybackSnapshotService::new([
         Ok(crate::proto::client::PlaybackSnapshot {

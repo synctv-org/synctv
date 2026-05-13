@@ -36,7 +36,7 @@ use synctv_realtime::sync::{
 };
 
 use synctv_api::realtime_fanout::{
-    default_realtime_fanout_service, default_realtime_fanout_service_with_realtime,
+    default_realtime_fanout_service, required_realtime_fanout_service_with_realtime,
     RealtimeFanoutService,
 };
 use synctv_api::runtime::{
@@ -76,6 +76,58 @@ struct Infrastructure {
 struct CoreState {
     services: synctv_core::bootstrap::services::Services,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
+}
+
+struct RuntimeModePlan {
+    cluster_runtime: bool,
+    cache_shared_state_profile: synctv_core::SharedStateProfile,
+    realtime_shared_state_profile: synctv_core::SharedStateProfile,
+    local_realtime_profile: synctv_core::SharedStateProfile,
+    realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+}
+
+impl RuntimeModePlan {
+    fn from_infrastructure(infra: &Infrastructure) -> Self {
+        let cluster_runtime = cluster_runtime_enabled(&infra.config);
+        let cache_shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
+            infra.shared_runtime.clone(),
+            &infra.config.redis.key_prefix,
+            cluster_runtime,
+        );
+        let realtime_shared_state_profile = build_realtime_state_profile(
+            infra.shared_runtime.clone(),
+            &infra.config.redis.key_prefix,
+            cluster_runtime,
+        );
+        let local_realtime_profile =
+            build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
+        let realtime_outbox =
+            cluster_runtime.then(|| Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
+
+        Self {
+            cluster_runtime,
+            cache_shared_state_profile,
+            realtime_shared_state_profile,
+            local_realtime_profile,
+            realtime_outbox,
+        }
+    }
+
+    const fn cluster_runtime(&self) -> bool {
+        self.cluster_runtime
+    }
+
+    fn realtime_outbox(&self) -> Option<Arc<RealtimeOutboxRepository>> {
+        self.realtime_outbox.clone()
+    }
+
+    fn require_realtime_outbox(&self) -> Result<Arc<RealtimeOutboxRepository>> {
+        self.realtime_outbox.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "startup invariant violated: cluster realtime fanout requires a realtime outbox"
+            )
+        })
+    }
 }
 
 /// Leader election and singleton background tasks.
@@ -262,8 +314,16 @@ const fn cluster_runtime_enabled(config: &Config) -> bool {
     config.cluster_runtime_enabled()
 }
 
+#[cfg(test)]
 const fn should_start_cache_invalidation_listener(config: &Config, has_redis: bool) -> bool {
     cluster_runtime_enabled(config) && has_redis
+}
+
+const fn should_start_cache_invalidation_listener_for_runtime(
+    plan: &RuntimeModePlan,
+    has_redis: bool,
+) -> bool {
+    plan.cluster_runtime() && has_redis
 }
 
 const fn should_run_startup_partition_initialization(_config: &Config) -> bool {
@@ -562,6 +622,7 @@ impl Application {
                 return Err(e);
             }
         };
+        let runtime_plan = RuntimeModePlan::from_infrastructure(&infra);
 
         // Phase 2: Schema (migrations, root user, partitions)
         if let Err(e) = Self::init_schema(&infra).await {
@@ -570,13 +631,14 @@ impl Application {
         }
 
         // Phase 3: Core services
-        let core = match Self::init_core_services(&infra, &mut shutdown, &options).await {
-            Ok(core) => core,
-            Err(e) => {
-                shutdown.shutdown().await;
-                return Err(e);
-            }
-        };
+        let core =
+            match Self::init_core_services(&infra, &runtime_plan, &mut shutdown, &options).await {
+                Ok(core) => core,
+                Err(e) => {
+                    shutdown.shutdown().await;
+                    return Err(e);
+                }
+            };
         if options.allow_password_registration {
             core.services
                 .settings_registry
@@ -586,25 +648,27 @@ impl Application {
         }
 
         // Phase 4: Leader election and singleton tasks
-        let leader = match Self::init_leader_election(&infra, &core, &mut shutdown).await {
-            Ok(leader) => leader,
-            Err(e) => {
-                shutdown.shutdown().await;
-                return Err(e);
-            }
-        };
+        let leader =
+            match Self::init_leader_election(&infra, &runtime_plan, &core, &mut shutdown).await {
+                Ok(leader) => leader,
+                Err(e) => {
+                    shutdown.shutdown().await;
+                    return Err(e);
+                }
+            };
 
         // Phase 5: Singleton background tasks
-        Self::start_singleton_tasks(&infra, &core, &leader, &mut shutdown);
+        Self::start_singleton_tasks(&infra, &runtime_plan, &core, &leader, &mut shutdown);
 
         // Phase 6: Cluster infrastructure
-        let cluster = match Self::init_cluster(&infra, &core, &leader, &mut shutdown).await {
-            Ok(cluster) => cluster,
-            Err(e) => {
-                shutdown.shutdown().await;
-                return Err(e);
-            }
-        };
+        let cluster =
+            match Self::init_cluster(&infra, &runtime_plan, &core, &leader, &mut shutdown).await {
+                Ok(cluster) => cluster,
+                Err(e) => {
+                    shutdown.shutdown().await;
+                    return Err(e);
+                }
+            };
 
         // Phase 7: Server components (livestream, WebRTC, providers)
         let servers = match Self::init_servers(&infra, &core, &leader, &mut shutdown).await {
@@ -737,6 +801,7 @@ impl Application {
 
     async fn init_core_services(
         infra: &Infrastructure,
+        runtime_plan: &RuntimeModePlan,
         shutdown: &mut ShutdownCoordinator,
         options: &ApplicationBuildOptions,
     ) -> Result<CoreState> {
@@ -744,14 +809,9 @@ impl Application {
         // Uses the cluster node_id so invalidation messages are correctly attributed.
         // When Redis is not configured, cache invalidation operates in no-op mode.
         let key_builder = KeyBuilder::from_config(&infra.config);
-        let cache_shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
-            infra.shared_runtime.clone(),
-            &infra.config.redis.key_prefix,
-            cluster_runtime_enabled(&infra.config),
-        );
         let cache_invalidation =
             synctv_core::cache::cache_invalidation_runtime_from_shared_state_profile(
-                &cache_shared_state_profile,
+                &runtime_plan.cache_shared_state_profile,
                 infra.node_id.clone(),
                 key_builder.cache_invalidation_stream(),
             )?;
@@ -761,12 +821,15 @@ impl Application {
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // subscriber must be running before any service publishes an
         // invalidation event to avoid dropped messages during initialization.
-        if should_start_cache_invalidation_listener(&infra.config, infra.shared_runtime.is_some()) {
+        if should_start_cache_invalidation_listener_for_runtime(
+            runtime_plan,
+            infra.shared_runtime.is_some(),
+        ) {
             if let Err(e) = cache_invalidation.start().await {
                 // When distributed mode is explicitly enabled, cache invalidation failure
                 // is a fatal error - the cluster cannot maintain cache consistency without it.
                 // In standalone mode, we can continue with local-only caching.
-                if cluster_runtime_enabled(&infra.config) {
+                if runtime_plan.cluster_runtime() {
                     return Err(anyhow::anyhow!(
                         "Failed to start cache invalidation listener (distributed mode): {e}. \
                          Cache consistency is required when cluster.enabled=true."
@@ -784,9 +847,6 @@ impl Application {
                 (!infra.config.security.credential_encryption_key.is_empty())
                     .then(|| infra.config.security.credential_encryption_key.clone())
             });
-        let realtime_outbox = cluster_runtime_enabled(&infra.config)
-            .then(|| Arc::new(RealtimeOutboxRepository::new(infra.pool.clone())));
-
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
             &infra.config,
@@ -798,7 +858,7 @@ impl Application {
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
                 password_hasher_override: options.password_hasher_override.clone(),
-                realtime_outbox: realtime_outbox.clone(),
+                realtime_outbox: runtime_plan.realtime_outbox(),
             },
         )
         .await?;
@@ -915,10 +975,11 @@ impl Application {
 
     async fn init_leader_election(
         infra: &Infrastructure,
+        runtime_plan: &RuntimeModePlan,
         _core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
-        if !cluster_runtime_enabled(&infra.config) {
+        if !runtime_plan.cluster_runtime() {
             info!("Cluster mode disabled — using unified standalone leader runtime");
             synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(0);
             synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
@@ -940,36 +1001,36 @@ impl Application {
 
         let leader_cancel = shutdown.register_token("leader_election");
 
-        let shared_state_profile = synctv_core::SharedStateProfile::from_runtime(
-            infra.shared_runtime.clone(),
-            &infra.config.redis.key_prefix,
-            true,
-        );
-
         #[cfg(feature = "k8s")]
-        let leader_runtime =
-            build_managed_leader_runtime(&infra.config, &infra.node_id, &shared_state_profile)
-                .await
-                .map_err(|e| {
-                    error!(
-                        error = %e,
-                        mode = %infra.config.cluster.leader_election_mode,
-                        "CRITICAL: leader election initialization failed"
-                    );
-                    e
-                })?;
+        let leader_runtime = build_managed_leader_runtime(
+            &infra.config,
+            &infra.node_id,
+            &runtime_plan.cache_shared_state_profile,
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                error = %e,
+                mode = %infra.config.cluster.leader_election_mode,
+                "CRITICAL: leader election initialization failed"
+            );
+            e
+        })?;
 
         #[cfg(not(feature = "k8s"))]
-        let leader_runtime =
-            build_managed_leader_runtime(&infra.config, &infra.node_id, &shared_state_profile)
-                .map_err(|e| {
-                    error!(
-                        error = %e,
-                        mode = %infra.config.cluster.leader_election_mode,
-                        "CRITICAL: leader election initialization failed"
-                    );
-                    e
-                })?;
+        let leader_runtime = build_managed_leader_runtime(
+            &infra.config,
+            &infra.node_id,
+            &runtime_plan.cache_shared_state_profile,
+        )
+        .map_err(|e| {
+            error!(
+                error = %e,
+                mode = %infra.config.cluster.leader_election_mode,
+                "CRITICAL: leader election initialization failed"
+            );
+            e
+        })?;
 
         match leader_runtime.mode_label() {
             "redis" => {
@@ -1003,6 +1064,7 @@ impl Application {
 
     fn start_singleton_tasks(
         infra: &Infrastructure,
+        runtime_plan: &RuntimeModePlan,
         core: &CoreState,
         leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
@@ -1066,7 +1128,7 @@ impl Application {
         );
         info!("Database maintenance service started (leader-gated cleanup tasks every 1h)");
 
-        if cluster_runtime_enabled(&infra.config) {
+        if runtime_plan.cluster_runtime() {
             let pool = infra.pool.clone();
             let settings_registry = core.services.settings_registry.clone();
             let leader_runtime = leader.leader_runtime.clone();
@@ -1125,6 +1187,7 @@ impl Application {
 
     async fn init_cluster(
         infra: &Infrastructure,
+        runtime_plan: &RuntimeModePlan,
         core: &CoreState,
         leader: &LeaderState,
         shutdown: &mut ShutdownCoordinator,
@@ -1138,14 +1201,10 @@ impl Application {
             max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
-        let cluster_runtime = cluster_runtime_enabled(&infra.config);
-        let realtime_profile = build_realtime_state_profile(
-            infra.shared_runtime.clone(),
-            &infra.config.redis.key_prefix,
-            cluster_runtime,
-        );
-        let realtime_connection_service =
-            build_connection_manager(connection_limits, &realtime_profile)?;
+        let realtime_connection_service = build_connection_manager(
+            connection_limits,
+            &runtime_plan.realtime_shared_state_profile,
+        )?;
         info!(
             max_per_user = infra.config.connection_limits.max_per_user,
             max_per_room = infra.config.connection_limits.max_per_room,
@@ -1153,14 +1212,12 @@ impl Application {
             "Connection manager initialized with configurable limits"
         );
 
-        if !cluster_runtime {
-            let local_realtime_profile =
-                build_realtime_state_profile(None, &infra.config.redis.key_prefix, false);
+        if !runtime_plan.cluster_runtime() {
             let realtime_manager = build_local_realtime_manager(
                 &infra.config,
                 &infra.node_id,
                 realtime_connection_service.clone(),
-                build_room_message_runtime(&local_realtime_profile)?,
+                build_room_message_runtime(&runtime_plan.local_realtime_profile)?,
                 core.cache_invalidation.clone(),
                 Some(core.services.room_service.permission_service().clone()),
             )
@@ -1202,7 +1259,9 @@ impl Application {
 
         let realtime_config = RealtimeConfig {
             distributed_transport_factory: Some(cluster_backend.distributed_transport_factory()),
-            message_runtime: build_room_message_runtime(&realtime_profile)?,
+            message_runtime: build_room_message_runtime(
+                &runtime_plan.realtime_shared_state_profile,
+            )?,
             distributed_enabled: infra.config.cluster.enabled,
             node_id: infra.node_id.clone(),
             dedup_window: Duration::from_secs(
@@ -1273,7 +1332,7 @@ impl Application {
 
         let realtime_event_service =
             Arc::new(ClusterRealtimeEventService::new(realtime_manager.clone()));
-        let outbox = Arc::new(RealtimeOutboxRepository::new(infra.pool.clone()));
+        let outbox = runtime_plan.require_realtime_outbox()?;
         let outbox_cancel = shutdown.register_token("realtime_outbox_dispatcher");
         shutdown.register_task(
             "realtime_outbox_dispatcher",
@@ -1286,10 +1345,9 @@ impl Application {
         );
 
         Ok(ClusterState {
-            realtime_fanout_service: default_realtime_fanout_service_with_realtime(
-                Some(outbox),
-                true,
-                Some(realtime_event_service.clone()),
+            realtime_fanout_service: required_realtime_fanout_service_with_realtime(
+                outbox,
+                realtime_event_service.clone(),
             ),
             realtime_connection_service: realtime_connection_service.clone(),
             realtime_event_service: Some(realtime_event_service),
@@ -1672,6 +1730,74 @@ mod tests {
         config.cluster.enabled = true;
         assert!(!should_start_cache_invalidation_listener(&config, false));
         assert!(should_start_cache_invalidation_listener(&config, true));
+    }
+
+    #[tokio::test]
+    async fn test_runtime_mode_plan_keeps_standalone_local_and_without_outbox() {
+        let mut config = minimal_valid_startup_config();
+        config.cluster.enabled = false;
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let infra = Infrastructure {
+            config,
+            pool,
+            shared_runtime: None,
+            cluster_coordination_provider: None,
+            node_id: "runtime-plan-standalone".to_string(),
+        };
+
+        let plan = RuntimeModePlan::from_infrastructure(&infra);
+
+        assert!(!plan.cluster_runtime());
+        assert!(plan.realtime_outbox().is_none());
+        assert_eq!(
+            plan.cache_shared_state_profile.state_mode(),
+            synctv_core::SharedStateMode::LocalOnly
+        );
+        assert_eq!(
+            plan.realtime_shared_state_profile.state_mode(),
+            synctv_core::SharedStateMode::LocalOnly
+        );
+        assert_eq!(
+            plan.local_realtime_profile.state_mode(),
+            synctv_core::SharedStateMode::LocalOnly
+        );
+    }
+
+    #[tokio::test]
+    async fn test_runtime_mode_plan_creates_cluster_outbox_once() {
+        let mut config = minimal_valid_startup_config();
+        config.cluster.enabled = true;
+        let pool = PgPool::connect_lazy("postgresql://test").expect("lazy pool should build");
+        let infra = Infrastructure {
+            config,
+            pool,
+            shared_runtime: None,
+            cluster_coordination_provider: None,
+            node_id: "runtime-plan-cluster".to_string(),
+        };
+
+        let plan = RuntimeModePlan::from_infrastructure(&infra);
+        let first = plan
+            .realtime_outbox()
+            .expect("cluster plan should create realtime outbox");
+        let second = plan
+            .require_realtime_outbox()
+            .expect("cluster plan should expose required outbox");
+
+        assert!(plan.cluster_runtime());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            plan.cache_shared_state_profile.state_mode(),
+            synctv_core::SharedStateMode::SharedRequired
+        );
+        assert_eq!(
+            plan.realtime_shared_state_profile.state_mode(),
+            synctv_core::SharedStateMode::SharedRequired
+        );
+        assert_eq!(
+            plan.local_realtime_profile.state_mode(),
+            synctv_core::SharedStateMode::LocalOnly
+        );
     }
 
     #[test]

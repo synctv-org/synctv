@@ -546,20 +546,17 @@ impl RealtimeManager {
             return 0;
         }
 
-        if let Some(room_id) = event.room_id().copied() {
-            return self.message_hub.broadcast(&room_id, &event);
+        let mut local_sent = 0;
+        if event.delivers_to_room_channel() {
+            if let Some(room_id) = event.room_id().copied() {
+                local_sent = self.message_hub.broadcast(&room_id, &event);
+            }
         }
-
-        if matches!(
-            &event,
-            RealtimeEvent::UserNotification { .. }
-                | RealtimeEvent::ProviderCredentialChanged { .. }
-                | RealtimeEvent::CacheInvalidate { .. }
-        ) {
+        if event.delivers_to_admin_channel() {
             let _ = self.admin_event_tx.send(event);
         }
 
-        0
+        local_sent
     }
 
     /// Publish an event to Redis without re-broadcasting it locally.
@@ -957,19 +954,15 @@ impl RealtimeManager {
         let mut local_sent = 0;
 
         // Get room_id for broadcasting
-        if let Some(room_id) = event.room_id() {
-            // Broadcast to local subscribers
-            local_sent = self.message_hub.broadcast(room_id, &event);
+        if event.delivers_to_room_channel() {
+            if let Some(room_id) = event.room_id() {
+                // Broadcast to local subscribers
+                local_sent = self.message_hub.broadcast(room_id, &event);
+            }
         }
 
-        // UserNotification events are user-targeted (no room_id), so they are
-        // delivered via the admin event channel to reach connected WebSocket handlers.
-        if matches!(
-            &event,
-            RealtimeEvent::UserNotification { .. }
-                | RealtimeEvent::ProviderCredentialChanged { .. }
-                | RealtimeEvent::CacheInvalidate { .. }
-        ) {
+        // Admin-routed events reach app-level handlers and user-targeted WebSocket handlers.
+        if event.delivers_to_admin_channel() {
             let _ = self.admin_event_tx.send(event.clone());
         }
 

@@ -66,7 +66,37 @@ Return the synctv image name
 {{- $registry := .Values.image.registry | default .Values.global.imageRegistry | default "docker.io" -}}
 {{- $repository := .Values.image.repository -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- include "synctv.imageReference" (list $registry $repository $tag) -}}
+{{- end }}
+
+{{/*
+Return an image reference, preserving repositories that already include a registry host.
+*/}}
+{{- define "synctv.imageReference" -}}
+{{- $registry := index . 0 -}}
+{{- $repository := index . 1 -}}
+{{- $tag := index . 2 -}}
+{{- $firstComponent := first (splitList "/" $repository) -}}
+{{- $hasRegistry := or (contains "." $firstComponent) (contains ":" $firstComponent) (eq $firstComponent "localhost") -}}
+{{- if $hasRegistry -}}
+{{- printf "%s:%s" $repository $tag -}}
+{{- else -}}
 {{- printf "%s/%s:%s" $registry $repository $tag -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Return a chart-managed backing service image name.
+*/}}
+{{- define "synctv.managedImage" -}}
+{{- $root := index . 0 -}}
+{{- $image := index . 1 -}}
+{{- $defaultRepository := index . 2 -}}
+{{- $defaultTag := index . 3 -}}
+{{- $registry := $root.Values.global.imageRegistry | default "docker.io" -}}
+{{- $repository := $image.repository | default $defaultRepository -}}
+{{- $tag := $image.tag | default $defaultTag -}}
+{{- include "synctv.imageReference" (list $registry $repository $tag) -}}
 {{- end }}
 
 {{/*

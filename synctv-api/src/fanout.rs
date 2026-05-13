@@ -4,17 +4,39 @@ use synctv_core::models::{RoomId, RoomSettings, UserId};
 use synctv_core::service::RealtimeOutboxSettingsEventFactory;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::realtime_fanout::{publish_best_effort, RealtimeFanoutService};
-use crate::runtime::RealtimeEventService;
+use crate::realtime_fanout::{
+    publish_best_effort, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+};
+use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 
 #[derive(Clone)]
 pub struct PreparedRoomSettingsFanout {
-    pub event: RealtimeEvent,
+    plan: PreparedRealtimeFanoutPlan,
     distributed: bool,
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
 }
 
 impl PreparedRoomSettingsFanout {
+    #[must_use]
+    pub fn event(&self) -> &RealtimeEvent {
+        self.plan.event()
+    }
+
+    #[must_use]
+    fn from_event(event: RealtimeEvent, realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
+        let plan = PreparedRealtimeFanoutPlan::new(
+            realtime_fanout.clone(),
+            event,
+            RealtimeDeliveryRequirement::DistributedIfAvailable,
+        );
+        let distributed = plan.outbox_event().is_some();
+        Self {
+            plan,
+            distributed,
+            realtime_fanout,
+        }
+    }
+
     #[must_use]
     pub fn settings_outbox_factory(&self) -> Option<RealtimeOutboxSettingsEventFactory> {
         if !self.distributed {
@@ -25,7 +47,7 @@ impl PreparedRoomSettingsFanout {
         Some(Arc::new(move |settings: &RoomSettings, version| {
             let settings_json = serde_json::to_vec(settings).ok()?;
             let event = room_settings_event_with_settings_and_version(
-                &prepared.event,
+                prepared.event(),
                 settings_json,
                 version,
             );
@@ -35,32 +57,26 @@ impl PreparedRoomSettingsFanout {
 
     #[must_use]
     pub fn with_version(&self, version: i64) -> Self {
-        Self {
-            event: room_settings_event_with_version(&self.event, version),
-            distributed: self.distributed,
-            realtime_fanout: self.realtime_fanout.clone(),
-        }
+        Self::from_event(
+            room_settings_event_with_version(self.event(), version),
+            self.realtime_fanout.clone(),
+        )
     }
 
     #[must_use]
     pub fn with_settings_and_version(&self, settings: &RoomSettings, version: i64) -> Option<Self> {
         let settings_json = serde_json::to_vec(settings).ok()?;
-        Some(Self {
-            event: room_settings_event_with_settings_and_version(
-                &self.event,
-                settings_json,
-                version,
-            ),
-            distributed: self.distributed,
-            realtime_fanout: self.realtime_fanout.clone(),
-        })
+        Some(Self::from_event(
+            room_settings_event_with_settings_and_version(self.event(), settings_json, version),
+            self.realtime_fanout.clone(),
+        ))
     }
 }
 
 impl std::fmt::Debug for PreparedRoomSettingsFanout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedRoomSettingsFanout")
-            .field("event", &self.event)
+            .field("event", self.event())
             .field("distributed", &self.distributed)
             .finish()
     }
@@ -124,23 +140,17 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
             version,
             timestamp: chrono::Utc::now(),
         };
-        let distributed = self.realtime_fanout.outbox_event(&event).is_some();
-        PreparedRoomSettingsFanout {
-            event,
-            distributed,
-            realtime_fanout: self.realtime_fanout.clone(),
-        }
+        PreparedRoomSettingsFanout::from_event(event, self.realtime_fanout.clone())
     }
 
     fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout) {
         if prepared.distributed {
-            self.realtime_fanout
-                .publish_after_outbox_commit(prepared.event);
+            prepared.plan.publish_after_outbox_commit();
         } else {
             publish_best_effort(
                 self.realtime_fanout.clone(),
                 PublishRequest {
-                    event: prepared.event,
+                    event: prepared.plan.into_event(),
                 },
             );
         }
@@ -325,20 +335,20 @@ mod tests {
             default_room_settings_fanout_service(default_realtime_fanout_service(None, true), None);
         let prepared =
             service.prepare_settings_changed(&room_id(), &user_id(), "tester", Vec::new(), 0);
-        let original_event_id = prepared.event.event_id().to_string();
+        let original_event_id = prepared.event().event_id().to_string();
 
         let prepared = prepared
             .with_settings_and_version(&synctv_core::models::RoomSettings::default(), 42)
             .expect("default room settings should serialize");
 
         assert_eq!(
-            prepared.event.event_id(),
+            prepared.event().event_id(),
             original_event_id,
             "outbox and local room settings fanout must share one event id"
         );
-        match prepared.event {
+        match prepared.event() {
             RealtimeEvent::RoomSettingsChanged { version, .. } => {
-                assert_eq!(version, 42);
+                assert_eq!(*version, 42);
             }
             other => panic!("expected RoomSettingsChanged, got {other:?}"),
         }

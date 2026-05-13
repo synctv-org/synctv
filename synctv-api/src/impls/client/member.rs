@@ -7,7 +7,8 @@ use synctv_core::models::{PermissionBits, ReviewRequestId, ReviewStatus, UserId}
 use synctv_core::service::{RoomJoinReviewListQuery, RoomJoinReviewRecord};
 
 use super::convert::{
-    members_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role, room_member_to_proto,
+    members_to_proto, proto_role_filter_to_room_role, proto_role_to_room_role,
+    room_member_to_proto_with_permissions,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
@@ -277,7 +278,7 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings(&rid)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let proto_members = members_to_proto(
             &members,
             &room_settings,
@@ -365,16 +366,16 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings(&rid)
             .await
-            .unwrap_or_default();
-        let role_default = self
+            .map_err(ApiError::from)?;
+        let permissions = self
             .room_service
             .permission_service()
-            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
+            .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
         Ok(crate::proto::client::AddMemberResponse {
-            member: Some(room_member_to_proto(
+            member: Some(room_member_to_proto_with_permissions(
                 &member_with_user,
-                role_default,
+                permissions,
                 &self.public_id_codec,
             )),
         })
@@ -441,17 +442,17 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings(&rid)
             .await
-            .unwrap_or_default();
-        let role_default = self
+            .map_err(ApiError::from)?;
+        let permissions = self
             .room_service
             .permission_service()
-            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
+            .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
         Ok(crate::proto::client::ApproveRoomJoinReviewResponse {
             review: Some(self.load_room_join_review(&rid, request_id).await?),
-            member: Some(room_member_to_proto(
+            member: Some(room_member_to_proto_with_permissions(
                 &member_with_user,
-                role_default,
+                permissions,
                 &self.public_id_codec,
             )),
         })
@@ -638,16 +639,16 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings(&rid)
             .await
-            .unwrap_or_default();
-        let role_default = self
+            .map_err(ApiError::from)?;
+        let permissions = self
             .room_service
             .permission_service()
-            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
+            .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto(
+            member: Some(room_member_to_proto_with_permissions(
                 &member_with_user,
-                role_default,
+                permissions,
                 &self.public_id_codec,
             )),
         })

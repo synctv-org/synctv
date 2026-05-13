@@ -1,4 +1,5 @@
 const defaultRepository = 'synctv-org/synctv';
+const defaultAppVersion = '1.0.0';
 
 function readEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -61,7 +62,7 @@ export const githubRawBaseUrl =
 
 export const projectRepositoryName = repositoryName(githubRepository);
 export const dockerImage = readEnv('SYNCTV_DOCS_DOCKER_IMAGE') || dockerHubImage(githubRepository);
-export const dockerImageTag = readEnv('SYNCTV_DOCS_IMAGE_TAG') || 'latest';
+export const dockerImageTag = readEnv('SYNCTV_DOCS_IMAGE_TAG') || defaultAppVersion;
 export const dockerImageReference = `${dockerImage}:${dockerImageTag}`;
 export const dockerComposeFileUrl = `${githubRawBaseUrl}/docker-compose.yml`;
 export const dockerComposeDevFileUrl = `${githubRawBaseUrl}/docker-compose.dev.yml`;
@@ -70,7 +71,7 @@ export const composeSynctvEnvExampleUrl = `${githubRawBaseUrl}/.env.synctv.examp
 export const composeInitScriptUrl = `${githubRawBaseUrl}/scripts/init-compose-env.sh`;
 
 export const helmChartName = readEnv('SYNCTV_DOCS_HELM_CHART_NAME') || 'synctv';
-export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || '1.0.0';
+export const helmChartVersion = readEnv('SYNCTV_DOCS_HELM_CHART_VERSION') || defaultAppVersion;
 export const helmOciRepository =
   readEnv('SYNCTV_DOCS_HELM_OCI_REPOSITORY') ||
   readEnv('HELM_OCI_REPOSITORY') ||

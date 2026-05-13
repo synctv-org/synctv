@@ -307,7 +307,7 @@ async fn scenario_complete_authentication_flow() {
         .await
         .expect("Failed to register user");
 
-    assert_eq!(user.username, username);
+    assert_eq!(user.username, username.to_lowercase());
     assert_eq!(user.status, UserStatus::Active);
 
     let (_user, access_token, refresh_token) = expect_complete_login(

@@ -145,6 +145,7 @@ fn client_from_cookies_and_state(
 ) -> BilibiliClient {
     if cookies.is_empty() {
         BilibiliClient::new_with_transport(
+            client.clone(),
             client,
             super::client::BilibiliEndpoints::default(),
             wbi_state,
@@ -153,6 +154,7 @@ fn client_from_cookies_and_state(
     } else {
         BilibiliClient::with_cookies_and_transport(
             cookies.clone(),
+            client.clone(),
             client,
             super::client::BilibiliEndpoints::default(),
             wbi_state,
@@ -186,6 +188,7 @@ impl BilibiliInterface for BilibiliService {
     async fn new_qr_code(&self, _request: Empty) -> Result<NewQrCodeResp, BilibiliError> {
         let client = BilibiliClient::new_with_transport(
             self.client.clone(),
+            self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
             self.ssrf_guard.clone(),
@@ -199,6 +202,7 @@ impl BilibiliInterface for BilibiliService {
         request: LoginWithQrCodeReq,
     ) -> Result<LoginWithQrCodeResp, BilibiliError> {
         let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
@@ -217,6 +221,7 @@ impl BilibiliInterface for BilibiliService {
     async fn new_captcha(&self, _request: Empty) -> Result<NewCaptchaResp, BilibiliError> {
         let client = BilibiliClient::new_with_transport(
             self.client.clone(),
+            self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
             self.ssrf_guard.clone(),
@@ -232,6 +237,7 @@ impl BilibiliInterface for BilibiliService {
 
     async fn new_sms(&self, request: NewSmsReq) -> Result<NewSmsResp, BilibiliError> {
         let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),
@@ -254,6 +260,7 @@ impl BilibiliInterface for BilibiliService {
         request: LoginWithSmsReq,
     ) -> Result<LoginWithSmsResp, BilibiliError> {
         let client = BilibiliClient::new_with_transport(
+            self.client.clone(),
             self.client.clone(),
             super::client::BilibiliEndpoints::default(),
             self.wbi_state.clone(),

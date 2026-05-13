@@ -4933,13 +4933,98 @@ mod tests {
             .parent()
             .expect("synctv-core should be inside the workspace root");
 
-        let config_file = "synctv.example.yaml";
-        let path = workspace_root.join(config_file);
-        Config::load_config_file(
-            path.to_str()
-                .expect("checked-in config path should be valid UTF-8"),
-        )
-        .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
+        for config_file in ["synctv.example.yaml", "synctv.yaml"] {
+            let path = workspace_root.join(config_file);
+            let path_str = path
+                .to_str()
+                .expect("checked-in config path should be valid UTF-8");
+            Config::load_config_file(path_str)
+                .unwrap_or_else(|error| panic!("{config_file} should deserialize: {error}"));
+            let unknown_keys = Config::collect_unknown_config_file_keys(path_str)
+                .unwrap_or_else(|error| panic!("{config_file} unknown-key scan failed: {error}"));
+            assert!(
+                unknown_keys.is_empty(),
+                "{config_file} should not contain unsupported keys: {unknown_keys:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compose_env_initializer_uses_canonical_cluster_secret_env() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("synctv-core should be inside the workspace root");
+        let script = std::fs::read_to_string(workspace_root.join("scripts/init-compose-env.sh"))
+            .expect("compose env initializer should be readable");
+
+        assert!(
+            script.contains("SYNCTV_CLUSTER_SECRET"),
+            "compose initializer should populate the canonical cluster secret env var"
+        );
+        assert!(
+            !script.contains("SYNCTV_SERVER_CLUSTER_SECRET"),
+            "compose initializer must not populate the removed server.cluster_secret env var"
+        );
+    }
+
+    #[test]
+    fn test_release_image_versions_are_consistent() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("synctv-core should be inside the workspace root");
+        let cargo_toml = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+            .expect("Cargo.toml should be readable");
+        let chart_yaml = std::fs::read_to_string(workspace_root.join("helm/synctv/Chart.yaml"))
+            .expect("Helm chart should be readable");
+        let docker_compose = std::fs::read_to_string(workspace_root.join("docker-compose.yml"))
+            .expect("docker-compose.yml should be readable");
+        let docs_project = std::fs::read_to_string(workspace_root.join("docs/src/lib/project.ts"))
+            .expect("docs project metadata should be readable");
+
+        let workspace_version = cargo_toml
+            .lines()
+            .skip_while(|line| line.trim() != "[workspace.package]")
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with('['))
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("version")
+                    .and_then(|rest| rest.split_once('"'))
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(version, _)| version.to_string())
+            })
+            .expect("workspace package version should exist");
+        let chart_app_version = chart_yaml
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("appVersion:")
+                    .map(|value| value.trim().trim_matches('"').to_string())
+            })
+            .expect("chart appVersion should exist");
+        let compose_tag = docker_compose
+            .split("SYNCTV_IMAGE_TAG:-")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("compose image tag fallback should exist")
+            .to_string();
+        let docs_default_version = docs_project
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("const defaultAppVersion = '")
+                    .and_then(|rest| rest.strip_suffix("';"))
+                    .map(str::to_string)
+            })
+            .expect("docs default app version should exist");
+
+        assert_eq!(chart_app_version, workspace_version);
+        assert_eq!(compose_tag, workspace_version);
+        assert_eq!(docs_default_version, workspace_version);
+        assert!(
+            !docs_project.contains("dockerImageTag = readEnv('SYNCTV_DOCS_IMAGE_TAG') || 'latest'"),
+            "docs must not advertise latest while Compose pins the release app version"
+        );
     }
 
     /// Helper to create a valid production config for validation tests

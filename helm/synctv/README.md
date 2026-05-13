@@ -108,6 +108,27 @@ Do not rotate `secrets.security.credentialEncryptionKey` or
 `secrets.security.opaqueServerSetupSecret` casually; changing them can break
 provider credential decryption or password authentication.
 
+## Security
+
+Server-side outbound requests use the global SSRF policy from
+`config.security.ssrf`. Private, loopback, link-local, reserved, and metadata
+targets are blocked by default. Prefer explicit allowlists for trusted internal
+media endpoints:
+
+```yaml
+config:
+  security:
+    ssrf:
+      allowPrivateNetworkTargets: false
+      allowedHosts:
+        - nas.example.internal
+      allowedIpRanges:
+        - 10.0.8.0/24
+```
+
+Set `allowPrivateNetworkTargets=true` only for deployments where all users and
+configured provider endpoints are trusted.
+
 ## Standard Mode
 
 In standard mode, database authentication settings live under `standard.auth`, not next to `mode`:

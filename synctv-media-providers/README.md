@@ -208,7 +208,7 @@ Compared to earlier provider implementations:
 
 Feature flags are TLS-related: `tls-aws-lc`, `tls-ring`,
 `tls-webpki-roots`, and `tls-native-roots`. The crate does not currently define
-provider-specific feature flags.
+media-provider-specific feature flags.
 
 ```bash
 # Build only providers

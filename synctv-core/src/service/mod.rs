@@ -95,7 +95,7 @@ pub use passkey::{
     local_passkey_session_store, passkey_session_store_from_shared_state_profile,
     shared_passkey_session_store, PasskeyService, PasskeySessionStore,
 };
-pub use permission::PermissionService;
+pub use permission::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
 pub use playlist::{PlaylistBroadcaster, PlaylistService, RealtimeOutboxPlaylistEventFactory};
 pub use providers_manager::ProvidersManager;

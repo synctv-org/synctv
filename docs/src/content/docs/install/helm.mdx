@@ -194,6 +194,23 @@ existingSecret: "my-external-synctv-secret"
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` 和 `SYNCTV_METRICS_AUTH_BASIC_PASSWORD`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=basic`。
 - `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorageBackend=oss`。
 
+## 安全
+
+服务端出站请求使用 `config.security.ssrf` 中的全局 SSRF 策略。默认会阻止 private、loopback、link-local、reserved 和云 metadata 目标。对于可信的内网媒体端点，优先使用显式 allowlist：
+
+```yaml
+config:
+  security:
+    ssrf:
+      allowPrivateNetworkTargets: false
+      allowedHosts:
+        - nas.example.internal
+      allowedIpRanges:
+        - 10.0.8.0/24
+```
+
+只有在所有用户和 provider endpoint 都可信的私有部署里，才应设置 `allowPrivateNetworkTargets=true`。
+
 ## PostgreSQL 和 Redis 模式
 
 ### standard

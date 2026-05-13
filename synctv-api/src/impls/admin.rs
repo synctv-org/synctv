@@ -31,10 +31,11 @@ use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use super::client::convert::{
     bilibili_live_danmaku_for_static_media, map_slice_preserve_order, media_list_to_proto,
-    media_to_proto_with_availability, member_status_to_proto, playback_client_profile_from_proto,
-    playback_snapshot_to_proto, playback_state_to_proto, playlist_list_to_proto,
-    playlist_path_node_to_proto, playlist_to_proto, playlist_to_proto_with_availability,
-    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    media_to_proto_with_availability, member_status_to_proto, members_to_proto,
+    playback_client_profile_from_proto, playback_snapshot_to_proto, playback_state_to_proto,
+    playlist_list_to_proto, playlist_path_node_to_proto, playlist_to_proto,
+    playlist_to_proto_with_availability, provider_playback_info_to_model,
+    sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
@@ -568,12 +569,12 @@ impl AdminApiImpl {
             let prepared = self
                 .room_lifecycle_fanout
                 .prepare_room_deleted_outbox_fanout(room_id, deleted_by);
-            if let Some(outbox_event) = prepared.outbox_event {
+            if let Some(outbox_event) = prepared.cloned_outbox_event() {
                 outbox_events.insert(*room_id, outbox_event);
             }
             fanout.push(DeletedRoomAfterCommitFanout {
                 room_id: *room_id,
-                event: prepared.event,
+                event: prepared.into_event(),
             });
         }
         (outbox_events, fanout)
@@ -589,6 +590,23 @@ impl AdminApiImpl {
         self.request_executor.as_ref().ok_or_else(|| {
             ApiError::ServiceUnavailable("Request executor is not configured".to_string())
         })
+    }
+
+    async fn admin_room_member_to_proto(
+        &self,
+        member: &synctv_core::models::RoomMemberWithUser,
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
+        let room_settings = self
+            .room_service
+            .get_room_settings(&member.room_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(admin_room_member_to_proto_with_settings(
+            member,
+            &room_settings,
+            self.room_service.permission_service(),
+            &self.public_id_codec,
+        ))
     }
 
     async fn load_admin_room_proto(
@@ -779,7 +797,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         for prepared_fanout in owner_inactive_fanout {
-            let room_id = *prepared_fanout.event.room_id().ok_or_else(|| {
+            let room_id = *prepared_fanout.event().room_id().ok_or_else(|| {
                 ApiError::Internal("RoomOwnerInactive missing room id".to_string())
             })?;
             self.room_service
@@ -1371,8 +1389,7 @@ impl AdminApiImpl {
     ) -> Self {
         let review_service = Arc::new(ReviewService::new(user_service.pool().clone()));
         let ban_record_service = Arc::new(BanRecordService::new(user_service.pool().clone()));
-        let realtime_fanout =
-            default_realtime_fanout_service(None, config.cluster_runtime_enabled());
+        let realtime_fanout = default_realtime_fanout_service(None, false);
         let room_settings_fanout =
             default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(
@@ -1606,7 +1623,7 @@ impl AdminApiImpl {
             .room_service
             .get_room_settings_batch(&room_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let room_list: Vec<_> = rooms
             .into_iter()
@@ -1668,7 +1685,7 @@ impl AdminApiImpl {
             .admin_delete_room_as_with_outbox(
                 &rid,
                 &actor,
-                prepared_outbox_fanout.outbox_event.clone(),
+                prepared_outbox_fanout.cloned_outbox_event(),
             )
             .await
             .map_err(ApiError::from)?;
@@ -1798,10 +1815,18 @@ impl AdminApiImpl {
             .get_room_members_query(&rid, query)
             .await
             .map_err(ApiError::from)?;
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
 
-        let proto_members = map_slice_preserve_order(&members, |member| {
-            admin_room_member_to_proto(member, &self.public_id_codec)
-        });
+        let proto_members = members_to_proto(
+            &members,
+            &room_settings,
+            self.room_service.permission_service(),
+            &self.public_id_codec,
+        );
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
@@ -1892,10 +1917,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::AddMemberResponse {
-            member: Some(admin_room_member_to_proto(
-                &member_with_user,
-                &self.public_id_codec,
-            )),
+            member: Some(self.admin_room_member_to_proto(&member_with_user).await?),
         })
     }
 
@@ -1970,10 +1992,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(admin_room_member_to_proto(
-            &member_with_user,
-            &self.public_id_codec,
-        ))
+        self.admin_room_member_to_proto(&member_with_user).await
     }
 
     async fn reject_room_join_request(
@@ -2138,10 +2157,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(crate::proto::admin::UpdateMemberPermissionsResponse {
-            member: Some(admin_room_member_to_proto(
-                &member_with_user,
-                &self.public_id_codec,
-            )),
+            member: Some(self.admin_room_member_to_proto(&member_with_user).await?),
         })
     }
 
@@ -2915,35 +2931,6 @@ impl AdminApiImpl {
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
 
-        // Apply the same validation rules as client-facing set_username:
-        // trim, check length, charset, and leading character restrictions.
-        let username = req.new_username.trim().to_string();
-        if username.chars().count() < synctv_core::validation::USERNAME_MIN {
-            return Err(ApiError::InvalidInput(format!(
-                "Username must be at least {} characters",
-                synctv_core::validation::USERNAME_MIN,
-            )));
-        }
-        if username.chars().count() > synctv_core::validation::USERNAME_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Username must be at most {} characters",
-                synctv_core::validation::USERNAME_MAX,
-            )));
-        }
-        if !username
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(ApiError::InvalidInput(
-                "Username can only contain letters, numbers, underscores, and hyphens".to_string(),
-            ));
-        }
-        if username.starts_with('_') || username.starts_with('-') {
-            return Err(ApiError::InvalidInput(
-                "Username cannot start with underscore or hyphen".to_string(),
-            ));
-        }
-
         let mut user = self
             .user_service
             .get_user(&uid)
@@ -2951,7 +2938,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let old_username = user.username.clone();
         let old_version = user.version;
-        user.username = username;
+        user.username = req.new_username;
         let updated = self
             .user_service
             .update_user(&user, old_version)
@@ -3528,7 +3515,7 @@ impl AdminApiImpl {
             .room_service
             .get_room_settings_batch(&room_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
         let admin_rooms: Vec<crate::proto::admin::AdminRoom> = rooms
             .iter()
             .map(|room| {
@@ -3582,7 +3569,7 @@ impl AdminApiImpl {
             .ban_room_with_outbox(
                 &rid,
                 admin_user_id,
-                prepared_outbox_fanout.outbox_event.clone(),
+                prepared_outbox_fanout.cloned_outbox_event(),
             )
             .await
             .map_err(ApiError::from)?;
@@ -5515,7 +5502,7 @@ impl AdminApiImpl {
                     .ban_room_with_outbox(
                         &rid,
                         admin_user_id,
-                        prepared_outbox_fanout.outbox_event.clone(),
+                        prepared_outbox_fanout.cloned_outbox_event(),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -5600,7 +5587,7 @@ impl AdminApiImpl {
                     .admin_delete_room_as_with_outbox(
                         &rid,
                         &actor,
-                        prepared_outbox_fanout.outbox_event.clone(),
+                        prepared_outbox_fanout.cloned_outbox_event(),
                     )
                     .await
                     .map_err(ApiError::from)?;
@@ -5783,8 +5770,42 @@ fn admin_room_to_proto(
     }
 }
 
+#[cfg(test)]
 fn admin_room_member_to_proto(
     member: &synctv_core::models::RoomMemberWithUser,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_proto::common::RoomMember {
+    let role_default = member.role.permissions();
+    admin_room_member_to_proto_from_role_default(member, role_default, public_id_codec)
+}
+
+fn admin_room_member_to_proto_with_settings(
+    member: &synctv_core::models::RoomMemberWithUser,
+    room_settings: &synctv_core::models::RoomSettings,
+    permission_service: &synctv_core::service::PermissionService,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_proto::common::RoomMember {
+    let permissions =
+        permission_service.effective_member_with_user_permissions(member, room_settings);
+    admin_room_member_to_proto_with_permissions(member, permissions, public_id_codec)
+}
+
+#[cfg(test)]
+fn admin_room_member_to_proto_from_role_default(
+    member: &synctv_core::models::RoomMemberWithUser,
+    role_default: synctv_core::models::PermissionBits,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_proto::common::RoomMember {
+    admin_room_member_to_proto_with_permissions(
+        member,
+        member.effective_permissions(role_default),
+        public_id_codec,
+    )
+}
+
+fn admin_room_member_to_proto_with_permissions(
+    member: &synctv_core::models::RoomMemberWithUser,
+    permissions: synctv_core::models::PermissionBits,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
@@ -5796,7 +5817,7 @@ fn admin_room_member_to_proto(
             .expect("room member user id must be encodable"),
         username: member.username.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
-        permissions: member.effective_permissions(member.role.permissions()).0,
+        permissions: permissions.0,
         status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
@@ -6609,6 +6630,127 @@ mod tests {
                 target_user_id: target.id.to_string(),
                 changed_by: global_admin.id.to_string(),
             }]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_admin_member_response_uses_room_permission_overrides() {
+        let (_postgres, pool) = create_test_pool().await;
+        let (admin_api, _redis_publish_rx) =
+            make_admin_api_for_delete_user_test(pool.clone()).await;
+        let user_repo = UserRepository::new(pool);
+
+        let global_admin = synctv_core::models::User {
+            id: UserId::new(),
+            username: "global_admin_member_response_permissions".to_string(),
+            email: Some("global_admin_member_response_permissions@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::Root,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let owner = synctv_core::models::User {
+            id: UserId::new(),
+            username: "owner_member_response_permissions".to_string(),
+            email: Some("owner_member_response_permissions@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        let target = synctv_core::models::User {
+            id: UserId::new(),
+            username: "target_member_response_permissions".to_string(),
+            email: Some("target_member_response_permissions@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            is_banned: false,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
+            email_verified: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+            password_changed_at: chrono::Utc::now(),
+            password_version: 0,
+            version: 0,
+        };
+        user_repo
+            .create(&global_admin)
+            .await
+            .expect("create global admin");
+        let owner = user_repo.create(&owner).await.expect("create owner");
+        let target = user_repo.create(&target).await.expect("create target");
+        let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+
+        let mut settings = admin_api
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .expect("room settings should load");
+        settings.member_removed_permissions =
+            synctv_core::models::room_settings::MemberRemovedPermissions(
+                synctv_core::models::PermissionBits::ADD_MEDIA,
+            );
+        admin_api
+            .room_service
+            .set_room_settings(&room.id, &settings)
+            .await
+            .expect("room settings should update");
+
+        let response = admin_api
+            .update_member_permissions(
+                crate::proto::admin::UpdateMemberPermissionsRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    user_id: public_user_id(&admin_api, target.id),
+                    role: synctv_proto::common::RoomMemberRole::Member as i32,
+                    added_permissions: 0,
+                    removed_permissions: synctv_core::models::PermissionBits::SEND_CHAT,
+                    admin_added_permissions: 0,
+                    admin_removed_permissions: 0,
+                },
+                &global_admin.id,
+                &RequestContext::default(),
+            )
+            .await
+            .expect("admin update member permissions should succeed");
+
+        let member = response.member.expect("member should be returned");
+        assert!(
+            synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::DEFAULT_MEMBER)
+                .has(synctv_core::models::PermissionBits::ADD_MEDIA),
+            "static member defaults include ADD_MEDIA, so the response must prove it used room overrides"
+        );
+        assert!(
+            !synctv_core::models::PermissionBits(member.permissions)
+                .has(synctv_core::models::PermissionBits::ADD_MEDIA),
+            "admin member response must apply room-level permission removals"
         );
     }
 

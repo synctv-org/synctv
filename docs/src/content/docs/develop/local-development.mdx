@@ -188,10 +188,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 不要对整个 workspace 使用 `--all-features`：部分 feature 组合是刻意互斥的，
 例如 `mimalloc`/`jemalloc` 和 `tls-aws-lc`/`tls-ring`。非默认构建应使用显式
-feature 组合检查：
+feature 组合检查。TLS 的约定是：`tls-aws-lc` / `tls-ring` 选择 rustls crypto
+provider，`tls-webpki-roots` / `tls-native-roots` 选择信任根来源；这个约定会在上游
+crate 暴露对应开关的地方传播。少数依赖有自己的限制：SQLx 0.8 的 native roots
+只能通过 ring 后端启用，reqwest 0.13 使用 platform verifier；基础邮件 TLS 保留
+webpki roots，因为 lettre 编译 rustls 时要求至少启用一个 verifier/root feature。
+修改 TLS 相关代码时至少检查 provider 与 root 的四个组合：
 
 ```bash
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --locked
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
 cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 

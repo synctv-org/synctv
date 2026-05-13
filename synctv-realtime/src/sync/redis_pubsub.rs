@@ -251,14 +251,7 @@ enum SelectResult {
 }
 
 fn is_replica_wide_admin_event(event: &RealtimeEvent) -> bool {
-    matches!(
-        event,
-        RealtimeEvent::KickPublisher { .. }
-            | RealtimeEvent::KickUserFromRoom { .. }
-            | RealtimeEvent::RoomDeleted { .. }
-            | RealtimeEvent::RoomBanned { .. }
-            | RealtimeEvent::RoomOwnerInactive { .. }
-    )
+    event.delivers_to_admin_channel()
 }
 
 /// Redis Pub/Sub service for cross-node event synchronization

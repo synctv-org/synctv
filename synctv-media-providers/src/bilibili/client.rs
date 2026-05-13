@@ -42,6 +42,7 @@ static RE_LIVE_ROOM: LazyLock<Regex> =
 
 use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
+const BILIBILI_SHORT_LINK_MAX_REDIRECTS: usize = 5;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
 const LIVE_DANMAKU_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots", test))]
@@ -357,6 +358,7 @@ fn sanitize_cookie_pair(key: &str, value: &str) -> String {
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
+    short_link_client: Client,
     cookies: Option<HashMap<String, String>>,
     wbi_state: Arc<WbiState>,
     endpoints: BilibiliEndpoints,
@@ -370,8 +372,10 @@ impl BilibiliClient {
     }
 
     pub(crate) fn new_with_wbi_state(wbi_state: Arc<WbiState>) -> Result<Self, BilibiliError> {
+        let client = shared_client()?;
         Ok(Self::new_with_transport(
-            shared_client()?,
+            client.clone(),
+            client,
             BilibiliEndpoints::default(),
             wbi_state,
             SsrfGuard::strict_policy(),
@@ -380,12 +384,14 @@ impl BilibiliClient {
 
     pub(crate) const fn new_with_transport(
         client: Client,
+        short_link_client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
         ssrf_guard: SsrfGuard,
     ) -> Self {
         Self {
             client,
+            short_link_client,
             cookies: None,
             wbi_state,
             endpoints,
@@ -397,12 +403,31 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
     ) -> Result<Self, BilibiliError> {
+        let short_link_client = crate::provider_http_client_builder(SsrfGuard::strict_policy())
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|err| BilibiliError::Network(err.to_string()))?;
         Ok(Self::new_with_transport(
             client,
+            short_link_client,
             endpoints,
             Arc::new(WbiState::default()),
             SsrfGuard::strict_policy(),
         ))
+    }
+
+    pub fn new_with_short_link_transport_defaults(
+        client: Client,
+        short_link_client: Client,
+        endpoints: BilibiliEndpoints,
+    ) -> Self {
+        Self::new_with_transport(
+            client,
+            short_link_client,
+            endpoints,
+            Arc::new(WbiState::default()),
+            SsrfGuard::strict_policy(),
+        )
     }
 
     /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter).
@@ -414,9 +439,11 @@ impl BilibiliClient {
         cookies: HashMap<String, String>,
         wbi_state: Arc<WbiState>,
     ) -> Result<Self, BilibiliError> {
+        let client = shared_client()?;
         Ok(Self::with_cookies_and_transport(
             cookies,
-            shared_client()?,
+            client.clone(),
+            client,
             BilibiliEndpoints::default(),
             wbi_state,
             SsrfGuard::strict_policy(),
@@ -426,12 +453,14 @@ impl BilibiliClient {
     pub(crate) const fn with_cookies_and_transport(
         cookies: HashMap<String, String>,
         client: Client,
+        short_link_client: Client,
         endpoints: BilibiliEndpoints,
         wbi_state: Arc<WbiState>,
         ssrf_guard: SsrfGuard,
     ) -> Self {
         Self {
             client,
+            short_link_client,
             cookies: Some(cookies),
             wbi_state,
             endpoints,
@@ -444,9 +473,14 @@ impl BilibiliClient {
         client: Client,
         endpoints: BilibiliEndpoints,
     ) -> Result<Self, BilibiliError> {
+        let short_link_client = crate::provider_http_client_builder(SsrfGuard::strict_policy())
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|err| BilibiliError::Network(err.to_string()))?;
         Ok(Self::with_cookies_and_transport(
             cookies,
             client,
+            short_link_client,
             endpoints,
             Arc::new(WbiState::default()),
             SsrfGuard::strict_policy(),
@@ -1043,6 +1077,12 @@ impl BilibiliClient {
     pub fn validate_bilibili_url(url: &str) -> Result<(), BilibiliError> {
         let parsed =
             url::Url::parse(url).map_err(|e| BilibiliError::Parse(format!("Invalid URL: {e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(BilibiliError::Parse(format!(
+                "URL scheme is not allowed for Bilibili URLs: {}",
+                parsed.scheme()
+            )));
+        }
         let host = parsed
             .host_str()
             .ok_or_else(|| BilibiliError::Parse("URL has no host".to_string()))?;
@@ -1062,47 +1102,75 @@ impl BilibiliClient {
     pub fn is_short_link(url: &str) -> bool {
         url::Url::parse(url)
             .ok()
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
             .and_then(|u| u.host_str().map(String::from))
             .is_some_and(|host| host == "b23.tv" || host.ends_with(".b23.tv"))
     }
 
     /// Resolve short link to full URL.
     ///
-    /// The shared client has `redirect(Policy::none())`, so we manually follow
-    /// the `Location` header from b23.tv to get the resolved URL.
+    /// The short-link client has `redirect(Policy::none())`, so we manually
+    /// follow the `Location` header from b23.tv to get the resolved URL.
     /// The resolved URL is structurally validated before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
-        // Redirects are handled manually; private-network blocking depends on
-        // the configured runtime SSRF policy.
-        let response = self.client.get(url).send().await?;
-        let status = response.status();
+        if !Self::is_short_link(url) {
+            return Err(BilibiliError::Parse(
+                "Short-link resolver only accepts http(s) b23.tv URLs".to_string(),
+            ));
+        }
 
-        // b23.tv returns a 302 redirect; extract the Location header
-        if status.is_redirection() {
-            if let Some(location) = response.headers().get("location") {
-                let resolved = location
+        let mut current =
+            url::Url::parse(url).map_err(|e| BilibiliError::Parse(format!("Invalid URL: {e}")))?;
+
+        for _ in 0..BILIBILI_SHORT_LINK_MAX_REDIRECTS {
+            Self::validate_bilibili_url(current.as_str())?;
+
+            // Redirects are handled manually; private-network blocking depends on
+            // the configured runtime SSRF policy.
+            let response = self.short_link_client.get(current.clone()).send().await?;
+            let status = response.status();
+
+            if status.is_redirection() {
+                let location = response
+                    .headers()
+                    .get("location")
+                    .ok_or_else(|| {
+                        BilibiliError::Parse(
+                            "Redirect response missing Location header".to_string(),
+                        )
+                    })?
                     .to_str()
                     .map_err(|e| BilibiliError::Parse(format!("Invalid Location header: {e}")))?;
-                // Validate that the resolved URL points to a known Bilibili domain
-                Self::validate_bilibili_url(resolved)?;
-                return Ok(resolved.to_string());
+
+                current = current
+                    .join(location)
+                    .map_err(|e| BilibiliError::Parse(format!("Invalid redirect Location: {e}")))?;
+                Self::validate_bilibili_url(current.as_str())?;
+                continue;
             }
+
+            if status.is_success() {
+                if response.url() != &current {
+                    return Err(BilibiliError::Parse(format!(
+                        "Short-link request followed an unexpected redirect to {}",
+                        response.url()
+                    )));
+                }
+                Self::validate_bilibili_url(current.as_str())?;
+                return Ok(current.to_string());
+            }
+
+            return Err(BilibiliError::Http {
+                status,
+                url: response.url().to_string(),
+                retry_after_secs: None,
+                body: String::new(),
+            });
         }
 
-        // If no redirect, the response URL is already the final URL
-        if status.is_success() {
-            let final_url = response.url().to_string();
-            // Validate that the final URL points to a known Bilibili domain
-            Self::validate_bilibili_url(&final_url)?;
-            return Ok(final_url);
-        }
-
-        Err(BilibiliError::Http {
-            status,
-            url: response.url().to_string(),
-            retry_after_secs: None,
-            body: String::new(),
-        })
+        Err(BilibiliError::Parse(format!(
+            "Short link exceeded {BILIBILI_SHORT_LINK_MAX_REDIRECTS} redirects"
+        )))
     }
 
     /// Get video information by BVID

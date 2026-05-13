@@ -331,6 +331,50 @@ async fn test_join_room_wrong_password_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_join_room_ignores_stale_password_when_require_password_false() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("stale_pwd_owner"))
+        .await
+        .unwrap();
+    let joiner = user_repo
+        .create(&make_user("stale_pwd_joiner"))
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Stale Password Room".to_string(),
+            String::new(),
+            owner.id,
+            Some("OldPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    settings.require_password = synctv_core::models::room_settings::RequirePassword(false);
+    room_service
+        .set_room_settings(&room.id, &settings)
+        .await
+        .unwrap();
+
+    let result = room_service
+        .join_room(room.id, joiner.id, Some("WrongPassword456".to_string()))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "require_password=false is authoritative, so stale client passwords must not block join: {result:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_join_room_password_required_not_provided() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

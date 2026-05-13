@@ -3,7 +3,7 @@ use std::sync::Arc;
 use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::runtime::RealtimeEventService;
+use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 
 #[async_trait]
 pub trait RealtimeFanoutService: Send + Sync {
@@ -29,6 +29,64 @@ pub fn publish_best_effort(
             tracing::warn!("Best-effort realtime fanout publish was not accepted");
         }
     });
+}
+
+/// Prepared single-event fanout plan shared by transaction-aware API flows.
+///
+/// A plan makes the outbox row, local after-commit fanout, distributed
+/// after-commit expectation, and delivery requirement explicit in one value.
+#[derive(Clone)]
+pub struct PreparedRealtimeFanoutPlan {
+    event: RealtimeEvent,
+    outbox_event: Option<NewRealtimeOutboxEvent>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    delivery_requirement: RealtimeDeliveryRequirement,
+}
+
+impl PreparedRealtimeFanoutPlan {
+    #[must_use]
+    pub fn new(
+        realtime_fanout: Arc<dyn RealtimeFanoutService>,
+        event: RealtimeEvent,
+        delivery_requirement: RealtimeDeliveryRequirement,
+    ) -> Self {
+        let outbox_event = realtime_fanout.outbox_event(&event);
+        Self {
+            event,
+            outbox_event,
+            realtime_fanout,
+            delivery_requirement,
+        }
+    }
+
+    #[must_use]
+    pub const fn event(&self) -> &RealtimeEvent {
+        &self.event
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> RealtimeEvent {
+        self.event
+    }
+
+    #[must_use]
+    pub const fn outbox_event(&self) -> Option<&NewRealtimeOutboxEvent> {
+        self.outbox_event.as_ref()
+    }
+
+    #[must_use]
+    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+        self.outbox_event.clone()
+    }
+
+    #[must_use]
+    pub const fn delivery_requirement(&self) -> RealtimeDeliveryRequirement {
+        self.delivery_requirement
+    }
+
+    pub fn publish_after_outbox_commit(self) {
+        self.realtime_fanout.publish_after_outbox_commit(self.event);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -75,10 +133,12 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
     async fn try_publish(&self, request: PublishRequest) -> bool {
         let event = request.event;
         if let Some(event_service) = &self.event_service {
-            if let Some(room_id) = event.room_id() {
-                event_service.broadcast_local(room_id, &event);
+            if event.delivers_to_room_channel() {
+                if let Some(room_id) = event.room_id() {
+                    event_service.broadcast_local(room_id, &event);
+                }
             }
-            if is_admin_channel_event(&event) {
+            if event.delivers_to_admin_channel() {
                 event_service.broadcast_admin_local(&event);
             }
         }
@@ -105,10 +165,12 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
         if let Some(event_service) = &self.event_service {
-            if let Some(room_id) = event.room_id() {
-                event_service.broadcast_local(room_id, &event);
+            if event.delivers_to_room_channel() {
+                if let Some(room_id) = event.room_id() {
+                    event_service.broadcast_local(room_id, &event);
+                }
             }
-            if is_admin_channel_event(&event) {
+            if event.delivers_to_admin_channel() {
                 event_service.broadcast_admin_local(&event);
             }
         }
@@ -131,19 +193,9 @@ fn new_outbox_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
     }
 }
 
+#[cfg(test)]
 fn is_admin_channel_event(event: &RealtimeEvent) -> bool {
-    matches!(
-        event,
-        RealtimeEvent::KickUser { .. }
-            | RealtimeEvent::KickPublisher { .. }
-            | RealtimeEvent::KickUserFromRoom { .. }
-            | RealtimeEvent::RoomDeleted { .. }
-            | RealtimeEvent::RoomBanned { .. }
-            | RealtimeEvent::RoomOwnerInactive { .. }
-            | RealtimeEvent::UserNotification { .. }
-            | RealtimeEvent::ProviderCredentialChanged { .. }
-            | RealtimeEvent::CacheInvalidate { .. }
-    )
+    event.delivers_to_admin_channel()
 }
 
 fn aggregate_type(event: &RealtimeEvent) -> &'static str {
@@ -207,6 +259,16 @@ pub fn default_realtime_fanout_service_with_realtime(
     Arc::new(NoopRealtimeFanoutService)
 }
 
+pub fn required_realtime_fanout_service_with_realtime(
+    outbox: Arc<RealtimeOutboxRepository>,
+    event_service: Arc<dyn RealtimeEventService>,
+) -> Arc<dyn RealtimeFanoutService> {
+    Arc::new(OutboxRealtimeFanoutService::new(
+        outbox,
+        Some(event_service),
+    ))
+}
+
 #[derive(Debug, Clone)]
 #[doc(hidden)]
 struct ChannelRealtimeFanoutService {
@@ -244,10 +306,15 @@ pub fn channel_realtime_fanout_service(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_realtime_fanout_service, is_admin_channel_event, publish_best_effort};
+    use super::{
+        default_realtime_fanout_service, is_admin_channel_event, publish_best_effort,
+        PreparedRealtimeFanoutPlan,
+    };
     use chrono::Utc;
     use synctv_core::models::RoomId;
     use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
+
+    use crate::runtime::RealtimeDeliveryRequirement;
 
     #[tokio::test]
     async fn test_realtime_fanout_without_outbox_degrades_to_noop() {
@@ -286,5 +353,40 @@ mod tests {
         };
 
         assert!(is_admin_channel_event(&event));
+    }
+
+    #[test]
+    fn test_room_created_is_admin_channel_event() {
+        let event = RealtimeEvent::RoomCreated {
+            event_id: "room-created-admin-route".to_string(),
+            room_id: RoomId::expect_positive(10_000_152),
+            room_name: "created room".to_string(),
+            creator_id: synctv_core::models::UserId::expect_positive(10_000_153),
+            timestamp: Utc::now(),
+        };
+
+        assert!(is_admin_channel_event(&event));
+    }
+
+    #[test]
+    fn test_prepared_realtime_fanout_plan_captures_delivery_contract() {
+        let event = RealtimeEvent::RoomDeleted {
+            event_id: "prepared-plan-room-deleted".to_string(),
+            room_id: RoomId::expect_positive(10_000_154),
+            deleted_by: synctv_core::models::UserId::expect_positive(10_000_155),
+            timestamp: Utc::now(),
+        };
+        let plan = PreparedRealtimeFanoutPlan::new(
+            default_realtime_fanout_service(None, true),
+            event,
+            RealtimeDeliveryRequirement::DistributedIfAvailable,
+        );
+
+        assert!(plan.outbox_event().is_none());
+        assert_eq!(
+            plan.delivery_requirement(),
+            RealtimeDeliveryRequirement::DistributedIfAvailable
+        );
+        assert_eq!(plan.event().event_id(), "prepared-plan-room-deleted");
     }
 }

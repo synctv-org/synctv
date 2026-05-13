@@ -12,6 +12,32 @@ use synctv_media_providers::BilibiliClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn redirecting_client_for_b23(server: &MockServer) -> reqwest::Client {
+    reqwest::Client::builder()
+        .resolve("b23.tv", *server.address())
+        .build()
+        .unwrap()
+}
+
+fn manual_redirect_client_for_b23(server: &MockServer) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve("b23.tv", *server.address())
+        .build()
+        .unwrap()
+}
+
+fn bilibili_client_with_short_link_client(
+    server: &MockServer,
+    client: reqwest::Client,
+) -> BilibiliClient {
+    BilibiliClient::new_with_short_link_transport_defaults(
+        client,
+        manual_redirect_client_for_b23(server),
+        BilibiliEndpoints::for_test(server.uri()),
+    )
+}
+
 // match_url additional coverage
 
 #[test]
@@ -97,8 +123,20 @@ fn test_is_short_link_false_positives() {
     assert!(!BilibiliClient::is_short_link(
         "https://b23.tv.evil.com/fake"
     ));
+    assert!(!BilibiliClient::is_short_link("ftp://b23.tv/fake"));
     assert!(!BilibiliClient::is_short_link("not a url at all"));
     assert!(!BilibiliClient::is_short_link(""));
+}
+
+#[test]
+fn test_validate_bilibili_url_rejects_non_http_scheme() {
+    let err = BilibiliClient::validate_bilibili_url("ftp://www.bilibili.com/video/BV123")
+        .expect_err("non-http(s) Bilibili URLs should be rejected");
+
+    assert!(
+        err.to_string().contains("scheme"),
+        "unexpected error: {err}"
+    );
 }
 
 // BilibiliClient creation
@@ -146,6 +184,103 @@ async fn test_new_qr_code_uses_injected_endpoints() {
     let (url, key) = client.new_qr_code().await.unwrap();
     assert_eq!(url, "https://mock.local/qr");
     assert_eq!(key, "qr-test-key");
+}
+
+#[tokio::test]
+async fn test_resolve_short_link_rejects_non_short_link_without_network() {
+    let client = BilibiliClient::new_with_transport_defaults(
+        reqwest::Client::new(),
+        BilibiliEndpoints::for_test("http://127.0.0.1:9"),
+    )
+    .unwrap();
+
+    let err = client
+        .resolve_short_link("https://example.com/not-b23")
+        .await
+        .expect_err("non-b23 URLs should fail before any request is sent");
+
+    assert!(
+        err.to_string().contains("b23.tv"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_short_link_rejects_cross_domain_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/abc"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "https://evil.example/video"),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        bilibili_client_with_short_link_client(&server, manual_redirect_client_for_b23(&server));
+
+    let err = client
+        .resolve_short_link(&format!("http://b23.tv:{}/abc", server.address().port()))
+        .await
+        .expect_err("cross-domain redirect should be rejected");
+
+    assert!(
+        err.to_string().contains("known Bilibili domain"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_short_link_rejects_cross_domain_redirect_with_redirecting_client() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/abc"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", "https://evil.example/video"),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        bilibili_client_with_short_link_client(&server, redirecting_client_for_b23(&server));
+
+    let err = client
+        .resolve_short_link(&format!("http://b23.tv:{}/abc", server.address().port()))
+        .await
+        .expect_err("cross-domain redirect should be rejected before reqwest follows it");
+
+    assert!(
+        err.to_string().contains("known Bilibili domain"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_short_link_supports_relative_location() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/abc"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/video/BV123"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/video/BV123"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let client =
+        bilibili_client_with_short_link_client(&server, manual_redirect_client_for_b23(&server));
+
+    let resolved = client
+        .resolve_short_link(&format!("http://b23.tv:{}/abc", server.address().port()))
+        .await
+        .expect("relative Location should be resolved against the short-link URL");
+
+    assert_eq!(
+        resolved,
+        format!("http://b23.tv:{}/video/BV123", server.address().port())
+    );
 }
 
 // Quality type tests

@@ -42,7 +42,7 @@ spec:
     spec:
       containers:
         - name: postgresql
-          image: "{{ .Values.postgresql.standard.image.repository | default "postgres" }}:{{ .Values.postgresql.standard.image.tag | default "18.1-bookworm" }}"
+          image: {{ include "synctv.managedImage" (list . .Values.postgresql.standard.image "postgres" "18.1-bookworm") | quote }}
           imagePullPolicy: {{ .Values.postgresql.standard.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: postgresql

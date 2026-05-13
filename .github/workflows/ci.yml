@@ -58,6 +58,28 @@ jobs:
       - name: Build
         run: cargo build --workspace --verbose --locked
 
+  proto-freshness:
+    name: Proto Freshness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Regenerate proto artifacts
+        run: scripts/regen-proto.sh
+
+      - name: Check generated proto artifacts
+        run: git diff --exit-code -- synctv-proto/src synctv-media-providers/src/proto
+
   # SQLx offline metadata
   sqlx-offline:
     name: SQLx Offline Check
@@ -85,10 +107,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: synctv-minimal-tls
-            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+          - name: synctv-no-default-features
+            command: cargo check -p synctv --no-default-features --locked
+          - name: synctv-tls-aws-lc-webpki
+            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+          - name: synctv-tls-aws-lc-native
+            command: cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+          - name: synctv-tls-ring-webpki
+            command: cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+          - name: synctv-tls-ring-native
+            command: cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
           - name: synctv-production-no-openapi
             command: cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+          - name: key-crates-tls-ring-webpki
+            command: |
+              cargo check -p synctv-core --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-api --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-cluster --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-realtime --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-livestream --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-media-providers --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+              cargo check -p synctv-proxy --no-default-features --features "tls-ring,tls-webpki-roots" --locked
 
     steps:
       - uses: actions/checkout@v5

@@ -81,12 +81,11 @@ impl ExternalSourceType {
     /// Detect source type from URL
     #[must_use]
     pub fn from_url(url: &str) -> Option<Self> {
-        if url.starts_with("rtmp://") {
-            Some(Self::Rtmp)
-        } else if url.ends_with(".flv") || url.contains(".flv?") {
-            Some(Self::HttpFlv)
-        } else {
-            None
+        let parsed = Url::parse(url).ok()?;
+        match parsed.scheme() {
+            "rtmp" => Some(Self::Rtmp),
+            "http" | "https" if parsed.path().ends_with(".flv") => Some(Self::HttpFlv),
+            _ => None,
         }
     }
 }
@@ -206,7 +205,7 @@ impl ExternalStreamPuller {
                 // Filter out blocked IPs
                 let safe_addrs: Vec<std::net::SocketAddr> = addrs
                     .into_iter()
-                    .filter(|addr| !ssrf_guard.is_ip_blocked(&addr.ip()))
+                    .filter(|addr| !ssrf_guard.is_ip_blocked_for_host(host, &addr.ip()))
                     .collect();
 
                 if safe_addrs.is_empty() {
@@ -928,21 +927,13 @@ impl ExternalStreamPuller {
 fn build_http_flv_client(
     source_url: &str,
     resolved_addr: std::net::SocketAddr,
-    shared_client: Option<&reqwest::Client>,
+    _shared_client: Option<&reqwest::Client>,
     ssrf_guard: &SsrfGuard,
 ) -> Result<reqwest::Client> {
     let parsed = reqwest::Url::parse(source_url)?;
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("HTTP-FLV source URL is missing a host"))?;
-
-    // Public IP literals do not need DNS pinning; reusing the injected shared
-    // client preserves pooling without reintroducing rebinding risk.
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        if let Some(client) = shared_client {
-            return Ok(client.clone());
-        }
-    }
 
     let mut builder = synctv_common::http::SsrfSafeClientBuilder::new()
         .ssrf_guard(ssrf_guard.clone())
@@ -1103,6 +1094,8 @@ mod tests {
                 .is_none()
         );
         assert!(ExternalSourceType::from_url("http://example.com/video.mp4").is_none());
+        assert!(ExternalSourceType::from_url("ftp://example.com/video.flv").is_none());
+        assert!(ExternalSourceType::from_url("file:///tmp/video.flv").is_none());
     }
 
     #[test]
@@ -1112,6 +1105,8 @@ mod tests {
         // m3u8/HLS is not supported
         assert!(validate_source_url("https://live.example.com/app/stream/index.m3u8").is_err());
         assert!(validate_source_url("http://example.com/video.mp4").is_err());
+        assert!(validate_source_url("ftp://example.com/video.flv").is_err());
+        assert!(validate_source_url("file:///tmp/video.flv").is_err());
         assert!(validate_source_url("not-a-url").is_err());
     }
 
@@ -1445,6 +1440,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_external_puller_allows_private_ip_for_allowed_hostname() {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let resolved = std::net::SocketAddr::from(([10, 0, 0, 42], 1935));
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+
+        let puller = ExternalStreamPuller::new_async_with_resolver(
+            "room123".to_string(),
+            "media456".to_string(),
+            "rtmp://internal.example/app/stream".to_string(),
+            sender,
+            guard,
+            move |host, port| {
+                let expected = resolved;
+                async move {
+                    assert_eq!(host, "internal.example");
+                    assert_eq!(port, 1935);
+                    Ok(vec![expected])
+                }
+            },
+        )
+        .await
+        .expect("allowed hostname should be able to resolve to a private service IP");
+
+        assert_eq!(puller.resolved_addr, Some(resolved));
+    }
+
+    #[tokio::test]
+    async fn test_external_puller_blocks_metadata_ip_for_allowed_hostname() {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+
+        let error = match ExternalStreamPuller::new_async_with_resolver(
+            "room123".to_string(),
+            "media456".to_string(),
+            "rtmp://internal.example/app/stream".to_string(),
+            sender,
+            guard,
+            |_, _| async {
+                Ok(vec![std::net::SocketAddr::from((
+                    [169, 254, 169, 254],
+                    1935,
+                ))])
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("hostname allowlist must not allow metadata/link-local targets"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("all resolved IPs"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_build_http_flv_client_pins_hostname_even_with_shared_client() {
         let response =
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
@@ -1488,6 +1544,35 @@ mod tests {
 
         let response = client
             .get(format!("http://example.com:{}/stream.flv", addr.port()))
+            .send()
+            .await
+            .expect("request should return first-hop redirect");
+
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_build_http_flv_client_keeps_redirects_disabled_for_ip_literals() {
+        let response = b"HTTP/1.1 302 Found\r\nLocation: /next.flv\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (addr, server_handle) = spawn_http_response_server(response)
+            .await
+            .expect("test server should start");
+
+        let redirecting_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .expect("redirecting shared client should build");
+        let client = build_http_flv_client(
+            &format!("http://{addr}/stream.flv"),
+            addr,
+            Some(&redirecting_client),
+            &SsrfGuard::disabled(),
+        )
+        .expect("redirect-safe HTTP-FLV client should build for IP literal");
+
+        let response = client
+            .get(format!("http://{addr}/stream.flv"))
             .send()
             .await
             .expect("request should return first-hop redirect");

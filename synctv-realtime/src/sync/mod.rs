@@ -16,7 +16,9 @@ pub use connection_manager::{
     DisconnectSignalMetrics,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
-pub use events::{CacheTarget, NotificationLevel, RealtimeEvent, WebRTCSignalKind};
+pub use events::{
+    CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,
+};
 pub use realtime_manager::{BroadcastResult, RealtimeConfig, RealtimeManager, RealtimeMetrics};
 pub use redis_pubsub::{PublishRequest, RedisPubSub, RedisRealtimeMessageTransportFactory};
 pub use room_hub::{ConnectionId, MessageSender, RoomLifecycleEvent, RoomMessageHub, Subscriber};

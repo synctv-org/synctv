@@ -191,6 +191,16 @@ fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+fn initial_room_settings(settings: Option<RoomSettings>, password_provided: bool) -> RoomSettings {
+    match settings {
+        Some(settings) => settings,
+        None => RoomSettings {
+            require_password: crate::models::room_settings::RequirePassword(password_provided),
+            ..RoomSettings::default()
+        },
+    }
+}
+
 fn merge_json_object_patch(target: &mut serde_json::Value, patch: serde_json::Value) -> Result<()> {
     let serde_json::Value::Object(patch_object) = patch else {
         return Err(Error::InvalidInput(
@@ -1171,11 +1181,9 @@ impl RoomService {
             admin_added_permissions,
             admin_removed_permissions,
         ) = if let Some(member) = member.filter(|member| member.is_active()) {
-            let role_default = self
-                .permission_service
-                .calculate_role_default_permissions(&member.role, &room_settings);
             (
-                member.effective_permissions(role_default),
+                self.permission_service
+                    .effective_member_permissions(member, &room_settings),
                 i32::from(member.role),
                 PermissionBits(member.added_permissions),
                 PermissionBits(member.removed_permissions),
@@ -1367,11 +1375,14 @@ impl RoomService {
             password,
             settings,
         } = command;
+        let room_settings = initial_room_settings(settings, password.is_some());
+        room_settings.validate_permissions()?;
 
         tracing::info!(
             user_id = %created_by,
             room_name = %name,
-            has_password = password.is_some(),
+            password_provided = password.is_some(),
+            requires_password = room_settings.require_password.0,
             "Creating new room"
         );
 
@@ -1403,15 +1414,19 @@ impl RoomService {
                     ));
                 }
             }
-            // `room_must_need_pwd`: if true, rooms must have a password
-            if registry.room_must_need_pwd.get().unwrap_or(false) && password.is_none() {
+            // `room_must_need_pwd`: if true, rooms must require a password.
+            if registry.room_must_need_pwd.get().unwrap_or(false)
+                && !room_settings.require_password.0
+            {
                 tracing::warn!(user_id = %created_by, "Room creation rejected: password required by server policy");
                 return Err(Error::InvalidInput(
                     "Room password is required by server policy".to_string(),
                 ));
             }
-            // `room_must_no_need_pwd`: if true, rooms must NOT have a password
-            if registry.room_must_no_need_pwd.get().unwrap_or(false) && password.is_some() {
+            // `room_must_no_need_pwd`: if true, rooms must NOT require a password.
+            if registry.room_must_no_need_pwd.get().unwrap_or(false)
+                && room_settings.require_password.0
+            {
                 tracing::warn!(user_id = %created_by, "Room creation rejected: passwords not allowed by server policy");
                 return Err(Error::InvalidInput(
                     "Room passwords are not allowed by server policy".to_string(),
@@ -1431,11 +1446,6 @@ impl RoomService {
                 "Room description too long (max 500 characters)".to_string(),
             ));
         }
-
-        // Build settings
-        let mut room_settings = settings.unwrap_or_default();
-        room_settings.require_password =
-            crate::models::room_settings::RequirePassword(password.is_some());
 
         // Hash password outside the transaction (CPU-intensive bcrypt work)
         let pwd_hash = if let Some(ref pwd) = password {
@@ -2982,7 +2992,8 @@ impl RoomService {
         let settings = self.get_room_settings(room_id).await?;
         Ok(self
             .permission_service
-            .calculate_role_default_permissions(&RoomRole::Guest, &settings))
+            .effective_permission_calculator()
+            .role_default(&RoomRole::Guest, &settings))
     }
 
     /// Soft-delete a room.
@@ -5279,6 +5290,7 @@ impl RoomService {
         if !playlist_ids.is_empty()
             && !has_room_permission_in_tx(
                 &mut tx,
+                &self.permission_service,
                 &room_id,
                 &user_id,
                 PermissionBits::REORDER_PLAYLIST,
@@ -5313,6 +5325,7 @@ impl RoomService {
         if has_owned_media
             && !has_room_permission_in_tx(
                 &mut tx,
+                &self.permission_service,
                 &room_id,
                 &user_id,
                 PermissionBits::DELETE_MEDIA_SELF,
@@ -5326,6 +5339,7 @@ impl RoomService {
         if has_foreign_media
             && !has_room_permission_in_tx(
                 &mut tx,
+                &self.permission_service,
                 &room_id,
                 &user_id,
                 PermissionBits::DELETE_MEDIA_ANY,
@@ -6728,6 +6742,7 @@ where
 
 async fn has_room_permission_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    permission_service: &PermissionService,
     room_id: &RoomId,
     user_id: &UserId,
     permission: u64,
@@ -6772,44 +6787,56 @@ async fn has_room_permission_in_tx(
         None => RoomSettings::default(),
     };
 
-    let added = permission_bits_from_signed(row.added_permissions);
-    let removed = permission_bits_from_signed(row.removed_permissions);
-    let admin_added = permission_bits_from_signed(row.admin_added_permissions);
-    let admin_removed = permission_bits_from_signed(row.admin_removed_permissions);
+    let mut member = RoomMember::new(*room_id, *user_id, role);
+    member.added_permissions = permission_bits_from_signed(row.added_permissions)?;
+    member.removed_permissions = permission_bits_from_signed(row.removed_permissions)?;
+    member.admin_added_permissions = permission_bits_from_signed(row.admin_added_permissions)?;
+    member.admin_removed_permissions = permission_bits_from_signed(row.admin_removed_permissions)?;
 
-    let permissions = match role {
-        RoomRole::Creator => PermissionBits::ALL,
-        RoomRole::Admin => {
-            let mut bits = settings
-                .admin_permissions(PermissionBits(PermissionBits::DEFAULT_ADMIN))
-                .0;
-            bits |= admin_added;
-            bits &= !admin_removed;
-            bits
-        }
-        RoomRole::Member => {
-            let mut bits = settings
-                .member_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER))
-                .0;
-            bits |= added;
-            bits &= !removed;
-            bits
-        }
-        RoomRole::Guest => {
-            let mut bits = settings
-                .guest_permissions(PermissionBits(PermissionBits::DEFAULT_GUEST))
-                .0;
-            bits |= added & PermissionBits::GUEST_ASSIGNABLE;
-            bits &= !removed;
-            bits
-        }
-    };
+    let permissions = permission_service
+        .effective_permission_calculator()
+        .effective_for_member(&member, &settings)
+        .0;
 
     Ok((permissions & permission) == permission)
 }
 
-fn permission_bits_from_signed(bits: i64) -> u64 {
-    bits.cast_unsigned()
+fn permission_bits_from_signed(bits: i64) -> Result<u64> {
+    u64::try_from(bits).map_err(|error| {
+        Error::Internal(format!(
+            "Invalid negative permission bitmask loaded from database: {error}"
+        ))
+    })
+}
+
+#[cfg(test)]
+fn effective_room_permissions_from_base(
+    settings: &RoomSettings,
+    member: &RoomMember,
+    global_default: PermissionBits,
+) -> PermissionBits {
+    let calculator = crate::service::permission::EffectivePermissionCalculator::new(
+        crate::service::permission::RuntimePermissionDefaults {
+            admin: global_default,
+            member: global_default,
+            guest: global_default,
+        },
+    );
+    calculator.effective_for_member(member, settings)
+}
+
+#[cfg(test)]
+fn has_room_permission_from_base(
+    settings: &RoomSettings,
+    member: &RoomMember,
+    global_default: PermissionBits,
+    permission: u64,
+) -> bool {
+    if !member.has_permission(permission, PermissionBits(PermissionBits::ALL)) {
+        return false;
+    };
+
+    effective_room_permissions_from_base(settings, member, global_default).has(permission)
 }
 
 async fn collect_target_playlist_nodes_in_tx(
@@ -7253,7 +7280,7 @@ mod tests {
             AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
             MemberAddedPermissions, RequirePassword,
         },
-        PermissionBits, RoomSettings, RoomStatus,
+        PermissionBits, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, UserId,
     };
     use crate::test_helpers::RoomFixture;
     use crate::Error;
@@ -7316,6 +7343,57 @@ mod tests {
         assert!(validate_room_name("My Room").is_ok());
         assert!(validate_room_name("a").is_ok());
         assert!(validate_room_name("Room with spaces and 123").is_ok());
+    }
+
+    #[test]
+    fn test_initial_room_settings_preserves_explicit_require_password() {
+        let settings = RoomSettings {
+            require_password: RequirePassword(false),
+            ..RoomSettings::default()
+        };
+
+        let initialized = super::initial_room_settings(Some(settings), true);
+
+        assert!(
+            !initialized.require_password.0,
+            "explicit settings must remain the source of password-required state"
+        );
+    }
+
+    #[test]
+    fn test_initial_room_settings_uses_password_only_for_default_settings() {
+        let initialized = super::initial_room_settings(None, true);
+
+        assert!(
+            initialized.require_password.0,
+            "without explicit settings, a password in the create request should keep the old default behavior"
+        );
+    }
+
+    #[test]
+    fn test_transaction_permission_helper_uses_runtime_member_default() {
+        let settings = RoomSettings::default();
+        let member = RoomMember::new(
+            RoomId::expect_positive(1),
+            UserId::expect_positive(1),
+            RoomRole::Member,
+        );
+        let runtime_member_default =
+            PermissionBits(PermissionBits::DEFAULT_MEMBER & !PermissionBits::ADD_MEDIA);
+
+        assert!(
+            PermissionBits(PermissionBits::DEFAULT_MEMBER).has(PermissionBits::ADD_MEDIA),
+            "static defaults include ADD_MEDIA, so this test guards against falling back to them"
+        );
+        assert!(
+            !super::has_room_permission_from_base(
+                &settings,
+                &member,
+                runtime_member_default,
+                PermissionBits::ADD_MEDIA,
+            ),
+            "transactional permission checks must honor runtime role defaults"
+        );
     }
 
     #[test]

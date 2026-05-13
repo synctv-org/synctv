@@ -232,10 +232,10 @@ impl MemberService {
         } else {
             RoomSettings::default()
         };
-        let role_defaults = self
+        let effective_permissions = self
             .permission_service
-            .calculate_role_default_permissions(&member.role, &room_settings);
-        let effective_permissions = member.effective_permissions(role_defaults).0;
+            .effective_member_permissions(member, &room_settings)
+            .0;
 
         if let Err(error) = self.notification_service.notify_permission_changed(
             room_id,

@@ -5,7 +5,8 @@ use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::RealtimeOutboxPlaylistEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::RealtimeFanoutService;
+use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
+use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedPlaylistOutboxFanout {
@@ -46,14 +47,22 @@ impl PreparedPlaylistOutboxFanout {
 
 #[derive(Clone)]
 pub struct PreparedPlaylistDeletedFanout {
-    pub event: RealtimeEvent,
-    pub outbox_event: Option<NewRealtimeOutboxEvent>,
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    plan: PreparedRealtimeFanoutPlan,
 }
 
 impl PreparedPlaylistDeletedFanout {
+    #[must_use]
+    pub fn event(&self) -> &RealtimeEvent {
+        self.plan.event()
+    }
+
+    #[must_use]
+    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+        self.plan.cloned_outbox_event()
+    }
+
     pub fn publish_after_outbox_commit(self) {
-        self.realtime_fanout.publish_after_outbox_commit(self.event);
+        self.plan.publish_after_outbox_commit();
     }
 }
 
@@ -154,11 +163,12 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
         playlist_id: &PlaylistId,
     ) -> PreparedPlaylistDeletedFanout {
         let event = playlist_deleted_event(room_id, user_id, username, playlist_id);
-        let outbox_event = self.realtime_fanout.outbox_event(&event);
         PreparedPlaylistDeletedFanout {
-            event,
-            outbox_event,
-            realtime_fanout: self.realtime_fanout.clone(),
+            plan: PreparedRealtimeFanoutPlan::new(
+                self.realtime_fanout.clone(),
+                event,
+                RealtimeDeliveryRequirement::DistributedIfAvailable,
+            ),
         }
     }
 }

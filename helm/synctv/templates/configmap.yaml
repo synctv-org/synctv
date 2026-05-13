@@ -18,6 +18,8 @@ metadata:
 {{- $webauthn := .Values.config.webauthn | default dict }}
 {{- $cache := .Values.config.cache | default dict }}
 {{- $proxySliceCache := .Values.config.proxySliceCache | default dict }}
+{{- $security := .Values.config.security | default dict }}
+{{- $ssrf := $security.ssrf | default dict }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -57,6 +59,22 @@ data:
         {{- end }}
         min_length: {{ .Values.config.publicIds.sqids.minLength | default 12 }}
     {{- end }}
+
+    security:
+      ssrf:
+        allow_private_network_targets: {{ $ssrf.allowPrivateNetworkTargets | default false }}
+        allowed_hosts:{{ if $ssrf.allowedHosts }}
+          {{- range $ssrf.allowedHosts }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- else }} []
+        {{- end }}
+        allowed_ip_ranges:{{ if $ssrf.allowedIpRanges }}
+          {{- range $ssrf.allowedIpRanges }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- else }} []
+        {{- end }}
 
     metrics:
       enabled: {{ .Values.metrics.enabled | default false }}

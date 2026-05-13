@@ -16,6 +16,37 @@ use crate::{
     Error, Result,
 };
 
+fn parse_room_settings_json(room_id: RoomId, value: &str) -> Result<RoomSettings> {
+    serde_json::from_str(value).map_err(|e| {
+        Error::Internal(format!(
+            "Failed to deserialize room settings for room {room_id}: {e}"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_room_settings_json_error_includes_room_id() {
+        let room_id = RoomId::expect_positive(42);
+        let error = parse_room_settings_json(room_id, "not json")
+            .expect_err("invalid settings JSON should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to deserialize room settings"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.to_string().contains(&room_id.to_string()),
+            "error should identify corrupted room: {error}"
+        );
+    }
+}
+
 /// Room settings repository
 #[derive(Clone)]
 pub struct RoomSettingsRepository {
@@ -59,9 +90,7 @@ impl RoomSettingsRepository {
         .await?;
 
         if let Some(row) = row {
-            let settings: RoomSettings = serde_json::from_str(&row.value).map_err(|e| {
-                Error::Internal(format!("Failed to deserialize room settings: {e}"))
-            })?;
+            let settings = parse_room_settings_json(*room_id, &row.value)?;
             Ok((settings, row.version))
         } else {
             // No settings stored, return defaults with version 0
@@ -90,9 +119,7 @@ impl RoomSettingsRepository {
         .await?;
 
         if let Some(row) = row {
-            let settings: RoomSettings = serde_json::from_str(&row.value).map_err(|e| {
-                Error::Internal(format!("Failed to deserialize room settings: {e}"))
-            })?;
+            let settings = parse_room_settings_json(*room_id, &row.value)?;
             Ok(settings)
         } else {
             Ok(RoomSettings::default())
@@ -211,9 +238,8 @@ impl RoomSettingsRepository {
 
         let mut result = std::collections::HashMap::new();
         for row in rows {
-            if let Ok(settings) = serde_json::from_str::<RoomSettings>(&row.value) {
-                result.insert(row.room_id, (settings, row.version));
-            }
+            let settings = parse_room_settings_json(row.room_id, &row.value)?;
+            result.insert(row.room_id, (settings, row.version));
         }
         Ok(result)
     }

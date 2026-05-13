@@ -56,7 +56,9 @@ pub fn resource_invalidations_for_room_event(event: &RealtimeEvent) -> Vec<Resou
             ResourceInvalidation::RoomMembers,
         ],
         RealtimeEvent::UserJoined { .. }
+        | RealtimeEvent::GuestJoined { .. }
         | RealtimeEvent::UserLeft { .. }
+        | RealtimeEvent::GuestLeft { .. }
         | RealtimeEvent::PermissionChanged { .. } => vec![ResourceInvalidation::RoomMembers],
         _ => Vec::new(),
     }
@@ -238,6 +240,38 @@ mod tests {
                 room_id(),
                 user_id(),
             ),
+            vec![ResourceInvalidation::RoomMembers]
+        );
+    }
+
+    #[test]
+    fn guest_presence_events_invalidate_room_members() {
+        let joined = RealtimeEvent::GuestJoined {
+            event_id: "guest-joined".to_string(),
+            room_id: room_id(),
+            guest_id: "gst_test".to_string(),
+            username: "Guest".to_string(),
+            permissions: synctv_core::models::PermissionBits(
+                synctv_core::models::PermissionBits::DEFAULT_GUEST,
+            ),
+            role: synctv_proto::common::RoomMemberRole::Guest as i32,
+            joined_at: Utc::now(),
+            timestamp: Utc::now(),
+        };
+        let left = RealtimeEvent::GuestLeft {
+            event_id: "guest-left".to_string(),
+            room_id: room_id(),
+            guest_id: "gst_test".to_string(),
+            username: "Guest".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(
+            resource_invalidations_for_room_event(&joined),
+            vec![ResourceInvalidation::RoomMembers]
+        );
+        assert_eq!(
+            resource_invalidations_for_room_event(&left),
             vec![ResourceInvalidation::RoomMembers]
         );
     }

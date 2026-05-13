@@ -77,7 +77,7 @@ impl PreparedDeleteEntriesOutboxFanout {
             for media_id in &plan.deleted_media_ids {
                 let prepared = media_fanout
                     .prepare_removed_outbox_fanout(&room_id, &user_id, &username, media_id);
-                if let Some(outbox_event) = prepared.outbox_event.clone() {
+                if let Some(outbox_event) = prepared.cloned_outbox_event() {
                     outbox_events.push(outbox_event);
                 }
                 prepared_events.push(PreparedDeleteEntriesEvent::MediaRemoved(prepared));
@@ -102,7 +102,7 @@ impl PreparedDeleteEntriesOutboxFanout {
                     &username,
                     playlist_id,
                 );
-                if let Some(outbox_event) = prepared.outbox_event.clone() {
+                if let Some(outbox_event) = prepared.cloned_outbox_event() {
                     outbox_events.push(outbox_event);
                 }
                 prepared_events.push(PreparedDeleteEntriesEvent::PlaylistDeleted(prepared));

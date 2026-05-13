@@ -45,7 +45,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: "{{ .Values.redis.standard.image.repository | default "redis" }}:{{ .Values.redis.standard.image.tag | default "8.4.0-bookworm" }}"
+          image: {{ include "synctv.managedImage" (list . .Values.redis.standard.image "redis" "8.4.0-bookworm") | quote }}
           imagePullPolicy: {{ .Values.redis.standard.image.pullPolicy | default "IfNotPresent" }}
           command: ["sh", "-ec"]
           args:

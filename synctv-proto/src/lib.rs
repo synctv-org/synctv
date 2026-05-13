@@ -19,10 +19,16 @@ pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
 
 /// Encoded file descriptor set for client/admin/oauth2 proto definitions.
 /// Used by tonic-reflection to serve gRPC server reflection.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("descriptor.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+    "/descriptor.bin"
+));
 
 /// Encoded file descriptor set for provider proto definitions.
-pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("providers/descriptor.bin");
+pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
+    env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+    "/descriptor.bin"
+));
 
 pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
@@ -39,20 +45,29 @@ pub fn validate<M: prost_reflect::ReflectMessage>(
 // Common shared types (enums, RoomMember)
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod common {
-    include!("synctv.common.rs");
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.common.rs"
+    ));
 }
 
 // Client API
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod client {
-    include!("synctv.client.rs");
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.client.rs"
+    ));
 }
 
 // Admin API
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 pub mod admin {
-    include!("synctv.admin.rs");
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.admin.rs"
+    ));
 }
 
 // Providers
@@ -60,27 +75,42 @@ pub mod admin {
 pub mod providers {
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod common {
-        include!("providers/synctv.provider.common.rs");
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.common.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod rtmp {
-        include!("providers/synctv.provider.rtmp.rs");
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.rtmp.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod bilibili {
-        include!("providers/synctv.provider.bilibili.rs");
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.bilibili.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod alist {
-        include!("providers/synctv.provider.alist.rs");
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.alist.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     pub mod emby {
-        include!("providers/synctv.provider.emby.rs");
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.emby.rs"
+        ));
     }
 }
 

@@ -606,6 +606,7 @@ mod tests {
         assert!(validator.validate("ab").is_err()); // Too short
         assert!(validator.validate("_invalid").is_err()); // Starts with underscore
         assert!(validator.validate("invalid@name").is_err()); // Invalid character
+        assert!(validator.validate("RoOt").is_err()); // Reserved names are case-insensitive
     }
 
     #[test]

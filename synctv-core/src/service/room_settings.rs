@@ -535,7 +535,6 @@ impl RoomSettingsService {
         }
 
         let ids: Vec<RoomId> = room_ids.to_vec();
-        let batch = self.repo.get_batch(&ids).await?;
         let versioned_batch = self.repo.get_batch_with_version(&ids).await?;
 
         // Bulk insert into cache
@@ -547,7 +546,7 @@ impl RoomSettingsService {
                     version: *version,
                 })
                 .unwrap_or(RoomSettingsSnapshot {
-                    settings: batch.get(room_id).cloned().unwrap_or_default(),
+                    settings: RoomSettings::default(),
                     version: 0,
                 });
             self.cache.insert(*room_id, snapshot).await;

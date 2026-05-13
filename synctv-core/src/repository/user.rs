@@ -400,7 +400,7 @@ impl UserRepository {
             SELECT {USER_SELECT_COLUMNS}
             FROM users u
             {AUTH_PASSWORD_CREDENTIAL_JOIN}
-            WHERE u.username = $1 AND u.deleted_at IS NULL
+            WHERE LOWER(u.username) = LOWER($1) AND u.deleted_at IS NULL
             "
         );
         let u = sqlx::query_as::<_, User>(&sql)
@@ -1107,16 +1107,16 @@ impl UserRepository {
 
     /// Check if username exists
     pub async fn username_exists(&self, username: &str) -> Result<bool> {
-        let exists = sqlx::query_scalar!(
+        let exists = sqlx::query_scalar::<_, bool>(
             r#"
             SELECT EXISTS(
                 SELECT 1
                 FROM users
-                WHERE username = $1 AND deleted_at IS NULL
-            ) as "exists!"
+                WHERE LOWER(username) = LOWER($1) AND deleted_at IS NULL
+            )
             "#,
-            username,
         )
+        .bind(username)
         .fetch_one(&self.pool)
         .await?;
 

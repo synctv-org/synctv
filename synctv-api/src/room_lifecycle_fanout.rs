@@ -5,7 +5,8 @@ use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
 use synctv_core::service::RealtimeOutboxRoomEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::RealtimeFanoutService;
+use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
+use crate::runtime::RealtimeDeliveryRequirement;
 
 #[derive(Clone)]
 pub struct PreparedRoomCreatedOutboxFanout {
@@ -54,14 +55,27 @@ impl PreparedRoomCreatedOutboxFanout {
 
 #[derive(Clone)]
 pub struct PreparedRoomLifecycleOutboxFanout {
-    pub event: RealtimeEvent,
-    pub outbox_event: Option<NewRealtimeOutboxEvent>,
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    plan: PreparedRealtimeFanoutPlan,
 }
 
 impl PreparedRoomLifecycleOutboxFanout {
+    #[must_use]
+    pub fn event(&self) -> &RealtimeEvent {
+        self.plan.event()
+    }
+
+    #[must_use]
+    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+        self.plan.cloned_outbox_event()
+    }
+
+    #[must_use]
+    pub fn into_event(self) -> RealtimeEvent {
+        self.plan.into_event()
+    }
+
     pub fn publish_after_outbox_commit(self) {
-        self.realtime_fanout.publish_after_outbox_commit(self.event);
+        self.plan.publish_after_outbox_commit();
     }
 }
 
@@ -133,11 +147,12 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
         deleted_by: &UserId,
     ) -> PreparedRoomLifecycleOutboxFanout {
         let event = room_deleted_event(room_id, deleted_by);
-        let outbox_event = self.realtime_fanout.outbox_event(&event);
         PreparedRoomLifecycleOutboxFanout {
-            event,
-            outbox_event,
-            realtime_fanout: self.realtime_fanout.clone(),
+            plan: PreparedRealtimeFanoutPlan::new(
+                self.realtime_fanout.clone(),
+                event,
+                RealtimeDeliveryRequirement::DistributedIfAvailable,
+            ),
         }
     }
 
@@ -147,11 +162,12 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
         banned_by: &UserId,
     ) -> PreparedRoomLifecycleOutboxFanout {
         let event = room_banned_event(room_id, banned_by);
-        let outbox_event = self.realtime_fanout.outbox_event(&event);
         PreparedRoomLifecycleOutboxFanout {
-            event,
-            outbox_event,
-            realtime_fanout: self.realtime_fanout.clone(),
+            plan: PreparedRealtimeFanoutPlan::new(
+                self.realtime_fanout.clone(),
+                event,
+                RealtimeDeliveryRequirement::DistributedIfAvailable,
+            ),
         }
     }
 
@@ -162,11 +178,12 @@ impl RoomLifecycleFanoutService for DefaultRoomLifecycleFanoutService {
         triggered_by: &UserId,
     ) -> PreparedRoomLifecycleOutboxFanout {
         let event = room_owner_inactive_event(room_id, owner_id, triggered_by);
-        let outbox_event = self.realtime_fanout.outbox_event(&event);
         PreparedRoomLifecycleOutboxFanout {
-            event,
-            outbox_event,
-            realtime_fanout: self.realtime_fanout.clone(),
+            plan: PreparedRealtimeFanoutPlan::new(
+                self.realtime_fanout.clone(),
+                event,
+                RealtimeDeliveryRequirement::DistributedIfAvailable,
+            ),
         }
     }
 }

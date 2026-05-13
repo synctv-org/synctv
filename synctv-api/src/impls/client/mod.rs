@@ -418,8 +418,7 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             jwt_service.clone(),
         )));
-        let realtime_fanout =
-            default_realtime_fanout_service(None, config.cluster_runtime_enabled());
+        let realtime_fanout = default_realtime_fanout_service(None, false);
         let room_settings_fanout =
             default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(
@@ -481,8 +480,7 @@ impl ClientApiImpl {
         let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
             config.jwt_service.clone(),
         )));
-        let realtime_fanout =
-            default_realtime_fanout_service(None, config.config.cluster_runtime_enabled());
+        let realtime_fanout = default_realtime_fanout_service(None, false);
         let room_settings_fanout =
             default_room_settings_fanout_service(realtime_fanout.clone(), None);
         let membership_event_fanout = default_membership_event_fanout_service(

@@ -9,22 +9,32 @@ use synctv_core::service::{
 };
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::realtime_fanout::{publish_best_effort, RealtimeFanoutService};
-use crate::runtime::RealtimeEventService;
+use crate::realtime_fanout::{
+    publish_best_effort, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+};
+use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 
 type MediaBatchEventsBuilder = Arc<dyn Fn(&[Media]) -> Vec<RealtimeEvent> + Send + Sync>;
 type MediaIdsEventsBuilder = Arc<dyn Fn(&[MediaId]) -> Vec<RealtimeEvent> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct PreparedMediaRemovedFanout {
-    pub event: RealtimeEvent,
-    pub outbox_event: Option<NewRealtimeOutboxEvent>,
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    plan: PreparedRealtimeFanoutPlan,
 }
 
 impl PreparedMediaRemovedFanout {
+    #[must_use]
+    pub fn event(&self) -> &RealtimeEvent {
+        self.plan.event()
+    }
+
+    #[must_use]
+    pub fn cloned_outbox_event(&self) -> Option<NewRealtimeOutboxEvent> {
+        self.plan.cloned_outbox_event()
+    }
+
     pub fn publish_after_outbox_commit(self) {
-        self.realtime_fanout.publish_after_outbox_commit(self.event);
+        self.plan.publish_after_outbox_commit();
     }
 }
 
@@ -367,11 +377,12 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         media_id: &MediaId,
     ) -> PreparedMediaRemovedFanout {
         let event = media_removed_event(room_id, user_id, username, media_id);
-        let outbox_event = self.realtime_fanout.outbox_event(&event);
         PreparedMediaRemovedFanout {
-            event,
-            outbox_event,
-            realtime_fanout: self.realtime_fanout.clone(),
+            plan: PreparedRealtimeFanoutPlan::new(
+                self.realtime_fanout.clone(),
+                event,
+                RealtimeDeliveryRequirement::DistributedIfAvailable,
+            ),
         }
     }
 

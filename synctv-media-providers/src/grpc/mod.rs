@@ -1,19 +1,29 @@
 //! gRPC Provider Services
 //!
 //! This module contains gRPC server implementations for all providers.
-//! Generated code is committed under `src/proto/` (same pattern as `synctv-proto`).
+//! Generated code is included from Cargo `OUT_DIR`; `src/proto/` is updated only
+//! by the explicit proto regeneration workflow.
 
 // Include generated protobuf code
 pub mod alist {
-    include!("../proto/synctv.media.alist.rs");
+    include!(concat!(
+        env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
+        "/synctv.media.alist.rs"
+    ));
 }
 
 pub mod bilibili {
-    include!("../proto/synctv.media.bilibili.rs");
+    include!(concat!(
+        env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
+        "/synctv.media.bilibili.rs"
+    ));
 }
 
 pub mod emby {
-    include!("../proto/synctv.media.emby.rs");
+    include!(concat!(
+        env!("SYNCTV_MEDIA_PROVIDERS_PROTO_OUT_DIR"),
+        "/synctv.media.emby.rs"
+    ));
 }
 
 // Shared validation

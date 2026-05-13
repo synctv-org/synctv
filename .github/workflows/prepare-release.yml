@@ -42,11 +42,7 @@ jobs:
         run: ./scripts/set-release-version.sh "${{ steps.version.outputs.value }}"
 
       - name: Validate Helm chart
-        run: |
-          helm lint ./helm/synctv
-          helm template synctv ./helm/synctv --namespace synctv >/tmp/synctv-default.yaml
-          helm template synctv ./helm/synctv --namespace synctv --set ingress.grpc.enabled=true >/tmp/synctv-grpc.yaml
-          helm template synctv ./helm/synctv --namespace synctv --set postgresql.mode=kubeblocks --set redis.mode=kubeblocks >/tmp/synctv-kubeblocks.yaml
+        run: ./scripts/validate-helm.sh
 
       - name: Create release preparation PR
         uses: peter-evans/create-pull-request@v7
@@ -61,3 +57,4 @@ jobs:
             This updates:
             - Cargo workspace version and Cargo.lock
             - Helm chart version and appVersion
+            - Docker Compose and docs default app image version

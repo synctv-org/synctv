@@ -18,7 +18,7 @@ use std::time::Duration;
 use synctv_common::ExecutionControl;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{PermissionBits, RoomId, RoomStatus, UserId, UserStatus},
+    models::{PermissionBits, RoomId, RoomMember, RoomSettings, RoomStatus, UserId, UserStatus},
     service::{
         ChatService, ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService,
     },
@@ -232,6 +232,21 @@ impl RealtimeJoinError {
 impl From<String> for RealtimeJoinError {
     fn from(message: String) -> Self {
         classify_realtime_join_error_message(message)
+    }
+}
+
+impl From<crate::impls::ApiError> for RealtimeJoinError {
+    fn from(error: crate::impls::ApiError) -> Self {
+        let message = error.message().to_string();
+        match error.classify() {
+            crate::impls::ErrorKind::RateLimited => Self::RateLimited(message),
+            crate::impls::ErrorKind::ServiceUnavailable | crate::impls::ErrorKind::Timeout => {
+                Self::ServiceUnavailable(message)
+            }
+            crate::impls::ErrorKind::PermissionDenied
+            | crate::impls::ErrorKind::Unauthenticated => Self::PermissionDenied(message),
+            _ => Self::Internal(message),
+        }
     }
 }
 
@@ -566,6 +581,8 @@ pub struct StreamMessageHandler {
     /// subscribed in `RoomMessageHub`.
     pending_room_event_rx:
         Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RealtimeEvent>>>>,
+    /// Authenticated member/settings snapshot validated during `pre_join()`.
+    pending_initial_join_state: Arc<tokio::sync::Mutex<Option<InitialRealtimeJoinState>>>,
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
@@ -605,6 +622,7 @@ impl Clone for StreamMessageHandler {
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
             membership_cache: Arc::clone(&self.membership_cache),
             pending_room_event_rx: Arc::clone(&self.pending_room_event_rx),
+            pending_initial_join_state: Arc::clone(&self.pending_initial_join_state),
             concurrency_config: Arc::clone(&self.concurrency_config),
             last_progress_write: Arc::clone(&self.last_progress_write),
             heartbeat_schedule: self.heartbeat_schedule,
@@ -849,6 +867,7 @@ impl StreamMessageHandler {
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             membership_cache,
             pending_room_event_rx: Arc::new(tokio::sync::Mutex::new(None)),
+            pending_initial_join_state: Arc::new(tokio::sync::Mutex::new(None)),
             concurrency_config,
             last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
             heartbeat_schedule: HeartbeatSchedule::production(),
@@ -1146,11 +1165,17 @@ impl StreamMessageHandler {
         }
     }
 
-    async fn final_realtime_admission_denial_reason(
+    async fn prepare_initial_realtime_join_state(
         &self,
-    ) -> Result<Option<String>, RealtimeJoinError> {
+    ) -> Result<Result<InitialRealtimeJoinState, String>, RealtimeJoinError> {
         if self.principal.is_guest() {
-            return self.guest_admission_denial_reason().await;
+            return Ok(match self.guest_admission_denial_reason().await? {
+                Some(reason) => Err(reason),
+                None => Ok(InitialRealtimeJoinState {
+                    member: None,
+                    room_settings: None,
+                }),
+            });
         }
 
         let user = self
@@ -1171,12 +1196,12 @@ impl StreamMessageHandler {
         })?;
 
         if user.status == UserStatus::Banned {
-            return Ok(Some(
-                "User is no longer allowed to use real-time messaging".to_string(),
+            return Ok(Err(
+                "User is no longer allowed to use real-time messaging".to_string()
             ));
         }
         if user.deleted_at.is_some() {
-            return Ok(Some("User account is no longer available".to_string()));
+            return Ok(Err("User account is no longer available".to_string()));
         }
 
         let room = self.room_service.get_room(&self.room_id).await.map_err(|error| {
@@ -1192,11 +1217,11 @@ impl StreamMessageHandler {
         })?;
 
         if room.is_banned {
-            return Ok(Some("This room has been banned".to_string()));
+            return Ok(Err("This room has been banned".to_string()));
         }
         if room.status == RoomStatus::Closed {
-            return Ok(Some(
-                "This room is closed and not accepting new connections".to_string(),
+            return Ok(Err(
+                "This room is closed and not accepting new connections".to_string()
             ));
         }
 
@@ -1204,21 +1229,40 @@ impl StreamMessageHandler {
             probe_realtime_membership_access_with_room(&self.room_service, &room, &self.user_id)
                 .await;
         if let Some(reason) = initial_realtime_join_denial_reason(&membership_lookup) {
-            return Ok(Some(reason));
+            return Ok(Err(reason));
         }
-        if let Err(error) = membership_lookup {
-            tracing::warn!(
-                error = %error,
-                room_id = %self.room_id,
-                user_id = %self.user_id,
-                "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
-            );
-            return Err(RealtimeJoinError::ServiceUnavailable(
-                "Membership re-validation temporarily unavailable".to_string(),
-            ));
-        }
+        let member = match membership_lookup {
+            Ok(RealtimeMembershipAccess::Allowed(member)) => member,
+            Ok(RealtimeMembershipAccess::Denied(reason)) => return Ok(Err(reason)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id,
+                    user_id = %self.user_id,
+                    "Failed to re-validate membership during pre_join; rejecting connection because final admission must fail closed"
+                );
+                return Err(RealtimeJoinError::ServiceUnavailable(
+                    "Membership re-validation temporarily unavailable".to_string(),
+                ));
+            }
+        };
 
-        Ok(None)
+        let room_settings = self.room_service.get_room_settings(&self.room_id).await.map_err(
+            |error| {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id,
+                    user_id = %self.user_id,
+                    "Failed to load room settings during pre_join; rejecting connection because permission snapshots must fail closed"
+                );
+                RealtimeJoinError::from(crate::impls::ApiError::from(error))
+            },
+        )?;
+
+        Ok(Ok(InitialRealtimeJoinState {
+            member: Some(member),
+            room_settings: Some(room_settings),
+        }))
     }
 
     /// Register the connection and join the room, enforcing connection limits.
@@ -1260,8 +1304,8 @@ impl StreamMessageHandler {
             return Err(classify_realtime_join_error_message(e));
         }
 
-        let denial_reason = match self.final_realtime_admission_denial_reason().await {
-            Ok(reason) => reason,
+        let initial_join_state = match self.prepare_initial_realtime_join_state().await {
+            Ok(state) => state,
             Err(error) => {
                 self.skip_cleanup_user_left
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1271,13 +1315,28 @@ impl StreamMessageHandler {
                 return Err(error);
             }
         };
-        if let Some(reason) = denial_reason {
+        let initial_join_state = match initial_join_state {
+            Ok(state) => state,
+            Err(reason) => {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.connection_service
+                    .unregister(&self.connection_id)
+                    .await;
+                return Err(RealtimeJoinError::PermissionDenied(reason));
+            }
+        };
+
+        if let Err(error) = self
+            .cache_initial_realtime_join_state(initial_join_state)
+            .await
+        {
             self.skip_cleanup_user_left
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.connection_service
                 .unregister(&self.connection_id)
                 .await;
-            return Err(RealtimeJoinError::PermissionDenied(reason.clone()));
+            return Err(error);
         }
 
         if let Err(error) = self.cache_room_event_subscription().await {
@@ -1289,6 +1348,20 @@ impl StreamMessageHandler {
             return Err(error);
         }
 
+        Ok(())
+    }
+
+    async fn cache_initial_realtime_join_state(
+        &self,
+        state: InitialRealtimeJoinState,
+    ) -> Result<(), RealtimeJoinError> {
+        let mut pending_state = self.pending_initial_join_state.lock().await;
+        if pending_state.is_some() {
+            return Err(RealtimeJoinError::Internal(
+                "Initial realtime join state is already cached".to_string(),
+            ));
+        }
+        *pending_state = Some(state);
         Ok(())
     }
 
@@ -1378,47 +1451,21 @@ impl StreamMessageHandler {
             .as_ref()
             .map(|svc| svc.subscribe_events());
 
-        // Fetch member data once and reuse it for the join payload and realtime event.
-        let member_data = if self.principal.is_guest() {
-            None
-        } else {
-            let member_lookup =
-                probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
-                    .await;
-            if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
-                tracing::info!(
-                    room_id = %self.room_id,
-                    user_id = %self.user_id,
-                    reason,
-                    "Aborting real-time join because membership was revoked before initialization completed"
-                );
-                self.skip_cleanup_user_left
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.cleanup(&room_id_str).await;
-                return Ok(());
-            }
-            match member_lookup {
-                Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
-                Ok(RealtimeMembershipAccess::Denied(_)) => None,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %self.room_id,
-                        user_id = %self.user_id,
-                        "Failed to fetch membership during initial real-time join; using fallback member payload"
-                    );
-                    None
-                }
-            }
-        };
+        // Fetch member data and room settings once and reuse them for the join
+        // payload and realtime event. Authenticated users must have both so
+        // outbound permission snapshots cannot silently fall back to role-only
+        // defaults when a read fails.
+        let initial_join = self.take_initial_realtime_join_state(&room_id_str).await?;
 
         // Send initial user joined notification.
         // If the transport is already gone here, we still need to run cleanup()
         // because pre_join() already registered the connection and subscribed state
         // will be established below.
-        if let Err(error) =
-            stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref()))
-        {
+        if let Err(error) = stream.send(self.create_user_joined_message(
+            &room_id_str,
+            initial_join.member.as_ref(),
+            initial_join.room_settings.as_ref(),
+        )) {
             tracing::error!(
                 "Failed to send initial UserJoined message in run_after_join(): {error}"
             );
@@ -1429,7 +1476,11 @@ impl StreamMessageHandler {
         }
 
         // Broadcast UserJoined event to other replicas
-        self.broadcast_user_joined(member_data.as_ref()).await;
+        self.broadcast_user_joined(
+            initial_join.member.as_ref(),
+            initial_join.room_settings.as_ref(),
+        )
+        .await;
 
         // Create heartbeat interval OUTSIDE the loop so it doesn't reset
         // when other select! branches fire.
@@ -2009,6 +2060,7 @@ impl StreamMessageHandler {
         &self,
         room_id: &str,
         member: Option<&synctv_core::models::RoomMember>,
+        room_settings: Option<&synctv_core::models::RoomSettings>,
     ) -> ServerMessage {
         use crate::proto::client::server_message::Message;
         use crate::proto::client::UserJoinedRoom;
@@ -2033,7 +2085,13 @@ impl StreamMessageHandler {
             } else {
                 match member {
                     Some(member) => {
-                        let effective = member.effective_permissions(member.role.permissions());
+                        let settings = room_settings.expect(
+                        "authenticated UserJoined payload requires room settings for permissions",
+                    );
+                        let effective = self
+                            .room_service
+                            .permission_service()
+                            .effective_member_permissions(member, settings);
                         let role = room_role_to_proto(member.role);
                         (
                             role,
@@ -2091,7 +2149,11 @@ impl StreamMessageHandler {
     }
 
     /// Broadcast `UserJoined` event to cluster replicas.
-    async fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
+    async fn broadcast_user_joined(
+        &self,
+        member: Option<&synctv_core::models::RoomMember>,
+        room_settings: Option<&synctv_core::models::RoomSettings>,
+    ) {
         match self
             .connection_service
             .has_existing_presence_for_user_in_room_distributed(
@@ -2130,7 +2192,13 @@ impl StreamMessageHandler {
         } else {
             match member {
                 Some(member) => {
-                    let effective = member.effective_permissions(member.role.permissions());
+                    let settings = room_settings.expect(
+                        "authenticated UserJoined broadcast requires room settings for permissions",
+                    );
+                    let effective = self
+                        .room_service
+                        .permission_service()
+                        .effective_member_permissions(member, settings);
                     let role = room_role_to_proto(member.role);
                     (role, effective)
                 }
@@ -2491,36 +2559,18 @@ impl StreamMessageHandler {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let room_id_str = self.public_room_id();
 
-        // Fetch member data once and reuse it for the join payload and realtime event.
-        let member_data = if self.principal.is_guest() {
-            None
-        } else {
-            let member_lookup =
-                probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
-                    .await;
-            if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
-                self.skip_cleanup_user_left
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.cleanup(&room_id_str).await;
-                return Err(reason.clone());
-            }
-            match member_lookup {
-                Ok(RealtimeMembershipAccess::Allowed(member)) => Some(member),
-                Ok(RealtimeMembershipAccess::Denied(_)) => None,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %self.room_id,
-                        user_id = %self.user_id,
-                        "Failed to fetch membership during start(); using fallback member payload"
-                    );
-                    None
-                }
-            }
-        };
+        // Fetch member data and room settings once and reuse them for the join
+        // payload and realtime event. Authenticated users must have both so
+        // outbound permission snapshots cannot silently fall back to role-only
+        // defaults when a read fails.
+        let initial_join = self.take_initial_realtime_join_state(&room_id_str).await?;
 
         // Send initial UserJoined message to the client (mirrors run() behavior)
-        let initial_msg = self.create_user_joined_message(&room_id_str, member_data.as_ref());
+        let initial_msg = self.create_user_joined_message(
+            &room_id_str,
+            initial_join.member.as_ref(),
+            initial_join.room_settings.as_ref(),
+        );
         if let Err(e) = self.sender.send(initial_msg) {
             tracing::error!("Failed to send initial UserJoined message in start(): {e}");
             self.skip_cleanup_user_left
@@ -2531,7 +2581,11 @@ impl StreamMessageHandler {
             // connection has observed the initial join payload locally.
             // Otherwise we can create a transient ghost-presence event for a
             // connection that never became usable.
-            self.broadcast_user_joined(member_data.as_ref()).await;
+            self.broadcast_user_joined(
+                initial_join.member.as_ref(),
+                initial_join.room_settings.as_ref(),
+            )
+            .await;
         }
 
         // Use bounded channel to prevent memory exhaustion from fast clients
@@ -4233,8 +4287,97 @@ fn rebuild_leave_event_for_retry(event: &RealtimeEvent) -> RealtimeEvent {
 
 #[derive(Debug)]
 enum RealtimeMembershipAccess {
-    Allowed(synctv_core::models::RoomMember),
+    Allowed(RoomMember),
     Denied(String),
+}
+
+struct InitialRealtimeJoinState {
+    member: Option<RoomMember>,
+    room_settings: Option<RoomSettings>,
+}
+
+impl StreamMessageHandler {
+    async fn take_initial_realtime_join_state(
+        &self,
+        room_id_str: &str,
+    ) -> Result<InitialRealtimeJoinState, String> {
+        if let Some(state) = self.pending_initial_join_state.lock().await.take() {
+            return Ok(state);
+        }
+
+        if self.principal.is_guest() {
+            return Ok(InitialRealtimeJoinState {
+                member: None,
+                room_settings: None,
+            });
+        }
+
+        let member_lookup =
+            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
+                .await;
+        if let Some(reason) = initial_realtime_join_denial_reason(&member_lookup) {
+            tracing::info!(
+                room_id = %self.room_id,
+                user_id = %self.user_id,
+                reason,
+                "Aborting real-time join because membership was revoked before initialization completed"
+            );
+            self.skip_cleanup_user_left
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.cleanup(room_id_str).await;
+            return Err(reason);
+        }
+
+        let member = match member_lookup {
+            Ok(RealtimeMembershipAccess::Allowed(member)) => member,
+            Ok(RealtimeMembershipAccess::Denied(reason)) => {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cleanup(room_id_str).await;
+                return Err(reason);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id,
+                    user_id = %self.user_id,
+                    "Failed to fetch membership during initial real-time join"
+                );
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cleanup(room_id_str).await;
+                return Err(error.to_string());
+            }
+        };
+
+        let room_settings = self
+            .room_service
+            .get_room_settings(&self.room_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    error = %error,
+                    room_id = %self.room_id,
+                    user_id = %self.user_id,
+                    "Failed to fetch room settings during initial real-time join"
+                );
+                error.to_string()
+            });
+        let room_settings = match room_settings {
+            Ok(room_settings) => room_settings,
+            Err(error) => {
+                self.skip_cleanup_user_left
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.cleanup(room_id_str).await;
+                return Err(error);
+            }
+        };
+
+        Ok(InitialRealtimeJoinState {
+            member: Some(member),
+            room_settings: Some(room_settings),
+        })
+    }
 }
 
 async fn probe_realtime_membership_access_with_room(

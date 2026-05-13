@@ -325,10 +325,12 @@ pub(crate) fn normalize_created_room_settings(
     settings: Option<&synctv_core::models::RoomSettings>,
     has_password: bool,
 ) -> synctv_core::models::RoomSettings {
-    let mut room_settings = settings.cloned().unwrap_or_default();
-    room_settings.require_password =
-        synctv_core::models::room_settings::RequirePassword(has_password);
-    room_settings
+    settings
+        .cloned()
+        .unwrap_or_else(|| synctv_core::models::RoomSettings {
+            require_password: synctv_core::models::room_settings::RequirePassword(has_password),
+            ..synctv_core::models::RoomSettings::default()
+        })
 }
 
 #[must_use]
@@ -483,9 +485,22 @@ pub(crate) fn playback_state_to_proto(
     }
 }
 
+#[cfg(test)]
 pub(super) fn room_member_to_proto(
     member: &synctv_core::models::RoomMemberWithUser,
     role_default: synctv_core::models::PermissionBits,
+    public_id_codec: &crate::PublicIdCodec,
+) -> synctv_proto::common::RoomMember {
+    room_member_to_proto_with_permissions(
+        member,
+        member.effective_permissions(role_default),
+        public_id_codec,
+    )
+}
+
+pub(crate) fn room_member_to_proto_with_permissions(
+    member: &synctv_core::models::RoomMemberWithUser,
+    permissions: synctv_core::models::PermissionBits,
     public_id_codec: &crate::PublicIdCodec,
 ) -> synctv_proto::common::RoomMember {
     synctv_proto::common::RoomMember {
@@ -497,7 +512,7 @@ pub(super) fn room_member_to_proto(
             .expect("positive user ID must encode"),
         username: member.username.clone(),
         role: room_role_to_proto(member.role),
-        permissions: member.effective_permissions(role_default).0,
+        permissions: permissions.0,
         status: member_status_to_proto(member.status),
         added_permissions: member.added_permissions,
         removed_permissions: member.removed_permissions,
@@ -518,16 +533,16 @@ pub(super) fn room_member_to_proto(
 /// This eliminates the duplicated pattern of:
 ///   1. Fetch room settings
 ///   2. For each member: `calculate_role_default_permissions` + `room_member_to_proto`
-pub(super) fn members_to_proto(
+pub(crate) fn members_to_proto(
     members: &[synctv_core::models::RoomMemberWithUser],
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
     public_id_codec: &crate::PublicIdCodec,
 ) -> Vec<synctv_proto::common::RoomMember> {
     map_slice_preserve_order(members, |m| {
-        let role_default =
-            permission_service.calculate_role_default_permissions(&m.role, room_settings);
-        room_member_to_proto(m, role_default, public_id_codec)
+        let permissions =
+            permission_service.effective_member_with_user_permissions(m, room_settings);
+        room_member_to_proto_with_permissions(m, permissions, public_id_codec)
     })
 }
 
@@ -995,13 +1010,14 @@ mod tests {
     fn normalize_created_room_settings_preserves_other_fields() {
         let source = synctv_core::models::RoomSettings {
             allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true),
+            require_password: synctv_core::models::room_settings::RequirePassword(true),
             ..synctv_core::models::RoomSettings::default()
         };
 
         let settings = normalize_created_room_settings(Some(&source), false);
 
         assert!(settings.allow_guest_join.0);
-        assert!(!settings.require_password.0);
+        assert!(settings.require_password.0);
     }
 
     #[test]

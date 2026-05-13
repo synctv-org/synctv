@@ -1,5 +1,57 @@
+use std::env;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+
+const MAIN_GENERATED_FILES: &[&str] = &[
+    "descriptor.bin",
+    "buf.validate.rs",
+    "synctv.common.rs",
+    "synctv.client.rs",
+    "synctv.admin.rs",
+];
+
+const PROVIDER_GENERATED_FILES: &[&str] = &[
+    "descriptor.bin",
+    "buf.validate.rs",
+    "synctv.provider.alist.rs",
+    "synctv.provider.bilibili.rs",
+    "synctv.provider.common.rs",
+    "synctv.provider.emby.rs",
+    "synctv.provider.rtmp.rs",
+];
+
+fn build_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    env::var_os("OUT_DIR").map(PathBuf::from).ok_or_else(|| {
+        Box::new(io::Error::new(
+            io::ErrorKind::NotFound,
+            "OUT_DIR is not set by Cargo",
+        )) as Box<dyn std::error::Error>
+    })
+}
+
+fn regen_proto_enabled() -> bool {
+    env::var("SYNCTV_REGEN_PROTO")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn sync_generated_files(
+    source_root: &Path,
+    destination_root: &Path,
+    files: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(destination_root)?;
+    for file in files {
+        let source = source_root.join(file);
+        let destination = destination_root.join(file);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&source, &destination)?;
+    }
+    Ok(())
+}
 
 fn match_count_as_i32(line: &str, needle: char) -> Result<i32, Box<dyn std::error::Error>> {
     Ok(i32::try_from(line.matches(needle).count())?)
@@ -51,6 +103,22 @@ fn collect_openapi_schema_aliases(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    let out_dir = build_out_dir()?;
+    let main_out_dir = out_dir.join("main");
+    let provider_out_dir = out_dir.join("providers");
+    fs::create_dir_all(&main_out_dir)?;
+    fs::create_dir_all(&provider_out_dir)?;
+
+    println!(
+        "cargo:rustc-env=SYNCTV_PROTO_MAIN_OUT_DIR={}",
+        main_out_dir.display()
+    );
+    println!(
+        "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
+        provider_out_dir.display()
+    );
+    println!("cargo:rerun-if-env-changed=SYNCTV_REGEN_PROTO");
+
     let main_proto_files = [
         "proto/client.proto",
         "proto/admin.proto",
@@ -61,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_config.protoc_executable(protoc.clone());
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::DESCRIPTOR_POOL")
-        .file_descriptor_set_path("src/descriptor.bin")
+        .file_descriptor_set_path(main_out_dir.join("descriptor.bin"))
         .configure(&mut prost_config, &main_proto_files, &main_proto_includes)?;
     let main_schema_aliases = [
         "proto/client.proto",
@@ -368,7 +436,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     main_builder = main_builder
         .build_server(true)
         .build_client(true)
-        .file_descriptor_set_path("src/descriptor.bin")
+        .file_descriptor_set_path(main_out_dir.join("descriptor.bin"))
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             ".",
@@ -418,7 +486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (path, attr) in &main_schema_aliases {
         main_builder = main_builder.type_attribute(path, attr);
     }
-    main_builder.out_dir("src").compile_with_config(
+    main_builder.out_dir(&main_out_dir).compile_with_config(
         prost_config,
         &main_proto_files,
         &main_proto_includes,
@@ -428,7 +496,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     provider_prost_config.protoc_executable(protoc);
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::PROVIDERS_DESCRIPTOR_POOL")
-        .file_descriptor_set_path("src/providers/descriptor.bin")
+        .file_descriptor_set_path(provider_out_dir.join("descriptor.bin"))
         .configure(
             &mut provider_prost_config,
             &[
@@ -462,7 +530,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     provider_builder = provider_builder
         .build_server(true)
         .build_client(true)
-        .file_descriptor_set_path("src/providers/descriptor.bin")
+        .file_descriptor_set_path(provider_out_dir.join("descriptor.bin"))
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             ".",
@@ -545,7 +613,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider_builder = provider_builder.type_attribute(path, attr);
     }
     provider_builder
-        .out_dir("src/providers")
+        .out_dir(&provider_out_dir)
         .compile_with_config(
             provider_prost_config,
             &[
@@ -562,6 +630,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["."],
         )?;
+
+    if regen_proto_enabled() {
+        sync_generated_files(&main_out_dir, Path::new("src"), MAIN_GENERATED_FILES)?;
+        sync_generated_files(
+            &provider_out_dir,
+            Path::new("src/providers"),
+            PROVIDER_GENERATED_FILES,
+        )?;
+    }
 
     Ok(())
 }

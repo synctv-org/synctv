@@ -1142,7 +1142,7 @@ async fn test_login_accepts_email_identifier_with_password() {
             .expect("Email identifier login should succeed"),
     );
 
-    assert_eq!(logged_in_user.username, username);
+    assert_eq!(logged_in_user.username, username.to_lowercase());
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
 }
@@ -1965,6 +1965,61 @@ async fn test_set_password_succeeds_even_when_family_revocation_store_fails() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_username_registration_and_login_are_case_insensitive() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(&pool);
+    let suffix = synctv_common::snanoid!(6);
+
+    let (user, _, _) = service
+        .register(
+            format!("CaseUser_{suffix}"),
+            Some(format!("case_user_{suffix}@test.com")),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    assert_eq!(
+        user.username,
+        format!("caseuser_{}", suffix.to_lowercase()),
+        "Stored username should use the canonical lowercase form"
+    );
+
+    let duplicate = service
+        .register(
+            format!("CASEUSER_{suffix}"),
+            Some(format!("case_user_dup_{suffix}@test.com")),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(duplicate, Err(Error::AlreadyExists(_))),
+        "Case variants of the same username must collide"
+    );
+
+    let (logged_in_user, _, _) = expect_complete_login(
+        service
+            .login(
+                format!("cAsEuSeR_{suffix}"),
+                "StrongPass1".to_string(),
+                None,
+            )
+            .await
+            .expect("Login should accept case variants of the canonical username"),
+    );
+    assert_eq!(logged_in_user.id, user.id);
+
+    let fetched = service
+        .get_user_by_username(&format!("CASEUSER_{suffix}"))
+        .await
+        .expect("Case-insensitive username lookup should find the user");
+    assert_eq!(fetched.id, user.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_profile_updates_username_and_password_atomically() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(&pool);
@@ -1987,14 +2042,14 @@ async fn test_update_profile_updates_username_and_password_atomically() {
     let updated_user = service
         .update_profile(
             &user.id,
-            Some(new_username.clone()),
+            Some(new_username.to_uppercase()),
             Some("StrongPass1".to_string()),
             Some("NewStrongPass1".to_string()),
         )
         .await
         .expect("Combined profile update should succeed");
 
-    assert_eq!(updated_user.username, new_username);
+    assert_eq!(updated_user.username, new_username.to_lowercase());
     assert_eq!(
         updated_user.password_version,
         user.password_version + 1,
@@ -2010,7 +2065,11 @@ async fn test_update_profile_updates_username_and_password_atomically() {
     );
 
     let login_new = service
-        .login(new_username, "NewStrongPass1".to_string(), None)
+        .login(
+            new_username.to_uppercase(),
+            "NewStrongPass1".to_string(),
+            None,
+        )
         .await;
     assert!(
         login_new.is_ok(),
@@ -2058,7 +2117,8 @@ async fn test_update_profile_rolls_back_username_when_password_verification_fail
         .await
         .expect("User should still exist after rejected update");
     assert_eq!(
-        persisted.username, old_username,
+        persisted.username,
+        old_username.to_lowercase(),
         "Username must not be partially committed when password verification fails"
     );
 
@@ -2118,7 +2178,8 @@ async fn test_update_profile_commits_when_family_revocation_store_fails() {
         .await
         .expect("User should still exist after successful combined update");
     assert_eq!(
-        persisted.username, new_username,
+        persisted.username,
+        new_username.to_lowercase(),
         "Username change must commit even when best-effort family revocation persistence fails"
     );
     assert_eq!(updated.username, persisted.username);
@@ -2160,7 +2221,7 @@ async fn test_register_succeeds_when_username_cache_write_fails() {
         .await
         .expect("Registration must succeed even when username cache write fails");
 
-    assert_eq!(user.username, username);
+    assert_eq!(user.username, username.to_lowercase());
     assert!(access_token.is_some());
     assert!(refresh_token.is_some());
 

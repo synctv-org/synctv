@@ -124,7 +124,7 @@ fullnameOverride: ""
 replicaCount: 1
 
 image:
-  registry: docker.io
+  registry: ""
   repository: synctvorg/synctv
   tag: "" # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
@@ -297,6 +297,17 @@ config:
       enabled: false
       alphabet: ""
       minLength: 12
+
+  ## SecurityConfig
+  security:
+    ## Global SSRF policy for server-side outbound requests.
+    ## Private, loopback, link-local, reserved, and metadata targets are blocked by default.
+    ## Prefer allowedHosts / allowedIpRanges for known internal media endpoints.
+    ## Set allowPrivateNetworkTargets=true only in a trusted private deployment.
+    ssrf:
+      allowPrivateNetworkTargets: false
+      allowedHosts: []
+      allowedIpRanges: []
 
   ## ManagementConfig
   ## transport=tcp is always loopback-only inside the process; only the port is configurable.

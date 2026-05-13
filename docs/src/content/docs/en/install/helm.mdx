@@ -194,6 +194,26 @@ Required keys include:
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
 - `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
 
+## Security
+
+Server-side outbound requests use the global SSRF policy in `config.security.ssrf`.
+Private, loopback, link-local, reserved, and cloud metadata targets are blocked
+by default. Prefer explicit allowlists for trusted internal media endpoints:
+
+```yaml
+config:
+  security:
+    ssrf:
+      allowPrivateNetworkTargets: false
+      allowedHosts:
+        - nas.example.internal
+      allowedIpRanges:
+        - 10.0.8.0/24
+```
+
+Set `allowPrivateNetworkTargets=true` only for private deployments where all
+users and provider endpoints are trusted.
+
 ## PostgreSQL and Redis Modes
 
 `standard` mode creates chart-managed StatefulSet and Service resources:

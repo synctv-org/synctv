@@ -21,6 +21,16 @@ k8s = ["synctv-cluster/k8s", "synctv-core/k8s", "synctv-api/k8s"]
 mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:tikv-jemallocator"]
 openapi = ["synctv-api/openapi"]
+
+# TLS contract:
+# - `tls-aws-lc` / `tls-ring` select the rustls crypto provider where upstream
+#   crates expose provider selection.
+# - `tls-webpki-roots` / `tls-native-roots` select trust root sources where
+#   upstream crates expose root selection. SQLx 0.8 only supports native roots
+#   through its ring backend; reqwest 0.13 uses platform verification; baseline
+#   email TLS keeps webpki roots because lettre requires a verifier/root feature
+#   whenever rustls is compiled.
+# Root features propagate this contract to workspace crates that perform TLS.
 tls-aws-lc = [
     "synctv-core/tls-aws-lc",
     "synctv-api/tls-aws-lc",

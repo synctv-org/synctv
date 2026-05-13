@@ -249,7 +249,7 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings_batch(&room_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in &rooms {
@@ -293,7 +293,7 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings_batch(&room_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (room, role, _status, member_count) in &rooms {
@@ -476,7 +476,16 @@ impl ClientApiImpl {
             Some(req.password)
         };
 
-        if let Some(password) = password.as_ref() {
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+
+        if room_settings.require_password.0 {
+            let password = password.as_ref().ok_or_else(|| {
+                ApiError::Authorization("Forbidden: Password required".to_string())
+            })?;
             let start = std::time::Instant::now();
             let parsed_client_ip = client_ip.and_then(|ip| ip.parse().ok());
 
@@ -542,11 +551,6 @@ impl ClientApiImpl {
             .ok()
             .map(|s| playback_state_to_proto(&s, &self.public_id_codec));
 
-        let room_settings = self
-            .room_service
-            .get_room_settings(&rid)
-            .await
-            .unwrap_or_default();
         let proto_members = members_to_proto(
             &members,
             &room_settings,
@@ -670,7 +674,7 @@ impl ClientApiImpl {
         // 1. Delete the DB record first. If this fails, no realtime event is
         //    published and no connections are dropped -- the room remains intact.
         self.room_service
-            .delete_room_with_outbox(rid, uid, prepared_outbox_fanout.outbox_event.clone())
+            .delete_room_with_outbox(rid, uid, prepared_outbox_fanout.cloned_outbox_event())
             .await
             .map_err(ApiError::from)?;
 
@@ -1005,7 +1009,7 @@ impl ClientApiImpl {
                     .room_service
                     .get_room_settings(&rid)
                     .await
-                    .unwrap_or_default();
+                    .map_err(ApiError::from)?;
                 let availability = self
                     .room_service
                     .room_availability(&room)
@@ -1102,7 +1106,7 @@ impl ClientApiImpl {
             .room_service
             .get_room_settings_batch(&room_ids)
             .await
-            .unwrap_or_default();
+            .map_err(ApiError::from)?;
 
         let hot_rooms: Vec<crate::proto::client::RoomWithStats> = top_rooms
             .into_iter()

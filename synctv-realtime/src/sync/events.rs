@@ -19,6 +19,17 @@ pub enum CacheTarget {
     All,
 }
 
+/// Client/subscriber route used for local and cross-replica realtime delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeDeliveryRoute {
+    /// Deliver to subscribers of the event's room channel.
+    Room,
+    /// Deliver only through the replica-wide admin channel.
+    Admin,
+    /// Deliver to both the room channel and replica-wide admin channel.
+    RoomAndAdmin,
+}
+
 /// WebRTC signaling payload kind routed between room peers.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -485,6 +496,59 @@ impl RealtimeEvent {
         }
     }
 
+    /// Delivery route for local subscribers and Redis fanout.
+    #[must_use]
+    pub const fn delivery_route(&self) -> RealtimeDeliveryRoute {
+        match self {
+            Self::RoomCreated { .. }
+            | Self::KickPublisher { .. }
+            | Self::KickUserFromRoom { .. }
+            | Self::RoomDeleted { .. }
+            | Self::RoomBanned { .. }
+            | Self::RoomOwnerInactive { .. } => RealtimeDeliveryRoute::RoomAndAdmin,
+            Self::KickUser { .. }
+            | Self::UserNotification { .. }
+            | Self::ProviderCredentialChanged { .. }
+            | Self::CacheInvalidate { .. } => RealtimeDeliveryRoute::Admin,
+            Self::ChatMessage { .. }
+            | Self::PlaybackStateChanged { .. }
+            | Self::UserJoined { .. }
+            | Self::GuestJoined { .. }
+            | Self::UserLeft { .. }
+            | Self::GuestLeft { .. }
+            | Self::MediaAdded { .. }
+            | Self::MediaRemoved { .. }
+            | Self::MediaUpdated { .. }
+            | Self::MediaRemovedBatch { .. }
+            | Self::PlaylistReordered { .. }
+            | Self::PlaylistCreated { .. }
+            | Self::PlaylistUpdated { .. }
+            | Self::PlaylistDeleted { .. }
+            | Self::PermissionChanged { .. }
+            | Self::RoomSettingsChanged { .. }
+            | Self::WebRTCSignaling { .. }
+            | Self::WebRTCJoin { .. }
+            | Self::WebRTCLeave { .. }
+            | Self::SystemNotification { .. } => RealtimeDeliveryRoute::Room,
+        }
+    }
+
+    #[must_use]
+    pub const fn delivers_to_admin_channel(&self) -> bool {
+        matches!(
+            self.delivery_route(),
+            RealtimeDeliveryRoute::Admin | RealtimeDeliveryRoute::RoomAndAdmin
+        )
+    }
+
+    #[must_use]
+    pub const fn delivers_to_room_channel(&self) -> bool {
+        matches!(
+            self.delivery_route(),
+            RealtimeDeliveryRoute::Room | RealtimeDeliveryRoute::RoomAndAdmin
+        )
+    }
+
     /// Get the user ID that initiated this event
     #[must_use]
     pub const fn user_id(&self) -> Option<&UserId> {
@@ -690,6 +754,21 @@ mod tests {
         assert!(json.contains("provider_credential_changed"));
         let deserialized: RealtimeEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type(), "provider_credential_changed");
+    }
+
+    #[test]
+    fn test_room_created_is_replica_wide_admin_routed() {
+        let event = RealtimeEvent::RoomCreated {
+            event_id: synctv_common::snanoid!(16),
+            room_id: RoomId::expect_positive(10_000_151),
+            room_name: "created room".to_string(),
+            creator_id: UserId::expect_positive(10_000_152),
+            timestamp: Utc::now(),
+        };
+
+        assert_eq!(event.delivery_route(), RealtimeDeliveryRoute::RoomAndAdmin);
+        assert!(event.delivers_to_admin_channel());
+        assert!(event.delivers_to_room_channel());
     }
 
     #[test]

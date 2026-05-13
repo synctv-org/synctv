@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_username_pending
-    ON user_registration_requests(username)
+    ON user_registration_requests(LOWER(username))
     WHERE reviewed_at IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_registration_requests_email_pending

@@ -178,10 +178,22 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Do not use `--all-features` for the full workspace: some feature pairs are
 intentionally mutually exclusive, such as `mimalloc`/`jemalloc` and
-`tls-aws-lc`/`tls-ring`. Check non-default builds with explicit feature sets:
+`tls-aws-lc`/`tls-ring`. Check non-default builds with explicit feature sets.
+The TLS contract is that `tls-aws-lc` / `tls-ring` select the rustls crypto
+provider, while `tls-webpki-roots` / `tls-native-roots` select trust root
+sources where upstream crates expose those switches. A few dependencies have
+their own limits: SQLx 0.8 exposes native roots only through its ring backend,
+reqwest 0.13 uses the platform verifier, and baseline email TLS keeps webpki
+roots because lettre requires a verifier/root feature whenever rustls is
+compiled. When changing TLS-related code, check all four provider/root
+combinations:
 
 ```bash
-cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --locked
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-webpki-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-aws-lc,tls-native-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-ring,tls-webpki-roots" --locked
+cargo check -p synctv --no-default-features --features "tls-ring,tls-native-roots" --locked
 cargo check -p synctv --no-default-features --features "k8s,mimalloc,tls-aws-lc,tls-webpki-roots,tls-native-roots" --locked
 ```
 

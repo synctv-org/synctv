@@ -1,7 +1,7 @@
 //! `RoomSettingsRepository` integration tests
 //!
 //! Tests: `set_settings_with_version` CAS (concurrent insert race, stale version -> `OptimisticLockConflict`),
-//!        `get_batch` silent JSON deserialization drop.
+//!        batch reads fail closed on invalid room settings JSON.
 //!
 //! Run with: cargo test -p synctv-core --test `room_settings_repository_tests`
 #![allow(clippy::unwrap_used)]
@@ -159,11 +159,11 @@ async fn test_set_settings_with_version_stale_update() {
     );
 }
 
-// ─── get_batch silent JSON deserialization drop ──────────────────────
+// ─── get_batch fail-closed JSON deserialization ──────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_batch_drops_invalid_json() {
+async fn test_get_batch_rejects_invalid_json() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
@@ -193,21 +193,24 @@ async fn test_get_batch_drops_invalid_json() {
         .await
         .unwrap();
 
-    // get_batch should return room1 and room3, silently dropping room2
+    // get_batch must fail instead of silently dropping room2 and letting callers
+    // cache defaults for a corrupted settings row.
     let room_ids = vec![room1.id, room2.id, room3.id];
-    let result = settings_repo.get_batch(&room_ids).await.unwrap();
+    let error = settings_repo
+        .get_batch(&room_ids)
+        .await
+        .expect_err("invalid settings JSON should fail batch reads");
 
-    assert_eq!(
-        result.len(),
-        2,
-        "Should have 2 valid entries, room2 silently dropped"
-    );
-    assert!(result.contains_key(&room1.id));
     assert!(
-        !result.contains_key(&room2.id),
-        "Invalid JSON room should be absent"
+        error
+            .to_string()
+            .contains("Failed to deserialize room settings"),
+        "unexpected error: {error}"
     );
-    assert!(result.contains_key(&room3.id));
+    assert!(
+        error.to_string().contains(&room2.id.to_string()),
+        "error should identify the corrupted room: {error}"
+    );
 }
 
 #[tokio::test]

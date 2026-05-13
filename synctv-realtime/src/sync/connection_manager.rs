@@ -549,6 +549,10 @@ pub struct ConnectionManager {
     /// Metrics
     total_connections_ever: Arc<AtomicU64>,
     total_messages: Arc<AtomicU64>,
+    #[cfg(test)]
+    users_online_metric_increments: Arc<AtomicUsize>,
+    #[cfg(test)]
+    users_online_metric_decrements: Arc<AtomicUsize>,
 
     /// Broadcast channel for disconnect signals
     disconnect_tx: Arc<broadcast::Sender<DisconnectSignal>>,
@@ -706,6 +710,10 @@ impl ConnectionManager {
             timeout_index: Arc::new(parking_lot::Mutex::new(TimeoutIndex::default())),
             total_connections_ever: Arc::new(AtomicU64::new(0)),
             total_messages: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            users_online_metric_increments: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            users_online_metric_decrements: Arc::new(AtomicUsize::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
             pending_room_reservations: Arc::new(DashMap::new()),
             pending_user_reservations: Arc::new(DashMap::new()),
@@ -1981,6 +1989,9 @@ impl ConnectionManager {
         synctv_core::metrics::ACTIVE_CONNECTIONS.inc();
         if is_first_connection_for_user {
             synctv_core::metrics::http::USERS_ONLINE.inc();
+            #[cfg(test)]
+            self.users_online_metric_increments
+                .fetch_add(1, Ordering::Relaxed);
         }
         synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(usize_to_i64_saturating(
             self.total_connections.load(Ordering::Relaxed),
@@ -2246,6 +2257,9 @@ impl ConnectionManager {
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
             if user_went_offline {
                 synctv_core::metrics::http::USERS_ONLINE.dec();
+                #[cfg(test)]
+                self.users_online_metric_decrements
+                    .fetch_add(1, Ordering::Relaxed);
             }
             synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(usize_to_i64_saturating(
                 self.total_connections.load(Ordering::Relaxed),
@@ -3892,6 +3906,13 @@ mod tests {
     use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
     impl ConnectionManager {
+        fn users_online_metric_delta_for_test(&self) -> isize {
+            self.users_online_metric_increments
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.users_online_metric_decrements.load(Ordering::Relaxed))
+                as isize
+        }
+
         fn drain_pending_retries_for_test(&self) -> Vec<PendingRedisOp> {
             let mut guard = self
                 .pending_retries_rx
@@ -4733,15 +4754,14 @@ mod tests {
     async fn test_users_online_metric_deduplicates_multiple_connections_per_user() {
         let manager = ConnectionManager::default();
         let user_id = UserId::expect_positive(10_000_128);
-        let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
             .register("metric-conn-1".to_string(), user_id)
             .await
             .unwrap();
         assert_eq!(
-            synctv_core::metrics::http::USERS_ONLINE.get(),
-            baseline + 1,
+            manager.users_online_metric_delta_for_test(),
+            1,
             "first connection for a user should increase online user count"
         );
 
@@ -4750,21 +4770,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            synctv_core::metrics::http::USERS_ONLINE.get(),
-            baseline + 1,
+            manager.users_online_metric_delta_for_test(),
+            1,
             "second connection for the same user must not double-count online users"
         );
 
         manager.unregister("metric-conn-1").await;
         manager.unregister("metric-conn-2").await;
-        assert_eq!(synctv_core::metrics::http::USERS_ONLINE.get(), baseline);
+        assert_eq!(manager.users_online_metric_delta_for_test(), 0);
     }
 
     #[tokio::test]
     async fn test_users_online_metric_decrements_only_after_last_connection_leaves() {
         let manager = ConnectionManager::default();
         let user_id = UserId::expect_positive(10_000_129);
-        let baseline = synctv_core::metrics::http::USERS_ONLINE.get();
 
         manager
             .register("metric-last-1".to_string(), user_id)
@@ -4777,15 +4796,15 @@ mod tests {
 
         manager.unregister("metric-last-1").await;
         assert_eq!(
-            synctv_core::metrics::http::USERS_ONLINE.get(),
-            baseline + 1,
+            manager.users_online_metric_delta_for_test(),
+            1,
             "user should remain online while another connection is still active"
         );
 
         manager.unregister("metric-last-2").await;
         assert_eq!(
-            synctv_core::metrics::http::USERS_ONLINE.get(),
-            baseline,
+            manager.users_online_metric_delta_for_test(),
+            0,
             "online user count should drop only after the final connection closes"
         );
     }

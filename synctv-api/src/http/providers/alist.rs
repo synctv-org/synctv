@@ -8,18 +8,19 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+use futures::FutureExt;
 
-use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
-};
+use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::alist::{
     GetBindsResponse, GetMeRequest, ListRequest, LoginRequest, LogoutRequest, SearchRequest,
 };
 use crate::proto::providers::common::ProviderInstanceQuery;
 
-use super::common::provider_instance_name;
+use super::common::{
+    apply_provider_instance_name, execute_provider_user_endpoint,
+    execute_provider_user_endpoint_with_control, provider_instance_name,
+};
 
 /// Alist endpoints that perform authentication or credential mutation.
 pub fn alist_auth_routes() -> Router<AppState> {
@@ -35,10 +36,6 @@ pub fn alist_read_routes() -> Router<AppState> {
         .route("/search", post(search))
         .route("/me", post(me))
         .route("/binds", get(binds))
-}
-
-fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
 }
 
 // Provider API handlers
@@ -70,19 +67,14 @@ pub(crate) async fn login(
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, authenticated| {
+            async move {
                 api.login_with_context(
                     &authenticated.user_id,
                     req,
@@ -90,16 +82,19 @@ pub(crate) async fn login(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Alist login failed: {}", e);
-            e
-        })?;
-    tracing::info!("Alist login successful");
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Alist login failed: {}", e);
+        e
+    })
+    .map(|resp| {
+        tracing::info!("Alist login successful");
+        resp
+    })
 }
 
 /// List Alist directory (uses stored credential)
@@ -129,19 +124,14 @@ pub(crate) async fn list(
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
                 api.list_with_context(
                     &authenticated.user_id,
                     req,
@@ -149,15 +139,15 @@ pub(crate) async fn list(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Alist list failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Alist list failed: {}", e);
+        e
+    })
 }
 
 /// Search Alist files and directories (uses stored credential)
@@ -187,19 +177,14 @@ pub(crate) async fn search(
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
                 api.search_with_context(
                     &authenticated.user_id,
                     req,
@@ -207,15 +192,15 @@ pub(crate) async fn search(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Alist search failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Alist search failed: {}", e);
+        e
+    })
 }
 
 /// Get Alist user info (uses stored credential)
@@ -245,19 +230,14 @@ pub(crate) async fn me(
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
                 api.get_me_with_context(
                     &authenticated.user_id,
                     req,
@@ -265,15 +245,15 @@ pub(crate) async fn me(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Alist me failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Alist me failed: {}", e);
+        e
+    })
 }
 
 /// Logout from Alist (delete stored credential)
@@ -303,25 +283,19 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
+    apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |authenticated| async move { api.logout(&authenticated.user_id, req).await },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Alist logout failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+    execute_provider_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |authenticated| async move { api.logout(&authenticated.user_id, req).await }.boxed(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Alist logout failed: {}", e);
+        e
+    })
 }
 
 #[cfg_attr(
@@ -346,22 +320,20 @@ pub(crate) async fn binds(
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
-    let instance_name = provider_instance_name(&query)?;
+    let instance_name = provider_instance_name(&query)?.map(str::to_owned);
     let api = state.shared_api_runtime.alist_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let response = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |authenticated| async move {
+    execute_provider_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |authenticated| {
+            async move {
                 tracing::info!("Alist binds request for user: {}", authenticated.user_id);
-                api.get_binds(&authenticated.user_id, instance_name).await
-            },
-        )
-        .await
-        .map_err(map_api_error)?;
-
-    Ok(Json(response))
+                api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                    .await
+            }
+            .boxed()
+        },
+    )
+    .await
 }

@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::http::SharedApiRuntime;
-use crate::impls::providers::extract_instance_name;
 use crate::impls::BilibiliApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
@@ -57,7 +56,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili parse request: url={}", req.url);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -91,7 +90,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login QR request");
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -120,7 +119,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili check QR: {}", req.key);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -154,7 +153,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili get captcha request");
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -192,7 +191,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             "****".to_string()
         };
         tracing::info!("gRPC Bilibili send SMS: phone={}", masked_phone);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -226,7 +225,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             "****".to_string()
         };
         tracing::info!("gRPC Bilibili login SMS: phone={}", masked_phone);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -260,7 +259,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili user info request");
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -321,7 +320,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
             Some(crate::grpc::grpc_unary_request_timeout()),
         );
         let req = request.get_ref();
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor

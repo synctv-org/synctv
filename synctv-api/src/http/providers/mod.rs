@@ -540,11 +540,12 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
         Some(synctv_proxy::ProxyErrorKind::Cancelled | synctv_proxy::ProxyErrorKind::Timeout) => {
             AppError::new(StatusCode::REQUEST_TIMEOUT, err.to_string())
         }
-        Some(
-            synctv_proxy::ProxyErrorKind::Connection
-            | synctv_proxy::ProxyErrorKind::Upstream
-            | synctv_proxy::ProxyErrorKind::Ssrf,
-        ) => AppError::new(StatusCode::BAD_GATEWAY, err.to_string()),
+        Some(synctv_proxy::ProxyErrorKind::Connection | synctv_proxy::ProxyErrorKind::Upstream) => {
+            AppError::new(StatusCode::BAD_GATEWAY, err.to_string())
+        }
+        Some(synctv_proxy::ProxyErrorKind::Ssrf) => {
+            AppError::forbidden("Proxy target is not allowed by SSRF policy")
+        }
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             AppError::bad_request(err.to_string())
         }
@@ -966,6 +967,31 @@ mod tests {
             err.message,
             synctv_common::messages::INVALID_PROXY_SIGNATURE
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_ssrf_errors_are_forbidden_and_sanitized() {
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+        let client = reqwest::Client::new();
+        let headers = HashMap::new();
+        let proxy_error = synctv_proxy::proxy_fetch_and_forward(
+            synctv_proxy::ProxyConfig {
+                ssrf_guard: &guard,
+                client: &client,
+                url: "http://169.254.169.254/latest/meta-data",
+                provider_headers: &headers,
+                range_header: None,
+                request_control: None,
+                upstream_header_timeout: None,
+            },
+            &synctv_proxy::NoopMetrics,
+        )
+        .await
+        .expect_err("strict SSRF policy must block metadata IPs");
+        let err = map_proxy_execution_error(proxy_error.into());
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "Proxy target is not allowed by SSRF policy");
     }
 
     fn test_app_state_with_proxy_cache(

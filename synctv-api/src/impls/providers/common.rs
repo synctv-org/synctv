@@ -106,14 +106,18 @@ pub fn extract_instance_name(name: &str) -> Option<String> {
     normalize_provider_instance_name(Some(name)).map(str::to_owned)
 }
 
-pub fn provider_instance_name_from_query(
-    query: &ProviderInstanceQuery,
-) -> Result<Option<&str>, ApiError> {
-    let Some(instance_name) = normalize_provider_instance_name(Some(&query.instance_name)) else {
+pub fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, ApiError> {
+    let Some(instance_name) = normalize_provider_instance_name(Some(value)) else {
         return Ok(None);
     };
     validate_provider_instance_name(instance_name).map_err(ApiError::InvalidInput)?;
     Ok(Some(instance_name))
+}
+
+pub fn provider_instance_name_from_query(
+    query: &ProviderInstanceQuery,
+) -> Result<Option<&str>, ApiError> {
+    provider_instance_name_from_value(&query.instance_name)
 }
 
 pub(crate) fn resolve_bound_instance_name(

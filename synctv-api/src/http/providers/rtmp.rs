@@ -4,13 +4,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{error::map_api_error, middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::rtmp::{
     CreatePublishKeyRequest, CreatePublishKeyResponse, GetStreamInfoRequest, GetStreamInfoResponse,
 };
+
+use super::common::provider_request_metadata;
 
 pub fn rtmp_routes() -> Router<AppState> {
     Router::new()
@@ -47,7 +48,7 @@ pub(crate) async fn generate_publish_key(
     Path(req): Path<CreatePublishKeyRequest>,
     request_meta: RequestMetadata,
 ) -> AppResult<Json<CreatePublishKeyResponse>> {
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = provider_request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -93,7 +94,7 @@ pub(crate) async fn handle_stream_info(
     Path(req): Path<GetStreamInfoRequest>,
     State(state): State<AppState>,
 ) -> AppResult<Json<GetStreamInfoResponse>> {
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = provider_request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let room_id = req.room_id;
     let media_id = req.media_id;

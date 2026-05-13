@@ -19,7 +19,6 @@ pub mod error;
 pub mod playback_profile;
 pub mod provider_client;
 pub mod proxy;
-pub mod registry;
 pub mod store;
 pub mod traits;
 
@@ -38,7 +37,6 @@ pub use error::*;
 pub use playback_profile::*;
 pub use provider_client::ProviderClientManager;
 pub use proxy::*;
-pub use registry::*;
 pub use store::*;
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::*;
@@ -62,12 +60,11 @@ pub use emby::EmbyProvider;
 pub use live_proxy::LiveProxyProvider;
 pub use rtmp::RtmpProvider;
 
-/// Bundle of all media provider instances.
+/// Bundle of all in-process provider adapters.
 ///
-/// Consolidates per-provider fields into a single struct. Pass this through
-/// the application instead of 4 separate `Arc<XxxProvider>` fields.
-/// Adding a new provider only requires updating this struct and its
-/// `build_proxy_registry()` method.
+/// `ProvidersManager` remains the source of truth for provider type
+/// availability and playback resolution. `ProviderSet` is the startup-time
+/// bundle used to wire proxy-capable adapters into `ProxyProviderRegistry`.
 #[derive(Clone)]
 pub struct ProviderSet {
     pub alist: std::sync::Arc<AlistProvider>,
@@ -133,10 +130,11 @@ impl ProviderSet {
         }
     }
 
-    /// Build a `ProxyProviderRegistry` from this provider set.
+    /// Build a `ProxyProviderRegistry` from this provider adapter bundle.
     ///
-    /// Registers all proxy-capable providers under their canonical names.
-    /// Called once at startup; both HTTP and gRPC share the resulting registry.
+    /// Registers proxy-capable adapters under their canonical provider names.
+    /// This registry is only for HTTP proxy resolution, not provider
+    /// availability or playback provider selection.
     #[must_use]
     pub fn build_proxy_registry(&self) -> ProxyProviderRegistry {
         let registry = ProxyProviderRegistry::new();

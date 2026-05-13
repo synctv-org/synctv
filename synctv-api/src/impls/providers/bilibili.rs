@@ -37,6 +37,18 @@ struct ResolvedBilibiliCredential {
     provider_instance_name: Option<String>,
 }
 
+fn ensure_login_cookies_present(
+    cookies: &HashMap<String, String>,
+    method: &str,
+) -> Result<(), synctv_core::provider::ProviderError> {
+    if cookies.is_empty() {
+        return Err(synctv_core::provider::ProviderError::Authentication(
+            format!("Bilibili {method} login did not return session cookies"),
+        ));
+    }
+    Ok(())
+}
+
 impl BilibiliApiImpl {
     #[must_use]
     pub const fn new(
@@ -397,8 +409,9 @@ impl BilibiliApiImpl {
             .login_with_qr_code_with_context(check_req, instance_name, request_context)
             .await?;
 
-        // If login succeeded (status = 4 = SUCCESS), persist cookies
-        if resp.status == 4 && !resp.cookies.is_empty() {
+        // If login succeeded (status = 4 = SUCCESS), persist cookies.
+        if resp.status == 4 {
+            ensure_login_cookies_present(&resp.cookies, "QR")?;
             self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
                 .await?;
         }
@@ -497,7 +510,7 @@ impl BilibiliApiImpl {
             .login_with_sms_with_context(login_req, instance_name, request_context)
             .await?;
 
-        // Persist cookies server-side
+        ensure_login_cookies_present(&resp.cookies, "SMS")?;
         self.persist_cookies(caller_user_id, &resp.cookies, instance_name)
             .await?;
 
@@ -640,7 +653,7 @@ impl BilibiliApiImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::BilibiliApiImpl;
+    use super::{ensure_login_cookies_present, BilibiliApiImpl};
     use std::collections::HashMap;
     use std::sync::Arc;
     use synctv_core::models::{
@@ -730,6 +743,25 @@ mod tests {
             err,
             synctv_core::provider::ProviderError::InvalidConfig(_)
         ));
+    }
+
+    #[test]
+    fn login_cookie_validation_rejects_empty_provider_response() {
+        let err = ensure_login_cookies_present(&HashMap::new(), "SMS")
+            .expect_err("successful login without cookies must not be persisted");
+
+        assert!(matches!(
+            err,
+            synctv_core::provider::ProviderError::Authentication(_)
+        ));
+    }
+
+    #[test]
+    fn login_cookie_validation_accepts_session_cookies() {
+        let cookies = HashMap::from([("SESSDATA".to_string(), "session".to_string())]);
+
+        ensure_login_cookies_present(&cookies, "SMS")
+            .expect("non-empty provider cookies should be accepted");
     }
 
     #[tokio::test]

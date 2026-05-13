@@ -9,12 +9,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
+use futures::FutureExt;
 
-use super::common::provider_instance_name;
-use crate::http::{
-    error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
+use super::common::{
+    apply_provider_instance_name, execute_provider_user_endpoint,
+    execute_provider_user_endpoint_with_control, provider_instance_name,
 };
+use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::providers::bilibili::{
     CheckQrRequest, GetBindsResponse, LoginSmsRequest, LogoutRequest, ParseRequest, SendSmsRequest,
@@ -39,10 +40,6 @@ pub fn bilibili_read_routes() -> Router<AppState> {
         .route("/parse", post(parse))
         .route("/me", post(user_info))
         .route("/binds", get(binds))
-}
-
-fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
 }
 
 // Provider API handlers
@@ -74,19 +71,14 @@ pub(crate) async fn parse(
 ) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
                 api.parse_with_context(
                     &authenticated.user_id,
                     req,
@@ -94,15 +86,15 @@ pub(crate) async fn parse(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Bilibili parse failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Bilibili parse failed: {}", e);
+        e
+    })
 }
 
 /// Generate Bilibili QR code for login
@@ -129,28 +121,26 @@ pub(crate) async fn login_qr(
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrCodeResponse>> {
     tracing::info!("Bilibili login QR request");
 
-    let instance_name = provider_instance_name(&query)?;
+    let instance_name = provider_instance_name(&query)?.map(str::to_owned);
     let req = crate::proto::providers::bilibili::LoginQrRequest::default();
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, _| async move {
-                api.login_qr_with_context(req, instance_name, Some(&control))
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, _| {
+            async move {
+                api.login_qr_with_context(req, instance_name.as_deref(), Some(&control))
                     .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to generate QR code: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to generate QR code: {}", e);
+        e
+    })
 }
 
 /// Check Bilibili QR code login status (persists cookies on success)
@@ -180,19 +170,14 @@ pub(crate) async fn qr_check(
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, authenticated| {
+            async move {
                 api.check_qr_with_context(
                     &authenticated.user_id,
                     req,
@@ -200,15 +185,15 @@ pub(crate) async fn qr_check(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to check QR status: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to check QR status: {}", e);
+        e
+    })
 }
 
 /// Get captcha for SMS login
@@ -235,28 +220,26 @@ pub(crate) async fn new_captcha(
 ) -> AppResult<Json<crate::proto::providers::bilibili::CaptchaResponse>> {
     tracing::info!("Bilibili new captcha request");
 
-    let instance_name = provider_instance_name(&query)?;
+    let instance_name = provider_instance_name(&query)?.map(str::to_owned);
     let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, _| async move {
-                api.get_captcha_with_context(req, instance_name, Some(&control))
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, _| {
+            async move {
+                api.get_captcha_with_context(req, instance_name.as_deref(), Some(&control))
                     .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to get captcha: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to get captcha: {}", e);
+        e
+    })
 }
 
 /// Send SMS verification code
@@ -286,30 +269,25 @@ pub(crate) async fn sms_send(
 ) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, _| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, _| {
+            async move {
                 api.send_sms_with_context(req, instance_name.as_deref(), Some(&control))
                     .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to send SMS: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to send SMS: {}", e);
+        e
+    })
 }
 
 /// Login with SMS code (persists cookies on success)
@@ -339,19 +317,14 @@ pub(crate) async fn sms_login(
 ) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |control, authenticated| {
+            async move {
                 api.login_sms_with_context(
                     &authenticated.user_id,
                     req,
@@ -359,15 +332,15 @@ pub(crate) async fn sms_login(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to login with SMS: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to login with SMS: {}", e);
+        e
+    })
 }
 
 /// Get Bilibili user info (uses stored cookies)
@@ -397,19 +370,14 @@ pub(crate) async fn user_info(
 ) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
-    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
+    let instance_name = apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint_with_control(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |control, authenticated| async move {
+    execute_provider_user_endpoint_with_control(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |control, authenticated| {
+            async move {
                 api.get_user_info_with_context(
                     &authenticated.user_id,
                     req,
@@ -417,15 +385,15 @@ pub(crate) async fn user_info(
                     Some(&control),
                 )
                 .await
-            },
-        )
-        .await
-        .map_err(map_api_error)
-        .map_err(|e| {
-            tracing::error!("Failed to get user info: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+            }
+            .boxed()
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to get user info: {}", e);
+        e
+    })
 }
 
 #[cfg_attr(
@@ -450,24 +418,22 @@ pub(crate) async fn binds(
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
 ) -> AppResult<Json<GetBindsResponse>> {
-    let instance_name = provider_instance_name(&query)?;
+    let instance_name = provider_instance_name(&query)?.map(str::to_owned);
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let response = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Read,
-            move |authenticated| async move {
+    execute_provider_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        move |authenticated| {
+            async move {
                 tracing::info!("Bilibili binds request for user: {}", authenticated.user_id);
-                api.get_binds(&authenticated.user_id, instance_name).await
-            },
-        )
-        .await
-        .map_err(map_api_error)?;
-
-    Ok(Json(response))
+                api.get_binds(&authenticated.user_id, instance_name.as_deref())
+                    .await
+            }
+            .boxed()
+        },
+    )
+    .await
 }
 
 /// Logout (delete stored credential)
@@ -497,25 +463,19 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
-    if let Some(query_instance_name) = provider_instance_name(&query)? {
-        req.instance_name = query_instance_name.to_string();
-    }
+    apply_provider_instance_name(&mut req.instance_name, &query)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
-    let request_meta = request_metadata(request_meta);
-    let resp = state
-        .shared_api_runtime
-        .client_api
-        .execute_user_endpoint(
-            &request_meta,
-            EndpointRateLimitCategory::Auth,
-            move |authenticated| async move { api.logout(&authenticated.user_id, req).await },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Bilibili logout failed: {}", e);
-            e
-        })?;
-    Ok(Json(resp))
+    execute_provider_user_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Auth,
+        move |authenticated| async move { api.logout(&authenticated.user_id, req).await }.boxed(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Bilibili logout failed: {}", e);
+        e
+    })
 }
 
 #[cfg(test)]

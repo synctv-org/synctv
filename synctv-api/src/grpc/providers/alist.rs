@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::http::SharedApiRuntime;
-use crate::impls::providers::extract_instance_name;
 use crate::impls::AlistApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;
@@ -56,7 +55,7 @@ impl AlistProviderService for AlistProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Alist login request: host={}", req.host);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -91,7 +90,7 @@ impl AlistProviderService for AlistProviderGrpcService {
             req.server_id,
             req.path
         );
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -130,7 +129,7 @@ impl AlistProviderService for AlistProviderGrpcService {
             req.parent,
             req.keywords
         );
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -164,7 +163,7 @@ impl AlistProviderService for AlistProviderGrpcService {
         );
         let req = request.into_inner();
         tracing::info!("gRPC Alist me request: server_id={}", req.server_id);
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
 
         self.request_executor
@@ -225,7 +224,7 @@ impl AlistProviderService for AlistProviderGrpcService {
             Some(crate::grpc::grpc_unary_request_timeout()),
         );
         let req = request.get_ref();
-        let instance_name = extract_instance_name(&req.instance_name);
+        let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();
         let provider_binds = self
             .request_executor

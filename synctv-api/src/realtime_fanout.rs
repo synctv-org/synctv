@@ -133,14 +133,7 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
     async fn try_publish(&self, request: PublishRequest) -> bool {
         let event = request.event;
         if let Some(event_service) = &self.event_service {
-            if event.delivers_to_room_channel() {
-                if let Some(room_id) = event.room_id() {
-                    event_service.broadcast_local(room_id, &event);
-                }
-            }
-            if event.delivers_to_admin_channel() {
-                event_service.broadcast_admin_local(&event);
-            }
+            broadcast_event_locally(event_service.as_ref(), &event);
         }
         match self.outbox.insert(&new_outbox_event(&event)).await {
             Ok(()) => true,
@@ -165,19 +158,26 @@ impl RealtimeFanoutService for OutboxRealtimeFanoutService {
 
     fn publish_after_outbox_commit(&self, event: RealtimeEvent) {
         if let Some(event_service) = &self.event_service {
-            if event.delivers_to_room_channel() {
-                if let Some(room_id) = event.room_id() {
-                    event_service.broadcast_local(room_id, &event);
-                }
-            }
-            if event.delivers_to_admin_channel() {
-                event_service.broadcast_admin_local(&event);
-            }
+            broadcast_event_locally(event_service.as_ref(), &event);
         }
     }
 
     fn is_distributed_enabled(&self) -> bool {
         true
+    }
+}
+
+pub(crate) fn broadcast_event_locally(
+    event_service: &dyn RealtimeEventService,
+    event: &RealtimeEvent,
+) {
+    if event.delivers_to_room_channel() {
+        if let Some(room_id) = event.room_id() {
+            event_service.broadcast_local(room_id, event);
+        }
+    }
+    if event.delivers_to_admin_channel() {
+        event_service.broadcast_admin_local(event);
     }
 }
 
@@ -307,14 +307,75 @@ pub fn channel_realtime_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_realtime_fanout_service, is_admin_channel_event, publish_best_effort,
-        PreparedRealtimeFanoutPlan,
+        broadcast_event_locally, default_realtime_fanout_service, is_admin_channel_event,
+        publish_best_effort, PreparedRealtimeFanoutPlan,
     };
+    use async_trait::async_trait;
     use chrono::Utc;
-    use synctv_core::models::RoomId;
-    use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use synctv_core::models::{RoomId, UserId};
+    use synctv_realtime::sync::{
+        BroadcastResult, CacheTarget, ConnectionId, PublishRequest, RealtimeEvent,
+    };
+    use tokio::sync::{broadcast, mpsc};
 
-    use crate::runtime::RealtimeDeliveryRequirement;
+    use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics};
+
+    #[derive(Default)]
+    struct RecordingRealtimeEventService {
+        room_calls: AtomicUsize,
+        admin_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RealtimeEventService for RecordingRealtimeEventService {
+        async fn subscribe_with_id(
+            &self,
+            _room_id: RoomId,
+            _user_id: UserId,
+            _connection_id: String,
+        ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+            panic!("subscribe_with_id should not be called in realtime fanout tests");
+        }
+
+        fn unsubscribe(&self, _connection_id: &str) {
+            panic!("unsubscribe should not be called in realtime fanout tests");
+        }
+
+        fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
+            panic!("broadcast should not be called in realtime fanout tests");
+        }
+
+        fn publish_only(&self, _event: RealtimeEvent) -> bool {
+            panic!("publish_only should not be called in realtime fanout tests");
+        }
+
+        fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
+            self.room_calls.fetch_add(1, Ordering::SeqCst);
+            1
+        }
+
+        fn broadcast_admin_local(&self, _event: &RealtimeEvent) -> usize {
+            self.admin_calls.fetch_add(1, Ordering::SeqCst);
+            1
+        }
+
+        fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
+            panic!("subscribe_admin_events should not be called in realtime fanout tests");
+        }
+
+        fn metrics(&self) -> RealtimeMetrics {
+            RealtimeMetrics {
+                distributed_enabled: false,
+            }
+        }
+
+        fn node_id(&self) -> &'static str {
+            "realtime-fanout-test-node"
+        }
+
+        async fn shutdown(&self) {}
+    }
 
     #[tokio::test]
     async fn test_realtime_fanout_without_outbox_degrades_to_noop() {
@@ -366,6 +427,23 @@ mod tests {
         };
 
         assert!(is_admin_channel_event(&event));
+    }
+
+    #[test]
+    fn test_broadcast_event_locally_uses_room_and_admin_channels() {
+        let event_service = RecordingRealtimeEventService::default();
+        let event = RealtimeEvent::RoomCreated {
+            event_id: "room-created-local-route".to_string(),
+            room_id: RoomId::expect_positive(10_000_156),
+            room_name: "created room".to_string(),
+            creator_id: UserId::expect_positive(10_000_157),
+            timestamp: Utc::now(),
+        };
+
+        broadcast_event_locally(&event_service, &event);
+
+        assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(event_service.admin_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

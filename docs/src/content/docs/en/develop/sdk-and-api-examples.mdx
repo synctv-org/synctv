@@ -172,7 +172,7 @@ Alist list request:
 curl -sS "$BASE_URL/api/providers/alist/list" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"path":"/","provider_instance_name":"alist-main"}'
+  -d '{"server_id":"<server_id-from-login-or-binds>","path":"/","provider_instance_name":"alist-main"}'
 ```
 
 When adding media, the `source_provider`, `provider_instance_name`, and `source_config` combination is defined by the Provider. Provider credentials should not be placed directly in `source_config`; they are resolved by the server-side Provider credential layer.

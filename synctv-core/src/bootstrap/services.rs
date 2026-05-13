@@ -425,7 +425,7 @@ pub async fn init_services_with_options(
 
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption =
-        init_credential_encryption(options.credential_encryption_key_override.as_deref());
+        init_credential_encryption(options.credential_encryption_key_override.as_deref())?;
     // Keep a clone for provider credential resolution during media playback.
     let credential_encryption_for_services = credential_encryption.clone();
 
@@ -961,11 +961,12 @@ fn build_publish_key_service(
 /// The key must be a 64-character hex string (32 bytes).
 fn init_credential_encryption(
     hex_key_override: Option<&str>,
-) -> Option<crate::service::CredentialEncryption> {
+) -> Result<Option<crate::service::CredentialEncryption>, anyhow::Error> {
     use crate::secrets::{SecretLoader, SecretSource};
 
-    let hex_key = match hex_key_override {
-        Some(hex_key) => hex_key.to_string(),
+    let Some(hex_key) = (match hex_key_override {
+        Some(hex_key) if hex_key.trim().is_empty() => None,
+        Some(hex_key) => Some(hex_key.to_string()),
         None => {
             // Try file first, then env var
             SecretLoader::load_with_fallback(
@@ -973,20 +974,21 @@ fn init_credential_encryption(
                 &SecretSource::File("/run/secrets/credential_encryption_key"),
                 &SecretSource::Env("SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY"),
             )
-            .ok()?
+            .ok()
         }
+    }) else {
+        return Ok(None);
     };
 
     match crate::service::CredentialEncryption::from_hex_key(&hex_key) {
         Ok(enc) => {
             info!("Credential encryption initialized (AES-256-GCM)");
-            Some(enc)
+            Ok(Some(enc))
         }
-        Err(e) => {
-            error!("Failed to initialize credential encryption: {}", e);
-            error!("Key must be a 64-character hex string (32 bytes for AES-256)");
-            None
-        }
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to initialize credential encryption: {e}. \
+             Key must be a 64-character hex string (32 bytes for AES-256)"
+        )),
     }
 }
 
@@ -1764,5 +1766,23 @@ mod tests {
             providers_manager.get("direct_url").await.is_some(),
             "default provider instances must be loaded during provider manager initialization"
         );
+    }
+
+    #[test]
+    fn test_init_credential_encryption_allows_missing_key() {
+        let encryption = init_credential_encryption(Some(""))
+            .expect("empty credential encryption key should mean disabled");
+
+        assert!(encryption.is_none());
+    }
+
+    #[test]
+    fn test_init_credential_encryption_rejects_invalid_key() {
+        let error = init_credential_encryption(Some("not-a-64-character-hex-key"))
+            .expect_err("invalid explicit credential encryption key must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to initialize credential encryption"));
     }
 }

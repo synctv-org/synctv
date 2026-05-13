@@ -3,6 +3,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use futures::future::BoxFuture;
+use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::super::middleware::RequestMetadata;
 use super::super::validation::ProtoQuery;
@@ -12,6 +14,8 @@ use super::super::{
     },
     AppState,
 };
+use super::super::{error::map_api_error, AppResult};
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 use crate::proto::providers::common::{
     AddProviderInstanceRequest, AddProviderInstanceResponse, DeleteProviderInstanceRequest,
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
@@ -357,6 +361,74 @@ pub(crate) fn provider_instance_name(
 ) -> Result<Option<&str>, super::super::AppError> {
     crate::impls::providers::common::provider_instance_name_from_query(query)
         .map_err(super::super::error::map_api_error)
+}
+
+pub(crate) fn apply_provider_instance_name(
+    body_instance_name: &mut String,
+    query: &ProviderInstanceQuery,
+) -> Result<Option<String>, super::super::AppError> {
+    if let Some(query_instance_name) = provider_instance_name(query)? {
+        *body_instance_name = query_instance_name.to_string();
+    }
+
+    crate::impls::providers::common::provider_instance_name_from_value(body_instance_name)
+        .map(|name| name.map(str::to_owned))
+        .map_err(super::super::error::map_api_error)
+}
+
+pub(crate) fn provider_request_metadata(
+    request_meta: RequestMetadata,
+) -> crate::impls::RequestMetadata {
+    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+}
+
+pub(crate) async fn execute_provider_user_endpoint<T, E, F>(
+    state: &AppState,
+    request_meta: RequestMetadata,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> AppResult<Json<T>>
+where
+    T: Send + 'static,
+    E: Into<ApiError> + Send + 'static,
+    F: FnOnce(synctv_core::service::AuthenticatedToken) -> BoxFuture<'static, Result<T, E>>
+        + Send
+        + 'static,
+{
+    let request_meta = provider_request_metadata(request_meta);
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .execute_user_endpoint(&request_meta, category, operation)
+        .await
+        .map_err(map_api_error)?;
+    Ok(Json(response))
+}
+
+pub(crate) async fn execute_provider_user_endpoint_with_control<T, E, F>(
+    state: &AppState,
+    request_meta: RequestMetadata,
+    category: EndpointRateLimitCategory,
+    operation: F,
+) -> AppResult<Json<T>>
+where
+    T: Send + 'static,
+    E: Into<ApiError> + Send + 'static,
+    F: FnOnce(
+            synctv_core::provider::ExecutionControl,
+            synctv_core::service::AuthenticatedToken,
+        ) -> BoxFuture<'static, Result<T, E>>
+        + Send
+        + 'static,
+{
+    let request_meta = provider_request_metadata(request_meta);
+    let response = state
+        .shared_api_runtime
+        .client_api
+        .execute_user_endpoint_with_control(&request_meta, category, operation)
+        .await
+        .map_err(map_api_error)?;
+    Ok(Json(response))
 }
 
 #[cfg(test)]

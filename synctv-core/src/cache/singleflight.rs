@@ -56,6 +56,8 @@ pub enum CloneableError {
     NotFound(String),
     #[error("Already exists: {0}")]
     AlreadyExists(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
     #[error("Rate limited: {0}")]
@@ -99,6 +101,7 @@ impl From<Error> for CloneableError {
             Error::Authorization(message) => Self::Authorization(message),
             Error::NotFound(message) => Self::NotFound(message),
             Error::AlreadyExists(message) => Self::AlreadyExists(message),
+            Error::Conflict(message) => Self::Conflict(message),
             Error::InvalidInput(message) => Self::InvalidInput(message),
             Error::RateLimited(message) => Self::RateLimited(message),
             Error::ServiceUnavailable(message) => Self::ServiceUnavailable(message),
@@ -118,6 +121,7 @@ impl From<CloneableError> for Error {
             CloneableError::Authorization(message) => Self::Authorization(message),
             CloneableError::NotFound(message) => Self::NotFound(message),
             CloneableError::AlreadyExists(message) => Self::AlreadyExists(message),
+            CloneableError::Conflict(message) => Self::Conflict(message),
             CloneableError::InvalidInput(message) => Self::InvalidInput(message),
             CloneableError::RateLimited(message) => Self::RateLimited(message),
             CloneableError::ServiceUnavailable(message) => Self::ServiceUnavailable(message),

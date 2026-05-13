@@ -294,23 +294,6 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
     request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
 }
 
-fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
-    match err.status {
-        axum::http::StatusCode::BAD_REQUEST => crate::impls::ApiError::InvalidInput(err.message),
-        axum::http::StatusCode::UNAUTHORIZED => crate::impls::ApiError::Authentication(err.message),
-        axum::http::StatusCode::FORBIDDEN => crate::impls::ApiError::Authorization(err.message),
-        axum::http::StatusCode::NOT_FOUND => crate::impls::ApiError::NotFound(err.message),
-        axum::http::StatusCode::TOO_MANY_REQUESTS => {
-            crate::impls::ApiError::RateLimited(err.message)
-        }
-        axum::http::StatusCode::REQUEST_TIMEOUT => crate::impls::ApiError::Timeout(err.message),
-        axum::http::StatusCode::SERVICE_UNAVAILABLE => {
-            crate::impls::ApiError::ServiceUnavailable(err.message)
-        }
-        _ => crate::impls::ApiError::Internal(err.message),
-    }
-}
-
 // Existing provider API handlers
 
 /// Login to Emby/Jellyfin (validate API key and persist credential)
@@ -642,7 +625,7 @@ pub(crate) async fn thumbnail(
                     credential_owner_id,
                     scope,
                 )
-                .map_err(app_error_to_api_error)?
+                .map_err(crate::http::error::app_error_to_api_error)?
                 {
                     let room_id = state
                         .shared_api_runtime
@@ -689,11 +672,11 @@ pub(crate) async fn thumbnail(
                 let action = build_thumbnail_proxy_action_from_credential(
                     &item_id, &parsed, max_height, max_width,
                 )
-                .map_err(app_error_to_api_error)?;
+                .map_err(crate::http::error::app_error_to_api_error)?;
 
                 super::execute_proxy_action_with_state(&state, action, &headers, None)
                     .await
-                    .map_err(app_error_to_api_error)
+                    .map_err(crate::http::error::app_error_to_api_error)
             },
         )
         .await

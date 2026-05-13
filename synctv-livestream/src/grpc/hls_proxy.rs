@@ -13,6 +13,11 @@ use std::time::{Duration, Instant};
 use tonic::Request;
 use tracing::debug;
 
+use crate::util::{
+    validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
+    validate_stream_ids,
+};
+
 /// Per-entry TTL policy for the playlist cache.
 ///
 /// - Found playlists (`Some(...)`) use the normal `playlist_cache_ttl` (default
@@ -59,22 +64,25 @@ use super::proto::{
 /// gRPC connections to publisher nodes are pooled via [`GrpcConnectionPool`] to
 /// avoid the overhead of creating a new HTTP/2 connection per request.
 ///
-/// # Cache Key Format with Epoch
+/// # Cache Key Format
 ///
-/// Cache keys include an epoch version number to ensure consistency when streams restart:
-/// - Segment key: `{room_id}:{media_id}:{epoch}:{segment_name}`
-/// - Playlist key: `{room_id}:{media_id}:{epoch}:{segment_url_base}`
+/// Cache keys include both the publisher epoch and a local cache version. Every
+/// string component is length-prefixed before concatenation so delimiters inside
+/// a component cannot collide with stream boundaries:
+/// - Segment key: `|{len}:{room_id}|{len}:{media_id}|seg|{epoch}|{version}|{len}:{segment_name}`
+/// - Playlist key: `|{len}:{room_id}|{len}:{media_id}|pl|{epoch}|{version}|{len}:{url_template}`
 ///
 /// When a stream restarts (epoch changes), the new epoch creates a fresh cache namespace,
 /// preventing stale data from being returned even if `invalidate_stream_cache()` hasn't
-/// completed yet.
+/// completed yet. Local invalidation increments the cache version so delayed physical
+/// cleanup cannot return stale entries in the meantime.
 #[derive(Clone)]
 pub struct HlsProxyClient {
     /// Local cache for TS segments (immutable once created)
-    /// Key: "{`room_id}:{media_id}:{epoch}:{segment_name`}"
+    /// Key uses length-prefixed room/media/segment components.
     segment_cache: Cache<String, Bytes>,
     /// Short-lived cache for M3U8 playlists to coalesce concurrent requests.
-    /// Key: "{`room_id}:{media_id}:{epoch}:{segment_url_base`}", Value: playlist string or None for "not found"
+    /// Key uses length-prefixed room/media/template components. Value is playlist string or None for "not found".
     playlist_cache: Cache<String, Option<String>>,
     /// Cluster authentication secret for gRPC metadata
     cluster_secret: Option<String>,
@@ -87,14 +95,14 @@ pub struct HlsProxyClient {
     /// Cache miss counter for monitoring
     cache_misses: Arc<AtomicU64>,
     /// Per-stream cache version for synchronous invalidation consistency.
-    /// Key: "{`room_id}:{media_id`}", Value: version number
+    /// Key uses length-prefixed room/media components. Value: version number
     /// When a stream is invalidated, the version is incremented synchronously,
     /// and any cached entries with older versions are considered stale.
     ///
     /// Uses a moka sync cache with a 10-minute idle TTL to prevent unbounded growth.
     /// Entries that expire simply reset the version to 0 (the default),
     /// which is safe because epoch-based keys already provide primary isolation.
-    cache_versions: Arc<moka::sync::Cache<String, u64>>,
+    cache_versions: Arc<moka::sync::Cache<String, Arc<AtomicU64>>>,
 }
 
 impl HlsProxyClient {
@@ -194,7 +202,7 @@ impl HlsProxyClient {
 
     /// Build a segment cache key with epoch for cache isolation.
     ///
-    /// Format: `{room_id}:{media_id}:{epoch}:{segment_name}`
+    /// Format: length-prefixed components plus epoch.
     #[inline]
     #[must_use]
     pub fn build_segment_cache_key(
@@ -204,12 +212,12 @@ impl HlsProxyClient {
         epoch: u64,
         segment_name: &str,
     ) -> String {
-        format!("{room_id}:{media_id}:{epoch}:{segment_name}")
+        Self::compose_cache_key("seg", room_id, media_id, epoch, None, segment_name)
     }
 
     /// Build a playlist cache key with epoch for cache isolation.
     ///
-    /// Format: `{room_id}:{media_id}:{epoch}:{segment_url_base}`
+    /// Format: length-prefixed components plus epoch.
     #[inline]
     #[must_use]
     pub fn build_playlist_cache_key(
@@ -219,7 +227,13 @@ impl HlsProxyClient {
         epoch: u64,
         segment_url_base: &str,
     ) -> String {
-        format!("{room_id}:{media_id}:{epoch}:{segment_url_base}")
+        Self::compose_cache_key("pl", room_id, media_id, epoch, None, segment_url_base)
+    }
+
+    #[inline]
+    #[must_use]
+    fn segment_url_template(segment_url_base: &str, segment_url_suffix: &str) -> String {
+        format!("{segment_url_base}{{segment}}{segment_url_suffix}")
     }
 
     /// Fetch M3U8 playlist from the publisher node via gRPC.
@@ -239,11 +253,21 @@ impl HlsProxyClient {
         room_id: &str,
         media_id: &str,
         segment_url_base: &str,
+        segment_url_suffix: &str,
         epoch: u64,
     ) -> anyhow::Result<Option<String>> {
-        // Include epoch in cache key for isolation.
-        // Format: {room_id}:{media_id}:{epoch}:{segment_url_base}
-        let cache_key = self.build_playlist_cache_key(room_id, media_id, epoch, segment_url_base);
+        validate_stream_ids(room_id, media_id)?;
+        validate_hls_segment_url_base(segment_url_base)?;
+        validate_hls_segment_url_suffix(segment_url_suffix)?;
+        let cache_version = self.get_cache_version(room_id, media_id);
+        let segment_url_template = Self::segment_url_template(segment_url_base, segment_url_suffix);
+        let cache_key = self.build_playlist_cache_key_with_version(
+            room_id,
+            media_id,
+            epoch,
+            cache_version,
+            &segment_url_template,
+        );
 
         // Check playlist cache first
         if let Some(cached) = self.playlist_cache.get(&cache_key).await {
@@ -262,6 +286,7 @@ impl HlsProxyClient {
             room_id: room_id.to_string(),
             media_id: media_id.to_string(),
             segment_url_base: segment_url_base.to_string(),
+            segment_url_suffix: segment_url_suffix.to_string(),
         });
         request.set_timeout(Self::GRPC_REQUEST_TIMEOUT);
         self.attach_auth(&mut request)?;
@@ -308,9 +333,16 @@ impl HlsProxyClient {
         segment_name: &str,
         epoch: u64,
     ) -> anyhow::Result<Option<Bytes>> {
-        // Include epoch in cache key for isolation.
-        // Format: {room_id}:{media_id}:{epoch}:{segment_name}
-        let cache_key = self.build_segment_cache_key(room_id, media_id, epoch, segment_name);
+        validate_stream_ids(room_id, media_id)?;
+        validate_hls_segment_name(segment_name)?;
+        let cache_version = self.get_cache_version(room_id, media_id);
+        let cache_key = self.build_segment_cache_key_with_version(
+            room_id,
+            media_id,
+            epoch,
+            cache_version,
+            segment_name,
+        );
 
         // Check local cache first
         if let Some(cached) = self.segment_cache.get(&cache_key).await {
@@ -419,12 +451,20 @@ impl HlsProxyClient {
     ///
     /// This cleanup helps prevent memory bloat from accumulating old epoch entries.
     pub fn invalidate_stream_cache(&self, room_id: &str, media_id: &str) {
-        // Match entries without epoch prefix: {room_id}:{media_id}:
-        let prefix = format!("{room_id}:{media_id}:");
+        if let Err(error) = validate_stream_ids(room_id, media_id) {
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                error = %error,
+                "Skipping HLS cache invalidation for invalid stream identifiers"
+            );
+            return;
+        }
+        let prefix = Self::cache_stream_prefix(room_id, media_id);
 
         // Invalidate all playlist cache entries for this stream.
-        // Playlist keys include segment_url_base ("{room_id}:{media_id}:{segment_url_base}"),
-        // so we use prefix-based invalidation to match all variants.
+        // Playlist keys share a length-prefixed stream prefix, so predicate
+        // invalidation matches only this exact room/media pair.
         let playlist_prefix = prefix.clone();
         self.playlist_cache
             .invalidate_entries_if(move |key: &String, _| key.starts_with(&playlist_prefix))
@@ -463,7 +503,17 @@ impl HlsProxyClient {
         // reject stale entries.
         let new_version = self.increment_cache_version(&room_id, &media_id);
 
-        let prefix = format!("{room_id}:{media_id}:");
+        if let Err(error) = validate_stream_ids(&room_id, &media_id) {
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                error = %error,
+                "Skipping delayed HLS cache invalidation for invalid stream identifiers"
+            );
+            return;
+        }
+
+        let prefix = Self::cache_stream_prefix(&room_id, &media_id);
         let segment_cache = self.segment_cache.clone();
         let playlist_cache = self.playlist_cache.clone();
 
@@ -494,7 +544,7 @@ impl HlsProxyClient {
 
     /// Build a segment cache key with both epoch and cache version.
     ///
-    /// Format: `{room_id}:{media_id}:{epoch}:{version}:{segment_name}`
+    /// Format: length-prefixed components plus epoch and version.
     ///
     /// The version component ensures that entries from old cache versions
     /// are not returned after synchronous invalidation.
@@ -508,12 +558,12 @@ impl HlsProxyClient {
         version: u64,
         segment_name: &str,
     ) -> String {
-        format!("{room_id}:{media_id}:{epoch}:{version}:{segment_name}")
+        Self::compose_cache_key("seg", room_id, media_id, epoch, Some(version), segment_name)
     }
 
     /// Build a playlist cache key with both epoch and cache version.
     ///
-    /// Format: `{room_id}:{media_id}:{epoch}:{version}:{segment_url_base}`
+    /// Format: length-prefixed components plus epoch and version.
     #[inline]
     #[must_use]
     pub fn build_playlist_cache_key_with_version(
@@ -524,7 +574,51 @@ impl HlsProxyClient {
         version: u64,
         segment_url_base: &str,
     ) -> String {
-        format!("{room_id}:{media_id}:{epoch}:{version}:{segment_url_base}")
+        Self::compose_cache_key(
+            "pl",
+            room_id,
+            media_id,
+            epoch,
+            Some(version),
+            segment_url_base,
+        )
+    }
+
+    #[inline]
+    fn encode_component(component: &str) -> String {
+        format!("{}:{component}", component.len())
+    }
+
+    #[inline]
+    fn cache_stream_prefix(room_id: &str, media_id: &str) -> String {
+        format!(
+            "|{}|{}|",
+            Self::encode_component(room_id),
+            Self::encode_component(media_id)
+        )
+    }
+
+    fn compose_cache_key(
+        kind: &str,
+        room_id: &str,
+        media_id: &str,
+        epoch: u64,
+        version: Option<u64>,
+        tail: &str,
+    ) -> String {
+        let version = version.map_or_else(String::new, |version| format!("|{version}"));
+        format!(
+            "{}{kind}|{}{}|{}",
+            Self::cache_stream_prefix(room_id, media_id),
+            epoch,
+            version,
+            Self::encode_component(tail)
+        )
+    }
+
+    #[inline]
+    fn cache_version_key(room_id: &str, media_id: &str) -> String {
+        Self::cache_stream_prefix(room_id, media_id)
     }
 
     /// Get the current cache version for a stream.
@@ -532,8 +626,14 @@ impl HlsProxyClient {
     /// Returns 0 if the stream has no version entry (never invalidated or TTL expired).
     #[must_use]
     pub fn get_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
-        let key = format!("{room_id}:{media_id}");
-        self.cache_versions.get(&key).unwrap_or(0)
+        if validate_stream_ids(room_id, media_id).is_err() {
+            return 0;
+        }
+        let key = Self::cache_version_key(room_id, media_id);
+        self.cache_versions
+            .get(&key)
+            .map(|version| version.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     /// Increment and return the cache version for a stream.
@@ -543,44 +643,42 @@ impl HlsProxyClient {
     ///
     /// # Overflow Handling
     ///
-    /// If the version counter reaches `u64::MAX`, overflow is detected and the
-    /// entry is removed. This triggers a full cache invalidation for the stream
-    /// by calling `invalidate_stream_cache_sync`. The function then returns 1
-    /// (the first valid version after reset).
+    /// If the version counter reaches `u64::MAX`, it wraps back to 1. This is
+    /// still monotonic for practical cache lifetimes and avoids a 0 value, which
+    /// represents "no version entry" elsewhere in the cache path.
     pub fn increment_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
-        let key = format!("{room_id}:{media_id}");
-        let current = self.cache_versions.get(&key).unwrap_or(0);
-
-        // Check for overflow before incrementing
-        if let Some(new_version) = current.checked_add(1) {
-            self.cache_versions.insert(key, new_version);
-
+        let Ok(()) = validate_stream_ids(room_id, media_id) else {
             debug!(
                 room_id = room_id,
                 media_id = media_id,
-                version = new_version,
-                "Incremented cache version for stream"
+                "Skipping cache version increment for invalid stream identifiers"
             );
+            return 0;
+        };
+        let key = Self::cache_version_key(room_id, media_id);
+        let version_counter = self
+            .cache_versions
+            .get_with(key, || Arc::new(AtomicU64::new(0)));
+        let new_version = version_counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.checked_add(1).unwrap_or(1))
+            })
+            .map_or(1, |previous| previous.checked_add(1).unwrap_or(1));
 
-            new_version
-        } else {
-            // Overflow detected: remove entry and invalidate cache
-            self.cache_versions.invalidate(&key);
+        debug!(
+            room_id = room_id,
+            media_id = media_id,
+            version = new_version,
+            "Incremented cache version for stream"
+        );
 
-            debug!(
-                room_id = room_id,
-                media_id = media_id,
-                "Cache version overflow detected, invalidating cache"
-            );
-
-            1 // Return version 1 for the new epoch
-        }
+        new_version
     }
 
     /// Synchronously invalidate all cached segments and playlists for a stream.
     ///
     /// This method provides immediate consistency by:
-    /// 1. Incrementing the cache version (synchronous, lock-free via `DashMap`)
+    /// 1. Incrementing the cache version atomically
     /// 2. Removing entries from both caches using `invalidate_entries_if`
     /// 3. Running pending tasks to ensure immediate removal
     ///
@@ -588,9 +686,18 @@ impl HlsProxyClient {
     /// inaccessible through version-aware getters, even if the cache entries
     /// haven't been physically removed yet.
     pub async fn invalidate_stream_cache_sync(&self, room_id: &str, media_id: &str) {
+        if let Err(error) = validate_stream_ids(room_id, media_id) {
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                error = %error,
+                "Skipping synchronous HLS cache invalidation for invalid stream identifiers"
+            );
+            return;
+        }
         let new_version = self.increment_cache_version(room_id, media_id);
 
-        let prefix = format!("{room_id}:{media_id}:");
+        let prefix = Self::cache_stream_prefix(room_id, media_id);
 
         let playlist_prefix = prefix.clone();
         self.playlist_cache
@@ -628,6 +735,11 @@ impl HlsProxyClient {
         epoch: u64,
         entry_version: u64,
     ) -> Option<Bytes> {
+        if validate_stream_ids(room_id, media_id).is_err()
+            || validate_hls_segment_name(segment_name).is_err()
+        {
+            return None;
+        }
         let current_version = self.get_cache_version(room_id, media_id);
 
         // If the entry's version is less than current, it's stale
@@ -668,6 +780,9 @@ impl HlsProxyClient {
         epoch: u64,
         entry_version: u64,
     ) -> Option<Option<String>> {
+        if validate_stream_ids(room_id, media_id).is_err() {
+            return None;
+        }
         let current_version = self.get_cache_version(room_id, media_id);
 
         // If the entry's version is less than current, it's stale
@@ -790,7 +905,7 @@ mod tests {
         let client = HlsProxyClient::with_defaults(None);
 
         let error = client
-            .get_playlist("http://[invalid", "room", "media", "/segments", 1)
+            .get_playlist("http://[invalid", "room", "media", "/segments", ".ts", 1)
             .await
             .expect_err("remote HLS RPC must validate auth before connecting");
 
@@ -813,6 +928,123 @@ mod tests {
             error.to_string().contains("cluster secret is required"),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn main_cache_keys_include_current_stream_version() {
+        let client = HlsProxyClient::with_defaults(None);
+        let room_id = "room1";
+        let media_id = "stream1";
+        let segment_name = "segment001.ts";
+        let segment_data = Bytes::from_static(b"segment data");
+        let url_base = "/segments/";
+        let playlist = Some("#EXTM3U\nsegment001.ts".to_string());
+
+        let segment_key_v0 =
+            client.build_segment_cache_key_with_version(room_id, media_id, 7, 0, segment_name);
+        let playlist_key_v0 =
+            client.build_playlist_cache_key_with_version(room_id, media_id, 7, 0, url_base);
+        client
+            .segment_cache
+            .insert(segment_key_v0.clone(), segment_data.clone())
+            .await;
+        client
+            .playlist_cache
+            .insert(playlist_key_v0.clone(), playlist.clone())
+            .await;
+
+        assert_eq!(
+            client.segment_cache.get(&segment_key_v0).await,
+            Some(segment_data)
+        );
+        assert_eq!(
+            client.playlist_cache.get(&playlist_key_v0).await,
+            Some(playlist)
+        );
+
+        let new_version = client.increment_cache_version(room_id, media_id);
+        assert_eq!(new_version, 1);
+
+        let segment_key_v1 = client.build_segment_cache_key_with_version(
+            room_id,
+            media_id,
+            7,
+            new_version,
+            segment_name,
+        );
+        let playlist_key_v1 = client.build_playlist_cache_key_with_version(
+            room_id,
+            media_id,
+            7,
+            new_version,
+            url_base,
+        );
+
+        assert!(
+            client.segment_cache.get(&segment_key_v1).await.is_none(),
+            "main segment cache key must move to the new version immediately"
+        );
+        assert!(
+            client.playlist_cache.get(&playlist_key_v1).await.is_none(),
+            "main playlist cache key must move to the new version immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn length_prefixed_cache_keys_prevent_stream_prefix_collisions() {
+        let client = HlsProxyClient::with_defaults(None);
+        let target_key = client.build_segment_cache_key_with_version("1", "23", 7, 0, "seg.ts");
+        let other_key = client.build_segment_cache_key_with_version("12", "3", 7, 0, "seg.ts");
+        let target_data = Bytes::from_static(b"target");
+        let other_data = Bytes::from_static(b"other");
+
+        assert_ne!(
+            target_key, other_key,
+            "length-prefixed keys must distinguish ambiguous stream components"
+        );
+
+        client
+            .segment_cache
+            .insert(target_key.clone(), target_data.clone())
+            .await;
+        client
+            .segment_cache
+            .insert(other_key.clone(), other_data.clone())
+            .await;
+
+        client.invalidate_stream_cache_sync("1", "23").await;
+
+        assert!(
+            client
+                .get_segment_with_version_check("1", "23", "seg.ts", 7, 0)
+                .await
+                .is_none(),
+            "target stream cache entry should be rejected by the incremented version"
+        );
+        assert_eq!(
+            client
+                .get_segment_with_version_check("12", "3", "seg.ts", 7, 0)
+                .await,
+            Some(other_data),
+            "similarly-prefixed but different stream must remain cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn hls_proxy_rejects_invalid_internal_identifiers_before_connect() {
+        let client = HlsProxyClient::with_defaults(Some("cluster-secret".to_string()));
+
+        let playlist_error = client
+            .get_playlist("http://[invalid", "room:1", "media", "/segments/", ".ts", 1)
+            .await
+            .expect_err("invalid room id should fail before connect");
+        assert!(playlist_error.to_string().contains("room_id"));
+
+        let segment_error = client
+            .get_segment("http://[invalid", "room", "media", "../secret", 1)
+            .await
+            .expect_err("invalid segment name should fail before connect");
+        assert!(segment_error.to_string().contains("segment_name"));
     }
 
     #[tokio::test]
@@ -857,17 +1089,17 @@ mod tests {
         let new_data = Bytes::from_static(b"new segment data from epoch 1");
 
         // Insert data with epoch 0
-        let old_key = format!("{room_id}:{media_id}:0:{segment_name}");
+        let old_key = client.build_segment_cache_key(room_id, media_id, 0, segment_name);
         client.segment_cache.insert(old_key, old_data.clone()).await;
 
         // Simulate epoch change: insert data with epoch 1
-        let new_key = format!("{room_id}:{media_id}:1:{segment_name}");
+        let new_key = client.build_segment_cache_key(room_id, media_id, 1, segment_name);
         client.segment_cache.insert(new_key, new_data.clone()).await;
 
         // Verify that requesting with epoch 0 gets old data
         let cached_old = client
             .segment_cache
-            .get(&format!("{room_id}:{media_id}:0:{segment_name}"))
+            .get(&client.build_segment_cache_key(room_id, media_id, 0, segment_name))
             .await;
         assert!(cached_old.is_some());
         assert_eq!(cached_old.unwrap(), old_data);
@@ -875,7 +1107,7 @@ mod tests {
         // Verify that requesting with epoch 1 gets new data
         let cached_new = client
             .segment_cache
-            .get(&format!("{room_id}:{media_id}:1:{segment_name}"))
+            .get(&client.build_segment_cache_key(room_id, media_id, 1, segment_name))
             .await;
         assert!(cached_new.is_some());
         assert_eq!(cached_new.unwrap(), new_data);
@@ -937,17 +1169,17 @@ mod tests {
     fn test_build_segment_cache_key_format() {
         let client = HlsProxyClient::with_defaults(None);
 
-        // Test key format: {room_id}:{media_id}:{epoch}:{segment_name}
+        // Test length-prefixed key format: room/media components are unambiguous.
         let key = client.build_segment_cache_key("room1", "stream1", 42, "segment001.ts");
-        assert_eq!(key, "room1:stream1:42:segment001.ts");
+        assert_eq!(key, "|5:room1|7:stream1|seg|42|13:segment001.ts");
 
         // Test with different epoch
         let key2 = client.build_segment_cache_key("room1", "stream1", 0, "segment001.ts");
-        assert_eq!(key2, "room1:stream1:0:segment001.ts");
+        assert_eq!(key2, "|5:room1|7:stream1|seg|0|13:segment001.ts");
 
         // Test with different segment
         let key3 = client.build_segment_cache_key("room1", "stream1", 42, "segment002.ts");
-        assert_eq!(key3, "room1:stream1:42:segment002.ts");
+        assert_eq!(key3, "|5:room1|7:stream1|seg|42|13:segment002.ts");
     }
 
     #[tokio::test]

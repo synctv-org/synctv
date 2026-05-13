@@ -55,7 +55,7 @@ import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-lig
 
 | 场景 | 使用路径 | 边界 |
 | --- | --- | --- |
-| 只想临时体验 | 本地试用 | 启动快，但包含开发 secret，不能暴露公网或长期运行。 |
+| 只想临时体验 | 本地试用 | 使用生成的本地 env 文件，启动快；不要暴露公网或长期运行。 |
 | 要改代码 | 源码运行 | PostgreSQL 和 Redis 可由开发 Compose 提供，SyncTV 本体由本机 Rust 工具链启动。 |
 | 已有 Kubernetes 平台 | Helm | 先确定 HTTP/gRPC Ingress、Secret、PVC、metrics、Redis、HLS 存储和滚动更新策略。 |
 | 需要多副本实时协作 | Helm 或自管多副本 | 所有副本必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。 |
@@ -63,7 +63,7 @@ import deploymentPathLight from '../../../assets/diagrams/deployment-path-zh-lig
 ## 决策底线
 
 <Steps>
-1. 只要对外提供服务，就不要使用开发 Compose 的内置 secret。
+1. 只要对外提供服务，就不要使用开发 Compose。
 2. 只要长期运行，就必须备份 PostgreSQL 和生产 secret。
 3. 只要多副本运行，就必须共享 PostgreSQL、Redis、`redis.key_prefix` 和 `cluster.secret`。
 4. 只要启用 HLS 多副本，就必须选择 publisher-node proxy、`shared_file` 或 OSS 之一。

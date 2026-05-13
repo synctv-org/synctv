@@ -190,6 +190,9 @@ impl RemoteProviderManager {
             crate::Error::AlreadyExists(msg) => ProviderError::Internal(format!(
                 "Unexpected already exists error while resolving provider instance: {msg}"
             )),
+            crate::Error::Conflict(msg) => ProviderError::Internal(format!(
+                "Unexpected conflict while resolving provider instance: {msg}"
+            )),
             crate::Error::Internal(msg) => ProviderError::Internal(msg),
             crate::Error::OptimisticLockConflict => {
                 ProviderError::Internal("Optimistic lock conflict".to_string())

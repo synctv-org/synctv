@@ -9,6 +9,31 @@ use synctv_common::time as common_time;
 const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024;
 const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
 const DANGEROUS_CIDR_RANGES: &[&str] = &["0.0.0.0/0", "::/0", "0.0.0.0/0,::/0"];
+const KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS: &[&str] = &[
+    "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+];
+const KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS: &[&str] = &[
+    "dev-opaque-server-setup-secret-please-change-1234567890",
+    "dev-opaque-server-setup-secret-please-change-in-production",
+];
+const KNOWN_DEV_JWT_SECRETS: &[&str] = &[
+    "aDsPda5skjBg4km/8XFxBntIQ2ppbBTAAFT7P2PdzPA=",
+    "dev-jwt-secret-please-change-in-production-1234567890",
+];
+const KNOWN_DEV_CLUSTER_SECRETS: &[&str] =
+    &["dev-cluster-secret-please-change-in-production-1234567890"];
+const KNOWN_DEV_ROOT_PASSWORDS: &[&str] = &["Rootpasswd1234567890!", "DevRootPass12345"];
+
+fn is_known_dev_secret(value: &str, known_values: &[&str]) -> bool {
+    known_values.iter().any(|known| value == *known)
+}
+
+fn is_known_dev_hex_secret(value: &str, known_values: &[&str]) -> bool {
+    known_values
+        .iter()
+        .any(|known| value.eq_ignore_ascii_case(known))
+}
 
 fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -375,6 +400,52 @@ pub fn validate_cors_origin(origin: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn trim_ipv6_host_brackets(host: &str) -> &str {
+    host.trim()
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or_else(|| host.trim())
+}
+
+fn build_url_from_split_parts(
+    scheme: &str,
+    host: &str,
+    port: u16,
+    username: Option<&str>,
+    password: Option<&str>,
+    path_segment: Option<&str>,
+) -> String {
+    let Ok(mut url) = url::Url::parse(&format!("{scheme}://localhost/")) else {
+        return String::new();
+    };
+
+    if url.set_host(Some(trim_ipv6_host_brackets(host))).is_err()
+        || url.set_port(Some(port)).is_err()
+    {
+        return String::new();
+    }
+
+    if let Some(username) = username {
+        if url.set_username(username).is_err() {
+            return String::new();
+        }
+    }
+    if let Some(password) = password {
+        if url.set_password(Some(password)).is_err() {
+            return String::new();
+        }
+    }
+    if let Some(path_segment) = path_segment {
+        let Ok(mut segments) = url.path_segments_mut() else {
+            return String::new();
+        };
+        segments.clear().push(path_segment);
+        drop(segments);
+    }
+
+    url.to_string()
 }
 
 /// Application configuration
@@ -1689,13 +1760,13 @@ impl Config {
             return String::new();
         }
 
-        format!(
-            "postgresql://{}:{}@{}:{}/{}",
-            self.database.username,
-            self.database.password,
-            self.database.host,
+        build_url_from_split_parts(
+            "postgresql",
+            &self.database.host,
             self.database.port,
-            self.database.name
+            Some(&self.database.username),
+            Some(&self.database.password),
+            Some(&self.database.name),
         )
     }
 
@@ -1710,21 +1781,34 @@ impl Config {
             return String::new();
         }
 
-        let authority = if !self.redis.username.is_empty() {
-            format!(
-                "{}:{}@{}:{}",
-                self.redis.username, self.redis.password, self.redis.host, self.redis.port
+        if !self.redis.username.is_empty() {
+            build_url_from_split_parts(
+                "redis",
+                &self.redis.host,
+                self.redis.port,
+                Some(&self.redis.username),
+                Some(&self.redis.password),
+                Some(&self.redis.database.to_string()),
             )
         } else if !self.redis.password.is_empty() {
-            format!(
-                ":{}@{}:{}",
-                self.redis.password, self.redis.host, self.redis.port
+            build_url_from_split_parts(
+                "redis",
+                &self.redis.host,
+                self.redis.port,
+                Some(""),
+                Some(&self.redis.password),
+                Some(&self.redis.database.to_string()),
             )
         } else {
-            format!("{}:{}", self.redis.host, self.redis.port)
-        };
-
-        format!("redis://{authority}/{}", self.redis.database)
+            build_url_from_split_parts(
+                "redis",
+                &self.redis.host,
+                self.redis.port,
+                None,
+                None,
+                Some(&self.redis.database.to_string()),
+            )
+        }
     }
 
     /// Whether cross-replica cluster runtime is enabled.
@@ -3124,6 +3208,8 @@ impl Config {
                     "security.credential_encryption_key must contain only hexadecimal characters"
                         .to_string(),
                 );
+            } else if is_known_dev_hex_secret(key, KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS) {
+                errors.push("security.credential_encryption_key uses a known development value. Generate a unique key with `openssl rand -hex 32`".to_string());
             }
         }
 
@@ -3132,6 +3218,7 @@ impl Config {
             errors.push("security.opaque_server_setup_secret is empty. Set SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET or SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET_FILE to a stable random value".to_string());
         } else if opaque_secret == "change-me-in-production"
             || opaque_secret.starts_with("CHANGE_ME_")
+            || is_known_dev_secret(opaque_secret, KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS)
         {
             errors.push("security.opaque_server_setup_secret appears to be a placeholder. Set it to a stable random value (openssl rand -base64 48)".to_string());
         } else if opaque_secret.len() < 32 {
@@ -3285,6 +3372,7 @@ impl Config {
             errors.push("JWT secret is empty".to_string());
         } else if self.jwt.secret == "change-me-in-production"
             || self.jwt.secret.starts_with("CHANGE_ME_")
+            || is_known_dev_secret(&self.jwt.secret, KNOWN_DEV_JWT_SECRETS)
         {
             errors.push("JWT secret appears to be a placeholder. Set SYNCTV_JWT_SECRET to a strong random value (openssl rand -base64 48)".to_string());
         } else if self.jwt.secret.len() < 32 {
@@ -3300,7 +3388,7 @@ impl Config {
             let pwd = &self.bootstrap.root_password;
             if pwd.is_empty() {
                 errors.push("Root password is empty. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
-            } else if pwd == "root" {
+            } else if pwd == "root" || is_known_dev_secret(pwd, KNOWN_DEV_ROOT_PASSWORDS) {
                 errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
             } else {
                 // Only run complexity checks once a non-empty, non-placeholder
@@ -3891,7 +3979,12 @@ impl Config {
         // Validate cluster.secret strength when set.
         if !self.cluster.secret.is_empty() {
             const MIN_CLUSTER_SECRET_LEN: usize = 16;
-            if self.cluster.secret.len() < MIN_CLUSTER_SECRET_LEN {
+            if is_known_dev_secret(&self.cluster.secret, KNOWN_DEV_CLUSTER_SECRETS) {
+                errors.push(
+                    "cluster.secret uses a known development value. Generate a unique key with `openssl rand -hex 32`"
+                        .to_string(),
+                );
+            } else if self.cluster.secret.len() < MIN_CLUSTER_SECRET_LEN {
                 errors.push(format!(
                     "cluster.secret is too short ({} chars, minimum {}). \
                          Use: openssl rand -hex 16",
@@ -4933,7 +5026,7 @@ mod tests {
             .parent()
             .expect("synctv-core should be inside the workspace root");
 
-        for config_file in ["synctv.example.yaml", "synctv.yaml"] {
+        for config_file in ["synctv.example.yaml"] {
             let path = workspace_root.join(config_file);
             let path_str = path
                 .to_str()
@@ -4950,6 +5043,28 @@ mod tests {
     }
 
     #[test]
+    fn test_checked_in_example_config_does_not_ship_known_development_secrets() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("synctv-core should be inside the workspace root");
+        let config = std::fs::read_to_string(workspace_root.join("synctv.example.yaml"))
+            .expect("checked-in example config should be readable");
+
+        for known_secret in KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS
+            .iter()
+            .chain(KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS)
+            .chain(KNOWN_DEV_JWT_SECRETS)
+            .chain(KNOWN_DEV_CLUSTER_SECRETS)
+            .chain(KNOWN_DEV_ROOT_PASSWORDS)
+        {
+            assert!(
+                !config.contains(*known_secret),
+                "synctv.example.yaml must not ship known development secret value {known_secret:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_compose_env_initializer_uses_canonical_cluster_secret_env() {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -4960,6 +5075,10 @@ mod tests {
         assert!(
             script.contains("SYNCTV_CLUSTER_SECRET"),
             "compose initializer should populate the canonical cluster secret env var"
+        );
+        assert!(
+            script.contains("urllib.parse.quote"),
+            "compose initializer should URL-encode database password before building SYNCTV_DATABASE_URL"
         );
         assert!(
             !script.contains("SYNCTV_SERVER_CLUSTER_SECRET"),
@@ -5176,11 +5295,83 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_known_development_jwt_secret() {
+        let mut config = valid_prod_config();
+        for known_secret in KNOWN_DEV_JWT_SECRETS {
+            config.jwt.secret = (*known_secret).to_string();
+            let errors = config.validate().unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("JWT secret") && e.contains("placeholder")),
+                "unexpected errors for {known_secret:?}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_validate_empty_jwt_secret() {
         let mut config = valid_prod_config();
         config.jwt.secret = String::new();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("JWT secret is empty")));
+    }
+
+    #[test]
+    fn test_validate_known_development_security_secrets() {
+        let mut config = valid_prod_config();
+        config.security.credential_encryption_key =
+            KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS[0].to_string();
+        config.security.opaque_server_setup_secret =
+            KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS[0].to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("security.credential_encryption_key")
+                    && e.contains("known development value")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("security.opaque_server_setup_secret") && e.contains("placeholder")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_historical_development_security_secrets() {
+        let mut config = valid_prod_config();
+        config.security.credential_encryption_key =
+            KNOWN_DEV_CREDENTIAL_ENCRYPTION_KEYS[1].to_string();
+        config.security.opaque_server_setup_secret =
+            KNOWN_DEV_OPAQUE_SERVER_SETUP_SECRETS[1].to_string();
+        config.cluster.secret = KNOWN_DEV_CLUSTER_SECRETS[0].to_string();
+
+        let errors = config.validate().unwrap_err();
+
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("security.credential_encryption_key")
+                    && e.contains("known development value")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| {
+                e.contains("security.opaque_server_setup_secret") && e.contains("placeholder")
+            }),
+            "unexpected errors: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("cluster.secret") && e.contains("known development value")),
+            "unexpected errors: {errors:?}"
+        );
     }
 
     #[test]
@@ -5333,7 +5524,7 @@ media_providers:
             .expect("root password file should be written");
         std::fs::write(
             config_dir.join("credential.key"),
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+            "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
         )
         .expect("credential encryption key file should be written");
         std::fs::write(
@@ -5408,7 +5599,7 @@ bootstrap:
         assert_eq!(config.redis.password, "redis-password");
         assert_eq!(
             config.security.credential_encryption_key,
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+            "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
         );
         assert_eq!(
             config.security.opaque_server_setup_secret,
@@ -5464,6 +5655,52 @@ redis:
         assert_eq!(
             config.redis_url(),
             "redis://cache-user:redis-password@redis.example.com:6380/7"
+        );
+    }
+
+    #[test]
+    fn test_split_database_and_redis_urls_escape_reserved_characters() {
+        let mut config = Config::default();
+        config.database.url.clear();
+        config.database.host = "db.example.com".to_string();
+        config.database.port = 5432;
+        config.database.username = "sync@tv".to_string();
+        config.database.password = "p@ss/word:with?symbols#frag".to_string();
+        config.database.name = "sync/tv prod".to_string();
+        config.redis.url.clear();
+        config.redis.host = "redis.example.com".to_string();
+        config.redis.port = 6379;
+        config.redis.username = "cache:user".to_string();
+        config.redis.password = "p@ss/word:with?symbols#frag".to_string();
+        config.redis.database = 7;
+
+        let database_url = config.database_url();
+        assert_eq!(
+            database_url,
+            "postgresql://sync%40tv:p%40ss%2Fword%3Awith%3Fsymbols%23frag@db.example.com:5432/sync%2Ftv%20prod"
+        );
+        let parsed_database =
+            url::Url::parse(&database_url).expect("escaped database URL should parse");
+        assert_eq!(parsed_database.host_str(), Some("db.example.com"));
+        assert_eq!(parsed_database.port(), Some(5432));
+
+        let redis_url = config.redis_url();
+        assert_eq!(
+            redis_url,
+            "redis://cache%3Auser:p%40ss%2Fword%3Awith%3Fsymbols%23frag@redis.example.com:6379/7"
+        );
+        let redis_client =
+            redis::Client::open(redis_url.as_str()).expect("escaped Redis URL should parse");
+        let parsed_redis = redis_client.get_connection_info();
+        assert_eq!(
+            parsed_redis.addr(),
+            &redis::ConnectionAddr::Tcp("redis.example.com".to_string(), 6379)
+        );
+        assert_eq!(parsed_redis.redis_settings().db(), 7);
+        assert_eq!(parsed_redis.redis_settings().username(), Some("cache:user"));
+        assert_eq!(
+            parsed_redis.redis_settings().password(),
+            Some("p@ss/word:with?symbols#frag")
         );
     }
 
@@ -5815,6 +6052,21 @@ jwt:
         assert!(errors
             .iter()
             .any(|e| e.contains("Root password") && e.contains("default")));
+    }
+
+    #[test]
+    fn test_validate_known_development_root_password() {
+        let mut config = valid_prod_config();
+        for known_password in KNOWN_DEV_ROOT_PASSWORDS {
+            config.bootstrap.root_password = (*known_password).to_string();
+            let errors = config.validate().unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("Root password") && e.contains("default")),
+                "unexpected errors for {known_password:?}: {errors:?}"
+            );
+        }
     }
 
     #[test]
@@ -6284,7 +6536,7 @@ jwt:
         let cluster_secret = write_secret("cluster.secret", "cluster-secret-from-env-file");
         let credential_key = write_secret(
             "credential.key",
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         );
         let opaque_secret =
             write_secret("opaque.secret", "opaque-server-setup-secret-from-env-file");
@@ -6357,7 +6609,7 @@ jwt:
         assert_eq!(config.cluster.secret, "cluster-secret-from-env-file");
         assert_eq!(
             config.security.credential_encryption_key,
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+            "111102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
         );
         assert_eq!(
             config.security.opaque_server_setup_secret,

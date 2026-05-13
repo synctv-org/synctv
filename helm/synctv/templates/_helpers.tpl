@@ -29,6 +29,17 @@ Create chart name and version as used by the chart label.
 {{- end }}
 
 {{/*
+Append a DNS-label suffix while preserving the suffix under the 63-character
+Kubernetes Service-name limit.
+*/}}
+{{- define "synctv.nameWithSuffix" -}}
+{{- $base := index . 0 -}}
+{{- $suffix := index . 1 -}}
+{{- $maxBaseLen := int (sub 62 (len $suffix)) -}}
+{{- printf "%s-%s" ($base | trunc $maxBaseLen | trimSuffix "-") $suffix | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{/*
 Common labels
 */}}
 {{- define "synctv.labels" -}}
@@ -125,7 +136,21 @@ Return the ConfigMap name
 Return the gRPC service name
 */}}
 {{- define "synctv.grpcServiceName" -}}
-{{- printf "%s-grpc" (include "synctv.fullname" .) }}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "grpc") }}
+{{- end }}
+
+{{/*
+Return the headless service name
+*/}}
+{{- define "synctv.headlessServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "headless") }}
+{{- end }}
+
+{{/*
+Return the metrics service name
+*/}}
+{{- define "synctv.metricsServiceName" -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "metrics") }}
 {{- end }}
 
 {{/*
@@ -146,7 +171,7 @@ Return the metrics TLS self-signed issuer name
 Return the metrics TLS server name used by scrape clients
 */}}
 {{- define "synctv.metricsTlsServerName" -}}
-{{- printf "%s.%s.svc.cluster.local" (include "synctv.fullname" .) .Release.Namespace }}
+{{- printf "%s.%s.svc.cluster.local" (include "synctv.metricsServiceName" .) .Release.Namespace }}
 {{- end }}
 
 {{/*
@@ -175,14 +200,14 @@ Redis deployment mode
 Managed PostgreSQL service/statefulset name
 */}}
 {{- define "synctv.postgresql.fullname" -}}
-{{- printf "%s-postgresql" (include "synctv.fullname" .) -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "postgresql") -}}
 {{- end }}
 
 {{/*
 Managed Redis service/statefulset name
 */}}
 {{- define "synctv.redis.fullname" -}}
-{{- printf "%s-redis" (include "synctv.fullname" .) -}}
+{{- include "synctv.nameWithSuffix" (list (include "synctv.fullname" .) "redis") -}}
 {{- end }}
 
 {{/*
@@ -255,7 +280,9 @@ Redis connection port for SyncTV
 PostgreSQL app username for SyncTV
 */}}
 {{- define "synctv.postgresql.appUsername" -}}
-{{- if eq (include "synctv.postgresql.mode" .) "external" -}}
+{{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
+{{- .Values.postgresql.kubeblocks.appUsername | default "synctv" -}}
+{{- else if eq (include "synctv.postgresql.mode" .) "external" -}}
 {{- .Values.postgresql.external.username | default "synctv" -}}
 {{- else -}}
 {{- .Values.postgresql.standard.auth.username | default "synctv" -}}
@@ -267,7 +294,7 @@ PostgreSQL app database name for SyncTV
 */}}
 {{- define "synctv.postgresql.database" -}}
 {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" -}}
-postgres
+{{- .Values.postgresql.kubeblocks.database | default "synctv" -}}
 {{- else if eq (include "synctv.postgresql.mode" .) "external" -}}
 {{- .Values.postgresql.external.database | default "synctv" -}}
 {{- else -}}

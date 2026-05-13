@@ -4,10 +4,14 @@ pub mod circuit_breaker;
 pub mod client;
 pub mod server;
 
-// Include generated protobuf code
+// Include generated protobuf code from Cargo OUT_DIR. src/grpc/proto is only
+// refreshed by the explicit proto regeneration workflow.
 pub mod synctv {
     pub mod cluster {
-        include!("proto/synctv.cluster.rs");
+        include!(concat!(
+            env!("SYNCTV_CLUSTER_PROTO_OUT_DIR"),
+            "/synctv.cluster.rs"
+        ));
     }
 }
 

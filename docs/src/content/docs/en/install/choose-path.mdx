@@ -55,7 +55,7 @@ Execution path:
 
 | Scenario | Path | Boundary |
 | --- | --- | --- |
-| Temporary evaluation | Local evaluation | Fast startup, but includes development secrets and must not face the public internet or run long term. |
+| Temporary evaluation | Local evaluation | Fast startup with generated local env files; keep it off the public internet and do not run it long term. |
 | Source changes | Source run | PostgreSQL and Redis can come from development Compose while SyncTV runs from the local Rust toolchain. |
 | Existing Kubernetes platform | Helm | Decide HTTP/gRPC Ingress, Secret, PVC, metrics, Redis, HLS storage, and rolling updates first. |
 | Multi-replica realtime | Helm or self-managed multi-replica | All replicas must share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`. |
@@ -63,7 +63,7 @@ Execution path:
 ## Decision Rules
 
 <Steps>
-1. If it faces users, do not use development Compose secrets.
+1. If it faces users, do not use development Compose.
 2. If it runs long term, back up PostgreSQL and production secrets.
 3. If it runs multiple replicas, share PostgreSQL, Redis, `redis.key_prefix`, and `cluster.secret`.
 4. If HLS runs across replicas, choose publisher-node proxying, `shared_file`, or OSS explicitly.

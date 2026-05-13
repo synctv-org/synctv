@@ -19,7 +19,7 @@ import {
 
 单机部署优先使用 `docker-compose.yml`。它使用预构建镜像、显式生产 secret、持久化 env 文件和数据卷，适合一台服务器或本机长期运行。
 
-开发 Compose 只用于改代码或临时本地试用。它会从本地 Dockerfile 构建镜像，并内置开发 secret，不适合公网或长期运行。
+开发 Compose 只用于改代码或临时本地试用。它会从本地 Dockerfile 构建镜像，并内置仅供本地使用的开发配置；不要复用于生产。
 
 还没有确定部署方式时，先读 [部署路径选择](../choose-path/)。
 
@@ -28,11 +28,13 @@ import {
 | 文件 | 用途 | 特点 |
 | --- | --- | --- |
 | `docker-compose.yml` | 预构建镜像部署 | 使用 <code>{dockerImageReference}</code>，需要显式提供生产 secret |
-| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置开发 secret |
+| `docker-compose.dev.yml` | 本地开发 | 从本地 Dockerfile 构建，内置仅供本地使用的开发配置 |
 
 ## 获取生产 Compose 文件
 
 在空目录下载单机生产部署所需的最少文件：
+
+运行初始化脚本前，确认主机已安装 Docker Compose、`openssl` 和 `python3`。脚本使用 `openssl` 生成 PostgreSQL、JWT、cluster、credential-encryption 和 OPAQUE secret，并用 `python3` 安全地 URL-encode 数据库密码。
 
 <Code
   code={[
@@ -108,21 +110,13 @@ docker compose -f docker-compose.dev.yml up -d
 - Redis 8
 - SyncTV 本地构建镜像
 
-内置开发值：
-
-- JWT secret
-- cluster secret
-- credential encryption key
-- OPAQUE setup secret
-- root 密码
-
-这些值不能用于生产。
+它内置仅供本地开发使用的凭据和配置，完整源码仓库可以直接启动，不需要先生成 env 文件。
 
   </TabItem>
 </Tabs>
 
 <Aside type="caution">
-不要把开发 Compose 内置的 secret 复制到生产环境。生产 Compose 要求显式 secret 是刻意设计，用来避免默认弱密钥上线。
+不要把开发 Compose 的本地配置复制到生产环境。生产 Compose 要求显式 secret 是刻意设计，用来避免默认弱密钥上线。
 </Aside>
 
 ## 数据卷

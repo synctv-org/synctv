@@ -162,4 +162,4 @@ metrics:
     enabled: true
 ```
 
-The Helm chart exposes HTTP and gRPC through separate Services. Metrics scraping should target the API/metrics Service, not the gRPC Service.
+The Helm chart exposes HTTP/RTMP, gRPC, and metrics through separate Services. Metrics scraping targets the dedicated metrics Service, not the public API/RTMP Service or the gRPC Service.

@@ -6,6 +6,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 
+use crate::util::{validate_stream_id_component, validate_stream_ids};
+
 /// Mock `StreamRegistry` for testing without Redis
 #[derive(Debug, Clone)]
 pub struct MockStreamRegistry {
@@ -198,6 +200,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         self.register_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+        validate_stream_ids(room_id, media_id)?;
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
@@ -229,6 +232,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         user_id: &str,
         api_address: &str,
     ) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
@@ -260,6 +264,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         node_id: &str,
         expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome> {
+        validate_stream_ids(room_id, media_id)?;
         self.refresh_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self
@@ -305,6 +310,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
         let mut publishers = self.publishers.lock().await;
         publishers.remove(&(room_id.to_string(), media_id.to_string()));
         Ok(())
@@ -316,6 +322,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         media_id: &str,
         expected_epoch: u64,
     ) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
         self.unregister_if_epoch_matches_call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let remaining_failures = self
@@ -342,6 +349,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+        validate_stream_ids(room_id, media_id)?;
         if self
             .fail_get_publisher
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -355,6 +363,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let publishers = self.publishers.lock().await;
         Ok(publishers.contains_key(&(room_id.to_string(), media_id.to_string())))
     }
@@ -389,6 +398,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        validate_stream_id_component(room_id, "room_id")?;
         let publishers = self.publishers.lock().await;
         Ok(publishers
             .keys()
@@ -413,6 +423,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let publishers = self.publishers.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
@@ -501,6 +512,23 @@ mod tests {
             .await
             .unwrap();
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_mock_registry_rejects_ambiguous_stream_ids() {
+        let registry = MockStreamRegistry::new();
+
+        let error = registry
+            .try_register_publisher("room:1", "media", "node1", "user1", "10.0.0.1:50051")
+            .await
+            .expect_err("ambiguous room id must be rejected");
+        assert!(error.to_string().contains("room_id"));
+
+        let error = registry
+            .is_stream_active("room1", "../media")
+            .await
+            .expect_err("path-like media id must be rejected");
+        assert!(error.to_string().contains("media_id"));
     }
 
     #[tokio::test]

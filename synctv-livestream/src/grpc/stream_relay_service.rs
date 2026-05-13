@@ -21,6 +21,10 @@ use super::proto::{
 use crate::livestream::segment_manager::SegmentManager;
 use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
 use crate::relay::StreamRegistryTrait;
+use crate::util::{
+    validate_hls_segment_name, validate_hls_segment_url_base, validate_hls_segment_url_suffix,
+    validate_stream_ids,
+};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Send>>;
 
@@ -38,6 +42,27 @@ fn map_streamhub_enqueue_error(error: synctv_xiu::streamhub::errors::StreamHubEr
             Status::internal("Failed to enqueue subscribe event")
         }
     }
+}
+
+fn validate_relay_stream_ids(room_id: &str, media_id: &str) -> Result<(), Status> {
+    validate_stream_ids(room_id, media_id)
+        .map_err(|error| Status::invalid_argument(format!("invalid stream identifiers: {error}")))
+}
+
+fn validate_relay_hls_segment_name(segment_name: &str) -> Result<(), Status> {
+    validate_hls_segment_name(segment_name)
+        .map_err(|error| Status::invalid_argument(format!("invalid HLS segment name: {error}")))
+}
+
+fn validate_relay_segment_url_base(segment_url_base: &str) -> Result<(), Status> {
+    validate_hls_segment_url_base(segment_url_base)
+        .map_err(|error| Status::invalid_argument(format!("invalid HLS segment URL base: {error}")))
+}
+
+fn validate_relay_segment_url_suffix(segment_url_suffix: &str) -> Result<(), Status> {
+    validate_hls_segment_url_suffix(segment_url_suffix).map_err(|error| {
+        Status::invalid_argument(format!("invalid HLS segment URL suffix: {error}"))
+    })
 }
 
 /// Callback invoked when the relay service forwards frames from a local publisher.
@@ -228,6 +253,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         self.authenticate(&request)?;
 
         let req = request.into_inner();
+        validate_relay_stream_ids(&req.room_id, &req.media_id)?;
         info!(
             room_id = req.room_id,
             media_id = req.media_id,
@@ -357,6 +383,9 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         self.authenticate(&request)?;
 
         let req = request.into_inner();
+        validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_segment_url_base(&req.segment_url_base)?;
+        validate_relay_segment_url_suffix(&req.segment_url_suffix)?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
@@ -375,8 +404,10 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             Some(stream_state) => {
                 let state = stream_state.read();
                 let segment_url_base = req.segment_url_base;
-                let playlist =
-                    state.generate_m3u8(|ts_name| format!("{segment_url_base}{ts_name}.ts"));
+                let segment_url_suffix = req.segment_url_suffix;
+                let playlist = state.generate_m3u8(|ts_name| {
+                    format!("{segment_url_base}{ts_name}{segment_url_suffix}")
+                });
                 GetHlsPlaylistResponse {
                     playlist,
                     found: true,
@@ -400,6 +431,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         self.authenticate(&request)?;
 
         let req = request.into_inner();
+        validate_relay_stream_ids(&req.room_id, &req.media_id)?;
+        validate_relay_hls_segment_name(&req.segment_name)?;
         tracing::debug!(
             room_id = req.room_id,
             media_id = req.media_id,
@@ -669,6 +702,185 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
         assert!(status.message().contains("Timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_relay_rejects_invalid_stream_ids_before_backend_work() {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret");
+
+        let mut request = Request::new(PullRtmpStreamRequest {
+            room_id: "room:1".to_string(),
+            media_id: "media1".to_string(),
+            is_reconnect: false,
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.pull_rtmp_stream(request).await else {
+            panic!("invalid stream identifiers must be rejected");
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_relay_rejects_invalid_hls_playlist_base() {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_hls_stream_registry(Arc::new(dashmap::DashMap::new()));
+
+        let mut request = Request::new(GetHlsPlaylistRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            segment_url_base: "/segments/\n#EXT-X-ENDLIST".to_string(),
+            segment_url_suffix: ".ts".to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.get_hls_playlist(request).await else {
+            panic!("invalid HLS segment URL base must be rejected");
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_relay_rejects_invalid_hls_playlist_suffix() {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_hls_stream_registry(Arc::new(dashmap::DashMap::new()));
+
+        let mut request = Request::new(GetHlsPlaylistRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            segment_url_base: "/segments/".to_string(),
+            segment_url_suffix: ".ts\n#EXT-X-ENDLIST".to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.get_hls_playlist(request).await else {
+            panic!("invalid HLS segment URL suffix must be rejected");
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn test_relay_preserves_hls_playlist_segment_url_suffix() {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let hls_registry = Arc::new(dashmap::DashMap::new());
+        let mut segments = std::collections::VecDeque::new();
+        segments.push_back(synctv_xiu::hls::SegmentInfo {
+            sequence: 0,
+            duration: 1_000,
+            ts_name: "seg001".to_string(),
+            discontinuity: false,
+            created_at: std::time::Instant::now(),
+        });
+        hls_registry.insert(
+            "room1/media1".to_string(),
+            Arc::new(parking_lot::RwLock::new(
+                synctv_xiu::hls::StreamProcessorState {
+                    app_name: "room1".to_string(),
+                    stream_name: "media1".to_string(),
+                    segments,
+                    is_ended: false,
+                    created_at: std::time::Instant::now(),
+                    marked_for_cleanup: false,
+                    cleanup_segment_names: Vec::new(),
+                },
+            )),
+        );
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_hls_stream_registry(hls_registry);
+
+        let mut request = Request::new(GetHlsPlaylistRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            segment_url_base: "/api/live/segment/".to_string(),
+            segment_url_suffix: ".png?sig=abc&rid=room1".to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let response = service
+            .get_hls_playlist(request)
+            .await
+            .expect("valid relay playlist request should succeed")
+            .into_inner();
+
+        assert!(response.found);
+        assert!(
+            response
+                .playlist
+                .contains("/api/live/segment/seg001.png?sig=abc&rid=room1"),
+            "playlist must preserve signed query and disguised extension: {}",
+            response.playlist
+        );
+    }
+
+    #[tokio::test]
+    async fn test_relay_rejects_invalid_hls_segment_name() {
+        let registry = crate::relay::local_stream_registry();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let segment_manager = Arc::new(SegmentManager::new(
+            Arc::new(synctv_xiu::storage::MemoryStorage::new()),
+            Default::default(),
+        ));
+        let service = StreamRelayServiceImpl::new(
+            registry,
+            "test-node".to_string(),
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_cluster_secret("cluster-secret")
+        .with_segment_manager(segment_manager);
+
+        let mut request = Request::new(GetHlsSegmentRequest {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            segment_name: "../secret".to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse().unwrap());
+
+        let Err(status) = service.get_hls_segment(request).await else {
+            panic!("invalid HLS segment name must be rejected");
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

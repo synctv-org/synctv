@@ -24,6 +24,42 @@ require_rendered() {
   fi
 }
 
+forbid_rendered() {
+  local pattern="$1"
+  local file="$2"
+  local description="$3"
+
+  if grep -q "$pattern" "$file"; then
+    fail "$description was unexpectedly rendered in $file"
+  fi
+}
+
+assert_max_service_name_len() {
+  local file="$1"
+  local max_len="${2:-63}"
+  local bad_names
+
+  bad_names="$(
+    awk -v max="$max_len" '
+      $1 == "---" {
+        in_service = 0
+      }
+      $1 == "kind:" && $2 == "Service" {
+        in_service = 1
+      }
+      in_service && $1 == "name:" {
+        name = $2
+        gsub(/^"|"$/, "", name)
+        if (length(name) > max) {
+          print length(name) " " name
+        }
+      }
+    ' "$file"
+  )"
+
+  [ -z "$bad_names" ] || fail "rendered Service name(s) exceed ${max_len} characters in $file: $bad_names"
+}
+
 chart_version="$(sed -n 's/^version:[[:space:]]*//p' "$chart_dir/Chart.yaml" | head -n1 | tr -d '"')"
 app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' "$chart_dir/Chart.yaml" | head -n1 | tr -d '"')"
 cargo_version="$(
@@ -79,6 +115,22 @@ helm template synctv "$chart_dir" \
 
 helm template synctv "$chart_dir" \
   --namespace "$namespace" \
+  --set postgresql.mode=kubeblocks \
+  --set postgresql.kubeblocks.bootstrapAppDatabase=false \
+  >"$tmp_dir/kubeblocks-no-bootstrap.yaml"
+
+helm template aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$chart_dir" \
+  --namespace "$namespace" \
+  --set metrics.enabled=true \
+  --set metrics.tls.enabled=true \
+  --set metrics.serviceMonitor.enabled=true \
+  --set metrics.vmServiceScrape.enabled=true \
+  --set ingress.grpc.enabled=true \
+  --set headlessService.enabled=true \
+  >"$tmp_dir/long-release.yaml"
+
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
   --set global.imageRegistry=registry.example.com \
   --set config.security.ssrf.allowPrivateNetworkTargets=true \
   --set config.security.ssrf.allowedHosts[0]=nas.example.internal \
@@ -103,5 +155,12 @@ require_rendered 'nas.example.internal' \
 require_rendered '10.0.8.0/24' \
   "$tmp_dir/security.yaml" \
   "SSRF allowed IP range"
+forbid_rendered 'bootstrap-postgresql-app-db' \
+  "$tmp_dir/kubeblocks-no-bootstrap.yaml" \
+  "KubeBlocks PostgreSQL app database bootstrap initContainer"
+assert_max_service_name_len "$tmp_dir/long-release.yaml" 63
+forbid_rendered 'commonName:' \
+  "$tmp_dir/long-release.yaml" \
+  "metrics Certificate commonName"
 
 echo "Helm chart validation passed."

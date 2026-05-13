@@ -156,4 +156,4 @@ metrics:
     enabled: true
 ```
 
-Helm 中 HTTP 和 gRPC 使用独立 Service。metrics 抓取应指向 API/metrics Service，不抓 gRPC Service。
+Helm 中 HTTP/RTMP、gRPC、metrics 使用独立 Service。metrics 抓取应指向专用 metrics Service，不抓公网 API/RTMP Service 或 gRPC Service。

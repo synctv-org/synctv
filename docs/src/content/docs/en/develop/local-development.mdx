@@ -58,7 +58,7 @@ Start the whole development stack:
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Development Compose builds from the local Dockerfile and includes development secrets. It is not for production.
+Development Compose builds from the local Dockerfile and includes local-only development settings. It is not for production.
 
 ## Run Locally
 
@@ -69,13 +69,26 @@ Development Compose builds from the local Dockerfile and includes development se
    docker compose -f docker-compose.dev.yml up -d postgres redis
    ```
 
-2. Validate configuration:
+2. Export local settings for this shell:
+
+   ```bash
+   export SYNCTV_DATABASE_URL="postgresql://synctv:synctv@localhost:5432/synctv"
+   export SYNCTV_REDIS_URL="redis://localhost:6379"
+   export SYNCTV_JWT_SECRET="local-compose-jwt-secret-not-for-production-2026"
+   export SYNCTV_CLUSTER_SECRET="local-compose-cluster-secret-2026"
+   export SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY="222102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+   export SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET="local-compose-opaque-server-setup-secret-not-for-production-2026"
+   export SYNCTV_BOOTSTRAP_CREATE_ROOT_USER="true"
+   export SYNCTV_BOOTSTRAP_ROOT_PASSWORD="LocalDevRootPass2026!"
+   ```
+
+3. Validate configuration:
 
    ```bash
    cargo run -p synctv --bin synctv -- config validate
    ```
 
-3. Start the service:
+4. Start the service:
 
    ```bash
    cargo run -p synctv --bin synctv -- serve
@@ -213,14 +226,12 @@ Refresh flow:
 docker compose -f docker-compose.dev.yml down -v
 docker compose -f docker-compose.dev.yml up -d postgres redis
 
-SYNCTV_DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
-SYNCTV_JWT_SECRET=dev-jwt-secret-please-change-in-production-1234567890 \
-SYNCTV_CLUSTER_SECRET=dev-cluster-secret-please-change-in-production-1234567890 \
-SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
-SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=dev-opaque-server-setup-secret-please-change-1234567890 \
+local_database_url="postgresql://synctv:synctv@localhost:5432/synctv"
+
+SYNCTV_DATABASE_URL="$local_database_url" \
 cargo run -p synctv --bin synctv -- db migrate
 
-DATABASE_URL=postgresql://synctv:synctv@localhost:5432/synctv \
+DATABASE_URL="$local_database_url" \
 cargo sqlx prepare --workspace
 
 SQLX_OFFLINE=true cargo check --workspace --all-targets

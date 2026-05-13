@@ -229,21 +229,24 @@ impl From<synctv_core::provider::ProviderError> for AppError {
         use synctv_core::provider::ProviderError;
         match err {
             ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
-                Self::new(StatusCode::BAD_GATEWAY, msg)
+                Self::new(StatusCode::SERVICE_UNAVAILABLE, msg)
             }
             ProviderError::UpstreamHttp { status, .. } => {
                 tracing::warn!(status = status, "Upstream HTTP error");
-                if status == 401 || status == 403 {
-                    Self::unauthorized("Provider authentication failed")
-                } else if status == 404 {
-                    Self::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND)
-                } else if status == 408 || status == 429 || status >= 500 {
-                    Self::new(
-                        StatusCode::BAD_GATEWAY,
+                match status {
+                    401 | 403 => Self::unauthorized("Provider authentication failed"),
+                    404 => Self::not_found(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND),
+                    409 => Self::conflict("Upstream provider reported a request conflict."),
+                    429 => Self::too_many_requests("Upstream provider rate limited the request."),
+                    408 => Self::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
                         "Upstream provider service is temporarily unavailable.",
-                    )
-                } else {
-                    Self::bad_request("Upstream provider rejected the request.")
+                    ),
+                    status if status >= 500 => Self::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Upstream provider service is temporarily unavailable.",
+                    ),
+                    _ => Self::bad_request("Upstream provider rejected the request."),
                 }
             }
             ProviderError::ParseError(msg)
@@ -296,6 +299,7 @@ impl From<synctv_core::Error> for AppError {
         match err {
             Error::NotFound(msg) => Self::not_found(msg),
             Error::AlreadyExists(msg) => Self::conflict(msg),
+            Error::Conflict(msg) => Self::conflict(msg),
             Error::Authentication(msg) => Self::unauthorized(msg),
             Error::EmailNotVerified => {
                 Self::forbidden("Email not verified. Please verify your email to continue.")
@@ -403,6 +407,49 @@ impl From<crate::impls::ApiError> for AppError {
 #[must_use]
 pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
+}
+
+/// Map an `AppError` back into the typed API error model when an HTTP helper
+/// must run inside an impls-layer executor closure.
+///
+/// Prefer returning `ApiError` directly from new impls code. This bridge is a
+/// narrow compatibility path for legacy HTTP helpers that still need to run
+/// inside impls-layer executor closures; it is not a lossless `AppError`
+/// serializer.
+#[must_use]
+pub(crate) fn app_error_to_api_error(err: AppError) -> crate::impls::ApiError {
+    use crate::impls::{error_codes, ApiError};
+
+    let AppError {
+        status,
+        message,
+        error_code,
+        retry_after_seconds,
+    } = err;
+
+    match status {
+        StatusCode::BAD_REQUEST => ApiError::InvalidInput(message),
+        StatusCode::UNAUTHORIZED => ApiError::Authentication(message),
+        StatusCode::FORBIDDEN => ApiError::Authorization(message),
+        StatusCode::NOT_FOUND => ApiError::NotFound(message),
+        StatusCode::CONFLICT => match error_code {
+            Some(error_codes::ALREADY_EXISTS) => ApiError::AlreadyExists(message),
+            Some(error_codes::CONFLICT) => ApiError::Conflict(message),
+            None | Some(_) => ApiError::Conflict(message),
+        },
+        StatusCode::TOO_MANY_REQUESTS => match retry_after_seconds {
+            Some(retry_after_seconds) => ApiError::RateLimitedWithRetry {
+                message,
+                retry_after_seconds,
+            },
+            None => ApiError::RateLimited(message),
+        },
+        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(message),
+        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT | StatusCode::SERVICE_UNAVAILABLE => {
+            ApiError::ServiceUnavailable(message)
+        }
+        _ => ApiError::Internal(message),
+    }
 }
 
 #[cfg(test)]
@@ -950,6 +997,39 @@ mod tests {
     }
 
     #[test]
+    fn test_app_error_to_api_error_preserves_retry_after_rate_limit() {
+        let err = app_error_to_api_error(AppError::too_many_requests_with_retry("slow down", 7));
+
+        assert!(matches!(
+            err,
+            crate::impls::ApiError::RateLimitedWithRetry {
+                ref message,
+                retry_after_seconds: 7,
+            } if message == "slow down"
+        ));
+    }
+
+    #[test]
+    fn test_app_error_to_api_error_maps_conflict_without_code_as_conflict() {
+        assert!(matches!(
+            app_error_to_api_error(AppError::conflict("concurrent update")),
+            crate::impls::ApiError::Conflict(ref message) if message == "concurrent update"
+        ));
+        assert!(matches!(
+            app_error_to_api_error(AppError::from(crate::impls::ApiError::Conflict(
+                "concurrent update".to_string()
+            ))),
+            crate::impls::ApiError::Conflict(ref message) if message == "concurrent update"
+        ));
+        assert!(matches!(
+            app_error_to_api_error(AppError::from(crate::impls::ApiError::AlreadyExists(
+                "duplicate".to_string()
+            ))),
+            crate::impls::ApiError::AlreadyExists(ref message) if message == "duplicate"
+        ));
+    }
+
+    #[test]
     fn test_from_core_rate_limited_via_api_error() {
         // Test the full chain: synctv_core::Error::RateLimited -> ApiError -> AppError
         let core_err = synctv_core::Error::RateLimited("exceeded quota".to_string());
@@ -973,6 +1053,24 @@ mod tests {
     }
 
     #[test]
+    fn test_from_provider_network_error_maps_to_service_unavailable() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::NetworkError(
+            "connection refused".to_string(),
+        ));
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message, "connection refused");
+    }
+
+    #[test]
+    fn test_from_provider_api_error_maps_to_service_unavailable() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::ApiError(
+            "upstream provider down".to_string(),
+        ));
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message, "upstream provider down");
+    }
+
+    #[test]
     fn test_from_provider_upstream_http_404_maps_to_not_found() {
         let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
             status: 404,
@@ -986,12 +1084,12 @@ mod tests {
     }
 
     #[test]
-    fn test_from_provider_upstream_http_503_is_sanitized() {
+    fn test_from_provider_upstream_http_503_maps_to_service_unavailable() {
         let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
             status: 503,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             app_err.message,
             "Upstream provider service is temporarily unavailable."
@@ -999,12 +1097,12 @@ mod tests {
     }
 
     #[test]
-    fn test_from_provider_upstream_http_408_maps_to_bad_gateway() {
+    fn test_from_provider_upstream_http_408_maps_to_service_unavailable() {
         let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
             status: 408,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             app_err.message,
             "Upstream provider service is temporarily unavailable."
@@ -1012,15 +1110,28 @@ mod tests {
     }
 
     #[test]
-    fn test_from_provider_upstream_http_429_maps_to_bad_gateway() {
+    fn test_from_provider_upstream_http_409_maps_to_conflict() {
+        let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 409,
+            url: "https://provider.example/internal/path?token=secret".to_string(),
+        });
+        assert_eq!(app_err.status, StatusCode::CONFLICT);
+        assert_eq!(
+            app_err.message,
+            "Upstream provider reported a request conflict."
+        );
+    }
+
+    #[test]
+    fn test_from_provider_upstream_http_429_maps_to_too_many_requests() {
         let app_err = AppError::from(synctv_core::provider::ProviderError::UpstreamHttp {
             status: 429,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(app_err.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
             app_err.message,
-            "Upstream provider service is temporarily unavailable."
+            "Upstream provider rate limited the request."
         );
     }
 }

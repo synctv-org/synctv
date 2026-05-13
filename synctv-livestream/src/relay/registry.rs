@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
+use crate::util::validate_stream_ids;
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
@@ -465,9 +466,11 @@ impl StreamRegistry {
     }
 
     fn parse_publisher_member(member: &str) -> Option<(String, String)> {
-        member
-            .split_once(':')
-            .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
+        let (room_id, media_id) = member.split_once(':')?;
+        if media_id.contains(':') || validate_stream_ids(room_id, media_id).is_err() {
+            return None;
+        }
+        Some((room_id.to_string(), media_id.to_string()))
     }
 
     async fn remove_reverse_index_member(&self, set_key: &str, member: &str) -> Result<()> {
@@ -635,6 +638,7 @@ impl StreamRegistry {
         user_id: &str,
         api_address: &str,
     ) -> anyhow::Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         // Validate api_address at registration time (not usage time)
         // This ensures publishers cannot register without a valid shared API address.
         if api_address.trim().is_empty() {
@@ -748,6 +752,7 @@ impl StreamRegistry {
         node_id: &str,
         expected_epoch: Option<u64>,
     ) -> Result<PublisherRefreshOutcome> {
+        validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
         let user_key = if user_id.is_empty() {
             String::new()
@@ -817,6 +822,7 @@ impl StreamRegistry {
         media_id: &str,
         expected_epoch: Option<u64>,
     ) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
 
         // Use -1 to mean "no epoch check" (unconditional delete)
@@ -939,6 +945,7 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
     ) -> Result<Option<PublisherInfo>> {
+        validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
@@ -972,6 +979,7 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
     ) -> anyhow::Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
@@ -1013,6 +1021,7 @@ impl StreamRegistry {
 
     /// List active streams for a specific room, returning only the `media_id` values.
     pub async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        crate::util::validate_stream_id_component(room_id, "room_id")?;
         Ok(self
             .load_publishers_from_index(&self.room_publishers_key(room_id))
             .await?
@@ -1025,6 +1034,7 @@ impl StreamRegistry {
     /// Returns Ok(true) if the epoch is valid, Ok(false) if stale/invalid.
     /// Used by pull streams to detect split-brain scenarios.
     pub async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let key = self.publisher_key(room_id, media_id);
 
         with_redis_timeout(|| async {
@@ -1056,6 +1066,7 @@ impl StreamRegistry {
     /// Get the current epoch for a stream without publisher info.
     /// Returns None if no publisher exists.
     pub async fn get_current_epoch(&self, room_id: &str, media_id: &str) -> Result<Option<u64>> {
+        validate_stream_ids(room_id, media_id)?;
         let publisher = self.get_publisher_immut(room_id, media_id).await?;
         Ok(publisher.map(|p| p.epoch))
     }
@@ -1285,6 +1296,26 @@ mod tests {
             .unregister_publisher("room123", "media456")
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn test_parse_publisher_member_rejects_ambiguous_components() {
+        assert_eq!(
+            StreamRegistry::parse_publisher_member("room1:media1"),
+            Some(("room1".to_string(), "media1".to_string()))
+        );
+        assert!(
+            StreamRegistry::parse_publisher_member("room:1:media").is_none(),
+            "member parser must reject extra delimiters"
+        );
+        assert!(
+            StreamRegistry::parse_publisher_member("room1:../media").is_none(),
+            "member parser must reject path-like media ids"
+        );
+        assert!(
+            StreamRegistry::parse_publisher_member("room/1:media").is_none(),
+            "member parser must reject path-like room ids"
+        );
     }
 
     #[tokio::test]

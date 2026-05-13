@@ -20,6 +20,8 @@ use synctv_xiu::streamhub::{
 use tokio::time::{interval, sleep, Duration};
 use tracing::{debug, error, info, trace, warn};
 
+use crate::util::validate_stream_ids;
+
 /// Maximum number of retry attempts for heartbeat failures within a single heartbeat cycle
 const MAX_HEARTBEAT_RETRIES: u32 = 3;
 /// Delay between heartbeat retries (exponential backoff base)
@@ -178,6 +180,19 @@ fn is_redis_unreachable_error(error: &anyhow::Error) -> bool {
     message.contains("redis operation timed out") || message.contains("redis timeout")
 }
 
+fn publisher_key(room_id: &str, media_id: &str) -> anyhow::Result<String> {
+    validate_stream_ids(room_id, media_id)?;
+    Ok(format!("{room_id}:{media_id}"))
+}
+
+fn parse_publisher_key(key: &str) -> Option<(&str, &str)> {
+    let (room_id, media_id) = key.split_once(':')?;
+    if media_id.contains(':') || validate_stream_ids(room_id, media_id).is_err() {
+        return None;
+    }
+    Some((room_id, media_id))
+}
+
 /// Publisher manager that listens to `StreamHub` events
 pub struct PublisherManager {
     registry: Arc<dyn StreamRegistryTrait>,
@@ -282,9 +297,7 @@ impl PublisherManager {
         self.active_publishers
             .iter()
             .filter_map(|entry| {
-                entry
-                    .key()
-                    .split_once(':')
+                parse_publisher_key(entry.key())
                     .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
             })
             .collect()
@@ -297,7 +310,14 @@ impl PublisherManager {
     /// the publisher will be considered silent after `SILENT_PUBLISHER_TIMEOUT_SECS`
     /// and automatically cleaned up.
     pub fn record_publisher_activity(&self, room_id: &str, media_id: &str) {
-        let key = format!("{room_id}:{media_id}");
+        let Ok(key) = publisher_key(room_id, media_id) else {
+            warn!(
+                room_id = room_id,
+                media_id = media_id,
+                "Ignoring publisher activity for invalid stream identifiers"
+            );
+            return;
+        };
         if let Some(entry) = self.active_publishers.get(&key) {
             entry.touch();
         }
@@ -465,7 +485,7 @@ impl PublisherManager {
         // Track active publisher with composite key (room_id:media_id)
         // This publisher has already been registered to Redis in the auth phase.
         // Query registry to get user_id for heartbeat TTL refresh.
-        let publisher_key = format!("{room_id}:{media_id}");
+        let publisher_key = publisher_key(&room_id, &media_id)?;
         let entry = match self.registry.get_publisher(&room_id, &media_id).await {
             Ok(Some(info)) => {
                 debug!(
@@ -523,7 +543,7 @@ impl PublisherManager {
         let media_id = stream_name;
 
         // Look up by composite key (room_id:media_id)
-        let publisher_key = format!("{room_id}:{media_id}");
+        let publisher_key = publisher_key(&room_id, &media_id)?;
         if self.active_publishers.remove(&publisher_key).is_some() {
             // Unregister from Redis
             if let Err(e) = self
@@ -571,7 +591,7 @@ impl PublisherManager {
 
         let mut removed = 0u32;
         for publisher_key in &snapshot {
-            if let Some((room_id, media_id)) = publisher_key.split_once(':') {
+            if let Some((room_id, media_id)) = parse_publisher_key(publisher_key) {
                 match self.registry.get_publisher(room_id, media_id).await {
                     Ok(Some(info)) if info.node_id == self.local_node_id => {
                         // Publisher still registered to us -- keep it
@@ -607,6 +627,13 @@ impl PublisherManager {
                         );
                     }
                 }
+            } else {
+                warn!(
+                    publisher_key = publisher_key,
+                    "Removing invalid publisher tracking key during reconciliation"
+                );
+                self.active_publishers.remove(publisher_key);
+                removed += 1;
             }
         }
 
@@ -638,7 +665,18 @@ impl PublisherManager {
 
         let mut added = 0u32;
         for publisher in active_publishers {
-            let publisher_key = format!("{}:{}", publisher.room_id, publisher.media_id);
+            let publisher_key = match publisher_key(&publisher.room_id, &publisher.media_id) {
+                Ok(key) => key,
+                Err(error) => {
+                    warn!(
+                        room_id = %publisher.room_id,
+                        media_id = %publisher.media_id,
+                        error = %error,
+                        "Skipping invalid publisher entry returned by registry"
+                    );
+                    continue;
+                }
+            };
             // Skip if already tracked locally
             if self.active_publishers.contains_key(&publisher_key) {
                 continue;
@@ -848,7 +886,7 @@ impl PublisherManager {
         );
 
         for (publisher_key, entry) in &snapshot {
-            if let Some((room_id, media_id)) = publisher_key.split_once(':') {
+            if let Some((room_id, media_id)) = parse_publisher_key(publisher_key) {
                 // Try to register the publisher in registry.
                 // After reconcile_with_registry, only entries owned by us remain,
                 // so we just need to refresh TTL or re-register if expired.
@@ -943,6 +981,12 @@ impl PublisherManager {
                         );
                     }
                 }
+            } else {
+                warn!(
+                    publisher_key = publisher_key,
+                    "Removing invalid publisher tracking key during re-registration"
+                );
+                self.active_publishers.remove(publisher_key);
             }
         }
         self.clear_restarting();
@@ -958,7 +1002,18 @@ impl PublisherManager {
         expected_epoch: u64,
         reason: &str,
     ) {
-        let publisher_key = format!("{room_id}:{media_id}");
+        let publisher_key = match publisher_key(room_id, media_id) {
+            Ok(key) => key,
+            Err(error) => {
+                warn!(
+                    room_id = room_id,
+                    media_id = media_id,
+                    error = %error,
+                    "Skipping cleanup for invalid publisher identifiers"
+                );
+                return;
+            }
+        };
         info!(
             "Cleaning up publisher room={} media={} epoch={}: {}",
             room_id, media_id, expected_epoch, reason
@@ -1097,7 +1152,12 @@ impl PublisherManager {
 
         for (publisher_key, entry) in &snapshot {
             // Parse room_id and media_id from the composite key
-            let Some((room_id, media_id)) = publisher_key.split_once(':') else {
+            let Some((room_id, media_id)) = parse_publisher_key(publisher_key) else {
+                warn!(
+                    publisher_key = publisher_key,
+                    "Removing invalid publisher tracking key during heartbeat"
+                );
+                self.active_publishers.remove(publisher_key);
                 continue;
             };
 
@@ -1451,7 +1511,7 @@ mod tests {
             .expect("registry lookup should succeed")
             .expect("publisher should exist in registry");
         manager.active_publishers.insert(
-            format!("{room_id}:{media_id}"),
+            publisher_key(room_id, media_id).expect("valid test stream id"),
             Arc::new(PublisherEntry::with_registration(info.user_id, info.epoch)),
         );
     }

@@ -5,23 +5,9 @@ metadata:
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
-  {{- $annotations := dict }}
-  {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations.enabled }}
-  {{- $_ := set $annotations "prometheus.io/scrape" "true" }}
-  {{- $_ := set $annotations "prometheus.io/port" (.Values.metrics.port | default 9090 | toString) }}
-  {{- $_ := set $annotations "prometheus.io/path" "/metrics" }}
-  {{- $_ := set $annotations "prometheus.io/scheme" (ternary "https" "http" (.Values.metrics.tls.enabled | default false)) }}
-  {{- end }}
   {{- with .Values.service.annotations }}
-  {{- range $k, $v := . }}
-  {{- $_ := set $annotations $k $v }}
-  {{- end }}
-  {{- end }}
-  {{- if $annotations }}
   annotations:
-    {{- range $k, $v := $annotations }}
-    {{ $k }}: {{ $v | quote }}
-    {{- end }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   type: {{ .Values.service.type }}
@@ -41,12 +27,6 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
-    {{- if .Values.metrics.enabled }}
-    - port: {{ .Values.metrics.port | default 9090 }}
-      targetPort: metrics
-      protocol: TCP
-      name: metrics
-    {{- end }}
     - port: {{ .Values.config.livestream.rtmpPort }}
       targetPort: rtmp
       protocol: TCP
@@ -69,6 +49,46 @@ spec:
   sessionAffinity: {{ .Values.service.sessionAffinity }}
   {{- end }}
 ---
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "synctv.metricsServiceName" . }}
+  labels:
+    {{- include "synctv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- $metricsAnnotations := dict }}
+  {{- if .Values.metrics.scrapeAnnotations.enabled }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/scrape" "true" }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/port" (.Values.metrics.port | default 9090 | toString) }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/path" "/metrics" }}
+  {{- $_ := set $metricsAnnotations "prometheus.io/scheme" (ternary "https" "http" (.Values.metrics.tls.enabled | default false)) }}
+  {{- end }}
+  {{- with .Values.metrics.service.annotations }}
+  {{- range $k, $v := . }}
+  {{- $_ := set $metricsAnnotations $k $v }}
+  {{- end }}
+  {{- end }}
+  {{- if $metricsAnnotations }}
+  annotations:
+    {{- range $k, $v := $metricsAnnotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.metrics.service.type | default "ClusterIP" }}
+  ports:
+    - port: {{ .Values.metrics.port | default 9090 }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "synctv.selectorLabels" . | nindent 4 }}
+  {{- with .Values.metrics.service.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:

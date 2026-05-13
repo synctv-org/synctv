@@ -48,7 +48,10 @@ enum FrameType {
 message GetHlsPlaylistRequest {
     string room_id = 1;
     string media_id = 2;
-    string segment_url_base = 3; // base URL for segment links in the M3U8
+    // URL prefix and suffix around each HLS segment name in generated M3U8.
+    // Example: prefix="/api/.../segment/", suffix=".png?sig=..."
+    string segment_url_base = 3;
+    string segment_url_suffix = 4;
 }
 
 message GetHlsPlaylistResponse {
@@ -66,4 +69,3 @@ message GetHlsSegmentResponse {
     bytes data = 1;
     bool found = 2;
 }
-

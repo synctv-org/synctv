@@ -26,6 +26,18 @@ EOF
   exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+python3 is required to URL-encode the generated PostgreSQL password.
+
+Install Python 3 and rerun this script, for example:
+  Debian/Ubuntu: sudo apt-get install python3
+  Fedora/RHEL:   sudo dnf install python3
+  macOS:         brew install python
+EOF
+  exit 1
+fi
+
 cp "$postgres_example" "$postgres_env"
 cp "$synctv_example" "$synctv_env"
 
@@ -39,9 +51,20 @@ set_env() {
   sed -i.bak "s/^${key}=.*/${key}=${escaped}/" "$file"
 }
 
+url_encode() {
+  local value="$1"
+  VALUE="$value" python3 - <<'PY'
+import os
+import urllib.parse
+
+print(urllib.parse.quote(os.environ["VALUE"], safe=""))
+PY
+}
+
 postgres_password="$(openssl rand -hex 32)"
+postgres_password_encoded="$(url_encode "$postgres_password")"
 set_env "$postgres_env" POSTGRES_PASSWORD "$postgres_password"
-set_env "$synctv_env" SYNCTV_DATABASE_URL "postgresql://synctv:${postgres_password}@postgres:5432/synctv"
+set_env "$synctv_env" SYNCTV_DATABASE_URL "postgresql://synctv:${postgres_password_encoded}@postgres:5432/synctv"
 set_env "$synctv_env" SYNCTV_JWT_SECRET "$(openssl rand -base64 32)"
 set_env "$synctv_env" SYNCTV_CLUSTER_SECRET "$(openssl rand -hex 32)"
 set_env "$synctv_env" SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY "$(openssl rand -hex 32)"
@@ -51,10 +74,13 @@ rm -f "$postgres_env.bak" "$synctv_env.bak"
 cat <<'EOF'
 Created .env.postgres and .env.synctv with generated production secrets.
 
-Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting:
+Edit SYNCTV_BOOTSTRAP_ROOT_PASSWORD in .env.synctv before starting production Compose:
 
   docker compose config
   docker compose up -d
+
+For local development, use docker-compose.dev.yml directly; it has built-in
+local-only settings and does not read these production env files.
 
 Keep both files backed up and stable across restarts, host reboots, and upgrades.
 EOF

@@ -23,8 +23,7 @@ fn build_proto_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 fn regen_proto_enabled() -> bool {
     env::var("SYNCTV_REGEN_PROTO")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
 fn sync_generated_files(source_root: &Path) -> Result<(), Box<dyn std::error::Error>> {

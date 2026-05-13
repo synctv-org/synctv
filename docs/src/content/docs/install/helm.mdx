@@ -117,14 +117,15 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 
 | Service | 用途 | 端口名 |
 | --- | --- | --- |
-| `synctv` | HTTP/REST，同时包含 RTMP、STUN、metrics 等端口 | `api` |
+| `synctv` | HTTP/REST，同时包含 RTMP 和 STUN 端口 | `api`、`rtmp`、`stun` |
+| `synctv-metrics` | `metrics.enabled=true` 时的专用指标入口 | `metrics` |
 | `synctv-grpc` | gRPC 专用入口 | `grpc` |
 
 为什么拆开：
 
 - Ingress controller 通常需要对 gRPC backend 使用独立协议配置。
 - HTTP 和 gRPC 虽然同端口，但 Kubernetes Service/Ingress 层需要不同语义。
-- metrics selector 也能只匹配 HTTP/API Service，避免误抓 gRPC Service。
+- metrics selector 可以只匹配专用 metrics Service，避免误抓公网 API/RTMP 或 gRPC Service。
 
 `config.server.grpcCompressionEnabled` 默认是 `true`，会让 gRPC 客户端和服务端协商 gzip 压缩。跨节点调用、Ingress 转发、批量响应较多时通常保持开启；如果你的 gRPC 调用都在本地低延迟网络且 CPU 比带宽更紧张，可以显式关闭。
 
@@ -239,6 +240,8 @@ redis:
 
 KubeBlocks 模式下，数据库账号密码来自 KubeBlocks 生成的 Secret。
 
+PostgreSQL 场景中，SyncTV 只在 init container 启动阶段使用 KubeBlocks 的 `postgres` 系统账号，用它创建或修正 `postgresql.kubeblocks.appUsername` 和 `postgresql.kubeblocks.database`；主容器随后使用这个应用账号连接数据库。应用账号密码保存在 Chart Secret 的 `SYNCTV_DATABASE_PASSWORD` 中；如果配置了 `existingSecret`，需要自行提供这个 key。
+
 注意：KubeBlocks Redis Sentinel 组件属于数据库 Operator 的内部拓扑，不等同于把 SyncTV 配置成 `redis.deployment_mode=sentinel`。Helm 默认仍向 SyncTV 注入稳定 Redis Service endpoint；SyncTV 集群模式不能与 SyncTV Sentinel mode 同时使用。
 
 ### external
@@ -265,7 +268,7 @@ redis:
 
 external PostgreSQL 必须通过 `existingSecret` 的 `SYNCTV_DATABASE_PASSWORD` 或 `secrets.database.password` 提供密码。external Redis 的 `SYNCTV_REDIS_PASSWORD` 是可选的：只有外部 Redis 启用了密码认证时才需要提供。
 
-如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 的 egress 不再匹配 Chart 内部 Pod label；默认允许对应端口访问 `0.0.0.0/0`。生产环境建议通过 `networkPolicy.externalPostgresqlCIDRs` 和 `networkPolicy.externalRedisCIDRs` 收紧到实际数据库网段。
+如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 以及对外 HTTP/HTTPS egress 会使用 `ipBlock` CIDR，而不是匹配 Chart 内部 Pod label；默认允许对应端口访问 `0.0.0.0/0`，以保证 external 模式、OAuth 和媒体源请求仍然可用。生产环境建议通过 `networkPolicy.externalPostgresqlCIDRs`、`networkPolicy.externalRedisCIDRs` 和 `networkPolicy.externalHttpCIDRs` 收紧到实际网段。
 
 Redis 连接管理相关的 Helm 值：
 
@@ -379,7 +382,7 @@ metrics:
     enabled: true
 ```
 
-metrics Service selector 会只匹配 `app.kubernetes.io/component: api` 的 Service，避免抓到 gRPC Service。
+metrics Service selector 会匹配独立的 metrics Service，避免抓到公网 API/RTMP Service 或 gRPC Service。
 
 如果使用 `metrics.auth.mode=kubernetes`，镜像内的 SyncTV 二进制必须启用 `k8s` feature。Helm 只负责 RBAC、ServiceAccount token 和抓取资源，不能改变镜像编译特性。
 

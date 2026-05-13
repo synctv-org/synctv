@@ -19,7 +19,7 @@ import {
 
 Single-node deployments should start with `docker-compose.yml`. It uses the prebuilt image, explicit production secrets, persistent env files, and volumes, so it is suitable for one-server or long-running local deployments.
 
-Development Compose is only for code work or short local previews. It builds from the local Dockerfile and includes development secrets, so it is not suitable for public or long-running deployments.
+Development Compose is only for code work or short local previews. It builds from the local Dockerfile and includes local-only development settings, so do not reuse it for production.
 
 If you have not chosen a deployment model yet, start with [Choose a Deployment Path](../choose-path/).
 
@@ -28,13 +28,13 @@ If you have not chosen a deployment model yet, start with [Choose a Deployment P
 | File | Purpose | Behavior |
 | --- | --- | --- |
 | `docker-compose.yml` | Image-based deployment | Uses <code>{dockerImageReference}</code> and requires explicit production secrets |
-| `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes development secrets |
+| `docker-compose.dev.yml` | Local development | Builds from the local Dockerfile and includes local-only development settings |
 
 ## Get Production Compose Files
 
 Download the minimum required production files into an empty directory:
 
-Before running the init script, make sure the host has Docker Compose and `openssl` available. The script uses `openssl` to generate PostgreSQL, JWT, cluster, credential-encryption, and OPAQUE secrets.
+Before running the init script, make sure the host has Docker Compose, `openssl`, and `python3` available. The script uses `openssl` to generate PostgreSQL, JWT, cluster, credential-encryption, and OPAQUE secrets, and `python3` to URL-encode the database password safely.
 
 <Code
   code={[
@@ -110,13 +110,13 @@ This starts:
 - Redis 8.
 - SyncTV built from the local Dockerfile.
 
-It includes development JWT, cluster, credential encryption, OPAQUE, and root password values. These values must not be used in production.
+It includes local-only development credentials and settings so a full checkout can start without generating env files.
 
   </TabItem>
 </Tabs>
 
 <Aside type="caution">
-Do not copy development Compose secrets into production. Production Compose requires explicit secrets by design.
+Do not copy development Compose settings into production. Production Compose requires explicit secrets by design.
 </Aside>
 
 ## Volumes

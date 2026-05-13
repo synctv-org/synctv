@@ -46,6 +46,13 @@ fn test_already_exists_maps_to_tonic_already_exists() {
 }
 
 #[test]
+fn test_conflict_maps_to_tonic_aborted() {
+    let status: tonic::Status = Error::Conflict("request conflict".to_string()).into();
+    assert_eq!(status.code(), tonic::Code::Aborted);
+    assert!(status.message().contains("request conflict"));
+}
+
+#[test]
 fn test_rate_limited_maps_to_tonic_resource_exhausted() {
     let status: tonic::Status = Error::RateLimited("too many requests".to_string()).into();
     assert_eq!(status.code(), tonic::Code::ResourceExhausted);
@@ -95,6 +102,10 @@ fn test_error_display_format() {
     assert_eq!(
         Error::AlreadyExists("room".to_string()).to_string(),
         "Already exists: room"
+    );
+    assert_eq!(
+        Error::Conflict("stale update".to_string()).to_string(),
+        "Conflict: stale update"
     );
     assert_eq!(
         Error::Authentication("expired".to_string()).to_string(),

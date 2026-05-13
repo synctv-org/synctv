@@ -56,6 +56,103 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
+      {{- if and (eq (include "synctv.postgresql.mode" .) "kubeblocks") .Values.postgresql.kubeblocks.bootstrapAppDatabase }}
+      initContainers:
+        - name: bootstrap-postgresql-app-db
+          image: {{ include "synctv.managedImage" (list . .Values.postgresql.kubeblocks.bootstrapImage "postgres" "18.1-bookworm") | quote }}
+          imagePullPolicy: {{ .Values.postgresql.kubeblocks.bootstrapImage.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PGHOST
+              value: {{ include "synctv.postgresql.host" . | quote }}
+            - name: PGPORT
+              value: {{ include "synctv.postgresql.port" . | quote }}
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
+                  key: password
+            - name: SYNCTV_APP_DB_USER
+              value: {{ include "synctv.postgresql.appUsername" . | quote }}
+            - name: SYNCTV_APP_DB_NAME
+              value: {{ include "synctv.postgresql.database" . | quote }}
+            - name: SYNCTV_APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_PASSWORD
+          command:
+            - sh
+            - -ec
+            - |
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres; do
+                sleep 2
+              done
+
+              role_exists() {
+                psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_user="$SYNCTV_APP_DB_USER" \
+                  <<'SQL' | grep -qx 1
+              SELECT 1 FROM pg_roles WHERE rolname = :'app_user';
+              SQL
+              }
+
+              database_exists() {
+                psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_db="$SYNCTV_APP_DB_NAME" \
+                  <<'SQL' | grep -qx 1
+              SELECT 1 FROM pg_database WHERE datname = :'app_db';
+              SQL
+              }
+
+              if ! role_exists; then
+                if ! psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                  --dbname=postgres \
+                  --set app_user="$SYNCTV_APP_DB_USER" \
+                  --set app_password="$SYNCTV_APP_DB_PASSWORD" <<'SQL'
+              SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password') \gexec
+              SQL
+                then
+                  role_exists
+                fi
+              fi
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname=postgres \
+                --set app_user="$SYNCTV_APP_DB_USER" \
+                --set app_password="$SYNCTV_APP_DB_PASSWORD" <<'SQL'
+              ALTER ROLE :"app_user" LOGIN PASSWORD :'app_password';
+              SQL
+
+              if ! database_exists; then
+                if ! createdb --owner="$SYNCTV_APP_DB_USER" "$SYNCTV_APP_DB_NAME"; then
+                  database_exists
+                fi
+              fi
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname=postgres \
+                --set app_user="$SYNCTV_APP_DB_USER" \
+                --set app_db="$SYNCTV_APP_DB_NAME" <<'SQL'
+              ALTER DATABASE :"app_db" OWNER TO :"app_user";
+              GRANT CONNECT ON DATABASE :"app_db" TO :"app_user";
+              SQL
+
+              psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname="$SYNCTV_APP_DB_NAME" \
+                --set app_user="$SYNCTV_APP_DB_USER" <<'SQL'
+              GRANT USAGE, CREATE ON SCHEMA public TO :"app_user";
+              ALTER SCHEMA public OWNER TO :"app_user";
+              SQL
+      {{- end }}
       containers:
         - name: synctv
           securityContext:
@@ -88,10 +185,8 @@ spec:
               value: {{ include "synctv.postgresql.port" . | quote }}
             - name: SYNCTV_DATABASE_NAME
               value: {{ include "synctv.postgresql.database" . | quote }}
-            {{- if ne (include "synctv.postgresql.mode" .) "kubeblocks" }}
             - name: SYNCTV_DATABASE_USER
               value: {{ include "synctv.postgresql.appUsername" . | quote }}
-            {{- end }}
             - name: SYNCTV_REDIS_HOST
               value: {{ include "synctv.redis.host" . | quote }}
             - name: SYNCTV_REDIS_PORT
@@ -116,19 +211,14 @@ spec:
                   fieldPath: status.podIP
             {{- if eq ((.Values.config.cluster).discoveryMode | default "redis") "k8s_dns" }}
             - name: HEADLESS_SERVICE_NAME
-              value: {{ include "synctv.fullname" . }}-headless
+              value: {{ include "synctv.headlessServiceName" . }}
             {{- end }}
             {{- if eq (include "synctv.postgresql.mode" .) "kubeblocks" }}
-            - name: SYNCTV_DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
-                  key: username
             - name: SYNCTV_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "synctv.postgresql.kubeblocks.superuserSecretName" . }}
-                  key: password
+                  name: {{ include "synctv.secretName" . }}
+                  key: SYNCTV_DATABASE_PASSWORD
             {{- else }}
             - name: SYNCTV_DATABASE_PASSWORD
               valueFrom:

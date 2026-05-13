@@ -117,14 +117,15 @@ The SyncTV process serves HTTP REST and gRPC on the same container port. The Hel
 
 | Service | Purpose | Port name |
 | --- | --- | --- |
-| `synctv` | HTTP/REST plus RTMP, STUN, metrics-related ports | `api` |
+| `synctv` | HTTP/REST plus RTMP and STUN ports | `api`, `rtmp`, `stun` |
+| `synctv-metrics` | Dedicated metrics endpoint when `metrics.enabled=true` | `metrics` |
 | `synctv-grpc` | Dedicated gRPC entry | `grpc` |
 
 Why split them:
 
 - Ingress controllers usually need protocol-specific gRPC backend settings.
 - Kubernetes Service/Ingress semantics differ even if the container port is the same.
-- Metrics selectors can target the HTTP/API Service without accidentally scraping the gRPC Service.
+- Metrics selectors can target the dedicated metrics Service without accidentally scraping public API/RTMP or gRPC Services.
 
 `config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
 
@@ -238,6 +239,8 @@ redis:
 
 In KubeBlocks mode, database credentials come from KubeBlocks-generated Secrets.
 
+For PostgreSQL, SyncTV uses the KubeBlocks `postgres` system account only during an init container bootstrap. The init container creates or updates `postgresql.kubeblocks.appUsername` and `postgresql.kubeblocks.database`, then the SyncTV container connects with that application role. The application role password is stored in the chart Secret as `SYNCTV_DATABASE_PASSWORD`; if you set `existingSecret`, include that key.
+
 Note: the KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically configure SyncTV as a `redis.deployment_mode=sentinel` client. The chart still injects a stable Redis Service endpoint into SyncTV, and SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
 
 `external` mode connects SyncTV to PostgreSQL or Redis managed by a cloud provider, platform team, or another operator. The chart does not render the corresponding StatefulSet, Service, or KubeBlocks Cluster.
@@ -262,7 +265,7 @@ redis:
 
 External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
 
-When `networkPolicy.enabled=true`, external PostgreSQL/Redis egress does not target chart-managed Pod labels. It defaults to `0.0.0.0/0` for the matching ports so external mode keeps working; production deployments should restrict it with `networkPolicy.externalPostgresqlCIDRs` and `networkPolicy.externalRedisCIDRs`.
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules default to `0.0.0.0/0` so external mode, OAuth, and media-provider calls keep working; production deployments should restrict them with `networkPolicy.externalPostgresqlCIDRs`, `networkPolicy.externalRedisCIDRs`, and `networkPolicy.externalHttpCIDRs`.
 
 Redis connection-manager values:
 
@@ -376,7 +379,7 @@ metrics:
     enabled: true
 ```
 
-The metrics selector should target the API component Service and avoid the gRPC Service.
+The metrics selector targets the dedicated metrics Service and avoids both the public API/RTMP Service and the gRPC Service.
 
 If `metrics.auth.mode=kubernetes` is used, the SyncTV binary in the image must be compiled with the `k8s` feature. Helm renders RBAC, service account token settings, and scrape resources, but cannot change image compile-time features.
 

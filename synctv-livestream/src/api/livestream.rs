@@ -497,15 +497,14 @@ impl HlsStreamingApi {
                 .validate_api_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
-            // Remote publisher: proxy via gRPC
-            // We need a segment_url_base for the remote node to generate URLs.
-            // The remote node will use this base to construct segment URLs in the M3U8.
-            // We generate a representative URL to extract the base pattern.
+            // Remote publisher: proxy via gRPC. Preserve the caller's full
+            // segment URL template so signed query strings and disguised
+            // extensions survive playlist generation on the publisher node.
             let sample_url = url_generator("__PLACEHOLDER__");
-            let segment_url_base = sample_url
+            let (segment_url_base, segment_url_suffix) = sample_url
                 .rsplit_once("__PLACEHOLDER__")
-                .map(|(base, _)| base.to_string())
-                .unwrap_or_default();
+                .map(|(base, suffix)| (base.to_string(), suffix.to_string()))
+                .unwrap_or_else(|| (String::new(), String::new()));
 
             let playlist = hls_proxy
                 .get_playlist(
@@ -513,6 +512,7 @@ impl HlsStreamingApi {
                     room_id,
                     media_id,
                     &segment_url_base,
+                    &segment_url_suffix,
                     publisher_info.epoch,
                 )
                 .await?;

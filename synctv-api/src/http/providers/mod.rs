@@ -495,10 +495,7 @@ fn execute_unified_proxy_handler(
                 if method != Method::GET {
                     return Err(proxy_method_not_allowed());
                 }
-                live::execute_live_stream_action(&state, action, Some(query_str.as_str()))
-                    .await
-                    .map_err(app_error_to_api_error)
-                    .map_err(map_api_error)
+                live::execute_live_stream_action(&state, action, Some(query_str.as_str())).await
             }
             other @ ProxyAction::FetchAndForward { .. } => {
                 execute_proxy_action_with_state_for_method(
@@ -509,8 +506,6 @@ fn execute_unified_proxy_handler(
                     method,
                 )
                 .await
-                .map_err(app_error_to_api_error)
-                .map_err(map_api_error)
             }
             other => {
                 if method != Method::GET {
@@ -524,8 +519,6 @@ fn execute_unified_proxy_handler(
                     method,
                 )
                 .await
-                .map_err(app_error_to_api_error)
-                .map_err(map_api_error)
             }
         }
     }
@@ -539,28 +532,6 @@ fn app_error_from_control(err: &synctv_common::ExecutionControlError) -> AppErro
             StatusCode::REQUEST_TIMEOUT,
             synctv_common::messages::REQUEST_TIMED_OUT,
         ),
-    }
-}
-
-fn app_error_to_api_error(err: AppError) -> ApiError {
-    match err.status {
-        StatusCode::BAD_REQUEST => ApiError::InvalidInput(err.message),
-        StatusCode::UNAUTHORIZED => ApiError::Authentication(err.message),
-        StatusCode::FORBIDDEN => ApiError::Authorization(err.message),
-        StatusCode::NOT_FOUND => ApiError::NotFound(err.message),
-        StatusCode::CONFLICT => ApiError::AlreadyExists(err.message),
-        StatusCode::TOO_MANY_REQUESTS => match err.retry_after_seconds {
-            Some(retry_after_seconds) => ApiError::RateLimitedWithRetry {
-                message: err.message,
-                retry_after_seconds,
-            },
-            None => ApiError::RateLimited(err.message),
-        },
-        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(err.message),
-        StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT | StatusCode::SERVICE_UNAVAILABLE => {
-            ApiError::ServiceUnavailable(err.message)
-        }
-        _ => ApiError::Internal(err.message),
     }
 }
 

@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 use super::registry::PublisherInfo;
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
+use crate::util::{validate_stream_id_component, validate_stream_ids};
 
 /// In-memory stream registry for standalone mode without Redis.
 ///
@@ -115,6 +116,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         api_address: &str,
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
+        validate_stream_ids(room_id, media_id)?;
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
@@ -147,6 +149,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         api_address: &str,
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
+        validate_stream_ids(room_id, media_id)?;
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
@@ -178,6 +181,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         node_id: &str,
         expected_epoch: u64,
     ) -> Result<PublisherRefreshOutcome> {
+        validate_stream_ids(room_id, media_id)?;
         let state = self.state.lock().await;
         Ok(
             match state
@@ -198,6 +202,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     }
 
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
         state.remove_publisher(&key);
@@ -210,6 +215,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         expected_epoch: u64,
     ) -> Result<()> {
+        validate_stream_ids(room_id, media_id)?;
         let key = (room_id.to_string(), media_id.to_string());
         let mut state = self.state.lock().await;
 
@@ -225,6 +231,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     }
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+        validate_stream_ids(room_id, media_id)?;
         let state = self.state.lock().await;
         Ok(state
             .publishers
@@ -233,6 +240,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let state = self.state.lock().await;
         Ok(state
             .publishers
@@ -258,6 +266,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     }
 
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
+        validate_stream_id_component(room_id, "room_id")?;
         let state = self.state.lock().await;
         Ok(state
             .room_streams
@@ -289,6 +298,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     }
 
     async fn validate_epoch(&self, room_id: &str, media_id: &str, epoch: u64) -> Result<bool> {
+        validate_stream_ids(room_id, media_id)?;
         let state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
         match state.publishers.get(&key) {
@@ -308,5 +318,26 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
             state.remove_publisher(&key);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn in_memory_registry_rejects_ambiguous_stream_ids() {
+        let registry = InMemoryStreamRegistry::new();
+        let error = registry
+            .try_register_publisher("room:1", "media", "node1", "user1", "addr")
+            .await
+            .expect_err("ambiguous room id must be rejected");
+        assert!(error.to_string().contains("room_id"));
+
+        let error = registry
+            .get_publisher("room", "../media")
+            .await
+            .expect_err("path-like media id must be rejected");
+        assert!(error.to_string().contains("media_id"));
     }
 }

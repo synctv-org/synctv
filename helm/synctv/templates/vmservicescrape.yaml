@@ -1,9 +1,14 @@
 {{- if and .Values.metrics.enabled .Values.metrics.vmServiceScrape.enabled }}
+{{- $vmServiceScrapeNamespace := .Values.metrics.vmServiceScrape.namespace | default .Release.Namespace }}
+{{- $metricsAuthMode := .Values.metrics.auth.mode | default "bearer_token" }}
+{{- if and (ne $vmServiceScrapeNamespace .Release.Namespace) (or .Values.metrics.tls.enabled (ne $metricsAuthMode "kubernetes")) }}
+{{- fail "metrics.vmServiceScrape.namespace must match the release namespace when metrics TLS is enabled or metrics.auth.mode is bearer_token/basic because VMServiceScrape Secret references are namespace-scoped; use metrics.auth.mode=kubernetes for cross-namespace VMServiceScrape objects, or leave metrics.vmServiceScrape.namespace empty" }}
+{{- end }}
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape
 metadata:
   name: {{ include "synctv.fullname" . }}
-  namespace: {{ .Values.metrics.vmServiceScrape.namespace | default .Release.Namespace }}
+  namespace: {{ $vmServiceScrapeNamespace }}
   labels:
     {{- include "synctv.labels" . | nindent 4 }}
     {{- with .Values.metrics.vmServiceScrape.labels }}
@@ -16,7 +21,7 @@ spec:
   selector:
     matchLabels:
       {{- include "synctv.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: api
+      app.kubernetes.io/component: metrics
   endpoints:
     - port: metrics
       path: /metrics

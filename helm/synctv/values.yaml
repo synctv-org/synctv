@@ -42,6 +42,15 @@ postgresql:
     componentDef: "postgresql"
     topology: "replication"
     serviceVersion: ""
+    appUsername: "synctv"
+    database: "synctv"
+    ## SyncTV bootstraps a least-privilege PostgreSQL app role/database from
+    ## the KubeBlocks-generated postgres system account before the app starts.
+    bootstrapAppDatabase: true
+    bootstrapImage:
+      repository: postgres
+      tag: "18.1-bookworm"
+      pullPolicy: IfNotPresent
     replicas: 2
     terminationPolicy: Delete
     disableExporter: true
@@ -705,6 +714,10 @@ metrics:
       group: "cert-manager.io"
   scrapeAnnotations:
     enabled: false
+  service:
+    type: ClusterIP
+    annotations: {}
+    sessionAffinity: ""
   serviceMonitor:
     enabled: false
     namespace: ""
@@ -748,6 +761,11 @@ networkPolicy:
   ## working when NetworkPolicy is enabled; restrict these ranges in production.
   externalPostgresqlCIDRs: []
   externalRedisCIDRs: []
+  ## CIDR ranges allowed for outbound HTTP/HTTPS calls such as OAuth providers,
+  ## metadata endpoints, and media-provider APIs. Defaults to 0.0.0.0/0 so these
+  ## integrations keep working when NetworkPolicy is enabled; restrict in
+  ## production and add ::/0 explicitly for IPv6-only external destinations.
+  externalHttpCIDRs: []
 
 ## Extra Environment Variables
 extraEnvVars: []

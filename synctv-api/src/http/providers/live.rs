@@ -315,6 +315,24 @@ fn build_hls_segment_path(
     )
 }
 
+fn normalize_hls_segment_name(
+    segment_name: &str,
+    disguised_as_png: bool,
+) -> Result<&str, AppError> {
+    let extension = if disguised_as_png { ".png" } else { ".ts" };
+    let normalized = segment_name
+        .strip_suffix(extension)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("Invalid segment name"))?;
+
+    if let Err(error) = synctv_common::validation::validate_path_for_traversal(normalized) {
+        warn!(segment = %normalized, error = %error, "HLS segment name failed path traversal validation");
+        return Err(AppError::bad_request("Invalid segment name"));
+    }
+
+    Ok(normalized)
+}
+
 async fn execute_hls_segment(
     state: &AppState,
     room_id: RoomId,
@@ -324,16 +342,7 @@ async fn execute_hls_segment(
 ) -> AppResult<Response> {
     let room_id_key = room_id.to_string();
     let media_id_key = media_id.to_string();
-    let validated_name = if disguised_as_png {
-        segment_name.trim_end_matches(".png")
-    } else {
-        segment_name.trim_end_matches(".ts")
-    };
-
-    if let Err(error) = synctv_common::validation::validate_path_for_traversal(validated_name) {
-        warn!(segment = %validated_name, error = %error, "HLS segment name failed path traversal validation");
-        return Err(AppError::bad_request("Invalid segment name"));
-    }
+    let validated_name = normalize_hls_segment_name(segment_name, disguised_as_png)?;
 
     let infrastructure = state
         .shared_api_runtime
@@ -470,6 +479,45 @@ mod tests {
     fn build_hls_segment_path_uses_ts_suffix_when_disabled() {
         let path = build_hls_segment_path("rtmp", "ver1", "seg001", None, false);
         assert_eq!(path, "/api/providers/proxy/rtmp/ver1/segment/seg001.ts");
+    }
+
+    #[test]
+    fn normalize_hls_segment_name_removes_only_one_expected_suffix() {
+        assert_eq!(
+            normalize_hls_segment_name("seg001.ts", false).unwrap(),
+            "seg001"
+        );
+        assert_eq!(
+            normalize_hls_segment_name("seg001.png", true).unwrap(),
+            "seg001"
+        );
+
+        assert_eq!(
+            normalize_hls_segment_name("seg001.tsts", false)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            normalize_hls_segment_name("seg001.pngpng", true)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn normalize_hls_segment_name_rejects_empty_or_traversal_names() {
+        assert_eq!(
+            normalize_hls_segment_name(".ts", false).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            normalize_hls_segment_name("../secret.ts", false)
+                .unwrap_err()
+                .status,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]

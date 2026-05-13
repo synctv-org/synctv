@@ -13,11 +13,10 @@ spec:
   subject:
     organizations:
       - synctv
-  commonName: {{ include "synctv.fullname" . }}.{{ .Release.Namespace }}.svc
   dnsNames:
-    - {{ include "synctv.fullname" . }}
-    - {{ include "synctv.fullname" . }}.{{ .Release.Namespace }}
-    - {{ include "synctv.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "synctv.metricsServiceName" . }}
+    - {{ include "synctv.metricsServiceName" . }}.{{ .Release.Namespace }}
+    - {{ include "synctv.metricsServiceName" . }}.{{ .Release.Namespace }}.svc
     - {{ include "synctv.metricsTlsServerName" . }}
   issuerRef:
     {{- if .Values.metrics.tls.issuerRef.name }}

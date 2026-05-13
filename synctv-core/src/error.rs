@@ -30,6 +30,9 @@ pub enum Error {
     #[error("Already exists: {0}")]
     AlreadyExists(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
@@ -119,9 +122,10 @@ impl From<crate::provider::ProviderError> for Error {
     fn from(err: crate::provider::ProviderError) -> Self {
         use crate::provider::ProviderError;
         match err {
-            // Network-related errors -> Timeout for transient issues
+            // Provider network errors mean the upstream provider path is
+            // unavailable; request-budget timeouts use Error::Timeout directly.
             ProviderError::NetworkError(msg) => {
-                Self::Timeout(format!("Provider network error: {msg}"))
+                Self::ServiceUnavailable(format!("Provider network error: {msg}"))
             }
             // Authentication errors
             ProviderError::AuthRequired
@@ -147,23 +151,40 @@ impl From<crate::provider::ProviderError> for Error {
             // Invalid URL
             ProviderError::InvalidUrl(msg) => Self::InvalidInput(format!("Invalid URL: {msg}")),
             // Upstream HTTP errors
-            ProviderError::UpstreamHttp { status, .. } => {
-                if status == 401 || status == 403 {
+            ProviderError::UpstreamHttp { status, .. } => match status {
+                401 | 403 => {
                     tracing::warn!(status, "Provider upstream authentication failure");
                     Self::Authentication("Provider authentication failed".to_string())
-                } else if status == 404 {
+                }
+                404 => {
                     tracing::info!(status, "Provider upstream resource not found");
                     Self::NotFound(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND.to_string())
-                } else if status == 408 || status == 429 || status >= 500 {
+                }
+                409 => {
+                    tracing::warn!(status, "Provider upstream reported a request conflict");
+                    Self::Conflict("Upstream provider reported a request conflict.".to_string())
+                }
+                429 => {
+                    tracing::warn!(status, "Provider upstream rate limited request");
+                    Self::RateLimited("Upstream provider rate limited the request.".to_string())
+                }
+                408 => {
                     tracing::warn!(status, "Provider upstream unavailable");
-                    Self::Timeout(
+                    Self::ServiceUnavailable(
                         "Upstream provider service is temporarily unavailable.".to_string(),
                     )
-                } else {
+                }
+                status if status >= 500 => {
+                    tracing::warn!(status, "Provider upstream unavailable");
+                    Self::ServiceUnavailable(
+                        "Upstream provider service is temporarily unavailable.".to_string(),
+                    )
+                }
+                _ => {
                     tracing::warn!(status, "Provider upstream rejected request");
                     Self::InvalidInput("Upstream provider rejected the request.".to_string())
                 }
-            }
+            },
             // Encryption required
             ProviderError::EncryptionRequired(provider) => Self::InvalidInput(format!(
                 "Credential encryption required for provider '{provider}'"
@@ -206,6 +227,7 @@ impl From<Error> for tonic::Status {
             Error::Authorization(msg) => Self::permission_denied(msg),
             Error::InvalidInput(msg) => Self::invalid_argument(msg),
             Error::AlreadyExists(msg) => Self::already_exists(msg),
+            Error::Conflict(msg) => Self::aborted(msg),
             Error::RateLimited(msg) => Self::resource_exhausted(msg),
             Error::ServiceUnavailable(msg) => Self::unavailable(msg),
             Error::OptimisticLockConflict => Self::aborted("Resource modified concurrently"),
@@ -510,11 +532,11 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_error_network_converts_to_timeout() {
+    fn test_provider_error_network_converts_to_service_unavailable() {
         let provider_err =
             crate::provider::ProviderError::NetworkError("connection refused".to_string());
         let core_err: Error = provider_err.into();
-        assert!(matches!(core_err, Error::Timeout(_)));
+        assert!(matches!(core_err, Error::ServiceUnavailable(_)));
         assert!(core_err.to_string().contains("network error"));
     }
 
@@ -603,39 +625,50 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_error_upstream_http_500_converts_to_timeout() {
+    fn test_provider_error_upstream_http_500_converts_to_service_unavailable() {
         let provider_err = crate::provider::ProviderError::UpstreamHttp {
             status: 500,
             url: "https://api.example.com/video".to_string(),
         };
         let core_err: Error = provider_err.into();
-        // 5xx errors are treated as transient/timeout
         assert!(
-            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+            matches!(core_err, Error::ServiceUnavailable(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
         );
     }
 
     #[test]
-    fn test_provider_error_upstream_http_408_converts_to_timeout() {
+    fn test_provider_error_upstream_http_408_converts_to_service_unavailable() {
         let provider_err = crate::provider::ProviderError::UpstreamHttp {
             status: 408,
             url: "https://api.example.com/video?token=secret".to_string(),
         };
         let core_err: Error = provider_err.into();
         assert!(
-            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+            matches!(core_err, Error::ServiceUnavailable(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
         );
     }
 
     #[test]
-    fn test_provider_error_upstream_http_429_converts_to_timeout() {
+    fn test_provider_error_upstream_http_409_converts_to_conflict() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 409,
+            url: "https://api.example.com/video?token=secret".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(
+            matches!(core_err, Error::Conflict(ref msg) if msg == "Upstream provider reported a request conflict.")
+        );
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_429_converts_to_rate_limited() {
         let provider_err = crate::provider::ProviderError::UpstreamHttp {
             status: 429,
             url: "https://api.example.com/video?token=secret".to_string(),
         };
         let core_err: Error = provider_err.into();
         assert!(
-            matches!(core_err, Error::Timeout(ref msg) if msg == "Upstream provider service is temporarily unavailable.")
+            matches!(core_err, Error::RateLimited(ref msg) if msg == "Upstream provider rate limited the request.")
         );
     }
 
@@ -677,12 +710,16 @@ mod tests {
 
     #[test]
     fn test_provider_error_to_tonic_status_preserves_error_type() {
-        // Network error -> Timeout -> should map to something appropriate
+        // Network error -> ServiceUnavailable -> upstream provider path is unavailable.
         let provider_err = crate::provider::ProviderError::NetworkError("timeout".to_string());
         let core_err: Error = provider_err.into();
         let status: tonic::Status = core_err.into();
-        // Timeout errors map to DeadlineExceeded
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+
+        let core_err = Error::Timeout("request budget exceeded".to_string());
+        let status: tonic::Status = core_err.into();
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+
         // Auth error -> Authentication -> Unauthenticated
         let provider_err = crate::provider::ProviderError::AuthRequired;
         let core_err: Error = provider_err.into();

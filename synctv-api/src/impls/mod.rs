@@ -365,6 +365,7 @@ impl From<synctv_core::Error> for ApiError {
             ),
             synctv_core::Error::Authorization(msg) => Self::Authorization(msg),
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
+            synctv_core::Error::Conflict(msg) => Self::Conflict(msg),
             synctv_core::Error::OptimisticLockConflict => {
                 Self::Conflict("Resource modified concurrently".to_string())
             }
@@ -401,21 +402,36 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             ProviderError::NetworkError(msg) | ProviderError::ApiError(msg) => {
                 Self::ServiceUnavailable(msg)
             }
-            ProviderError::UpstreamHttp { status, .. } => {
-                if status == 401 || status == 403 {
+            ProviderError::UpstreamHttp { status, .. } => match status {
+                401 | 403 => {
                     tracing::warn!(status, "Upstream provider authentication failure");
                     Self::Authentication("Provider authentication failed".to_string())
-                } else if status == 404 {
+                }
+                404 => {
                     tracing::info!(status, "Upstream provider resource not found");
                     Self::NotFound(synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND.to_string())
-                } else if status == 408 || status == 429 || status >= 500 {
+                }
+                409 => {
+                    tracing::warn!(status, "Upstream provider reported a request conflict");
+                    Self::Conflict("Upstream provider reported a request conflict.".to_string())
+                }
+                429 => {
+                    tracing::warn!(status, "Upstream provider rate limited request");
+                    Self::RateLimited("Upstream provider rate limited the request.".to_string())
+                }
+                408 => {
                     tracing::warn!(status, "Upstream provider unavailable");
                     Self::ServiceUnavailable(UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE.to_string())
-                } else {
+                }
+                status if status >= 500 => {
+                    tracing::warn!(status, "Upstream provider unavailable");
+                    Self::ServiceUnavailable(UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE.to_string())
+                }
+                _ => {
                     tracing::warn!(status, "Upstream provider rejected request");
                     Self::InvalidInput("Upstream provider rejected the request.".to_string())
                 }
-            }
+            },
             ProviderError::ParseError(msg)
             | ProviderError::InvalidConfig(msg)
             | ProviderError::InvalidUrl(msg)
@@ -716,7 +732,8 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::PermissionDenied)
     } else if err.starts_with("Already exists: ") {
         Some(ErrorKind::AlreadyExists)
-    } else if err.starts_with("Optimistic lock conflict")
+    } else if err.starts_with("Conflict: ")
+        || err.starts_with("Optimistic lock conflict")
         || err.starts_with("Distributed lock conflict: ")
     {
         Some(ErrorKind::Conflict)
@@ -1062,6 +1079,10 @@ mod tests {
             ErrorKind::AlreadyExists
         ));
         assert!(matches!(
+            classify_error("Conflict: upstream provider reported a request conflict"),
+            ErrorKind::Conflict
+        ));
+        assert!(matches!(
             classify_error("Invalid input: bad field"),
             ErrorKind::InvalidArgument
         ));
@@ -1323,7 +1344,23 @@ mod tests {
     }
 
     #[test]
-    fn test_api_error_from_provider_upstream_429_maps_to_service_unavailable() {
+    fn test_api_error_from_provider_upstream_409_maps_to_conflict() {
+        let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
+            status: 409,
+            url: "https://provider.example/api?token=secret".to_string(),
+        };
+        let api_err = ApiError::from(provider_err);
+        assert!(matches!(
+            api_err,
+            ApiError::Conflict(ref msg)
+                if msg == "Upstream provider reported a request conflict."
+        ));
+        assert!(matches!(api_err.classify(), ErrorKind::Conflict));
+        assert_eq!(api_err.code(), error_codes::CONFLICT);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_upstream_429_maps_to_rate_limited() {
         let provider_err = synctv_core::provider::ProviderError::UpstreamHttp {
             status: 429,
             url: "https://provider.example/api?token=secret".to_string(),
@@ -1331,11 +1368,11 @@ mod tests {
         let api_err = ApiError::from(provider_err);
         assert!(matches!(
             api_err,
-            ApiError::ServiceUnavailable(ref msg)
-                if msg == "Upstream provider service is temporarily unavailable."
+            ApiError::RateLimited(ref msg)
+                if msg == "Upstream provider rate limited the request."
         ));
-        assert!(matches!(api_err.classify(), ErrorKind::ServiceUnavailable));
-        assert_eq!(api_err.code(), error_codes::SERVICE_UNAVAILABLE);
+        assert!(matches!(api_err.classify(), ErrorKind::RateLimited));
+        assert_eq!(api_err.code(), error_codes::RESOURCE_EXHAUSTED);
     }
 
     #[test]

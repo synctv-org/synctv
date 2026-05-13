@@ -41,6 +41,9 @@ Ingress is enabled. Access the application at:
 
   - API:         port {{ .Values.config.server.port }}
   - gRPC:        service {{ include "synctv.grpcServiceName" . }} port {{ .Values.grpcService.port | default .Values.config.server.port }}
+{{- if .Values.metrics.enabled }}
+  - Metrics:     service {{ include "synctv.metricsServiceName" . }} port {{ .Values.metrics.port | default 9090 }}
+{{- end }}
   - RTMP Ingest: port {{ .Values.config.livestream.rtmpPort }}
 {{- if .Values.config.webrtc.enableBuiltinStun }}
   - STUN (UDP):  port {{ .Values.config.webrtc.stunPort }}
@@ -67,7 +70,7 @@ Ingress is enabled. Access the application at:
 ## Cluster discovery
 
   Mode: {{ .Values.config.cluster.discoveryMode | default "redis" }}
-  Headless service: {{ include "synctv.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local
+  Headless service: {{ include "synctv.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
 {{- end }}
 
 {{- if not .Values.existingSecret }}

@@ -191,11 +191,12 @@ redis:
 Notes:
 
 - PostgreSQL connects to `<cluster>-postgresql-postgresql:5432` by default
-- PostgreSQL uses `<cluster>-postgresql-account-postgres` by default
+- PostgreSQL uses `<cluster>-postgresql-account-postgres` only as the bootstrap system account
+- SyncTV bootstraps and then runs as `postgresql.kubeblocks.appUsername` against `postgresql.kubeblocks.database`
 - Redis connects to `<cluster>-redis-redis:6379` by default
 - Redis uses `<cluster>-redis-account-default` by default
 - PostgreSQL and Redis secret keys are fixed as `username` / `password`
-- KubeBlocks mode uses the generated database account by default; the PostgreSQL database name is fixed to `postgres`
+- The SyncTV app database password is stored in the chart secret as `SYNCTV_DATABASE_PASSWORD`; when using `existingSecret`, provide that key yourself
 - KubeBlocks-generated database services are also internal-only; for external debugging, prefer `kubectl port-forward`
 - The KubeBlocks Redis Sentinel component is part of the database operator topology. It does not automatically set SyncTV `redis.deployment_mode=sentinel`; this chart injects a stable Redis service endpoint. SyncTV cluster mode must not be combined with SyncTV Sentinel mode.
 
@@ -227,9 +228,10 @@ The application currently uses split database/Redis configuration rather than re
 | `config.passwordComplexity` | Password policy for account credentials |
 | `config.bufferSizes` | Internal queue sizes |
 
-The chart creates two separate Services for application traffic:
+The chart creates separate Services for application traffic:
 
-- `{{ release-name }}` exposes HTTP/REST plus RTMP/STUN/metrics ports.
+- `{{ release-name }}` exposes HTTP/REST plus RTMP/STUN ports.
+- `{{ release-name }}-metrics` exposes metrics when `metrics.enabled=true`.
 - `{{ release-name }}-grpc` exposes gRPC only and targets the same container port as HTTP.
 
 Important transport defaults:
@@ -370,13 +372,17 @@ metrics:
     mode: bearer_token
   serviceMonitor:
     enabled: true
-    namespace: monitoring
     labels:
       prometheus: kube-prometheus
 networkPolicy:
   metricsSourceNamespaces:
     - monitoring
 ```
+
+Keep `ServiceMonitor` and `VMServiceScrape` in the SyncTV release namespace when
+using static bearer/basic auth or chart-managed metrics TLS. Operator Secret
+references are namespace-scoped, so cross-namespace scrape objects only work
+without those Secret references, for example with `metrics.auth.mode=kubernetes`.
 
 If you want Kubernetes-native `TokenReview` + `SubjectAccessReview` auth instead:
 

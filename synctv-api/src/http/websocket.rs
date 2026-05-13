@@ -221,19 +221,6 @@ fn extract_authorization_bearer_token(headers: &HeaderMap) -> Result<Option<Stri
     Ok(Some(token))
 }
 
-fn app_error_to_api_error(err: AppError) -> ApiError {
-    match err.status {
-        StatusCode::BAD_REQUEST => ApiError::InvalidInput(err.message),
-        StatusCode::UNAUTHORIZED => ApiError::Authentication(err.message),
-        StatusCode::FORBIDDEN => ApiError::Authorization(err.message),
-        StatusCode::NOT_FOUND => ApiError::NotFound(err.message),
-        StatusCode::TOO_MANY_REQUESTS => ApiError::RateLimited(err.message),
-        StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(err.message),
-        StatusCode::SERVICE_UNAVAILABLE => ApiError::ServiceUnavailable(err.message),
-        _ => ApiError::Internal(err.message),
-    }
-}
-
 /// Extract user identity for the WebSocket handshake using explicit request execution.
 async fn extract_handshake_auth(
     state: &AppState,
@@ -338,7 +325,7 @@ async fn extract_handshake_auth(
                     )
                     .await
                     .map_err(map_websocket_ticket_validation_error)
-                    .map_err(app_error_to_api_error)?;
+                    .map_err(crate::http::error::app_error_to_api_error)?;
 
                 Ok(HandshakeAuthContext {
                     user_id: pending.user_id,

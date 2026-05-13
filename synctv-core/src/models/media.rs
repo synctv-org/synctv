@@ -210,7 +210,7 @@ impl Media {
         }
     }
 
-    /// Create a direct URL media with multi-mode playback info
+    /// Create a direct URL media from the primary playback URL.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn from_direct_multimode(
@@ -223,12 +223,22 @@ impl Media {
         metadata: &std::collections::HashMap<String, JsonValue>,
         position: f64,
     ) -> Self {
-        // Only store playback_infos, default_mode, and metadata in source_config
-        // id, playlist_id, room_id, name, position are stored in Media fields
+        let default_info = playback_infos
+            .get(default_mode)
+            .or_else(|| playback_infos.values().next());
+        let default_url = default_info.and_then(|info| {
+            info.urls
+                .get(info.default_url_index)
+                .or_else(|| info.urls.first())
+        });
+
         let source_config = serde_json::json!({
-            "playback_infos": playback_infos,
-            "default_mode": default_mode,
-            "metadata": metadata,
+            "url": default_url.map(|url| url.url.as_str()).unwrap_or_default(),
+            "headers": default_url.map(|url| &url.headers).cloned().unwrap_or_default(),
+            "proxy": metadata
+                .get("proxy")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         });
 
         let now = Utc::now();
@@ -277,9 +287,9 @@ impl Media {
 
 // Playback Information Structures (for all media types)
 // PlaybackResult is returned when generating playback info (at playback time)
-// For direct type media, source_config can store either:
-// 1. PlaybackResult (multi-mode, recommended)
-// 2. PlaybackInfo (single mode, will be wrapped into PlaybackResult)
+// For direct URL media, `source_config` stores provider input (`url`, optional
+// `headers`, and optional `proxy`). Runtime playback modes are produced by the
+// provider instead of being embedded in persisted media rows.
 
 /// Playback information generation result (returned by `generate_playback`)
 /// This structure supports multiple playback modes (e.g., "direct" and "proxied")

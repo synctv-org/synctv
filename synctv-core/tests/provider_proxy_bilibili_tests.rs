@@ -444,6 +444,7 @@ async fn test_m3u8_proxy() {
             url,
             headers,
             proxy_base,
+            ..
         } => {
             assert_eq!(url, "https://cdn.bilibili.com/live.m3u8");
             assert_eq!(headers.get("Referer").unwrap(), "https://www.bilibili.com");

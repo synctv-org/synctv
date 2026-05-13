@@ -75,6 +75,9 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         common::enable_provider_instance,
         common::disable_provider_instance,
         common::list_backends,
+        crate::http::providers::proxy_options_preflight,
+        crate::http::providers::unified_proxy_handler,
+        crate::http::providers::unified_proxy_head_handler,
         alist::login,
         alist::list,
         alist::search,
@@ -159,6 +162,8 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
         admin::create_user,
         admin::get_user,
         admin::delete_user,
+        admin::get_user_preferences,
+        admin::update_user_preferences,
         admin::set_user_role,
         admin::set_user_password,
         admin::set_user_username,
@@ -406,6 +411,9 @@ pub type ErrorResponseDoc = client::ApiErrorResponse;
             crate::proto::admin::ListBanRecordsResponse,
             crate::proto::admin::ListUsersResponse,
             crate::proto::admin::GetUserResponse,
+            crate::proto::admin::GetUserPreferencesResponse,
+            crate::proto::admin::UpdateUserPreferencesRequest,
+            crate::proto::admin::UpdateUserPreferencesResponse,
             crate::proto::admin::CreateUserRequest,
             crate::proto::admin::CreateUserResponse,
             crate::proto::admin::DeleteUserResponse,
@@ -562,6 +570,46 @@ mod tests {
             required,
             Some(true),
             "mark-all-as-read should not document its request body as required"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_admin_user_preferences_routes() {
+        let doc = openapi_json();
+
+        let path = &doc["paths"]["/api/admin/users/{user_id}/preferences"];
+        assert!(
+            path["get"].is_object(),
+            "admin get-user-preferences route should be documented"
+        );
+        assert!(
+            path["patch"].is_object(),
+            "admin update-user-preferences route should be documented"
+        );
+
+        let request_body = &path["patch"]["requestBody"];
+        assert!(
+            request_body.is_object(),
+            "admin update-user-preferences should document its request body"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_provider_proxy_routes() {
+        let doc = openapi_json();
+
+        let path = &doc["paths"]["/api/providers/proxy/{provider_name}/{sub_path}"];
+        assert!(
+            path["get"].is_object(),
+            "provider proxy GET route should be documented"
+        );
+        assert!(
+            path["head"].is_object(),
+            "provider proxy HEAD route should be documented"
+        );
+        assert!(
+            path["options"].is_object(),
+            "provider proxy OPTIONS route should be documented"
         );
     }
 

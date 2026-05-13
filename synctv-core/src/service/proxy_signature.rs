@@ -1,7 +1,8 @@
 // HMAC-signed proxy URL generation and verification.
-// Proxy URLs embed room_id, user_id, version, and expiry directly in the query string,
-// authenticated by an HMAC-SHA256 signature. This replaces JWT auth on proxy routes,
-// allowing URLs to be shared (e.g., in M3U8 playlists) without leaking JWT tokens.
+// Proxy URLs embed room_id, user_id, version, expiry, and optionally a target URL
+// directly in the query string, authenticated by an HMAC-SHA256 signature. This
+// replaces JWT auth on proxy routes, allowing URLs to be shared (e.g., in M3U8
+// playlists) without leaking JWT tokens.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -25,6 +26,9 @@ pub struct ProxySigningKey {
 }
 
 /// Claims embedded in a signed proxy URL.
+///
+/// `target_url` is bound into the signature when present so rewritten M3U8
+/// segment URLs cannot be retargeted by editing the `url` query parameter.
 #[derive(Debug, Clone)]
 pub struct ProxyUrlClaims {
     pub provider: String,
@@ -32,6 +36,7 @@ pub struct ProxyUrlClaims {
     pub room_id: String,
     pub user_id: String,
     pub expires_at: i64,
+    pub target_url: Option<String>,
 }
 
 /// Errors from proxy signature operations.
@@ -107,17 +112,34 @@ impl ProxySigningKey {
 
     /// Build a query string with all claims and signature.
     ///
-    /// Returns: `"sig={hex}&uid={uid}&rid={rid}&exp={exp}"`
+    /// Returns: `"sig={hex}&uid={uid}&rid={rid}&exp={exp}"`, plus `url=...`
+    /// when `claims.target_url` is set.
     #[must_use]
     pub fn build_signed_query(&self, claims: &ProxyUrlClaims) -> String {
         let sig = self.sign(claims);
-        format!(
+        let mut query = format!(
             "sig={}&uid={}&rid={}&exp={}",
             url_encode(&sig),
             url_encode(&claims.user_id),
             url_encode(&claims.room_id),
             claims.expires_at
-        )
+        );
+        if let Some(target_url) = &claims.target_url {
+            query.push_str("&url=");
+            query.push_str(&url_encode(target_url));
+        }
+        query
+    }
+
+    #[must_use]
+    pub fn build_signed_query_with_target_url(
+        &self,
+        claims: &ProxyUrlClaims,
+        target_url: &str,
+    ) -> String {
+        let mut claims = claims.clone();
+        claims.target_url = Some(target_url.to_string());
+        self.build_signed_query(&claims)
     }
 
     /// Parse query parameters and verify the HMAC signature.
@@ -133,6 +155,7 @@ impl ProxySigningKey {
         let mut uid = None;
         let mut rid = None;
         let mut exp = None;
+        let mut target_url = None;
 
         for pair in query.split('&') {
             if let Some((key, value)) = pair.split_once('=') {
@@ -141,7 +164,8 @@ impl ProxySigningKey {
                     "uid" => uid = Some(value),
                     "rid" => rid = Some(value),
                     "exp" => exp = Some(value),
-                    _ => {} // Ignore extra params (e.g., url= for M3U8 segments)
+                    "url" => target_url = Some(value),
+                    _ => {}
                 }
             }
         }
@@ -156,6 +180,13 @@ impl ProxySigningKey {
             urlencoding::decode(uid).map_err(|_| ProxySignatureError::InvalidParam("uid"))?;
         let rid_decoded =
             urlencoding::decode(rid).map_err(|_| ProxySignatureError::InvalidParam("rid"))?;
+        let target_url = target_url
+            .map(|url| {
+                urlencoding::decode(url)
+                    .map(std::borrow::Cow::into_owned)
+                    .map_err(|_| ProxySignatureError::InvalidParam("url"))
+            })
+            .transpose()?;
 
         let expires_at: i64 = exp_str
             .parse()
@@ -167,6 +198,7 @@ impl ProxySigningKey {
             room_id: rid_decoded.into_owned(),
             user_id: uid_decoded.into_owned(),
             expires_at,
+            target_url,
         };
 
         self.verify(&claims, sig)?;
@@ -176,10 +208,15 @@ impl ProxySigningKey {
 
     /// Build the canonical message string for HMAC signing.
     fn canonical_message(claims: &ProxyUrlClaims) -> String {
-        format!(
+        let mut message = format!(
             "{}:{}:{}:{}:{}",
             claims.provider, claims.version, claims.room_id, claims.user_id, claims.expires_at
-        )
+        );
+        if let Some(target_url) = &claims.target_url {
+            message.push_str(":url:");
+            message.push_str(target_url);
+        }
+        message
     }
 
     /// Return the default expiry duration for proxy URLs.
@@ -209,6 +246,7 @@ pub fn build_signed_proxy_url(
         room_id: room_id.to_string(),
         user_id: user_id.to_string(),
         expires_at,
+        target_url: None,
     };
     let query = signing_key.build_signed_query(&claims);
     format!(
@@ -235,6 +273,7 @@ mod tests {
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
+            target_url: None,
         }
     }
 
@@ -300,15 +339,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_with_extra_params() {
+    fn parse_query_binds_url_param_to_signature() {
         let key = test_key();
-        let claims = test_claims();
-        let mut query = key.build_signed_query(&claims);
-        query.push_str("&url=http%3A%2F%2Fexample.com%2Fseg.ts");
+        let mut claims = test_claims();
+        claims.target_url = Some("http://example.com/seg.ts".to_string());
+        let query = key.build_signed_query(&claims);
         let parsed = key
             .parse_and_verify_query(&query, &claims.provider, &claims.version)
             .unwrap();
         assert_eq!(parsed.room_id, claims.room_id);
+        assert_eq!(parsed.target_url, claims.target_url);
+    }
+
+    #[test]
+    fn parse_query_rejects_tampered_url_param() {
+        let key = test_key();
+        let mut claims = test_claims();
+        claims.target_url = Some("http://example.com/seg.ts".to_string());
+        let query = key.build_signed_query(&claims);
+        let (prefix, _) = query
+            .split_once("&url=")
+            .expect("signed target query should include url");
+        let tampered = format!(
+            "{prefix}&url={}",
+            urlencoding::encode("http://evil.example/seg.ts")
+        );
+
+        assert!(matches!(
+            key.parse_and_verify_query(&tampered, &claims.provider, &claims.version),
+            Err(ProxySignatureError::InvalidSignature)
+        ));
     }
 
     #[test]
@@ -356,6 +416,7 @@ mod tests {
             room_id: "room&id=tricky".to_string(),
             user_id: "user with spaces&more=yes".to_string(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
+            target_url: Some("https://cdn.example.com/a segment.ts?x=1&y=2".to_string()),
         };
         let query = key.build_signed_query(&claims);
 
@@ -367,6 +428,7 @@ mod tests {
         assert_eq!(parsed.room_id, claims.room_id);
         assert_eq!(parsed.user_id, claims.user_id);
         assert_eq!(parsed.expires_at, claims.expires_at);
+        assert_eq!(parsed.target_url, claims.target_url);
     }
 
     #[test]

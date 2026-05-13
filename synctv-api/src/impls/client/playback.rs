@@ -7,9 +7,9 @@ use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
 
 use super::convert::{
-    bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-    playback_client_profile_from_proto, playback_snapshot_to_proto, playback_state_to_proto,
-    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls,
+    bilibili_live_danmaku_for_static_media, playback_client_profile_from_proto,
+    playback_snapshot_to_proto, playback_state_to_proto, provider_playback_info_to_model,
+    sign_local_bilibili_danmaku_urls,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::impls::playback_snapshot::{
@@ -282,18 +282,6 @@ impl ClientApiImpl {
             .public_id_codec
             .encode_user_id(*user_id)
             .expect("positive user id must encode as public ID");
-        if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
-            sign_local_bilibili_danmaku_urls(
-                &mut embedded_result,
-                &public_user_id,
-                self.signing_key.as_deref(),
-                None,
-            );
-            let mut snapshot = playback_snapshot_to_proto(&embedded_result, &self.public_id_codec);
-            snapshot.version = static_playback_snapshot_version(&media);
-            snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-            return Ok(snapshot);
-        }
 
         let providers_manager = self
             .providers_manager
@@ -571,10 +559,6 @@ impl ClientApiImpl {
                 .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-
-            if direct_url_embedded_playback_result_to_model(&media)?.is_some() {
-                return Ok(Vec::new());
-            }
 
             let providers_manager = self
                 .providers_manager

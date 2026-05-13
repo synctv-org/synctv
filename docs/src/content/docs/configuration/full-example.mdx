@@ -135,10 +135,6 @@ server:
   grpc_max_message_size_bytes: 16777216
   grpc_compression_enabled: true
 
-cluster:
-  secret: ""
-  secret_file: "/run/secrets/cluster_secret"
-
 time:
   timezone: "Asia/Shanghai"
 
@@ -249,9 +245,9 @@ livestream:
   hls_oss:
     endpoint: ""
     access_key_id: ""
-    access_key_id_file: "/run/secrets/hls_oss_access_key_id"
+    access_key_id_file: ""
     secret_access_key: ""
-    secret_access_key_file: "/run/secrets/hls_oss_secret_access_key"
+    secret_access_key_file: ""
     bucket: ""
     region: null
     base_path: "hls/"
@@ -315,6 +311,8 @@ bootstrap:
 
 cluster:
   enabled: false
+  secret: ""
+  secret_file: ""
   critical_channel_capacity: 1000
   publish_channel_capacity: 10000
   discovery_mode: "redis"

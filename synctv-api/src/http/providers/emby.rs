@@ -154,6 +154,7 @@ fn build_signed_thumbnail_query(
         room_id: room_id.to_string(),
         user_id: user_id.to_string(),
         expires_at,
+        target_url: None,
     };
     signing_key.build_signed_query(&claims)
 }
@@ -335,11 +336,14 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::emby::LoginRequest>,
+    Json(mut req): Json<crate::proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -349,8 +353,13 @@ pub(crate) async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
-                api.login_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.login_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -385,11 +394,14 @@ pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::emby::ListRequest>,
+    Json(mut req): Json<crate::proto::providers::emby::ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -399,8 +411,13 @@ pub(crate) async fn list(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.list_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.list_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -435,11 +452,14 @@ pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::emby::GetMeRequest>,
+    Json(mut req): Json<crate::proto::providers::emby::GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -449,8 +469,13 @@ pub(crate) async fn me(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.get_me_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.get_me_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -469,6 +494,7 @@ pub(crate) async fn me(
         post,
         path = "/api/providers/emby/logout",
         tag = "Provider",
+        params(ProviderInstanceQuery),
         request_body = crate::proto::providers::emby::LogoutRequest,
         responses(
             (status = 200, description = "Emby credential removed", body = crate::proto::providers::emby::LogoutResponse),
@@ -483,10 +509,14 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::emby::LogoutRequest>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
+    Json(mut req): Json<crate::proto::providers::emby::LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
     let api = state.shared_api_runtime.emby_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state

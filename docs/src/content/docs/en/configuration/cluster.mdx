@@ -25,6 +25,23 @@ cluster:
 
 Redis and `cluster.secret` become required.
 
+## `cluster.secret`
+
+Shared secret for internal cluster gRPC calls. Required when `cluster.enabled=true`.
+
+Generate:
+
+```bash
+openssl rand -hex 32
+```
+
+Recommended:
+
+```yaml
+cluster:
+  secret_file: "/run/secrets/cluster_secret"
+```
+
 ## Design Goal
 
 Cluster mode solves runtime consistency when multiple SyncTV processes serve the same instance. It is not just a load-balancing switch, and it does not replace PostgreSQL, Redis, Ingress, or a deliberate livestream storage/proxy model.

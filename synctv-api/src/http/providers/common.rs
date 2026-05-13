@@ -10,7 +10,7 @@ use super::super::{
     admin_execute::{
         execute_admin_endpoint, execute_admin_endpoint_with_control, request_metadata,
     },
-    AppState, WithProviderInstanceName,
+    AppState,
 };
 use crate::proto::providers::common::{
     AddProviderInstanceRequest, AddProviderInstanceResponse, DeleteProviderInstanceRequest,
@@ -170,9 +170,9 @@ pub(crate) async fn update_provider_instance(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<DeleteProviderInstanceRequest>,
-    Json(req): Json<UpdateProviderInstanceRequest>,
+    Json(mut req): Json<UpdateProviderInstanceRequest>,
 ) -> Result<Json<UpdateProviderInstanceResponse>, super::super::AppError> {
-    let req = req.with_provider_instance_name(path.name);
+    req.name = path.name;
     let resp = execute_admin_endpoint_with_control(
         &state,
         request_meta,

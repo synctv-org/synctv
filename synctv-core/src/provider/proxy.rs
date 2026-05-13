@@ -36,6 +36,7 @@ pub enum ProxyAction {
         url: String,
         headers: HashMap<String, String>,
         proxy_base: String,
+        proxy_url_claims: Option<ProxyUrlClaims>,
     },
     /// Return a direct response body with a content type.
     ///

@@ -473,6 +473,7 @@ mod tests {
                 .encode_user_id(UserId::expect_positive(1))
                 .expect("user id should encode"),
             expires_at: chrono::Utc::now().timestamp() + 30,
+            target_url: None,
         };
         let ctx = ProxyRequestContext {
             sub_path: "v1/stream",

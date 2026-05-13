@@ -130,9 +130,11 @@ GOP cache helps new viewers start playback sooner without waiting for the next k
 
 `livestream.gop_cache_max_memory_mb` default: `100`.
 
+This is a per-stream limit. Total GOP cache memory can approach this value
+multiplied by the number of active live streams.
+
 Increase it when:
 
-- Many live streams run concurrently.
 - Bitrate is high.
 - New viewers join frequently.
 

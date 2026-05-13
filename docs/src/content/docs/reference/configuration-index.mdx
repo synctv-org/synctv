@@ -95,7 +95,6 @@ curl -fsS http://localhost:8080/health/ready
 | `server.enable_reflection` | 布尔值 | `false` | 是否开启公开 gRPC reflection |
 | `server.trusted_proxies` | 字符串数组 | `[]` | 可信反向代理 IP/CIDR |
 | `server.cors_allowed_origins` | 字符串数组 | `[]` | 允许跨域访问的前端 origin |
-| `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
 | `server.advertise_host` | 字符串 | `""` | 其他节点连接本节点时使用的地址 |
 | `server.shutdown_drain_timeout_seconds` | 秒数 | `30` | 关闭时等待连接 drain 的时间 |
 | `server.grpc_max_message_size_bytes` | 字节数 | `16777216` | gRPC 消息最大大小 |
@@ -271,6 +270,8 @@ curl -fsS http://localhost:8080/health/ready
 | `bootstrap.root_email` | 邮箱或空 | `""` | 初始 root 邮箱 |
 | `bootstrap.root_password` | secret 字符串 | `""` | 初始 root 密码 |
 | `cluster.enabled` | 布尔值 | `false` | 是否启用集群模式 |
+| `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
+| `cluster.secret_file` | 文件路径或空 | `""` | 读取集群内部 gRPC 认证密钥的文件 |
 | `cluster.critical_channel_capacity` | 整数 | `1000` | 高优先级集群事件队列容量 |
 | `cluster.publish_channel_capacity` | 整数 | `10000` | 普通集群发布队列容量 |
 | `cluster.discovery_mode` | `redis`、`static`、`k8s_dns` | `redis` | 节点发现模式 |

@@ -46,100 +46,6 @@ use tower_http::trace::{DefaultOnFailure, TraceLayer};
 
 pub use error::{AppError, AppResult};
 
-pub(crate) trait WithUserId: Sized {
-    fn with_user_id(self, user_id: String) -> Self;
-}
-
-pub(crate) trait WithRoomId: Sized {
-    fn with_room_id(self, room_id: String) -> Self;
-}
-
-pub(crate) trait WithMediaId: Sized {
-    fn with_media_id(self, media_id: String) -> Self;
-}
-
-pub(crate) trait WithPlaylistId: Sized {
-    fn with_playlist_id(self, playlist_id: String) -> Self;
-}
-
-pub(crate) trait WithProviderInstanceName: Sized {
-    fn with_provider_instance_name(self, name: String) -> Self;
-}
-
-macro_rules! impl_with_string_field {
-    ($trait_name:ident, $method_name:ident, $field:ident, [$($ty:path),+ $(,)?]) => {
-        $(
-            impl $trait_name for $ty {
-                fn $method_name(mut self, value: String) -> Self {
-                    self.$field = value;
-                    self
-                }
-            }
-        )+
-    };
-}
-
-impl_with_string_field!(
-    WithUserId,
-    with_user_id,
-    user_id,
-    [
-        crate::proto::client::UpdateMemberPermissionsRequest,
-        crate::proto::admin::UpdateUserRoleRequest,
-        crate::proto::admin::UpdateUserPreferencesRequest,
-        crate::proto::admin::UpdateUserPasswordRequest,
-        crate::proto::admin::UpdateUserUsernameRequest,
-        crate::proto::admin::BanUserRequest,
-        crate::proto::admin::GetUserRoomsRequest
-    ]
-);
-
-impl_with_string_field!(
-    WithRoomId,
-    with_room_id,
-    room_id,
-    [
-        crate::proto::admin::UpdateRoomPasswordRequest,
-        crate::proto::admin::GetRoomMembersRequest,
-        crate::proto::admin::BanRoomRequest,
-        crate::proto::admin::UpdateRoomSettingsRequest
-    ]
-);
-
-impl_with_string_field!(
-    WithMediaId,
-    with_media_id,
-    media_id,
-    [crate::proto::client::EditMediaRequest]
-);
-
-impl_with_string_field!(
-    WithPlaylistId,
-    with_playlist_id,
-    playlist_id,
-    [
-        crate::proto::client::UpdatePlaylistRequest,
-        crate::proto::client::MovePlaylistRequest
-    ]
-);
-
-impl_with_string_field!(
-    WithProviderInstanceName,
-    with_provider_instance_name,
-    name,
-    [crate::proto::providers::common::UpdateProviderInstanceRequest]
-);
-
-impl_with_string_field!(
-    WithUserId,
-    with_user_id,
-    user_id,
-    [
-        crate::proto::client::KickMemberRequest,
-        crate::proto::client::UnbanMemberRequest
-    ]
-);
-
 /// Configuration for creating the HTTP router
 #[derive(Clone)]
 pub struct RouterConfig {
@@ -1112,8 +1018,7 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
 mod tests {
     use super::{
         apply_global_layers, build_app_state, build_cors_layer, register_all_routes_for_test,
-        start_proxy_cache_lifecycle, RouterConfig, WithMediaId, WithPlaylistId,
-        WithProviderInstanceName, WithRoomId, WithUserId,
+        start_proxy_cache_lifecycle, RouterConfig,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1134,106 +1039,21 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
-    fn test_with_user_id_injects_proto_user_scoped_requests() {
-        let req = crate::proto::admin::BanUserRequest {
-            user_id: String::new(),
-            reason: "spam".to_string(),
-        }
-        .with_user_id("usr_1".to_string());
-
-        assert_eq!(req.user_id, "usr_1");
-        assert_eq!(req.reason, "spam");
-    }
-
-    #[test]
-    fn test_with_user_id_injects_client_single_field_requests() {
-        let req =
-            crate::proto::client::KickMemberRequest::default().with_user_id("usr_1".to_string());
-
-        assert_eq!(req.user_id, "usr_1");
-    }
-
-    #[test]
-    fn test_with_room_id_injects_proto_room_scoped_requests() {
-        let req = crate::proto::admin::GetRoomMembersRequest {
-            room_id: String::new(),
-            page: 2,
-            page_size: 25,
-            search: "alice".to_string(),
-            role: 0,
-            status: 0,
-            is_banned: None,
-            sort_by: 0,
-            sort_direction: 0,
-        }
-        .with_room_id("room_1".to_string());
-
-        assert_eq!(req.room_id, "room_1");
-        assert_eq!(req.page, 2);
-        assert_eq!(req.page_size, 25);
-        assert_eq!(req.search, "alice");
-    }
-
-    #[test]
-    fn test_proto_http_injection_traits_cover_media_playlist_and_provider_name() {
-        let edit_media = crate::proto::client::EditMediaRequest {
-            media_id: String::new(),
-            name: "Episode 1".to_string(),
-        }
-        .with_media_id("med_1".to_string());
-
-        let move_playlist = crate::proto::client::MovePlaylistRequest {
-            playlist_id: String::new(),
-            anchor: Some(
-                crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(
-                    "pl_2".to_string(),
-                ),
-            ),
-        }
-        .with_playlist_id("pl_1".to_string());
-
-        let update_provider = crate::proto::providers::common::UpdateProviderInstanceRequest {
-            name: String::new(),
-            endpoint: Some("https://provider.internal".to_string()),
-            comment: None,
-            timeout_seconds: None,
-            tls: None,
-            insecure_tls: None,
-            providers: Vec::new(),
-            jwt_secret: None,
-            custom_ca: None,
-            clear_comment: None,
-            clear_jwt_secret: None,
-            clear_custom_ca: None,
-        }
-        .with_provider_instance_name("alist_main".to_string());
-
-        assert_eq!(edit_media.media_id, "med_1");
-        assert_eq!(edit_media.name, "Episode 1");
-        assert_eq!(move_playlist.playlist_id, "pl_1");
-        assert_eq!(update_provider.name, "alist_main");
-        assert_eq!(
-            update_provider.endpoint.as_deref(),
-            Some("https://provider.internal")
-        );
-    }
-
-    #[test]
     fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() {
         let join_room: crate::proto::client::JoinRoomRequest =
             serde_json::from_str(r#"{"password":"secret"}"#).expect("join room body");
-        assert!(join_room.room_id.is_empty());
         assert_eq!(join_room.password, "secret");
+        assert!(join_room.room_id.is_empty());
 
         let edit_media: crate::proto::client::EditMediaRequest =
             serde_json::from_str(r#"{"name":"Episode 1"}"#).expect("edit media body");
-        assert!(edit_media.media_id.is_empty());
         assert_eq!(edit_media.name, "Episode 1");
+        assert!(edit_media.media_id.is_empty());
 
         let update_playlist: crate::proto::client::UpdatePlaylistRequest =
             serde_json::from_str(r#"{"name":"Season 1"}"#).expect("update playlist body");
-        assert!(update_playlist.playlist_id.is_empty());
         assert_eq!(update_playlist.name, "Season 1");
+        assert!(update_playlist.playlist_id.is_empty());
 
         let move_playlist: crate::proto::client::MovePlaylistRequest =
             serde_json::from_str(r#"{"after_playlist_id":"pl_anchor123"}"#)
@@ -1241,7 +1061,9 @@ mod tests {
         assert!(move_playlist.playlist_id.is_empty());
         assert!(matches!(
             move_playlist.anchor,
-            Some(crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(_))
+            Some(crate::proto::client::move_playlist_request::Anchor::AfterPlaylistId(
+                ref id
+            )) if id == "pl_anchor123"
         ));
 
         let member_permissions: crate::proto::client::UpdateMemberPermissionsRequest =
@@ -1295,7 +1117,6 @@ mod tests {
         let room_settings: crate::proto::admin::UpdateRoomSettingsRequest =
             serde_json::from_str(r#"{"settings":{"room":"settings"}}"#)
                 .expect("admin room settings body");
-        assert!(room_settings.room_id.is_empty());
         let settings: serde_json::Value =
             serde_json::from_slice(&room_settings.settings).expect("settings json");
         assert_eq!(settings, serde_json::json!({"room":"settings"}));
@@ -1309,7 +1130,6 @@ mod tests {
             )
             .expect("update provider instance body");
 
-        assert!(update_provider.name.is_empty());
         assert_eq!(
             update_provider.endpoint.as_deref(),
             Some("https://provider.internal")

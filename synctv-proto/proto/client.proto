@@ -2592,9 +2592,7 @@ message ListNotificationsResponse {
 }
 
 message GetNotificationRequest {
-    string notification_id = 1 [(buf.validate.field).string.pattern =
-        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-    ];
+    int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];
 }
 
 message GetNotificationResponse {
@@ -2602,11 +2600,9 @@ message GetNotificationResponse {
 }
 
 message MarkAsReadRequest {
-    repeated string notification_ids = 1 [(buf.validate.field).repeated = {
+    repeated int64 notification_ids = 1 [(buf.validate.field).repeated = {
         items: {
-            string: {
-                pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-            }
+            int64: { gte: 1 }
         }
     }];
 }
@@ -2627,9 +2623,7 @@ message ApiErrorResponse {
 }
 
 message DeleteNotificationRequest {
-    string notification_id = 1 [(buf.validate.field).string.pattern =
-        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-    ];
+    int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];
 }
 
 message DeleteNotificationResponse {}

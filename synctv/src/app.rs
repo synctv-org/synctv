@@ -23,7 +23,6 @@ use synctv_core::{
         services::{init_services_with_options, InitServicesOptions},
     },
     cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
-    provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     repository::realtime_outbox::RealtimeOutboxRepository,
     service::auth::PasswordHasherService,
     Config, RedisConnectionRuntime,
@@ -1341,15 +1340,10 @@ impl Application {
         let webrtc_components = init_webrtc(&infra.config).await;
 
         // Media providers
-        let pim = core.services.provider_instance_manager.clone();
-        let providers = synctv_core::provider::ProviderSet {
-            alist: Arc::new(AlistProvider::new(pim.clone())),
-            bilibili: Arc::new(BilibiliProvider::new(pim.clone())),
-            emby: Arc::new(EmbyProvider::new(pim)),
-            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
-            rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
-            live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
-        };
+        let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
+            core.services.provider_instance_manager.clone(),
+            infra.config.security.ssrf_guard(),
+        );
 
         Ok(ServerComponents {
             livestream_state,

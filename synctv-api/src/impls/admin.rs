@@ -30,12 +30,11 @@ use synctv_core::Error as CoreError;
 use synctv_livestream::api::LiveStreamingInfrastructure;
 
 use super::client::convert::{
-    bilibili_live_danmaku_for_static_media, direct_url_embedded_playback_result_to_model,
-    map_slice_preserve_order, media_list_to_proto, media_to_proto_with_availability,
-    member_status_to_proto, playback_client_profile_from_proto, playback_snapshot_to_proto,
-    playback_state_to_proto, playlist_list_to_proto, playlist_path_node_to_proto,
-    playlist_to_proto, playlist_to_proto_with_availability, provider_playback_info_to_model,
-    sign_local_bilibili_danmaku_urls, user_status_to_proto,
+    bilibili_live_danmaku_for_static_media, map_slice_preserve_order, media_list_to_proto,
+    media_to_proto_with_availability, member_status_to_proto, playback_client_profile_from_proto,
+    playback_snapshot_to_proto, playback_state_to_proto, playlist_list_to_proto,
+    playlist_path_node_to_proto, playlist_to_proto, playlist_to_proto_with_availability,
+    provider_playback_info_to_model, sign_local_bilibili_danmaku_urls, user_status_to_proto,
 };
 use super::client::{user_notification_preferences_to_proto, user_preferences_update_from_proto};
 use super::ApiError;
@@ -895,18 +894,6 @@ impl AdminApiImpl {
             .public_id_codec
             .encode_room_id(*room_id)
             .expect("positive room id must encode as public ID");
-        if let Some(mut embedded_result) = direct_url_embedded_playback_result_to_model(&media)? {
-            sign_local_bilibili_danmaku_urls(
-                &mut embedded_result,
-                &public_user_id,
-                Some(&signing_key),
-                None,
-            );
-            let mut snapshot = playback_snapshot_to_proto(&embedded_result, &self.public_id_codec);
-            snapshot.version = static_playback_snapshot_version(&media);
-            snapshot.expires_at = playback_snapshot_expires_at(&snapshot);
-            return Ok(snapshot);
-        }
 
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider_name = media.source_provider.trim();

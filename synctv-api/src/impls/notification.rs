@@ -185,31 +185,21 @@ pub(crate) fn build_get_notification_request(
     req: &GetNotificationRequest,
 ) -> Result<i64, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    req.notification_id
-        .parse::<i64>()
-        .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
+    Ok(req.notification_id)
 }
 
 pub(crate) fn build_mark_as_read_request(
     req: &ProtoMarkAsReadRequest,
 ) -> Result<Vec<i64>, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    req.notification_ids
-        .iter()
-        .map(|id| {
-            id.parse::<i64>()
-                .map_err(|_| ApiError::InvalidInput(format!("Invalid notification_id: {id}")))
-        })
-        .collect()
+    Ok(req.notification_ids.clone())
 }
 
 pub(crate) fn build_delete_notification_request(
     req: &DeleteNotificationRequest,
 ) -> Result<i64, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    req.notification_id
-        .parse::<i64>()
-        .map_err(|_| ApiError::InvalidInput("Invalid notification_id format".to_string()))
+    Ok(req.notification_id)
 }
 
 pub(crate) fn notification_counts_to_proto(
@@ -622,19 +612,37 @@ mod tests {
     }
 
     #[test]
-    fn test_build_get_notification_request_rejects_invalid_uuid() {
-        let error = build_get_notification_request(&GetNotificationRequest {
-            notification_id: "bad-id".to_string(),
+    fn test_build_get_notification_request_accepts_numeric_id() {
+        let notification_id = build_get_notification_request(&GetNotificationRequest {
+            notification_id: 42,
         })
-        .unwrap_err();
+        .expect("numeric notification ID should be accepted");
+
+        assert_eq!(notification_id, 42);
+    }
+
+    #[test]
+    fn test_build_get_notification_request_rejects_invalid_numeric_id() {
+        let error = build_get_notification_request(&GetNotificationRequest { notification_id: 0 })
+            .unwrap_err();
 
         assert!(matches!(error, ApiError::InvalidInput(_)));
     }
 
     #[test]
-    fn test_build_mark_as_read_request_rejects_invalid_uuid() {
+    fn test_build_mark_as_read_request_accepts_numeric_ids() {
+        let notification_ids = build_mark_as_read_request(&ProtoMarkAsReadRequest {
+            notification_ids: vec![42, 43],
+        })
+        .expect("numeric notification IDs should be accepted");
+
+        assert_eq!(notification_ids, vec![42, 43]);
+    }
+
+    #[test]
+    fn test_build_mark_as_read_request_rejects_invalid_numeric_id() {
         let error = build_mark_as_read_request(&ProtoMarkAsReadRequest {
-            notification_ids: vec!["bad-id".to_string()],
+            notification_ids: vec![0],
         })
         .unwrap_err();
 
@@ -642,11 +650,20 @@ mod tests {
     }
 
     #[test]
-    fn test_build_delete_notification_request_rejects_invalid_uuid() {
-        let error = build_delete_notification_request(&DeleteNotificationRequest {
-            notification_id: "bad-id".to_string(),
+    fn test_build_delete_notification_request_accepts_numeric_id() {
+        let notification_id = build_delete_notification_request(&DeleteNotificationRequest {
+            notification_id: 42,
         })
-        .unwrap_err();
+        .expect("numeric notification ID should be accepted");
+
+        assert_eq!(notification_id, 42);
+    }
+
+    #[test]
+    fn test_build_delete_notification_request_rejects_invalid_numeric_id() {
+        let error =
+            build_delete_notification_request(&DeleteNotificationRequest { notification_id: 0 })
+                .unwrap_err();
 
         assert!(matches!(error, ApiError::InvalidInput(_)));
     }

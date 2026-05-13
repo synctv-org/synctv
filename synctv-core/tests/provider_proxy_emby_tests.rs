@@ -174,6 +174,7 @@ async fn test_m3u8_proxy() {
             url,
             headers,
             proxy_base,
+            ..
         } => {
             assert_eq!(url, "https://emby.example.com/Videos/123/master.m3u8");
             assert_eq!(headers.get("X-Emby-Token").unwrap(), "api-key-123");

@@ -632,7 +632,6 @@ use crate::runtime::{
     RealtimeConnectionService, RealtimeDeliveryRequirement, RealtimeEventService,
 };
 use std::sync::Arc;
-use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
     ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig,
@@ -762,17 +761,11 @@ fn cluster_node_id(event_service: Option<&Arc<dyn RealtimeEventService>>) -> Str
 }
 
 fn build_fallback_http_app_state(deps: FallbackHttpAppStateDeps) -> Arc<crate::http::AppState> {
-    let providers = synctv_core::provider::ProviderSet {
-        alist: Arc::new(AlistProvider::new(deps.provider_instance_manager.clone())),
-        bilibili: Arc::new(BilibiliProvider::new(
-            deps.provider_instance_manager.clone(),
-        )),
-        emby: Arc::new(EmbyProvider::new(deps.provider_instance_manager.clone())),
-        direct_url: Arc::new(DirectUrlProvider::new()),
-        rtmp: Arc::new(synctv_core::provider::RtmpProvider::new()),
-        live_proxy: Arc::new(synctv_core::provider::LiveProxyProvider::new()),
-    };
     let ssrf_guard = deps.config.security.ssrf_guard();
+    let providers = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
+        deps.provider_instance_manager.clone(),
+        ssrf_guard.clone(),
+    );
     let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())
         .expect("gRPC proxy HTTP client should build");
     let proxy_slice_cache_config =

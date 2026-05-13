@@ -1181,6 +1181,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
                         proxy_base,
+                        proxy_url_claims: ctx.verified_claims.cloned(),
                     });
                 }
                 _ => {}

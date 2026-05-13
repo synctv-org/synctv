@@ -1224,9 +1224,9 @@ pub struct LivestreamConfig {
     pub pull_max_backoff_ms: u64,
     /// Max FLV tag size to accept (bytes, prevents OOM)
     pub max_flv_tag_size_bytes: usize,
-    /// Maximum memory (in megabytes) for the GOP cache across all GOPs per stream.
+    /// Maximum memory (in megabytes) for the GOP cache per stream.
     /// When exceeded, the oldest GOP is evicted even if `gop_cache_size` hasn't
-    /// been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
+    /// been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
     /// Maximum memory (in megabytes) for in-memory HLS segment storage.
     /// 0 means use the built-in default (512 MB).
@@ -1501,8 +1501,8 @@ impl Config {
             env.get(name).cloned()
         };
         let mut config = match config_file {
-            Some(path) if Path::new(path).exists() => Self::load_config_file(path)?,
-            _ => Self::default(),
+            Some(path) => Self::load_config_file(path)?,
+            None => Self::default(),
         };
 
         // Apply SYNCTV_* environment variable overrides (single underscore format).
@@ -1511,9 +1511,7 @@ impl Config {
         // Instead, every SYNCTV_ env var is mapped explicitly here.
         config.apply_env_overrides_with(&get_env)?;
         config.resolve_owned_local_paths(
-            config_file
-                .filter(|path| Path::new(path).exists())
-                .map(Path::new),
+            config_file.map(Path::new),
             env.contains_key("SYNCTV_DATA_DIR"),
             data_dir_override,
         );
@@ -1535,6 +1533,12 @@ impl Config {
 
     fn load_config_file(path: &str) -> Result<Self, ConfigError> {
         let path = Path::new(path);
+        if !path.exists() {
+            return Err(ConfigError::Message(format!(
+                "config file not found: {}",
+                absolute_display_path(path)
+            )));
+        }
         let (config, unknown_keys) = Self::deserialize_config_file(path)?;
         Self::emit_unknown_config_file_warnings(path, &unknown_keys);
         Ok(config)
@@ -1667,11 +1671,6 @@ impl Config {
 
     /// Load from file path
     pub fn from_file(path: &str) -> Result<Self, ConfigError> {
-        if !Path::new(path).exists() {
-            return Err(ConfigError::Message(format!(
-                "config file not found: {path}"
-            )));
-        }
         Self::load(Some(path))
     }
 
@@ -4767,6 +4766,29 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("SYNCTV_SERVER_PORT"));
         assert!(message.contains("not-a-port"));
+    }
+
+    #[test]
+    fn test_load_with_explicit_missing_config_path_fails_closed() {
+        let unique = format!(
+            "synctv-missing-explicit-config-{}-{}.yaml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+
+        let error =
+            Config::load_with_env_map(Some(path.to_str().expect("utf-8 path")), &env_map(&[]))
+                .expect_err("explicit missing config path must not fall back to defaults");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("config file not found"),
+            "missing file error should report the missing config file: {message}"
+        );
     }
 
     #[test]

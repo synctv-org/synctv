@@ -320,9 +320,9 @@ livestream:
   pull_max_backoff_ms: 30000
   # Max FLV tag size to accept in bytes (prevents OOM). Default: 10MB
   max_flv_tag_size_bytes: 10485760
-  # Maximum memory (in megabytes) for the GOP cache across all GOPs per stream.
+  # Maximum memory (in megabytes) for the GOP cache per stream.
   # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
-  # been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
+  # been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
   gop_cache_max_memory_mb: 100
   # Maximum memory (in megabytes) for in-memory HLS segment storage.
   # 0 means use the built-in default.

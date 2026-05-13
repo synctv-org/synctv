@@ -6,7 +6,7 @@ use axum::{
 };
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
-use crate::http::{middleware::RequestMetadata, AppResult, AppState, WithUserId};
+use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 
 fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
@@ -236,7 +236,7 @@ pub async fn kick_member(
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::KickMemberResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::KickMemberRequest::default().with_user_id(user_id);
+    let req = crate::proto::client::KickMemberRequest { user_id };
     let request_meta = request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
@@ -282,10 +282,10 @@ pub async fn set_member_permissions(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
-    Json(req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
+    Json(mut req): Json<crate::proto::client::UpdateMemberPermissionsRequest>,
 ) -> AppResult<Json<crate::proto::client::UpdateMemberPermissionsResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = req.with_user_id(user_id);
+    req.user_id = user_id;
     let request_meta = request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
@@ -382,7 +382,7 @@ pub async fn unban_member(
     Path(path): Path<crate::proto::client::RoomMemberTargetPathRequest>,
 ) -> AppResult<Json<crate::proto::client::UnbanMemberResponse>> {
     let crate::proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
-    let req = crate::proto::client::UnbanMemberRequest::default().with_user_id(user_id);
+    let req = crate::proto::client::UnbanMemberRequest { user_id };
     let request_meta = request_metadata(request_meta);
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
@@ -423,6 +423,17 @@ mod tests {
 
         assert!(req.request_id.is_empty());
         assert_eq!(req.reason, "denied");
+    }
+
+    #[test]
+    fn test_update_member_permissions_body_deserializes_without_path_field() {
+        let req: crate::proto::client::UpdateMemberPermissionsRequest =
+            serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)
+                .expect("deserialize member permissions body");
+
+        assert!(req.user_id.is_empty());
+        assert_eq!(req.role, 2);
+        assert_eq!(req.added_permissions, 1);
     }
 
     #[test]

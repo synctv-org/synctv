@@ -16,7 +16,7 @@ pub fn rewrite_m3u8(
     source_url: &str,
     proxy_base: &str,
 ) -> Result<String, anyhow::Error> {
-    rewrite_m3u8_with_limit(m3u8, source_url, proxy_base, None)
+    rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, None, default_proxy_url)
 }
 
 /// Rewrite URLs inside an M3U8 playlist with a custom URL limit.
@@ -35,6 +35,31 @@ pub fn rewrite_m3u8_with_limit(
     proxy_base: &str,
     max_urls: Option<usize>,
 ) -> Result<String, anyhow::Error> {
+    rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, max_urls, default_proxy_url)
+}
+
+pub fn rewrite_m3u8_with_url_mapper<F>(
+    m3u8: &str,
+    source_url: &str,
+    proxy_base: &str,
+    proxy_url_for_target: F,
+) -> Result<String, anyhow::Error>
+where
+    F: Fn(&str, &str) -> String,
+{
+    rewrite_m3u8_with_limit_and_mapper(m3u8, source_url, proxy_base, None, proxy_url_for_target)
+}
+
+pub fn rewrite_m3u8_with_limit_and_mapper<F>(
+    m3u8: &str,
+    source_url: &str,
+    proxy_base: &str,
+    max_urls: Option<usize>,
+    proxy_url_for_target: F,
+) -> Result<String, anyhow::Error>
+where
+    F: Fn(&str, &str) -> String,
+{
     if proxy_base.contains('\n') || proxy_base.contains('\r') {
         return Err(anyhow::anyhow!(
             "proxy_base contains line break characters, refusing to rewrite M3U8"
@@ -50,8 +75,12 @@ pub fn rewrite_m3u8_with_limit(
 
     for line in m3u8.lines() {
         if line.starts_with('#') {
-            let (rewritten_line, count) =
-                rewrite_uri_attribute_with_count(line, base.as_ref(), proxy_base);
+            let (rewritten_line, count) = rewrite_uri_attribute_with_mapper(
+                line,
+                base.as_ref(),
+                proxy_base,
+                &proxy_url_for_target,
+            );
             url_count += count;
             output.push_str(&rewritten_line);
         } else {
@@ -74,8 +103,7 @@ pub fn rewrite_m3u8_with_limit(
                     break;
                 }
                 let absolute = make_absolute(trimmed, base.as_ref());
-                let separator = if proxy_base.contains('?') { '&' } else { '?' };
-                let proxied = format!("{}{separator}url={}", proxy_base, percent_encode(&absolute));
+                let proxied = proxy_url_for_target(proxy_base, &absolute);
                 output.push_str(&proxied);
             }
         }
@@ -91,6 +119,16 @@ pub fn rewrite_m3u8_with_limit(
     }
 
     Ok(output)
+}
+
+#[must_use]
+pub fn default_proxy_url(proxy_base: &str, target_url: &str) -> String {
+    let separator = if proxy_base.contains('?') { '&' } else { '?' };
+    format!(
+        "{}{separator}url={}",
+        proxy_base,
+        percent_encode(target_url)
+    )
 }
 
 /// Resolve a possibly-relative URL to absolute using the given base URL.
@@ -115,6 +153,18 @@ pub fn rewrite_uri_attribute_with_count(
     base: Option<&url::Url>,
     proxy_base: &str,
 ) -> (String, usize) {
+    rewrite_uri_attribute_with_mapper(line, base, proxy_base, default_proxy_url)
+}
+
+pub fn rewrite_uri_attribute_with_mapper<F>(
+    line: &str,
+    base: Option<&url::Url>,
+    proxy_base: &str,
+    proxy_url_for_target: F,
+) -> (String, usize)
+where
+    F: Fn(&str, &str) -> String,
+{
     let pattern = "URI=\"";
     let mut result = String::with_capacity(line.len());
     let mut remaining = line;
@@ -127,8 +177,7 @@ pub fn rewrite_uri_attribute_with_count(
         if let Some(end) = remaining.find('"') {
             let uri = &remaining[..end];
             let absolute = make_absolute(uri, base);
-            let separator = if proxy_base.contains('?') { '&' } else { '?' };
-            let proxied = format!("{}{separator}url={}", proxy_base, percent_encode(&absolute));
+            let proxied = proxy_url_for_target(proxy_base, &absolute);
             result.push_str(&proxied);
             result.push('"');
             remaining = &remaining[end + 1..];

@@ -142,10 +142,9 @@ pub async fn exchange_authorization_code(
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
-    Json(req): Json<ExchangeAuthorizationCodeRequest>,
+    Json(mut req): Json<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    let mut req = req;
     req.provider = path.provider;
     let provider_for_log = req.provider.clone();
     let client_ip = crate::client_ip::extract_client_ip_from_headers(
@@ -408,12 +407,14 @@ mod tests {
 
     #[test]
     fn test_exchange_authorization_code_request_deserializes_without_provider() {
-        let req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
+        let mut req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
             r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
         )
         .expect("deserialize HTTP exchange request without provider");
 
         assert!(req.provider.is_empty());
+        req.provider = "github-main".to_string();
+        assert_eq!(req.provider, "github-main");
         assert_eq!(req.code, "abc123._+-");
         assert_eq!(req.state, "AbCdEfGh1234567890aBcDeFgHiJkLm");
     }

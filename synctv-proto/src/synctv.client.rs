@@ -4412,10 +4412,10 @@ pub struct ListNotificationsResponse {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_GetNotificationRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNotificationRequest {
-    #[prost(string, tag = "1")]
-    pub notification_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "1")]
+    pub notification_id: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.GetNotificationResponse")]
@@ -4438,8 +4438,8 @@ pub struct GetNotificationResponse {
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_MarkAsReadRequest))]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MarkAsReadRequest {
-    #[prost(string, repeated, tag = "1")]
-    pub notification_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(int64, repeated, packed = "false", tag = "1")]
+    pub notification_ids: ::prost::alloc::vec::Vec<i64>,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.MarkAsReadResponse")]
@@ -4499,10 +4499,10 @@ pub struct ApiErrorResponse {
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "openapi", schema(as = synctv_client_DeleteNotificationRequest))]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteNotificationRequest {
-    #[prost(string, tag = "1")]
-    pub notification_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "1")]
+    pub notification_id: i64,
 }
 #[derive(::prost_reflect::ReflectMessage)]
 #[prost_reflect(message_name = "synctv.client.DeleteNotificationResponse")]

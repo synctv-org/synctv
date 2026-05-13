@@ -86,17 +86,25 @@ pub(crate) async fn execute_proxy_action(
             url,
             headers,
             proxy_base,
-        } => synctv_proxy::proxy_m3u8_and_rewrite_with_control(
-            proxy_http_client,
-            ssrf_guard,
-            &url,
-            &headers,
-            &proxy_base,
-            request_control,
-        )
-        .await
-        .map(|response| set_default_cache_control(response, "no-cache, no-store"))
-        .map_err(map_proxy_execution_error),
+            proxy_url_claims,
+        } => {
+            if proxy_url_claims.is_some() {
+                return Err(AppError::internal(
+                    "signed M3U8 proxy actions require application state".to_string(),
+                ));
+            }
+            synctv_proxy::proxy_m3u8_and_rewrite_with_control(
+                proxy_http_client,
+                ssrf_guard,
+                &url,
+                &headers,
+                &proxy_base,
+                request_control,
+            )
+            .await
+            .map(|response| set_default_cache_control(response, "no-cache, no-store"))
+            .map_err(map_proxy_execution_error)
+        }
         ProxyAction::DirectBody {
             body,
             content_type,
@@ -211,6 +219,50 @@ pub(crate) async fn execute_proxy_action_with_state_for_method(
             )
             .await
         }
+        ProxyAction::M3u8Rewrite {
+            url,
+            headers,
+            proxy_base,
+            proxy_url_claims,
+        } => {
+            if method != Method::GET {
+                return Err(proxy_method_not_allowed());
+            }
+            let proxy_control = proxy_execution_control(request_control);
+            if let Some(claims) = proxy_url_claims {
+                let signing_key = state.shared_api_runtime.proxy_signing_key.clone();
+                synctv_proxy::proxy_m3u8_and_rewrite_with_control_and_mapper(
+                    &state.proxy_http_client,
+                    &state.ssrf_guard,
+                    &url,
+                    &headers,
+                    &proxy_base,
+                    proxy_control.as_ref(),
+                    move |proxy_base, target_url| {
+                        let signed_query =
+                            signing_key.build_signed_query_with_target_url(&claims, target_url);
+                        format!("{proxy_base}?{signed_query}")
+                    },
+                )
+                .await
+                .map(|response| set_default_cache_control(response, "no-cache, no-store"))
+                .map_err(map_proxy_execution_error)
+            } else {
+                execute_proxy_action(
+                    &state.proxy_http_client,
+                    &state.ssrf_guard,
+                    ProxyAction::M3u8Rewrite {
+                        url,
+                        headers,
+                        proxy_base,
+                        proxy_url_claims: None,
+                    },
+                    client_headers,
+                    proxy_control.as_ref(),
+                )
+                .await
+            }
+        }
         other => {
             if method != Method::GET {
                 return Err(proxy_method_not_allowed());
@@ -244,6 +296,22 @@ fn proxy_method_not_allowed() -> AppError {
 /// This must follow the same origin allowlist as the main HTTP router instead
 /// of returning a wildcard response, otherwise browser preflight succeeds for
 /// origins that the actual API would reject.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        options,
+        path = "/api/providers/proxy/{provider_name}/{sub_path}",
+        tag = "Provider Proxy",
+        params(
+            ("provider_name" = String, Path, description = "Provider backend name"),
+            ("sub_path" = String, Path, description = "Provider-specific proxy path")
+        ),
+        responses(
+            (status = 204, description = "CORS preflight accepted"),
+            (status = 403, description = "Origin is not allowed", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub(crate) async fn proxy_options_preflight(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -277,6 +345,28 @@ pub(crate) async fn proxy_options_preflight(
 /// - Response bodies are never timed out here; they stop only on cancellation.
 /// - Slice-cache proxying may perform multiple upstream hops, and each hop is
 ///   independent rather than sharing one end-to-end deadline.
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/providers/proxy/{provider_name}/{sub_path}",
+        tag = "Provider Proxy",
+        params(
+            ("provider_name" = String, Path, description = "Provider backend name"),
+            ("sub_path" = String, Path, description = "Provider-specific proxy path"),
+            ("sig" = String, Query, description = "HMAC signature for the proxy URL"),
+            ("exp" = i64, Query, description = "Unix timestamp when the proxy URL expires")
+        ),
+        responses(
+            (status = 200, description = "Proxied provider response"),
+            (status = 400, description = "Invalid proxy request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid or expired proxy signature", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Proxy access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider proxy target not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 502, description = "Upstream provider error", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub(crate) fn unified_proxy_handler(
     Path(path): Path<crate::proto::providers::common::ProviderProxyPathRequest>,
     State(state): State<AppState>,
@@ -294,6 +384,29 @@ pub(crate) fn unified_proxy_handler(
     )
 }
 
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        head,
+        path = "/api/providers/proxy/{provider_name}/{sub_path}",
+        tag = "Provider Proxy",
+        params(
+            ("provider_name" = String, Path, description = "Provider backend name"),
+            ("sub_path" = String, Path, description = "Provider-specific proxy path"),
+            ("sig" = String, Query, description = "HMAC signature for the proxy URL"),
+            ("exp" = i64, Query, description = "Unix timestamp when the proxy URL expires")
+        ),
+        responses(
+            (status = 200, description = "Proxied provider response headers"),
+            (status = 400, description = "Invalid proxy request", body = crate::openapi::ErrorResponseDoc),
+            (status = 401, description = "Invalid or expired proxy signature", body = crate::openapi::ErrorResponseDoc),
+            (status = 403, description = "Proxy access denied", body = crate::openapi::ErrorResponseDoc),
+            (status = 404, description = "Provider proxy target not found", body = crate::openapi::ErrorResponseDoc),
+            (status = 405, description = "Proxy action does not support HEAD", body = crate::openapi::ErrorResponseDoc),
+            (status = 502, description = "Upstream provider error", body = crate::openapi::ErrorResponseDoc)
+        )
+    )
+)]
 pub(crate) fn unified_proxy_head_handler(
     Path(path): Path<crate::proto::providers::common::ProviderProxyPathRequest>,
     State(state): State<AppState>,
@@ -764,6 +877,93 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn test_execute_m3u8_rewrite_signs_each_segment_target_url() {
+        let Some(mock_server) = start_mock_server_or_skip().await else {
+            return;
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("#EXTM3U\nseg-1.ts\nseg-2.ts\n"),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_app_state_with_proxy_cache(
+            None,
+            Arc::new(test_slice_cache_for_mock(
+                SliceCacheConfig::default(),
+                &mock_server,
+            )),
+        );
+
+        let claims = ProxyUrlClaims {
+            provider: "alist".to_string(),
+            version: "version-1".to_string(),
+            room_id: "room-1".to_string(),
+            user_id: "user-1".to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 300,
+            target_url: None,
+        };
+        let action = ProxyAction::M3u8Rewrite {
+            url: format!("{}/master.m3u8", mock_server.uri()),
+            headers: HashMap::new(),
+            proxy_base: "/api/providers/proxy/alist/version-1".to_string(),
+            proxy_url_claims: Some(claims),
+        };
+
+        let response = execute_proxy_action_with_state_for_method(
+            &state,
+            action,
+            &HeaderMap::new(),
+            None,
+            Method::GET,
+        )
+        .await
+        .expect("signed M3U8 proxy action should succeed");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let playlist = String::from_utf8(body.to_vec()).expect("playlist should be utf8");
+        let first_segment = playlist
+            .lines()
+            .find(|line| line.starts_with("/api/providers/proxy/alist/version-1?"))
+            .expect("rewritten playlist should contain signed segment URL");
+        let query = first_segment
+            .split_once('?')
+            .map(|(_, query)| query)
+            .expect("segment URL should include query");
+        let parsed = state
+            .shared_api_runtime
+            .proxy_signing_key
+            .parse_and_verify_query(query, "alist", "version-1")
+            .expect("segment query should verify");
+
+        assert_eq!(
+            parsed.target_url.as_deref(),
+            Some(format!("{}/seg-1.ts", mock_server.uri()).as_str())
+        );
+
+        let (prefix, _) = query
+            .split_once("&url=")
+            .expect("signed segment query should include url");
+        let tampered = format!(
+            "{prefix}&url={}",
+            synctv_proxy::percent_encode(&format!("{}/seg-2.ts", mock_server.uri()))
+        );
+        assert!(
+            state
+                .shared_api_runtime
+                .proxy_signing_key
+                .parse_and_verify_query(&tampered, "alist", "version-1")
+                .is_err(),
+            "changing the segment target URL must invalidate the signature"
+        );
+    }
+
     #[test]
     fn proxy_membership_probe_backend_outage_maps_to_503() {
         let err = map_api_error(
@@ -1040,6 +1240,7 @@ mod tests {
             room_id: room_id.to_string(),
             user_id: user_id.to_string(),
             expires_at: chrono::Utc::now().timestamp() + 300,
+            target_url: None,
         })
     }
 

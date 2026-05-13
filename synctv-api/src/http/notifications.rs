@@ -88,7 +88,7 @@ pub async fn list_notifications(
         path = "/api/notifications/{notification_id}",
         tag = "Notification",
         params(
-            ("notification_id" = String, Path, description = "Notification ID as UUID")
+            ("notification_id" = i64, Path, description = "Notification numeric ID")
         ),
         responses(
             (status = 200, description = "Notification details", body = GetNotificationResponse),
@@ -229,7 +229,7 @@ pub async fn mark_all_as_read(
         path = "/api/notifications/{notification_id}",
         tag = "Notification",
         params(
-            ("notification_id" = String, Path, description = "Notification ID as UUID")
+            ("notification_id" = i64, Path, description = "Notification numeric ID")
         ),
         responses(
             (status = 204, description = "Notification deleted"),
@@ -365,19 +365,11 @@ mod tests {
     #[test]
     fn test_notification_path_requests_deserialize_proto_field_names() {
         let get_request: crate::proto::client::GetNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":"550e8400-e29b-41d4-a716-446655440000"}"#)
-                .unwrap();
-        assert_eq!(
-            get_request.notification_id,
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
+            serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
+        assert_eq!(get_request.notification_id, 42);
 
         let delete_request: crate::proto::client::DeleteNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":"550e8400-e29b-41d4-a716-446655440000"}"#)
-                .unwrap();
-        assert_eq!(
-            delete_request.notification_id,
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
+            serde_json::from_str(r#"{"notification_id":42}"#).unwrap();
+        assert_eq!(delete_request.notification_id, 42);
     }
 }

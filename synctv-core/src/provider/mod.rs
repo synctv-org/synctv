@@ -78,7 +78,61 @@ pub struct ProviderSet {
     pub live_proxy: std::sync::Arc<LiveProxyProvider>,
 }
 
+fn provider_http_client_for_ssrf_guard(
+    ssrf_guard: synctv_common::ssrf::SsrfGuard,
+) -> reqwest::Client {
+    synctv_media_providers::build_provider_http_client(ssrf_guard)
+        .expect("provider HTTP client should build")
+}
+
 impl ProviderSet {
+    /// Build built-in providers with a shared local provider HTTP client and
+    /// explicit global SSRF policy.
+    #[must_use]
+    pub fn new_with_ssrf_guard(
+        provider_instance_manager: std::sync::Arc<crate::service::RemoteProviderManager>,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        let provider_http_client = provider_http_client_for_ssrf_guard(ssrf_guard.clone());
+        Self::new_with_provider_http_client_and_ssrf_guard(
+            provider_instance_manager,
+            provider_http_client,
+            ssrf_guard,
+        )
+    }
+
+    /// Build built-in providers with explicit local provider transport and
+    /// global SSRF policy.
+    #[must_use]
+    pub fn new_with_provider_http_client_and_ssrf_guard(
+        provider_instance_manager: std::sync::Arc<crate::service::RemoteProviderManager>,
+        provider_http_client: reqwest::Client,
+        ssrf_guard: synctv_common::ssrf::SsrfGuard,
+    ) -> Self {
+        let client_manager = std::sync::Arc::new(
+            ProviderClientManager::new_with_provider_http_client(provider_http_client),
+        );
+        Self {
+            alist: std::sync::Arc::new(AlistProvider::with_client_manager(
+                provider_instance_manager.clone(),
+                client_manager.clone(),
+            )),
+            bilibili: std::sync::Arc::new(BilibiliProvider::with_client_manager(
+                provider_instance_manager.clone(),
+                client_manager.clone(),
+            )),
+            emby: std::sync::Arc::new(EmbyProvider::with_client_manager(
+                provider_instance_manager,
+                client_manager,
+            )),
+            direct_url: std::sync::Arc::new(DirectUrlProvider::new_with_ssrf_guard(
+                ssrf_guard.clone(),
+            )),
+            rtmp: std::sync::Arc::new(RtmpProvider::new()),
+            live_proxy: std::sync::Arc::new(LiveProxyProvider::new_with_ssrf_guard(ssrf_guard)),
+        }
+    }
+
     /// Build a `ProxyProviderRegistry` from this provider set.
     ///
     /// Registers all proxy-capable providers under their canonical names.
@@ -493,7 +547,9 @@ mod tests {
     use super::*;
     use crate::models::{RoomId, UserId};
     use crate::provider::store::{InMemoryProviderStore, StoreError, StoreLockGuard};
+    use crate::repository::ProviderInstanceRepository;
     use crate::service::ProxySigningKey;
+    use crate::service::RemoteProviderManager;
     use std::sync::Arc;
 
     struct FailVersionMappingStore {
@@ -810,5 +866,37 @@ mod tests {
             Some(&"https://subtitle.example".to_string()),
             "subtitle-specific headers should override playback defaults"
         );
+    }
+
+    #[tokio::test]
+    async fn test_provider_set_uses_explicit_ssrf_guard_for_builtin_url_validators() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://synctv:synctv@localhost:5432/synctv")
+            .expect("lazy pool");
+        let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
+            ProviderInstanceRepository::new(pool),
+        )));
+        let providers = ProviderSet::new_with_ssrf_guard(
+            provider_instance_manager,
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        );
+        let ctx = ProviderContext::new("test");
+
+        providers
+            .direct_url
+            .validate_source_config(
+                &ctx,
+                SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/video.mp4" })),
+            )
+            .await
+            .expect("explicit disabled SSRF guard should allow DirectUrl loopback");
+        providers
+            .live_proxy
+            .validate_source_config(
+                &ctx,
+                SourceConfig::media(&serde_json::json!({ "url": "http://127.0.0.1/live.flv" })),
+            )
+            .await
+            .expect("explicit disabled SSRF guard should allow LiveProxy loopback");
     }
 }

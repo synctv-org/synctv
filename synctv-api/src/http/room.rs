@@ -13,27 +13,25 @@ use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use synctv_core::service::auth::{JwtValidator, TokenType};
 
 use super::validation::ProtoQuery;
-use super::{middleware::RequestMetadata, AppResult, AppState, WithMediaId, WithPlaylistId};
+use super::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
 use crate::proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomResponse,
     ClearPlaylistResponse, CreatePlaylistRequest, CreatePlaylistResponse, CreateRoomRequest,
     CreateRoomResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
     DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistQuery, DeletePlaylistRequest,
-    DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
-    GetChatHistoryRequest, GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse,
-    GetPlaybackRequest, GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse,
-    GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
-    ListPlaylistItemsRequest, ListPlaylistsRequest, ListPlaylistsResponse, ListRoomStreamsRequest,
-    ListRoomStreamsResponse, ListRoomsRequest, ListRoomsResponse, MoveMediaRequest,
-    MoveMediaResponse, MovePlaylistRequest, MovePlaylistResponse, ResetRoomSettingsResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse, StartPlaybackRequest, StartPlaybackResponse,
-    StopPlaybackRequest, StopPlaybackResponse, TransferRoomOwnershipRequest,
-    TransferRoomOwnershipResponse, UpdatePlayback, UpdatePlaylistRequest, UpdatePlaylistResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
+    DeletePlaylistResponse, DeleteRoomResponse, EditMediaResponse, GetChatHistoryRequest,
+    GetChatHistoryResponse, GetHotRoomsRequest, GetHotRoomsResponse, GetPlaybackRequest,
+    GetPlaybackResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomResponse,
+    JoinRoomResponse, LeaveRoomResponse, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    ListPlaylistsResponse, ListRoomStreamsRequest, ListRoomStreamsResponse, ListRoomsRequest,
+    ListRoomsResponse, MoveMediaRequest, MoveMediaResponse, MovePlaylistResponse,
+    ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
+    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdatePlayback,
+    UpdatePlaylistResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
 };
 
-pub type JoinRoomBody = JoinRoomRequest;
 pub type SetRoomPasswordBody = SetRoomPasswordRequest;
 pub type UpdateRoomSettingsBody = UpdateRoomSettingsRequest;
 pub type TransferRoomOwnershipBody = TransferRoomOwnershipRequest;
@@ -77,10 +75,9 @@ fn parse_optional_query_bool(
 }
 
 pub type AddMediaBatchBody = AddMediaBatchRequest;
-pub type EditMediaBody = EditMediaRequest;
 pub type CreatePlaylistBody = CreatePlaylistRequest;
-pub type UpdatePlaylistBody = UpdatePlaylistRequest;
-pub type MovePlaylistBody = MovePlaylistRequest;
+pub type UpdatePlaylistBody = crate::proto::client::UpdatePlaylistRequest;
+pub type MovePlaylistBody = crate::proto::client::MovePlaylistRequest;
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
@@ -499,7 +496,7 @@ pub async fn get_room(
         params(
             ("room_id" = String, Path, description = "Room ID")
         ),
-        request_body = JoinRoomRequest,
+        request_body = crate::proto::client::JoinRoomRequest,
         responses(
             (status = 200, description = "Joined room", body = JoinRoomResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -516,7 +513,7 @@ pub async fn join_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPathRequest>,
-    Json(mut req): Json<JoinRoomBody>,
+    Json(mut req): Json<crate::proto::client::JoinRoomRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
     let request_meta = request_meta
         .0
@@ -1238,7 +1235,7 @@ pub async fn push_media_batch(
             ("room_id" = String, Path, description = "Room ID"),
             ("media_id" = String, Path, description = "Media ID")
         ),
-        request_body = EditMediaRequest,
+        request_body = crate::proto::client::EditMediaRequest,
         responses(
             (status = 200, description = "Media updated", body = EditMediaResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1253,10 +1250,10 @@ pub async fn edit_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomMediaTargetPathRequest>,
-    Json(req): Json<EditMediaBody>,
+    Json(mut req): Json<crate::proto::client::EditMediaRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let crate::proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
-    let req = req.with_media_id(media_id);
+    req.media_id = media_id;
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1716,7 +1713,7 @@ pub async fn create_playlist(
             ("room_id" = String, Path, description = "Room ID"),
             ("playlist_id" = String, Path, description = "Playlist ID")
         ),
-        request_body = UpdatePlaylistRequest,
+        request_body = crate::proto::client::UpdatePlaylistRequest,
         responses(
             (status = 200, description = "Playlist updated", body = UpdatePlaylistResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1731,13 +1728,13 @@ pub async fn update_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    Json(req): Json<UpdatePlaylistBody>,
+    Json(mut req): Json<crate::proto::client::UpdatePlaylistRequest>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
     } = path;
-    let req = req.with_playlist_id(playlist_id);
+    req.playlist_id = playlist_id;
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -1763,7 +1760,7 @@ pub async fn update_playlist(
             ("room_id" = String, Path, description = "Room ID"),
             ("playlist_id" = String, Path, description = "Playlist ID")
         ),
-        request_body = MovePlaylistRequest,
+        request_body = crate::proto::client::MovePlaylistRequest,
         responses(
             (status = 200, description = "Playlist moved", body = MovePlaylistResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -1778,13 +1775,13 @@ pub async fn move_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<crate::proto::client::RoomPlaylistTargetPathRequest>,
-    Json(req): Json<MovePlaylistBody>,
+    Json(mut req): Json<crate::proto::client::MovePlaylistRequest>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
     let crate::proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
     } = path;
-    let req = req.with_playlist_id(playlist_id);
+    req.playlist_id = playlist_id;
     let response = execute_user_endpoint(
         &state,
         request_meta,

@@ -904,10 +904,17 @@ fn test_websocket_connect_request_allows_empty_ticket_for_header_auth() {
 }
 
 #[test]
-fn test_get_notification_request_rejects_invalid_notification_id() {
+fn test_get_notification_request_accepts_numeric_notification_id() {
     let request = GetNotificationRequest {
-        notification_id: "bad-id".to_string(),
+        notification_id: 42,
     };
+
+    synctv_proto::validate(&request).expect("numeric notification ID should be valid");
+}
+
+#[test]
+fn test_get_notification_request_rejects_invalid_notification_id() {
+    let request = GetNotificationRequest { notification_id: 0 };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
@@ -915,12 +922,18 @@ fn test_get_notification_request_rejects_invalid_notification_id() {
 }
 
 #[test]
+fn test_mark_as_read_request_accepts_numeric_notification_ids() {
+    let request = MarkAsReadRequest {
+        notification_ids: vec![42, 43],
+    };
+
+    synctv_proto::validate(&request).expect("numeric notification IDs should be valid");
+}
+
+#[test]
 fn test_mark_as_read_request_rejects_invalid_notification_id() {
     let request = MarkAsReadRequest {
-        notification_ids: vec![
-            "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            "bad-id".to_string(),
-        ],
+        notification_ids: vec![42, 0],
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -929,10 +942,17 @@ fn test_mark_as_read_request_rejects_invalid_notification_id() {
 }
 
 #[test]
-fn test_delete_notification_request_rejects_invalid_notification_id() {
+fn test_delete_notification_request_accepts_numeric_notification_id() {
     let request = DeleteNotificationRequest {
-        notification_id: "bad-id".to_string(),
+        notification_id: 42,
     };
+
+    synctv_proto::validate(&request).expect("numeric notification ID should be valid");
+}
+
+#[test]
+fn test_delete_notification_request_rejects_invalid_notification_id() {
+    let request = DeleteNotificationRequest { notification_id: 0 };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();

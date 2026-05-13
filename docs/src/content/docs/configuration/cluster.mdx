@@ -25,6 +25,21 @@ cluster:
 
 启用后，Redis 和 `cluster.secret` 必填。
 
+## `cluster.secret`
+
+集群内部 gRPC 共享密钥。`cluster.enabled=true` 时必填。
+
+```yaml
+cluster:
+  secret_file: "/run/secrets/cluster_secret"
+```
+
+生成：
+
+```bash
+openssl rand -hex 32
+```
+
 ## 设计目标
 
 集群模式解决的是“多个 SyncTV 进程共同服务同一个实例”时的运行时一致性问题。它不是简单的负载均衡开关，也不替代 PostgreSQL、Redis、Ingress 或直播存储/代理策略。

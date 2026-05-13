@@ -16,7 +16,10 @@ use crate::http::{
     error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::providers::bilibili::GetBindsResponse;
+use crate::proto::providers::bilibili::{
+    CheckQrRequest, GetBindsResponse, LoginSmsRequest, LogoutRequest, ParseRequest, SendSmsRequest,
+    UserInfoRequest,
+};
 use crate::proto::providers::common::ProviderInstanceQuery;
 
 /// Bilibili endpoints that authenticate, issue challenges, or mutate stored credentials.
@@ -52,7 +55,7 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
         path = "/api/providers/bilibili/parse",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::bilibili::ParseRequest,
+        request_body = ParseRequest,
         responses(
             (status = 200, description = "Bilibili media parsed", body = crate::proto::providers::bilibili::ParseResponse),
             (status = 400, description = "Invalid parse request", body = crate::openapi::ErrorResponseDoc),
@@ -67,11 +70,14 @@ pub(crate) async fn parse(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::ParseRequest>,
+    Json(mut req): Json<ParseRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -81,8 +87,13 @@ pub(crate) async fn parse(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.parse_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.parse_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -150,7 +161,7 @@ pub(crate) async fn login_qr(
         path = "/api/providers/bilibili/login/qr/check",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::bilibili::CheckQrRequest,
+        request_body = CheckQrRequest,
         responses(
             (status = 200, description = "Bilibili QR login status", body = crate::proto::providers::bilibili::QrStatusResponse),
             (status = 400, description = "Invalid QR check request", body = crate::openapi::ErrorResponseDoc),
@@ -165,11 +176,14 @@ pub(crate) async fn qr_check(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::CheckQrRequest>,
+    Json(mut req): Json<CheckQrRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -182,7 +196,7 @@ pub(crate) async fn qr_check(
                 api.check_qr_with_context(
                     &authenticated.user_id,
                     req,
-                    instance_name,
+                    instance_name.as_deref(),
                     Some(&control),
                 )
                 .await
@@ -253,7 +267,7 @@ pub(crate) async fn new_captcha(
         path = "/api/providers/bilibili/login/sms/send",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::bilibili::SendSmsRequest,
+        request_body = SendSmsRequest,
         responses(
             (status = 200, description = "Bilibili SMS sent", body = crate::proto::providers::bilibili::SendSmsResponse),
             (status = 400, description = "Invalid SMS request", body = crate::openapi::ErrorResponseDoc),
@@ -268,11 +282,14 @@ pub(crate) async fn sms_send(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::SendSmsRequest>,
+    Json(mut req): Json<SendSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::SendSmsResponse>> {
     tracing::info!("Bilibili SMS send request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -282,7 +299,7 @@ pub(crate) async fn sms_send(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |control, _| async move {
-                api.send_sms_with_context(req, instance_name, Some(&control))
+                api.send_sms_with_context(req, instance_name.as_deref(), Some(&control))
                     .await
             },
         )
@@ -303,7 +320,7 @@ pub(crate) async fn sms_send(
         path = "/api/providers/bilibili/login/sms/login",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::bilibili::LoginSmsRequest,
+        request_body = LoginSmsRequest,
         responses(
             (status = 200, description = "Bilibili SMS login succeeded", body = crate::proto::providers::bilibili::LoginSmsResponse),
             (status = 400, description = "Invalid SMS login request", body = crate::openapi::ErrorResponseDoc),
@@ -318,11 +335,14 @@ pub(crate) async fn sms_login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::LoginSmsRequest>,
+    Json(mut req): Json<LoginSmsRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::LoginSmsResponse>> {
     tracing::info!("Bilibili SMS login request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -335,7 +355,7 @@ pub(crate) async fn sms_login(
                 api.login_sms_with_context(
                     &authenticated.user_id,
                     req,
-                    instance_name,
+                    instance_name.as_deref(),
                     Some(&control),
                 )
                 .await
@@ -358,7 +378,7 @@ pub(crate) async fn sms_login(
         path = "/api/providers/bilibili/me",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::bilibili::UserInfoRequest,
+        request_body = UserInfoRequest,
         responses(
             (status = 200, description = "Bilibili account info", body = crate::proto::providers::bilibili::UserInfoResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -373,11 +393,14 @@ pub(crate) async fn user_info(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::bilibili::UserInfoRequest>,
+    Json(mut req): Json<UserInfoRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -390,7 +413,7 @@ pub(crate) async fn user_info(
                 api.get_user_info_with_context(
                     &authenticated.user_id,
                     req,
-                    instance_name,
+                    instance_name.as_deref(),
                     Some(&control),
                 )
                 .await
@@ -454,7 +477,8 @@ pub(crate) async fn binds(
         post,
         path = "/api/providers/bilibili/logout",
         tag = "Provider",
-        request_body = crate::proto::providers::bilibili::LogoutRequest,
+        params(ProviderInstanceQuery),
+        request_body = LogoutRequest,
         responses(
             (status = 200, description = "Bilibili credential removed", body = crate::proto::providers::bilibili::LogoutResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -468,10 +492,14 @@ pub(crate) async fn binds(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::bilibili::LogoutRequest>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
+    Json(mut req): Json<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
     let api = state.shared_api_runtime.bilibili_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state

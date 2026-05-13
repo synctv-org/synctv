@@ -891,7 +891,7 @@ impl RemoteProviderManager {
 
             let mut resolved = tokio::net::lookup_host((host, port)).await?;
             let address = resolved.find(|addr| {
-                let blocked = guard.is_ip_blocked(&addr.ip());
+                let blocked = guard.is_ip_blocked_for_host(host, &addr.ip());
                 if blocked {
                     tracing::warn!(
                         host,

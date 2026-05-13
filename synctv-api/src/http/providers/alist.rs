@@ -14,7 +14,9 @@ use crate::http::{
     error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
-use crate::proto::providers::alist::GetBindsResponse;
+use crate::proto::providers::alist::{
+    GetBindsResponse, GetMeRequest, ListRequest, LoginRequest, LogoutRequest, SearchRequest,
+};
 use crate::proto::providers::common::ProviderInstanceQuery;
 
 use super::common::provider_instance_name;
@@ -49,7 +51,7 @@ fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetad
         path = "/api/providers/alist/login",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::alist::LoginRequest,
+        request_body = LoginRequest,
         responses(
             (status = 200, description = "Alist login succeeded", body = crate::proto::providers::alist::LoginResponse),
             (status = 400, description = "Invalid login request", body = crate::openapi::ErrorResponseDoc),
@@ -64,11 +66,14 @@ pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::alist::LoginRequest>,
+    Json(mut req): Json<LoginRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -78,8 +83,13 @@ pub(crate) async fn login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |control, authenticated| async move {
-                api.login_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.login_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -100,7 +110,7 @@ pub(crate) async fn login(
         path = "/api/providers/alist/list",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::alist::ListRequest,
+        request_body = ListRequest,
         responses(
             (status = 200, description = "Alist directory listing", body = crate::proto::providers::alist::ListResponse),
             (status = 400, description = "Invalid list request", body = crate::openapi::ErrorResponseDoc),
@@ -115,11 +125,14 @@ pub(crate) async fn list(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::alist::ListRequest>,
+    Json(mut req): Json<ListRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -129,8 +142,13 @@ pub(crate) async fn list(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.list_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.list_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -150,7 +168,7 @@ pub(crate) async fn list(
         path = "/api/providers/alist/search",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::alist::SearchRequest,
+        request_body = SearchRequest,
         responses(
             (status = 200, description = "Alist search results", body = crate::proto::providers::alist::SearchResponse),
             (status = 400, description = "Invalid search request", body = crate::openapi::ErrorResponseDoc),
@@ -165,11 +183,14 @@ pub(crate) async fn search(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::alist::SearchRequest>,
+    Json(mut req): Json<SearchRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -179,8 +200,13 @@ pub(crate) async fn search(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.search_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.search_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -200,7 +226,7 @@ pub(crate) async fn search(
         path = "/api/providers/alist/me",
         tag = "Provider",
         params(ProviderInstanceQuery),
-        request_body = crate::proto::providers::alist::GetMeRequest,
+        request_body = GetMeRequest,
         responses(
             (status = 200, description = "Alist account info", body = crate::proto::providers::alist::GetMeResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -215,11 +241,14 @@ pub(crate) async fn me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
-    Json(req): Json<crate::proto::providers::alist::GetMeRequest>,
+    Json(mut req): Json<GetMeRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
-    let instance_name = provider_instance_name(&query)?;
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
+    let instance_name = crate::impls::providers::extract_instance_name(&req.instance_name);
     let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state
@@ -229,8 +258,13 @@ pub(crate) async fn me(
             &request_meta,
             EndpointRateLimitCategory::Read,
             move |control, authenticated| async move {
-                api.get_me_with_context(&authenticated.user_id, req, instance_name, Some(&control))
-                    .await
+                api.get_me_with_context(
+                    &authenticated.user_id,
+                    req,
+                    instance_name.as_deref(),
+                    Some(&control),
+                )
+                .await
             },
         )
         .await
@@ -249,7 +283,8 @@ pub(crate) async fn me(
         post,
         path = "/api/providers/alist/logout",
         tag = "Provider",
-        request_body = crate::proto::providers::alist::LogoutRequest,
+        params(ProviderInstanceQuery),
+        request_body = LogoutRequest,
         responses(
             (status = 200, description = "Alist credential removed", body = crate::proto::providers::alist::LogoutResponse),
             (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponseDoc),
@@ -263,10 +298,14 @@ pub(crate) async fn me(
 pub(crate) async fn logout(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<crate::proto::providers::alist::LogoutRequest>,
+    ProtoQuery(query): ProtoQuery<ProviderInstanceQuery>,
+    Json(mut req): Json<LogoutRequest>,
 ) -> AppResult<Json<crate::proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
+    if let Some(query_instance_name) = provider_instance_name(&query)? {
+        req.instance_name = query_instance_name.to_string();
+    }
     let api = state.shared_api_runtime.alist_api.clone();
     let request_meta = request_metadata(request_meta);
     let resp = state

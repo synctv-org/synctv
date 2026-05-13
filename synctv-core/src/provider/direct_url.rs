@@ -210,97 +210,6 @@ impl TryFrom<&Value> for DirectUrlSourceConfig {
     }
 }
 
-fn parse_embedded_playback_result(value: &Value) -> Result<Option<PlaybackResult>, ProviderError> {
-    let Some(playback_infos_value) = value.get("playback_infos") else {
-        return Ok(None);
-    };
-    let playback_infos_model: HashMap<String, crate::models::media::PlaybackInfo> =
-        serde_json::from_value(playback_infos_value.clone()).map_err(|error| {
-            ProviderError::InvalidConfig(format!(
-                "Failed to parse DirectUrl embedded playback_infos: {error}"
-            ))
-        })?;
-    let default_mode = value
-        .get("default_mode")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ProviderError::InvalidConfig(
-                "DirectUrl embedded playback result missing default_mode".to_string(),
-            )
-        })?
-        .to_string();
-    let metadata = value
-        .get("metadata")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|error| {
-            ProviderError::InvalidConfig(format!(
-                "Failed to parse DirectUrl embedded metadata: {error}"
-            ))
-        })?
-        .unwrap_or_default();
-
-    let playback_infos = playback_infos_model
-        .into_iter()
-        .map(|(mode_name, info)| {
-            let format = info.format.clone();
-            let default_url = info
-                .urls
-                .get(info.default_url_index)
-                .or_else(|| info.urls.first());
-            let headers = default_url
-                .map(|url| url.headers.clone())
-                .unwrap_or_default();
-            let expires_at =
-                default_url.and_then(|url| url.expire_at.as_ref().map(chrono::DateTime::timestamp));
-            let subtitles = info
-                .subtitles
-                .into_iter()
-                .map(|sub| super::traits::SubtitleTrack {
-                    headers: sub
-                        .urls
-                        .get(sub.default_url_index)
-                        .or_else(|| sub.urls.first())
-                        .map(|url| url.headers.clone())
-                        .unwrap_or_default(),
-                    url: sub
-                        .urls
-                        .get(sub.default_url_index)
-                        .or_else(|| sub.urls.first())
-                        .map(|url| url.url.clone())
-                        .unwrap_or_default(),
-                    format: sub
-                        .urls
-                        .get(sub.default_url_index)
-                        .or_else(|| sub.urls.first())
-                        .map(|url| url.format.clone())
-                        .unwrap_or_default(),
-                    language: sub.language,
-                    name: sub.name,
-                })
-                .collect();
-            (
-                mode_name,
-                PlaybackInfo {
-                    urls: info.urls.into_iter().map(|url| url.url).collect(),
-                    format,
-                    headers,
-                    subtitles,
-                    expires_at,
-                    cors_proxy_required: false,
-                },
-            )
-        })
-        .collect();
-
-    Ok(Some(PlaybackResult {
-        playback_infos,
-        default_mode,
-        metadata,
-    }))
-}
-
 // ProviderProxy implementation for DirectUrl
 // Supported sub_paths (same pattern as other providers):
 // - `{version}/stream` — proxy the video stream
@@ -417,6 +326,7 @@ impl ProviderProxy for DirectUrlProvider {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
                         proxy_base,
+                        proxy_url_claims: ctx.verified_claims.cloned(),
                     });
                 }
                 _ => {}
@@ -461,10 +371,6 @@ impl MediaProvider for DirectUrlProvider {
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
         super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
-
-        if let Some(result) = parse_embedded_playback_result(source_config)? {
-            return Ok(result);
-        }
 
         let config = DirectUrlSourceConfig::try_from(source_config)?;
         Self::validate_source_url(&config.url, &self.ssrf_guard)?;
@@ -521,7 +427,6 @@ impl MediaProvider for DirectUrlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::media::{PlaybackInfo as ModelPlaybackInfo, PlaybackUrl};
     use crate::provider::store::InMemoryProviderStore;
     use std::sync::Arc;
 
@@ -691,120 +596,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_playback_accepts_embedded_playback_result_source_config() {
+    async fn test_generate_playback_rejects_embedded_playback_result_source_config() {
         let provider = DirectUrlProvider::new();
         let source_config = serde_json::json!({
             "playback_infos": {
-                "direct": ModelPlaybackInfo {
-                    urls: vec![PlaybackUrl::simple(
-                        "1080p".to_string(),
-                        "https://example.com/video.mp4".to_string()
-                    )],
-                    default_url_index: 0,
-                    subtitles: Vec::new(),
-                    default_subtitle_index: None,
-                    danmakus: Vec::new(),
-                    format: "mp4".to_string(),
-                }
-            },
-            "default_mode": "direct",
-            "metadata": {
-                "filename": "video.mp4"
-            }
-        });
-
-        let result = provider
-            .generate_playback(&ProviderContext::new("synctv"), &source_config)
-            .await
-            .expect("embedded playback result source config should be supported");
-
-        assert_eq!(result.default_mode, "direct");
-        assert_eq!(
-            result.playback_infos["direct"].urls,
-            vec!["https://example.com/video.mp4".to_string()]
-        );
-        assert_eq!(result.playback_infos["direct"].format, "mp4");
-        assert_eq!(result.metadata.get("filename"), Some(&json!("video.mp4")));
-    }
-
-    #[tokio::test]
-    async fn test_generate_playback_embedded_result_preserves_default_transport_fields() {
-        let provider = DirectUrlProvider::new();
-        let source_config = serde_json::json!({
-            "playback_infos": {
-                "direct": ModelPlaybackInfo {
-                    urls: vec![
-                        crate::models::media::PlaybackUrl {
-                            name: "backup".to_string(),
-                            url: "https://example.com/video-backup.mp4".to_string(),
-                            headers: HashMap::from([(
-                                "Authorization".to_string(),
-                                "Bearer backup".to_string(),
-                            )]),
-                            expire_at: Some(
-                                chrono::DateTime::from_timestamp(1_700_000_000, 0)
-                                    .expect("test timestamp should be valid"),
-                            ),
-                            metadata: None,
-                        },
-                        crate::models::media::PlaybackUrl {
-                            name: "primary".to_string(),
-                            url: "https://example.com/video-primary.mp4".to_string(),
-                            headers: HashMap::from([(
-                                "Authorization".to_string(),
-                                "Bearer primary".to_string(),
-                            )]),
-                            expire_at: Some(
-                                chrono::DateTime::from_timestamp(1_700_000_123, 0)
-                                    .expect("test timestamp should be valid"),
-                            ),
-                            metadata: None,
-                        },
-                    ],
-                    default_url_index: 1,
-                    subtitles: vec![crate::models::media::Subtitle {
-                        name: "Chinese".to_string(),
-                        language: "zh-CN".to_string(),
-                        urls: vec![
-                            crate::models::media::SubtitleUrl {
-                                name: "backup".to_string(),
-                                url: "https://example.com/subtitle.json".to_string(),
-                                headers: HashMap::new(),
-                                format: "json".to_string(),
-                            },
-                            crate::models::media::SubtitleUrl {
-                                name: "default".to_string(),
-                                url: "https://example.com/subtitle.ass".to_string(),
-                                headers: HashMap::new(),
-                                format: "ass".to_string(),
-                            },
-                        ],
-                        default_url_index: 1,
+                "direct": {
+                    "urls": [{
+                        "name": "primary",
+                        "url": "https://example.com/video-primary.mp4",
+                        "headers": {
+                            "Authorization": "Bearer token"
+                        }
                     }],
-                    default_subtitle_index: Some(0),
-                    danmakus: Vec::new(),
-                    format: "mp4".to_string(),
-                }
+                    "default_url_index": 0,
+                    "subtitles": [],
+                    "default_subtitle_index": null,
+                    "danmakus": [],
+                    "format": "mp4"
+                },
             },
             "default_mode": "direct",
-            "metadata": {
-                "filename": "video-primary.mp4"
-            }
+            "metadata": {}
         });
 
-        let result = provider
+        let err = provider
             .generate_playback(&ProviderContext::new("synctv"), &source_config)
             .await
-            .expect("embedded playback result source config should be supported");
-        let direct = &result.playback_infos["direct"];
+            .expect_err("embedded playback result source_config should be rejected");
 
-        assert_eq!(
-            direct.headers.get("Authorization").map(String::as_str),
-            Some("Bearer primary")
+        assert!(
+            err.to_string().contains("DirectUrl"),
+            "error should come from normal DirectUrl source_config parsing, got: {err}"
         );
-        assert_eq!(direct.expires_at, Some(1_700_000_123));
-        assert_eq!(direct.subtitles[0].url, "https://example.com/subtitle.ass");
-        assert_eq!(direct.subtitles[0].format, "ass");
     }
 
     #[tokio::test]

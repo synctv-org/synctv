@@ -813,6 +813,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     url: url.clone(),
                     headers: default_info.headers.clone(),
                     proxy_base,
+                    proxy_url_claims: ctx.verified_claims.cloned(),
                 });
             }
         }

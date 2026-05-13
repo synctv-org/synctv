@@ -29,8 +29,8 @@ pub use cors::{proxy_options_preflight_with_cors, CorsConfig};
 pub(crate) use error::ProxyError;
 pub use error::{proxy_error_kind, ProxyErrorKind};
 pub use manifest::{
-    make_absolute, percent_encode, rewrite_m3u8, rewrite_m3u8_with_limit,
-    rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
+    default_proxy_url, make_absolute, percent_encode, rewrite_m3u8, rewrite_m3u8_with_limit,
+    rewrite_m3u8_with_url_mapper, rewrite_uri_attribute_with_count, MAX_M3U8_URLS,
 };
 #[cfg(test)]
 pub(crate) use redirect::REDIRECT_PRESERVE_HEADERS;
@@ -532,6 +532,31 @@ pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
     proxy_base: &str,
     request_control: Option<&ExecutionControl>,
 ) -> Result<Response, anyhow::Error> {
+    proxy_m3u8_and_rewrite_with_control_and_mapper(
+        client,
+        ssrf_guard,
+        url,
+        provider_headers,
+        proxy_base,
+        request_control,
+        manifest::default_proxy_url,
+    )
+    .await
+}
+
+pub async fn proxy_m3u8_and_rewrite_with_control_and_mapper<S, F>(
+    client: &reqwest::Client,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    url: &str,
+    provider_headers: &HashMap<String, String, S>,
+    proxy_base: &str,
+    request_control: Option<&ExecutionControl>,
+    proxy_url_for_target: F,
+) -> Result<Response, anyhow::Error>
+where
+    S: BuildHasher,
+    F: Fn(&str, &str) -> String,
+{
     let parsed = url::Url::parse(url).map_err(|e| anyhow::anyhow!("M3U8 URL is invalid: {e}"))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
@@ -580,7 +605,8 @@ pub async fn proxy_m3u8_and_rewrite_with_control<S: BuildHasher>(
     let m3u8_text = String::from_utf8(m3u8_bytes.to_vec())
         .map_err(|e| anyhow::anyhow!("M3U8 response is not valid UTF-8: {e}"))?;
 
-    let rewritten = rewrite_m3u8(&m3u8_text, url, proxy_base)?;
+    let rewritten =
+        manifest::rewrite_m3u8_with_url_mapper(&m3u8_text, url, proxy_base, proxy_url_for_target)?;
 
     Response::builder()
         .status(StatusCode::OK)

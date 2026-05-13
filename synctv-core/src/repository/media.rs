@@ -1944,7 +1944,11 @@ mod tests {
         assert_eq!(media.name, "Single Mode Video");
         assert!((media.position - 5.0).abs() < f64::EPSILON);
         assert!(media.provider_instance_name.is_none());
-        assert!(media.source_config.get("playback_infos").is_some());
+        assert_eq!(
+            media.source_config["url"],
+            serde_json::json!("https://example.com/video.mp4")
+        );
+        assert!(media.source_config.get("playback_infos").is_none());
     }
 
     /// Unit test: `Media::from_direct_multimode`
@@ -1986,8 +1990,12 @@ mod tests {
         assert_eq!(media.name, "Multimode Video");
         assert!((media.position - 10.0).abs() < f64::EPSILON);
         assert!(media.provider_instance_name.is_none());
-        assert!(media.source_config.get("playback_infos").is_some());
-        assert!(media.source_config.get("metadata").is_some());
+        assert_eq!(
+            media.source_config["url"],
+            serde_json::json!("https://example.com/video.mp4")
+        );
+        assert!(media.source_config.get("playback_infos").is_none());
+        assert!(media.source_config.get("metadata").is_none());
     }
 
     /// Unit test: Repository constructor

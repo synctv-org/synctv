@@ -24,10 +24,14 @@
 //! ```
 
 use http_acl::HttpAcl;
-use http_acl_reqwest::HttpAclMiddleware;
 use ipnet::IpNet;
-use std::net::IpAddr;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+use std::collections::HashSet;
+use std::error::Error;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+
+type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Default extra denied IP ranges (beyond what `http-acl` blocks via `is_global`).
 const DEFAULT_EXTRA_DENIED_RANGES: &[&str] = &[
@@ -68,6 +72,39 @@ const DEFAULT_NON_GLOBAL_DENIED_RANGES: &[&str] = &[
     "fe80::/10",     // link-local
 ];
 
+/// Non-global ranges that a hostname allowlist entry still must not unlock.
+///
+/// A hostname allowlist is intended for controlled private services such as
+/// `alist.internal -> 10.0.8.10`. It should not turn DNS names into a shortcut
+/// to loopback, link-local, metadata, documentation, multicast, or reserved
+/// networks. Users can still opt into those explicitly with `allowed_ip_ranges`
+/// or `allow_private_network_targets`.
+const HOST_ALLOWLIST_DENIED_RANGES: &[&str] = &[
+    "0.0.0.0/8",       // current network
+    "100.64.0.0/10",   // carrier-grade NAT
+    "127.0.0.0/8",     // loopback
+    "169.254.0.0/16",  // link-local / cloud metadata
+    "192.0.0.0/24",    // IETF protocol assignments
+    "192.0.2.0/24",    // documentation
+    "192.88.99.0/24",  // 6to4 relay anycast
+    "198.18.0.0/15",   // benchmarking
+    "198.51.100.0/24", // documentation
+    "203.0.113.0/24",  // documentation
+    "224.0.0.0/4",     // IPv4 multicast
+    "240.0.0.0/4",     // reserved
+    "255.255.255.255/32",
+    "::/128",        // unspecified
+    "::1/128",       // loopback
+    "::ffff:0:0/96", // IPv4-mapped
+    "64:ff9b::/96",  // IPv4/IPv6 translation
+    "100::/64",      // discard-only
+    "2001::/32",     // Teredo
+    "2001:db8::/32", // documentation
+    "2002::/16",     // 6to4
+    "fe80::/10",     // link-local
+    "ff00::/8",      // IPv6 multicast
+];
+
 /// Default denied hostnames.
 const DEFAULT_DENIED_HOSTS: &[&str] = &[
     "localhost",
@@ -88,7 +125,116 @@ pub struct SsrfGuard {
 
 struct SsrfGuardInner {
     acl: HttpAcl,
-    middleware: HttpAclMiddleware,
+    resolver: Arc<dyn Resolve>,
+    policy: Arc<SsrfPolicy>,
+}
+
+#[derive(Clone)]
+struct SsrfPolicy {
+    allow_private_network_targets: bool,
+    default_denied_ip_ranges: Vec<IpNet>,
+    host_allowlist_denied_ip_ranges: Vec<IpNet>,
+    extra_denied_ip_ranges: Vec<IpNet>,
+    extra_allowed_ip_ranges: Vec<IpNet>,
+    denied_hosts: HashSet<String>,
+    allowed_hosts: HashSet<String>,
+}
+
+struct SsrfDnsResolver {
+    acl: Arc<HttpAcl>,
+    inner: Arc<dyn Resolve>,
+    policy: Arc<SsrfPolicy>,
+}
+
+struct SystemDnsResolver;
+
+impl Resolve for SystemDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|error| Box::new(error) as BoxError)?;
+            Ok(Box::new(addresses) as Addrs)
+        })
+    }
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn parse_ranges(ranges: &[&str]) -> Vec<IpNet> {
+    ranges
+        .iter()
+        .map(|range| range.parse().expect("default CIDR should parse"))
+        .collect()
+}
+
+fn contains_ip(ranges: &[IpNet], ip: &IpAddr) -> bool {
+    ranges.iter().any(|range| range.contains(ip))
+}
+
+impl SsrfPolicy {
+    fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
+        if contains_ip(&self.extra_allowed_ip_ranges, ip) {
+            return true;
+        }
+
+        if contains_ip(&self.extra_denied_ip_ranges, ip) {
+            return false;
+        }
+
+        if !self.allow_private_network_targets && contains_ip(&self.default_denied_ip_ranges, ip) {
+            return false;
+        }
+
+        true
+    }
+
+    fn is_ip_allowed_for_host(&self, host: &str, ip: &IpAddr) -> bool {
+        if self.is_ip_allowed(ip) {
+            return true;
+        }
+
+        if contains_ip(&self.extra_denied_ip_ranges, ip) {
+            return false;
+        }
+
+        self.allowed_hosts.contains(&normalize_host(host))
+            && !contains_ip(&self.host_allowlist_denied_ip_ranges, ip)
+    }
+
+    fn is_host_blocked(&self, host: &str) -> bool {
+        let host = normalize_host(host);
+        !self.allowed_hosts.contains(&host) && self.denied_hosts.contains(&host)
+    }
+}
+
+impl Resolve for SsrfDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        if self.acl.is_host_allowed(&host).is_denied() {
+            let err: BoxError = Box::new(std::io::Error::other("Host denied by ACL"));
+            return Box::pin(std::future::ready(Err(err)));
+        }
+
+        let acl = self.acl.clone();
+        let resolver = self.inner.clone();
+        let policy = self.policy.clone();
+
+        Box::pin(async move {
+            let resolved = resolver.resolve(name).await?;
+            let filtered = resolved
+                .filter(|addr| {
+                    policy.is_ip_allowed_for_host(&host, &addr.ip())
+                        && acl.is_port_allowed(addr.port()).is_allowed()
+                })
+                .collect::<Vec<SocketAddr>>();
+
+            Ok(Box::new(filtered.into_iter()) as Addrs)
+        })
+    }
 }
 
 impl SsrfGuard {
@@ -119,9 +265,7 @@ impl SsrfGuard {
     /// Get a reqwest DNS resolver that enforces this guard's policy.
     #[must_use]
     pub fn dns_resolver(&self) -> Option<Arc<dyn reqwest::dns::Resolve>> {
-        self.inner
-            .as_ref()
-            .map(|inner| inner.middleware.dns_resolver() as Arc<dyn reqwest::dns::Resolve>)
+        self.inner.as_ref().map(|inner| inner.resolver.clone())
     }
 
     /// Check if an IP is blocked by this guard's policy.
@@ -132,7 +276,18 @@ impl SsrfGuard {
     pub fn is_ip_blocked(&self, ip: &IpAddr) -> bool {
         self.inner
             .as_ref()
-            .is_some_and(|inner| inner.acl.is_ip_allowed(ip).is_denied())
+            .is_some_and(|inner| !inner.policy.is_ip_allowed(ip))
+    }
+
+    /// Check if an IP is blocked for a resolved hostname by this guard's policy.
+    ///
+    /// Hostname allowlist entries are evaluated here, so callers that perform
+    /// their own DNS resolution should use this instead of `is_ip_blocked`.
+    #[must_use]
+    pub fn is_ip_blocked_for_host(&self, host: &str, ip: &IpAddr) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| !inner.policy.is_ip_allowed_for_host(host, ip))
     }
 
     /// Check if a hostname is blocked by this guard's policy.
@@ -140,7 +295,7 @@ impl SsrfGuard {
     pub fn is_host_blocked(&self, host: &str) -> bool {
         self.inner
             .as_ref()
-            .is_some_and(|inner| inner.acl.is_host_allowed(host).is_denied())
+            .is_some_and(|inner| inner.policy.is_host_blocked(host))
     }
 
     /// Access the underlying ACL for advanced use.
@@ -234,6 +389,21 @@ impl SsrfGuardBuilder {
         let allow_non_global_ip_ranges =
             self.allow_private_network_targets || !self.extra_allowed_ip_ranges.is_empty();
         let mut builder = HttpAcl::builder();
+        let extra_allowed_ip_ranges = self.extra_allowed_ip_ranges;
+        let extra_denied_ip_ranges = self.extra_denied_ip_ranges;
+        let allowed_hosts = self
+            .extra_allowed_hosts
+            .into_iter()
+            .map(|host| normalize_host(&host))
+            .collect::<HashSet<_>>();
+        let mut denied_hosts = DEFAULT_DENIED_HOSTS
+            .iter()
+            .map(|host| normalize_host(host))
+            .collect::<HashSet<_>>();
+
+        for host in self.extra_denied_hosts {
+            denied_hosts.insert(normalize_host(&host));
+        }
 
         // Apply default denied ranges
         for range_str in DEFAULT_EXTRA_DENIED_RANGES {
@@ -241,38 +411,25 @@ impl SsrfGuardBuilder {
             builder = builder.add_denied_ip_range(range).expect("valid IP range");
         }
 
-        if !self.allow_private_network_targets && allow_non_global_ip_ranges {
-            for range_str in DEFAULT_NON_GLOBAL_DENIED_RANGES {
-                let range: IpNet = range_str.parse().unwrap();
-                builder = builder.add_denied_ip_range(range).expect("valid IP range");
-            }
-        }
-
-        // Apply default denied hosts
-        for host in DEFAULT_DENIED_HOSTS {
+        // Apply denied hosts that were not explicitly allowlisted.
+        for host in denied_hosts.difference(&allowed_hosts) {
             builder = builder
-                .add_denied_host((*host).to_string())
+                .add_denied_host(host.clone())
                 .expect("valid hostname");
         }
 
-        // Apply extra denied ranges
-        for range in self.extra_denied_ip_ranges {
-            builder = builder.add_denied_ip_range(range).expect("valid IP range");
-        }
-
-        // Apply extra denied hosts
-        for host in self.extra_denied_hosts {
-            builder = builder.add_denied_host(host).expect("valid hostname");
-        }
-
-        // Apply extra allowed ranges
-        for range in self.extra_allowed_ip_ranges {
-            builder = builder.add_allowed_ip_range(range).expect("valid IP range");
+        // Apply extra denied ranges to the underlying ACL where they cannot
+        // conflict with explicit allow ranges. The guard's own policy below is
+        // authoritative for IP decisions.
+        for range in &extra_denied_ip_ranges {
+            builder = builder.add_denied_ip_range(*range).expect("valid IP range");
         }
 
         // Apply extra allowed hosts
-        for host in self.extra_allowed_hosts {
-            builder = builder.add_allowed_host(host).expect("valid hostname");
+        for host in &allowed_hosts {
+            builder = builder
+                .add_allowed_host(host.clone())
+                .expect("valid hostname");
         }
 
         let acl = builder
@@ -284,10 +441,30 @@ impl SsrfGuardBuilder {
             .try_build()
             .expect("SSRF ACL configuration is valid");
 
-        let middleware = HttpAclMiddleware::new(acl.clone());
+        let mut default_denied_ip_ranges = parse_ranges(DEFAULT_NON_GLOBAL_DENIED_RANGES);
+        default_denied_ip_ranges.extend(parse_ranges(DEFAULT_EXTRA_DENIED_RANGES));
+
+        let policy = Arc::new(SsrfPolicy {
+            allow_private_network_targets: self.allow_private_network_targets,
+            default_denied_ip_ranges,
+            host_allowlist_denied_ip_ranges: parse_ranges(HOST_ALLOWLIST_DENIED_RANGES),
+            extra_denied_ip_ranges,
+            extra_allowed_ip_ranges,
+            denied_hosts,
+            allowed_hosts,
+        });
+        let resolver = Arc::new(SsrfDnsResolver {
+            acl: Arc::new(acl.clone()),
+            inner: Arc::new(SystemDnsResolver),
+            policy: policy.clone(),
+        }) as Arc<dyn Resolve>;
 
         SsrfGuard {
-            inner: Some(Arc::new(SsrfGuardInner { acl, middleware })),
+            inner: Some(Arc::new(SsrfGuardInner {
+                acl,
+                resolver,
+                policy,
+            })),
         }
     }
 }
@@ -297,118 +474,89 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    struct StaticDnsResolver {
+        addresses: Vec<SocketAddr>,
+    }
+
+    impl Resolve for StaticDnsResolver {
+        fn resolve(&self, _name: Name) -> Resolving {
+            let addresses = self.addresses.clone();
+            Box::pin(async move { Ok(Box::new(addresses.into_iter()) as Addrs) })
+        }
+    }
+
+    fn resolver_for_test(guard: &SsrfGuard, addresses: Vec<SocketAddr>) -> Arc<dyn Resolve> {
+        let inner = guard
+            .inner
+            .as_ref()
+            .expect("test guard should expose SSRF internals");
+        Arc::new(SsrfDnsResolver {
+            acl: Arc::new(inner.acl.clone()),
+            inner: Arc::new(StaticDnsResolver { addresses }),
+            policy: inner.policy.clone(),
+        })
+    }
+
     // Default policy tests (migrated from synctv-ssrf)
 
     #[test]
     fn test_acl_blocks_private_ipv4() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
         // Loopback
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::LOCALHOST))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         // Private ranges
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
         // Link-local / cloud metadata
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
         // CGNAT
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254))));
         // Current network
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
         // Multicast
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1))));
         // Reserved
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::BROADCAST))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::BROADCAST)));
     }
 
     #[test]
     fn test_acl_allows_public_ipv4() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
-            .is_allowed());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
-            .is_allowed());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)))
-            .is_allowed());
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
     }
 
     #[test]
     fn test_acl_blocks_ipv6() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::LOCALHOST))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::UNSPECIFIED))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
         // Unique local
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1))));
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1))));
         // Link-local
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))));
         // Multicast
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 1))));
         // Teredo
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 1))));
         // 6to4
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V6(Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 1)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 1))));
     }
 
     #[test]
     fn test_acl_allows_public_ipv6() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
         let google = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
-        assert!(acl.is_ip_allowed(&google).is_allowed());
+        assert!(!guard.is_ip_blocked(&google));
         let cloudflare = IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111));
-        assert!(acl.is_ip_allowed(&cloudflare).is_allowed());
+        assert!(!guard.is_ip_blocked(&cloudflare));
     }
 
     #[test]
@@ -456,40 +604,22 @@ mod tests {
     #[test]
     fn test_ipv4_172_range_boundary() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
         // 172.15.x.x is NOT private (outside 172.16.0.0/12)
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255)))
-            .is_allowed());
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 15, 255, 255))));
         // 172.16.0.0 through 172.31.255.255 IS private
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255)))
-            .is_denied());
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
         // 172.32.x.x is NOT private
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0)))
-            .is_allowed());
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 0))));
     }
 
     #[test]
     fn test_ipv4_cgnat_boundary() {
         let guard = SsrfGuard::strict_policy();
-        let acl = guard.acl().expect("strict policy should expose ACL");
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255)))
-            .is_allowed());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255)))
-            .is_denied());
-        assert!(acl
-            .is_ip_allowed(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 0)))
-            .is_allowed());
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 63, 255, 255))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 0))));
     }
 
     // SsrfGuard struct tests
@@ -508,6 +638,100 @@ mod tests {
         assert!(guard.is_host_blocked("localhost"));
         assert!(guard.is_host_blocked("metadata.google.internal"));
         assert!(!guard.is_host_blocked("example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_dns_resolver_allows_private_ip_for_explicit_allowed_host() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+
+        let resolved = resolver
+            .resolve("internal.example".parse().expect("valid DNS name"))
+            .await
+            .expect("DNS resolution should succeed")
+            .collect::<Vec<_>>();
+
+        assert_eq!(resolved, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+        assert!(
+            guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42))),
+            "host-specific allowlist must not globally allow private IPs"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dns_resolver_still_blocks_private_ip_for_non_allowlisted_host() {
+        let guard = SsrfGuard::strict_policy();
+        let resolver = resolver_for_test(&guard, vec![SocketAddr::from(([10, 0, 0, 42], 443))]);
+
+        let resolved = resolver
+            .resolve("example.com".parse().expect("valid DNS name"))
+            .await
+            .expect("DNS resolution should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(
+            resolved.is_empty(),
+            "private DNS results should still be filtered for non-allowlisted hosts"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dns_resolver_blocks_metadata_ip_for_explicit_allowed_host() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+        let resolver =
+            resolver_for_test(&guard, vec![SocketAddr::from(([169, 254, 169, 254], 80))]);
+
+        let resolved = resolver
+            .resolve("internal.example".parse().expect("valid DNS name"))
+            .await
+            .expect("DNS resolution should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(
+            resolved.is_empty(),
+            "hostname allowlist should not allow metadata IPs"
+        );
+    }
+
+    #[test]
+    fn test_host_context_allows_private_ip_for_explicit_allowed_host() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42));
+
+        assert!(guard.is_ip_blocked(&ip));
+        assert!(!guard.is_ip_blocked_for_host("internal.example", &ip));
+        assert!(guard.is_ip_blocked_for_host("example.com", &ip));
+    }
+
+    #[test]
+    fn test_allowed_ip_range_overrides_private_default() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_ip_range(
+                "10.0.8.0/24"
+                    .parse()
+                    .expect("test CIDR must parse successfully"),
+            )
+            .build();
+
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 8, 42))));
+        assert!(guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 9, 42))));
+    }
+
+    #[test]
+    fn test_allow_private_network_targets_allows_non_global_ips() {
+        let guard = SsrfGuard::builder()
+            .allow_private_network_targets(true)
+            .build();
+
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(!guard.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
     }
 
     // Builder tests

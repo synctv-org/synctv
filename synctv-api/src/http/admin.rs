@@ -14,7 +14,7 @@ use super::{
     admin_execute::{execute_admin_endpoint, execute_root_endpoint, request_metadata},
     middleware::RequestMetadata,
     validation::ProtoQuery,
-    AppError, AppResult, AppState, WithRoomId, WithUserId,
+    AppError, AppResult, AppState,
 };
 use crate::proto::admin;
 
@@ -677,9 +677,9 @@ pub(crate) async fn update_user_preferences(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Json(req): Json<admin::UpdateUserPreferencesRequest>,
+    Json(mut req): Json<admin::UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<admin::UpdateUserPreferencesResponse>> {
-    let req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -778,9 +778,9 @@ pub(crate) async fn set_user_role(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Json(req): Json<admin::UpdateUserRoleRequest>,
+    Json(mut req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
-    let req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -816,7 +816,7 @@ pub(crate) async fn set_user_password(
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
-    req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     if req.reason.is_empty() {
         req.reason = "Admin forced password reset".to_string();
     }
@@ -853,9 +853,9 @@ pub(crate) async fn set_user_username(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Json(req): Json<admin::UpdateUserUsernameRequest>,
+    Json(mut req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
-    let req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -889,9 +889,9 @@ pub(crate) async fn ban_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Json(req): Json<admin::BanUserRequest>,
+    Json(mut req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::BanUserResponse>> {
-    let req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -958,9 +958,9 @@ pub(crate) async fn get_user_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Query(req): Query<admin::GetUserRoomsRequest>,
+    Query(mut req): Query<admin::GetUserRoomsRequest>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
-    let req = req.with_user_id(path.user_id);
+    req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1151,9 +1151,9 @@ pub(crate) async fn set_room_password(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Json(req): Json<admin::UpdateRoomPasswordRequest>,
+    Json(mut req): Json<admin::UpdateRoomPasswordRequest>,
 ) -> AppResult<Json<admin::UpdateRoomPasswordResponse>> {
-    let req = req.with_room_id(path.room_id);
+    req.room_id = path.room_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1188,9 +1188,9 @@ pub(crate) async fn get_room_members(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Query(req): Query<admin::GetRoomMembersRequest>,
+    Query(mut req): Query<admin::GetRoomMembersRequest>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
-    let req = req.with_room_id(path.room_id);
+    req.room_id = path.room_id;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1221,9 +1221,9 @@ pub(crate) async fn ban_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Json(req): Json<admin::BanRoomRequest>,
+    Json(mut req): Json<admin::BanRoomRequest>,
 ) -> AppResult<Json<admin::BanRoomResponse>> {
-    let req = req.with_room_id(path.room_id);
+    req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1318,9 +1318,9 @@ pub(crate) async fn set_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Json(req): Json<admin::UpdateRoomSettingsRequest>,
+    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
-    let req = req.with_room_id(path.room_id);
+    req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
             &state,

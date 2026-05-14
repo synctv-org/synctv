@@ -106,8 +106,8 @@ All nodes must:
 
 | Field | Default | Purpose |
 | --- | --- | --- |
-| `cluster.critical_channel_capacity` | `1000` | High-priority events such as kicks and permission changes |
-| `cluster.publish_channel_capacity` | `10000` | Normal Redis publish events |
+| `cluster.critical_channel_capacity` | `10000` | High-priority events such as kicks and permission changes |
+| `cluster.publish_channel_capacity` | `100000` | Normal Redis publish events |
 
 Critical events apply backpressure when full. Normal events may be dropped under extreme pressure with a warning to protect the main flow.
 
@@ -165,7 +165,7 @@ The Helm chart can render the required Kubernetes resources when configured.
 
 When a node joins or reconnects, it replays recent Redis Stream events within this window. Increase it if startup is slow or you want more conservative replay. Decrease it if event volume is high and fast startup matters more.
 
-`cluster.stream_max_length` default: `10000`.
+`cluster.stream_max_length` default: `100000`.
 
 This controls approximate Redis Stream retention. If traffic is high and nodes disconnect, too small a value can trim events before a node catches up. Larger values use more Redis memory.
 

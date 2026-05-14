@@ -177,6 +177,8 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
         "api",
         "refresh",
         "email",
+        "streaming",
+        "websocket",
     ];
     for segment in key.rsplit(':') {
         for &tier in KNOWN_TIERS {
@@ -1110,6 +1112,22 @@ mod tests {
         assert_eq!(retry_after_seconds_from_oldest(2_001, 1_000, 2), 1);
         assert_eq!(retry_after_seconds_from_oldest(10_000, 0, 60), 1);
         assert_eq!(retry_after_seconds_from_oldest(1_000, 1_000, 60), 60);
+    }
+
+    #[test]
+    fn test_extracts_rate_limit_tier_from_transport_scoped_keys() {
+        assert_eq!(
+            extract_rate_limit_tier("ratelimit:http:websocket:user:42"),
+            "websocket"
+        );
+        assert_eq!(
+            extract_rate_limit_tier("ratelimit:grpc:streaming:user:42"),
+            "streaming"
+        );
+        assert_eq!(
+            extract_rate_limit_tier("ratelimit:http:read:user:42"),
+            "read"
+        );
     }
 
     #[test]

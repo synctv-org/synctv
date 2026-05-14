@@ -9,9 +9,9 @@ description: HTTP/gRPC 请求限流、聊天弹幕限流、WebSocket 限制和 s
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `connection_limits.max_per_user` | `5` | 每用户最大并发连接 |
-| `connection_limits.max_per_room` | `200` | 每房间最大并发连接 |
-| `connection_limits.max_total` | `10000` | 全局最大并发连接 |
+| `connection_limits.max_per_user` | `20` | 每用户最大并发连接 |
+| `connection_limits.max_per_room` | `2000` | 每房间最大并发连接 |
+| `connection_limits.max_total` | `100000` | 全局最大并发连接 |
 | `connection_limits.idle_timeout_seconds` | `300` | 空闲连接断开时间 |
 | `connection_limits.max_duration_seconds` | `86400` | 单连接最大生命周期 |
 | `connection_limits.ws_message_rate_limit_per_second` | `50` | 单 WebSocket 连接消息速率 |
@@ -90,6 +90,8 @@ grpc_rate_limits:
   admin_window_seconds: 60
   read_max_requests: 100
   read_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
 ```
 
 | 类别 | 用途 |
@@ -100,6 +102,7 @@ grpc_rate_limits:
 | `write` | CreateRoom、UpdateRoom、JoinRoom、SendChat |
 | `admin` | 管理 RPC |
 | `read` | GetRoom、ListRooms、GetUser、GetPlaylist |
+| `websocket` | MessageStream 建连尝试 |
 
 邮件类接口应保持严格限流，因为它容易被滥用，也可能产生成本。
 

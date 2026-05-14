@@ -1,5 +1,8 @@
 //! Shared gRPC transport helpers used by public API and management services.
 
+pub const ERROR_CODE_METADATA_KEY: &str = "x-synctv-error-code";
+pub const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
+
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///
 /// Shared across gRPC service implementations to avoid duplicating the
@@ -11,7 +14,7 @@
 pub fn map_api_error_ref(err: &crate::impls::ApiError) -> tonic::Status {
     use crate::impls::ErrorKind;
     let msg = err.message().to_string();
-    match err.classify() {
+    let mut status = match err.classify() {
         ErrorKind::NotFound => tonic::Status::not_found(msg),
         ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
         ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
@@ -25,7 +28,20 @@ pub fn map_api_error_ref(err: &crate::impls::ApiError) -> tonic::Status {
             tracing::error!("API internal error: {msg}");
             tonic::Status::internal("Internal error")
         }
+    };
+
+    if let Ok(value) = err.code().to_string().parse() {
+        status.metadata_mut().insert(ERROR_CODE_METADATA_KEY, value);
     }
+    if let Some(retry_after_seconds) = err.retry_after_seconds() {
+        if let Ok(value) = retry_after_seconds.to_string().parse() {
+            status
+                .metadata_mut()
+                .insert(RETRY_AFTER_METADATA_KEY, value);
+        }
+    }
+
+    status
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -11,12 +11,12 @@ Media proxy Range-slice caching is configured separately in [Proxy Slice Cache](
 
 ```yaml
 cache:
-  l1_capacity: 500
+  l1_capacity: 5000
   l1_ttl_seconds: 300
   l2_ttl_seconds: 300
-  username_cache_capacity: 1000
+  username_cache_capacity: 10000
   username_cache_ttl_seconds: 3600
-  permission_cache_capacity: 1000
+  permission_cache_capacity: 20000
   permission_cache_ttl_seconds: 300
 ```
 
@@ -24,12 +24,12 @@ cache:
 
 | Field | Default | Change when | Risk |
 | --- | --- | --- | --- |
-| `cache.l1_capacity` | `500` | One node has enough memory and user/room cache churn is visible | Too low increases database reads; too high increases memory use |
+| `cache.l1_capacity` | `5000` | One node has enough memory and user/room cache churn is visible | Too low increases database reads; too high increases memory use |
 | `cache.l1_ttl_seconds` | `300` | In-process entries should expire faster or stay longer | Too long delays visible changes; too short increases database pressure |
 | `cache.l2_ttl_seconds` | `300` | Redis is configured and business cache reuse should last longer | Has no effect without Redis |
-| `cache.username_cache_capacity` | `1000` | Login, member lists, or display paths frequently resolve usernames | Too low repeatedly falls back to the database |
+| `cache.username_cache_capacity` | `10000` | Login, member lists, or display paths frequently resolve usernames | Too low repeatedly falls back to the database |
 | `cache.username_cache_ttl_seconds` | `3600` | Username update frequency and lookup pressure do not match defaults | Too long delays username changes; too short lowers hit rate |
-| `cache.permission_cache_capacity` | `1000` | Permission cache capacity needs explicit tuning | Too low increases permission-read overhead |
+| `cache.permission_cache_capacity` | `20000` | Permission cache capacity needs explicit tuning | Too low increases permission-read overhead |
 | `cache.permission_cache_ttl_seconds` | `300` | Permission changes should propagate faster or slower | Too long delays permission visibility |
 
 ## Single-Node Production

@@ -146,12 +146,12 @@ data:
       backtrace: {{ .Values.config.logging.backtrace | default false }}
 
     cache:
-      l1_capacity: {{ $cache.l1Capacity | default 500 }}
+      l1_capacity: {{ $cache.l1Capacity | default 5000 }}
       l1_ttl_seconds: {{ $cache.l1TtlSeconds | default 300 }}
       l2_ttl_seconds: {{ $cache.l2TtlSeconds | default 300 }}
-      username_cache_capacity: {{ $cache.usernameCacheCapacity | default 1000 }}
+      username_cache_capacity: {{ $cache.usernameCacheCapacity | default 10000 }}
       username_cache_ttl_seconds: {{ $cache.usernameCacheTtlSeconds | default 3600 }}
-      permission_cache_capacity: {{ $cache.permissionCacheCapacity | default 1000 }}
+      permission_cache_capacity: {{ $cache.permissionCacheCapacity | default 20000 }}
       permission_cache_ttl_seconds: {{ $cache.permissionCacheTtlSeconds | default 300 }}
 
     proxy_slice_cache:
@@ -198,8 +198,8 @@ data:
 
     cluster:
       enabled: {{ .Values.config.cluster.enabled }}
-      critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity }}
-      publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity }}
+      critical_channel_capacity: {{ .Values.config.cluster.criticalChannelCapacity | default 10000 }}
+      publish_channel_capacity: {{ .Values.config.cluster.publishChannelCapacity | default 100000 }}
       discovery_mode: {{ .Values.config.cluster.discoveryMode | default "redis" | quote }}
       leader_election_mode: {{ .Values.config.cluster.leaderElectionMode | default "redis" | quote }}
       {{- if .Values.config.cluster.peers }}
@@ -209,7 +209,7 @@ data:
         {{- end }}
       {{- end }}
       catchup_window_secs: {{ .Values.config.cluster.catchupWindowSecs | default 300 }}
-      stream_max_length: {{ .Values.config.cluster.streamMaxLength | default 10000 }}
+      stream_max_length: {{ .Values.config.cluster.streamMaxLength | default 100000 }}
 
     webrtc:
       mode: {{ .Values.config.webrtc.mode | default "peer_to_peer" | quote }}
@@ -222,9 +222,9 @@ data:
       filter_private_ice_candidates: {{ .Values.config.webrtc.filterPrivateIceCandidates }}
 
     connection_limits:
-      max_per_user: {{ $connectionLimits.maxPerUser | default 5 }}
-      max_per_room: {{ $connectionLimits.maxPerRoom | default 200 }}
-      max_total: {{ $connectionLimits.maxTotal | default 10000 }}
+      max_per_user: {{ $connectionLimits.maxPerUser | default 20 }}
+      max_per_room: {{ $connectionLimits.maxPerRoom | default 2000 }}
+      max_total: {{ $connectionLimits.maxTotal | default 100000 }}
       idle_timeout_seconds: {{ $connectionLimits.idleTimeoutSeconds | default 300 }}
       max_duration_seconds: {{ $connectionLimits.maxDurationSeconds | default 86400 }}
       ws_message_rate_limit_per_second: {{ $connectionLimits.wsMessageRateLimitPerSecond | default 50 }}
@@ -263,6 +263,8 @@ data:
       admin_window_seconds: {{ $grpcRateLimits.adminWindowSeconds | default 60 }}
       read_max_requests: {{ $grpcRateLimits.readMaxRequests | default 100 }}
       read_window_seconds: {{ $grpcRateLimits.readWindowSeconds | default 60 }}
+      websocket_max_requests: {{ $grpcRateLimits.websocketMaxRequests | default 10 }}
+      websocket_window_seconds: {{ $grpcRateLimits.websocketWindowSeconds | default 60 }}
 
     password_complexity:
       min_length: {{ $passwordComplexity.minLength | default 8 }}

@@ -255,9 +255,6 @@ impl SyncTvRtmpAuth {
         &self,
         app_name: &str,
     ) -> Result<RoomId, Box<dyn std::error::Error + Send + Sync>> {
-        if let Ok(room_id) = app_name.parse::<RoomId>() {
-            return Ok(room_id);
-        }
         self.public_id_codec
             .decode_room_id(app_name)
             .map_err(|error| format!("Invalid RTMP room id: {error}").into())
@@ -267,9 +264,6 @@ impl SyncTvRtmpAuth {
         &self,
         stream_name: &str,
     ) -> Result<MediaId, Box<dyn std::error::Error + Send + Sync>> {
-        if let Ok(media_id) = stream_name.parse::<MediaId>() {
-            return Ok(media_id);
-        }
         self.public_id_codec
             .decode_media_id(stream_name)
             .map_err(|error| format!("Invalid RTMP media id: {error}").into())
@@ -1198,6 +1192,22 @@ mod tests {
             stream_name, "media_123",
             "query token mode must still reserve stream_name for media binding"
         );
+    }
+
+    #[tokio::test]
+    async fn test_rtmp_ids_require_public_id_prefixes() {
+        let auth = make_test_auth_with_registry(local_stream_registry());
+
+        assert_eq!(
+            auth.decode_rtmp_room_id("room_42").unwrap(),
+            RoomId::expect_positive(42)
+        );
+        assert_eq!(
+            auth.decode_rtmp_media_id("med_99").unwrap(),
+            MediaId::expect_positive(99)
+        );
+        assert!(auth.decode_rtmp_room_id("42").is_err());
+        assert!(auth.decode_rtmp_media_id("99").is_err());
     }
 
     #[tokio::test]

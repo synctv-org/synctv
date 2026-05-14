@@ -68,7 +68,7 @@ use crate::proto::client::{
 const MESSAGE_STREAM_BUFFER_SIZE: usize = 100;
 
 use super::map_api_error;
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 
 #[derive(Debug)]
 enum GrpcReceiveOutcome<T, E> {
@@ -92,17 +92,37 @@ where
 #[allow(clippy::result_large_err)]
 fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
     error.log_if_internal("grpc_message_stream_pre_join");
-    map_api_error(crate::impls::ApiError::from(error))
+    map_api_error(ApiError::from(error))
+}
+
+#[allow(clippy::result_large_err)]
+fn invalid_argument_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::InvalidInput(message.into()))
+}
+
+#[allow(clippy::result_large_err)]
+fn unauthenticated_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::Authentication(message.into()))
+}
+
+#[allow(clippy::result_large_err)]
+fn permission_denied_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::Authorization(message.into()))
+}
+
+#[allow(clippy::result_large_err)]
+fn unavailable_status(message: impl Into<String>) -> Status {
+    map_api_error(ApiError::ServiceUnavailable(message.into()))
 }
 
 #[allow(clippy::result_large_err)]
 fn validate_realtime_room_access(room: &Room) -> Result<(), Status> {
     if room.is_banned {
-        return Err(Status::permission_denied("This room has been banned"));
+        return Err(permission_denied_status("This room has been banned"));
     }
 
     if room.status.is_closed() {
-        return Err(Status::permission_denied(
+        return Err(permission_denied_status(
             "This room is closed and not accepting new connections",
         ));
     }
@@ -112,12 +132,7 @@ fn validate_realtime_room_access(room: &Room) -> Result<(), Status> {
 
 #[allow(clippy::result_large_err)]
 fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
-    match crate::impls::ClientApiImpl::map_room_access_error(err) {
-        crate::impls::ApiError::Authorization(message) => Status::permission_denied(message),
-        crate::impls::ApiError::NotFound(message) => Status::not_found(message),
-        crate::impls::ApiError::ServiceUnavailable(message) => Status::unavailable(message),
-        other => map_api_error(other),
-    }
+    map_api_error(crate::impls::ClientApiImpl::map_room_access_error(err))
 }
 
 #[allow(clippy::result_large_err)]
@@ -127,15 +142,12 @@ fn map_email_flow_error(err: crate::impls::ApiError) -> Status {
 
 #[allow(clippy::result_large_err)]
 fn map_message_stream_user_lookup_error(err: synctv_core::Error) -> Status {
-    map_api_error(crate::impls::ApiError::from(err))
+    map_api_error(ApiError::from(err))
 }
 
 #[allow(clippy::result_large_err)]
 fn map_message_stream_room_lookup_error(err: synctv_core::Error) -> Status {
-    match crate::impls::ApiError::from(err) {
-        crate::impls::ApiError::NotFound(message) => Status::not_found(message),
-        other => map_api_error(other),
-    }
+    map_api_error(ApiError::from(err))
 }
 
 /// Configuration for `ClientService`
@@ -260,14 +272,14 @@ impl ClientServiceImpl {
         let room_id = request
             .metadata()
             .get("x-room-id")
-            .ok_or_else(|| Status::invalid_argument("Missing x-room-id header"))?
+            .ok_or_else(|| invalid_argument_status("Missing x-room-id header"))?
             .to_str()
-            .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?;
+            .map_err(|_| invalid_argument_status("Invalid x-room-id header"))?;
 
         self.client_api
             .public_id_codec
             .decode_room_id(room_id)
-            .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))?;
+            .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
 
         Ok(room_id.to_string())
     }
@@ -281,7 +293,7 @@ impl ClientServiceImpl {
         self.client_api
             .public_id_codec
             .decode_room_id(&room_id)
-            .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))
+            .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))
     }
 
     #[allow(clippy::result_large_err)]
@@ -313,7 +325,7 @@ impl ClientServiceImpl {
             return Ok(None);
         };
         let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(authorization)
-            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?;
+            .map_err(|_| unauthenticated_status("Invalid authorization header"))?;
         if synctv_core::service::JwtService::token_type_hint(&token)
             == Some(synctv_core::service::TokenType::Guest)
         {
@@ -337,44 +349,16 @@ impl ClientServiceImpl {
             + 'static,
         Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'static,
     {
-        let token = metadata
-            .authorization
-            .as_deref()
-            .map(synctv_core::service::auth::JwtValidator::extract_bearer_token)
-            .transpose()
-            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-        let is_guest_token = synctv_core::service::JwtService::token_type_hint(&token)
-            == Some(synctv_core::service::TokenType::Guest);
-        let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
-        if is_guest_token {
-            executor
-                .execute_public_endpoint(&metadata, category, move || {
-                    let client_api = client_api.clone();
-                    async move {
-                        let access = client_api
-                            .validate_guest_room_access(&token, &public_room_id)
-                            .await?;
-                        operation(client_api, crate::impls::client::RoomActor::Guest(access)).await
-                    }
-                })
-                .await
-                .map_err(map_api_error)
-        } else {
-            executor
-                .execute_user_endpoint(&metadata, category, move |authenticated| {
-                    let client_api = client_api.clone();
-                    async move {
-                        let actor = client_api
-                            .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                            .await?;
-                        operation(client_api, actor).await
-                    }
-                })
-                .await
-                .map_err(map_api_error)
-        }
+        crate::impls::ClientApiImpl::execute_room_actor_endpoint(
+            client_api,
+            &metadata,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(map_api_error)
     }
 
     async fn execute_room_actor_endpoint_with_control<T, F, Fut>(
@@ -395,53 +379,16 @@ impl ClientServiceImpl {
             + 'static,
         Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'static,
     {
-        let token = metadata
-            .authorization
-            .as_deref()
-            .map(synctv_core::service::auth::JwtValidator::extract_bearer_token)
-            .transpose()
-            .map_err(|_| Status::unauthenticated("Invalid authorization header"))?
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-        let is_guest_token = synctv_core::service::JwtService::token_type_hint(&token)
-            == Some(synctv_core::service::TokenType::Guest);
-        let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
-        if is_guest_token {
-            executor
-                .execute_public_endpoint_with_control(&metadata, category, move |request_control| {
-                    let client_api = client_api.clone();
-                    async move {
-                        let access = client_api
-                            .validate_guest_room_access(&token, &public_room_id)
-                            .await?;
-                        operation(
-                            client_api,
-                            request_control,
-                            crate::impls::client::RoomActor::Guest(access),
-                        )
-                        .await
-                    }
-                })
-                .await
-                .map_err(map_api_error)
-        } else {
-            executor
-                .execute_user_endpoint_with_control(
-                    &metadata,
-                    category,
-                    move |request_control, authenticated| {
-                        let client_api = client_api.clone();
-                        async move {
-                            let actor = client_api
-                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                                .await?;
-                            operation(client_api, request_control, actor).await
-                        }
-                    },
-                )
-                .await
-                .map_err(map_api_error)
-        }
+        crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+            client_api,
+            &metadata,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(map_api_error)
     }
 }
 
@@ -1692,13 +1639,13 @@ impl RoomService for ClientServiceImpl {
                 .client_api
                 .public_id_codec
                 .encode_room_id(room_id)
-                .map_err(|error| Status::invalid_argument(format!("Invalid room_id: {error}")))?;
+                .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
             let client_api = self.client_api.clone();
             Some(
                 executor
                     .execute_public_endpoint(
                         &metadata,
-                        EndpointRateLimitCategory::Streaming,
+                        EndpointRateLimitCategory::WebSocket,
                         move || async move {
                             let access = client_api
                                 .validate_guest_room_access(&guest_token, &public_room_id)
@@ -1732,7 +1679,7 @@ impl RoomService for ClientServiceImpl {
             let user_id = executor
                 .execute_user_endpoint(
                     &metadata,
-                    EndpointRateLimitCategory::Streaming,
+                    EndpointRateLimitCategory::WebSocket,
                     move |authenticated| async move {
                         Ok::<_, crate::impls::ApiError>(authenticated.user_id)
                     },
@@ -1780,7 +1727,7 @@ impl RoomService for ClientServiceImpl {
         // RealtimeManager is required for real-time messaging; in single-node mode
         // without Redis, streaming is not supported.
         let event_service = self.event_service.clone().ok_or_else(|| {
-            Status::unavailable(
+            unavailable_status(
                 "Real-time messaging requires realtime manager (Redis not configured)",
             )
         })?;
@@ -2556,6 +2503,13 @@ mod tests {
     use super::*;
     use synctv_core::models::UserId;
 
+    fn metadata_error_code(status: &Status) -> Option<&str> {
+        status
+            .metadata()
+            .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+    }
+
     #[test]
     fn test_map_api_error_not_found() {
         let err = crate::impls::ApiError::NotFound("room not found".to_string());
@@ -2666,6 +2620,7 @@ mod tests {
         ));
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert_eq!(status.message(), "user backend unavailable");
+        assert_eq!(metadata_error_code(&status), Some("9002"));
     }
 
     #[test]
@@ -2675,6 +2630,28 @@ mod tests {
         ));
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert_eq!(status.message(), "Room not found");
+        assert_eq!(metadata_error_code(&status), Some("2000"));
+    }
+
+    #[test]
+    fn test_message_stream_direct_admission_errors_include_application_code() {
+        let invalid = invalid_argument_status("Missing x-room-id header");
+        assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+        assert_eq!(metadata_error_code(&invalid), Some("3000"));
+
+        let unauthenticated = unauthenticated_status("Invalid authorization header");
+        assert_eq!(unauthenticated.code(), tonic::Code::Unauthenticated);
+        assert_eq!(metadata_error_code(&unauthenticated), Some("1000"));
+
+        let denied = permission_denied_status("This room has been banned");
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        assert_eq!(metadata_error_code(&denied), Some("4000"));
+
+        let unavailable = unavailable_status(
+            "Real-time messaging requires realtime manager (Redis not configured)",
+        );
+        assert_eq!(unavailable.code(), tonic::Code::Unavailable);
+        assert_eq!(metadata_error_code(&unavailable), Some("9002"));
     }
 
     #[test]

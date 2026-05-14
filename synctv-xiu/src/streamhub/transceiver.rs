@@ -45,9 +45,7 @@ pub(crate) struct PacketSubscriberDropCounter {
 /// How often to log per-subscriber drop warnings (every N drops).
 const DROP_LOG_INTERVAL: u64 = 100;
 
-async fn request_synthetic_unpublish(
-    event_sender: Option<&mpsc::UnboundedSender<TransceiverEvent>>,
-) {
+fn request_synthetic_unpublish(event_sender: Option<&mpsc::UnboundedSender<TransceiverEvent>>) {
     let Some(sender) = event_sender else {
         return;
     };
@@ -207,7 +205,7 @@ impl StreamDataTransceiver {
                     data = receiver.recv() => {
                         if data.is_none() {
                             tracing::warn!("Frame data receiver closed (publisher dropped)");
-                            request_synthetic_unpublish(event_sender.as_ref()).await;
+                            request_synthetic_unpublish(event_sender.as_ref());
                             break;
                         }
                         Self::receive_frame_data(
@@ -288,7 +286,7 @@ impl StreamDataTransceiver {
                     data = receiver.recv() => {
                         if data.is_none() {
                             tracing::warn!("Packet data receiver closed (publisher dropped)");
-                            request_synthetic_unpublish(event_sender.as_ref()).await;
+                            request_synthetic_unpublish(event_sender.as_ref());
                             break;
                         }
                         Self::receive_packet_data(

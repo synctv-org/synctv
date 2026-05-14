@@ -1193,14 +1193,7 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ClusterState> {
         // Connection manager
-        let connection_limits = ConnectionLimits {
-            max_per_user: infra.config.connection_limits.max_per_user,
-            max_per_room: infra.config.connection_limits.max_per_room,
-            max_total: infra.config.connection_limits.max_total,
-            idle_timeout: Duration::from_secs(infra.config.connection_limits.idle_timeout_seconds),
-            max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
-            webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
-        };
+        let connection_limits = ConnectionLimits::from(&infra.config.connection_limits);
         let realtime_connection_service = build_connection_manager(
             connection_limits,
             &runtime_plan.realtime_shared_state_profile,

@@ -21,8 +21,8 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
 
         // Resolve external address with auto-detection fallback chain:
         // 1. Explicit config (stun_external_addr)
-        // 2. advertise_host config / POD_IP
-        // 3. Cloud metadata (AWS/GCP/Azure)
+        // 2. advertise_host config
+        // 3. STUN_EXTERNAL_IP / cloud metadata (AWS/GCP/Azure)
         let external_addr = if config.webrtc.stun_external_addr.is_empty() {
             let advertise = config.advertise_host();
             // Check if advertise_host resolved to something usable
@@ -38,7 +38,8 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
                     error!(
                         "Could not resolve a routable external IP for STUN server. \
                          advertise_host '{}' is not routable and cloud metadata detection failed. \
-                         Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR or STUN_EXTERNAL_IP to a public IP. \
+                         Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public ip:port or DNS name:port, \
+                         or set STUN_EXTERNAL_IP to a public IP. \
                          Built-in STUN server will NOT start.",
                         advertise
                     );

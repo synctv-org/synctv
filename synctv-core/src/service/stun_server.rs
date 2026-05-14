@@ -49,11 +49,6 @@ pub async fn resolve_external_ip() -> Option<IpAddr> {
         return Some(ip);
     }
 
-    if let Some(ip) = ip_from_env("POD_IP") {
-        tracing::info!(ip = %ip, "Resolved external IP from POD_IP env var");
-        return Some(ip);
-    }
-
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .connect_timeout(std::time::Duration::from_secs(1))
@@ -147,8 +142,9 @@ pub fn validate_external_addr(addr: &str) -> Result<(), String> {
     if is_unusable_external_ip(&sock.ip()) {
         return Err(format!(
             "STUN external address '{addr}' is not routable (unspecified, loopback, or private). \
-             Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public IP, or set STUN_EXTERNAL_IP / POD_IP env var. \
-             In Kubernetes, use the pod's host IP or a LoadBalancer IP."
+             Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public IP or DNS name, \
+             or set STUN_EXTERNAL_IP to a public IP. In Kubernetes, use a LoadBalancer IP, \
+             a node public IP, or a public DNS name; do not use a Pod IP or ClusterIP Service IP."
         ));
     }
 

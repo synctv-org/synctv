@@ -26,6 +26,7 @@ use super::transport::{
 };
 use crate::error::Result as RealtimeResult;
 use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
+use synctv_core::config::ClusterChannelConfig;
 use synctv_core::models::id::{RoomId, UserId};
 
 /// Realtime configuration
@@ -65,7 +66,7 @@ pub struct RealtimeConfig {
     pub catchup_window_secs: u64,
     /// Maximum number of entries per Redis Stream (approximate).
     /// Mirrors the deployment channel stream length setting.
-    /// Default: 10000
+    /// Default: 100000
     pub stream_max_length: usize,
     /// Optional application-owned handler for side effects caused by remote realtime events.
     ///
@@ -113,17 +114,18 @@ impl std::fmt::Debug for RealtimeConfig {
 
 impl Default for RealtimeConfig {
     fn default() -> Self {
+        let cluster_config = ClusterChannelConfig::default();
         Self {
             distributed_transport_factory: None,
             message_runtime: Arc::new(RoomMessageHub::new()),
             distributed_enabled: false,
             node_id: format!("node_{}", synctv_common::snanoid!(8)),
             dedup_window: Duration::from_mins(15),
-            critical_channel_capacity: 1000,
-            publish_channel_capacity: 10_000,
+            critical_channel_capacity: cluster_config.critical_channel_capacity,
+            publish_channel_capacity: cluster_config.publish_channel_capacity,
             key_prefix: "synctv:".to_string(),
-            catchup_window_secs: 300,
-            stream_max_length: 10_000,
+            catchup_window_secs: cluster_config.catchup_window_secs,
+            stream_max_length: cluster_config.stream_max_length,
             event_handler: None,
             parent_cancel_token: None,
         }
@@ -1147,6 +1149,7 @@ mod tests {
     use chrono::Utc;
     use std::sync::atomic::AtomicUsize;
     use synctv_cluster::NodeRegistry;
+    use synctv_core::config::ClusterChannelConfig;
     use tokio::sync::{broadcast, mpsc};
 
     struct NoopRealtimeEventHandler;
@@ -1290,6 +1293,23 @@ mod tests {
         fn background_shutdown_requested(&self) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn test_realtime_config_default_tracks_core_cluster_capacity() {
+        let core = ClusterChannelConfig::default();
+        let realtime = RealtimeConfig::default();
+
+        assert_eq!(
+            realtime.critical_channel_capacity,
+            core.critical_channel_capacity
+        );
+        assert_eq!(
+            realtime.publish_channel_capacity,
+            core.publish_channel_capacity
+        );
+        assert_eq!(realtime.catchup_window_secs, core.catchup_window_secs);
+        assert_eq!(realtime.stream_max_length, core.stream_max_length);
     }
 
     #[tokio::test]

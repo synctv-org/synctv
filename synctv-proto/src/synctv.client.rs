@@ -3357,7 +3357,7 @@ pub struct ErrorMessage {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
     /// Application-level error code for programmatic handling
-    #[prost(enumeration = "super::common::ErrorCode", tag = "2")]
+    #[prost(int32, tag = "2")]
     pub code: i32,
     /// Optional detailed/debug info (may be empty in production)
     #[prost(string, tag = "3")]

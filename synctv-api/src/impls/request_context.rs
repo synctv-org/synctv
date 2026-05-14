@@ -20,6 +20,16 @@ pub enum TransportProtocol {
     Grpc,
 }
 
+impl TransportProtocol {
+    #[must_use]
+    pub const fn key_segment(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Grpc => "grpc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointRateLimitCategory {
     Auth,
@@ -588,7 +598,7 @@ impl RequestExecutor {
             },
             |authenticated| format!("user:{}", authenticated.user_id),
         );
-        let key = format!("ratelimit:{}:{subject_key}", category.key_suffix());
+        let key = rate_limit_key(metadata.transport, category, &subject_key);
 
         self.rate_limiter
             .check_rate_limit_with_control(&key, max_requests, window_seconds, control)
@@ -601,57 +611,81 @@ impl RequestExecutor {
         transport: TransportProtocol,
         category: EndpointRateLimitCategory,
     ) -> (u32, u64) {
-        match transport {
-            TransportProtocol::Http => {
-                let config = &self.config.http_rate_limits;
-                match category {
-                    EndpointRateLimitCategory::Auth | EndpointRateLimitCategory::Email => {
-                        (config.auth_max_requests, config.auth_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Write => {
-                        (config.write_max_requests, config.write_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Read => {
-                        (config.read_max_requests, config.read_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Media => {
-                        (config.media_max_requests, config.media_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Admin => {
-                        (config.admin_max_requests, config.admin_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Streaming => (
-                        config.streaming_max_requests,
-                        config.streaming_window_seconds,
-                    ),
-                    EndpointRateLimitCategory::WebSocket => (
-                        config.websocket_max_requests,
-                        config.websocket_window_seconds,
-                    ),
+        rate_limit_budget_for_config(&self.config, transport, category)
+    }
+}
+
+fn rate_limit_key(
+    transport: TransportProtocol,
+    category: EndpointRateLimitCategory,
+    subject_key: &str,
+) -> String {
+    format!(
+        "ratelimit:{}:{}:{subject_key}",
+        transport.key_segment(),
+        category.key_suffix()
+    )
+}
+
+fn rate_limit_budget_for_config(
+    config: &Config,
+    transport: TransportProtocol,
+    category: EndpointRateLimitCategory,
+) -> (u32, u64) {
+    match transport {
+        TransportProtocol::Http => {
+            let config = &config.http_rate_limits;
+            match category {
+                EndpointRateLimitCategory::Auth | EndpointRateLimitCategory::Email => {
+                    (config.auth_max_requests, config.auth_window_seconds)
                 }
+                EndpointRateLimitCategory::Write => {
+                    (config.write_max_requests, config.write_window_seconds)
+                }
+                EndpointRateLimitCategory::Read => {
+                    (config.read_max_requests, config.read_window_seconds)
+                }
+                EndpointRateLimitCategory::Media => {
+                    (config.media_max_requests, config.media_window_seconds)
+                }
+                EndpointRateLimitCategory::Admin => {
+                    (config.admin_max_requests, config.admin_window_seconds)
+                }
+                EndpointRateLimitCategory::Streaming => (
+                    config.streaming_max_requests,
+                    config.streaming_window_seconds,
+                ),
+                EndpointRateLimitCategory::WebSocket => (
+                    config.websocket_max_requests,
+                    config.websocket_window_seconds,
+                ),
             }
-            TransportProtocol::Grpc => {
-                let config = &self.config.grpc_rate_limits;
-                match category {
-                    EndpointRateLimitCategory::Auth => {
-                        (config.auth_max_requests, config.auth_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Email => {
-                        (config.email_max_requests, config.email_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Write | EndpointRateLimitCategory::WebSocket => {
-                        (config.write_max_requests, config.write_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Read | EndpointRateLimitCategory::Streaming => {
-                        (config.read_max_requests, config.read_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Media => {
-                        (config.media_max_requests, config.media_window_seconds)
-                    }
-                    EndpointRateLimitCategory::Admin => {
-                        (config.admin_max_requests, config.admin_window_seconds)
-                    }
+        }
+        TransportProtocol::Grpc => {
+            let config = &config.grpc_rate_limits;
+            match category {
+                EndpointRateLimitCategory::Auth => {
+                    (config.auth_max_requests, config.auth_window_seconds)
                 }
+                EndpointRateLimitCategory::Email => {
+                    (config.email_max_requests, config.email_window_seconds)
+                }
+                EndpointRateLimitCategory::Write => {
+                    (config.write_max_requests, config.write_window_seconds)
+                }
+                EndpointRateLimitCategory::Read | EndpointRateLimitCategory::Streaming => {
+                    (config.read_max_requests, config.read_window_seconds)
+                }
+                EndpointRateLimitCategory::Media => {
+                    (config.media_max_requests, config.media_window_seconds)
+                }
+                EndpointRateLimitCategory::Admin => {
+                    (config.admin_max_requests, config.admin_window_seconds)
+                }
+                EndpointRateLimitCategory::WebSocket => (
+                    config.websocket_max_requests,
+                    config.websocket_window_seconds,
+                ),
             }
         }
     }
@@ -726,5 +760,59 @@ mod tests {
             .check_active()
             .expect_err("cancelled context must fail at the next checkpoint");
         assert!(matches!(err, ApiError::Timeout(message) if message == "Request cancelled"));
+    }
+
+    #[test]
+    fn grpc_websocket_rate_limit_uses_message_stream_budget() {
+        let mut config = Config::default();
+        config.grpc_rate_limits.write_max_requests = 30;
+        config.grpc_rate_limits.write_window_seconds = 31;
+        config.grpc_rate_limits.read_max_requests = 100;
+        config.grpc_rate_limits.read_window_seconds = 101;
+        config.grpc_rate_limits.websocket_max_requests = 7;
+        config.grpc_rate_limits.websocket_window_seconds = 8;
+
+        assert_eq!(
+            rate_limit_budget_for_config(
+                &config,
+                TransportProtocol::Grpc,
+                EndpointRateLimitCategory::WebSocket
+            ),
+            (7, 8)
+        );
+        assert_eq!(
+            rate_limit_budget_for_config(
+                &config,
+                TransportProtocol::Grpc,
+                EndpointRateLimitCategory::Streaming
+            ),
+            (100, 101)
+        );
+        assert_eq!(
+            rate_limit_budget_for_config(
+                &config,
+                TransportProtocol::Grpc,
+                EndpointRateLimitCategory::Write
+            ),
+            (30, 31)
+        );
+    }
+
+    #[test]
+    fn rate_limit_keys_include_transport_segment() {
+        let http_key = rate_limit_key(
+            TransportProtocol::Http,
+            EndpointRateLimitCategory::Read,
+            "user:42",
+        );
+        let grpc_key = rate_limit_key(
+            TransportProtocol::Grpc,
+            EndpointRateLimitCategory::Read,
+            "user:42",
+        );
+
+        assert_eq!(http_key, "ratelimit:http:read:user:42");
+        assert_eq!(grpc_key, "ratelimit:grpc:read:user:42");
+        assert_ne!(http_key, grpc_key);
     }
 }

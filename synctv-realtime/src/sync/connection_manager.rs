@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synctv_core::{
+    config::ConnectionLimitsConfig,
     models::id::{RoomId, UserId},
     RedisConnectionRuntime,
 };
@@ -315,12 +316,24 @@ pub struct ConnectionLimits {
 
 impl Default for ConnectionLimits {
     fn default() -> Self {
+        Self::from(ConnectionLimitsConfig::default())
+    }
+}
+
+impl From<ConnectionLimitsConfig> for ConnectionLimits {
+    fn from(config: ConnectionLimitsConfig) -> Self {
+        Self::from(&config)
+    }
+}
+
+impl From<&ConnectionLimitsConfig> for ConnectionLimits {
+    fn from(config: &ConnectionLimitsConfig) -> Self {
         Self {
-            max_per_user: 5,
-            max_per_room: 200,
-            max_total: 10000,
-            idle_timeout: Duration::from_mins(5),   // 5 minutes
-            max_duration: Duration::from_hours(24), // 24 hours
+            max_per_user: config.max_per_user,
+            max_per_room: config.max_per_room,
+            max_total: config.max_total,
+            idle_timeout: Duration::from_secs(config.idle_timeout_seconds),
+            max_duration: Duration::from_secs(config.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours
         }
     }
@@ -4202,6 +4215,7 @@ impl ShutdownReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::config::ConnectionLimitsConfig;
     use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
     impl ConnectionManager {
@@ -4248,6 +4262,24 @@ mod tests {
                 .lock()
                 .expect("ttl refresh handle mutex poisoned") = Some(handle);
         }
+    }
+
+    #[test]
+    fn test_connection_limits_default_tracks_core_config() {
+        let core = ConnectionLimitsConfig::default();
+        let realtime = ConnectionLimits::default();
+
+        assert_eq!(realtime.max_per_user, core.max_per_user);
+        assert_eq!(realtime.max_per_room, core.max_per_room);
+        assert_eq!(realtime.max_total, core.max_total);
+        assert_eq!(
+            realtime.idle_timeout,
+            Duration::from_secs(core.idle_timeout_seconds)
+        );
+        assert_eq!(
+            realtime.max_duration,
+            Duration::from_secs(core.max_duration_seconds)
+        );
     }
 
     #[tokio::test]

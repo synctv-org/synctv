@@ -808,6 +808,52 @@ mod tests {
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("password"));
         assert!(!status.message().contains("database"));
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("9000")
+        );
+    }
+
+    #[test]
+    fn test_api_err_metadata_includes_application_error_code() {
+        let err = crate::impls::ApiError::NotFound("user not found".to_string());
+        let status = map_api_error(err);
+
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("2000")
+        );
+    }
+
+    #[test]
+    fn test_rate_limited_error_includes_retry_after_metadata() {
+        let err = crate::impls::ApiError::RateLimitedWithRetry {
+            message: "Rate limit exceeded. Try again in 7s".to_string(),
+            retry_after_seconds: 7,
+        };
+        let status = map_api_error(err);
+
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("2002")
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::grpc_support::RETRY_AFTER_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
     }
 
     #[test]

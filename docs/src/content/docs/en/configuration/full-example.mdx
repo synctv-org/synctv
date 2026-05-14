@@ -295,9 +295,9 @@ webrtc:
   filter_private_ice_candidates: true
 
 connection_limits:
-  max_per_user: 5
-  max_per_room: 200
-  max_total: 10000
+  max_per_user: 20
+  max_per_room: 2000
+  max_total: 100000
   idle_timeout_seconds: 300
   max_duration_seconds: 86400
   ws_message_rate_limit_per_second: 50
@@ -313,13 +313,13 @@ cluster:
   enabled: false
   secret: ""
   secret_file: ""
-  critical_channel_capacity: 1000
-  publish_channel_capacity: 10000
+  critical_channel_capacity: 10000
+  publish_channel_capacity: 100000
   discovery_mode: "redis"
   leader_election_mode: "redis"
   peers: []
   catchup_window_secs: 300
-  stream_max_length: 10000
+  stream_max_length: 100000
 
 password_complexity:
   min_length: 8
@@ -336,12 +336,12 @@ buffer_sizes:
   audit_buffer: 10000
 
 cache:
-  l1_capacity: 500
+  l1_capacity: 5000
   l1_ttl_seconds: 300
   l2_ttl_seconds: 300
-  username_cache_capacity: 1000
+  username_cache_capacity: 10000
   username_cache_ttl_seconds: 3600
-  permission_cache_capacity: 1000
+  permission_cache_capacity: 20000
   permission_cache_ttl_seconds: 300
 
 proxy_slice_cache:
@@ -390,6 +390,8 @@ grpc_rate_limits:
   admin_window_seconds: 60
   read_max_requests: 100
   read_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
 ```
 
   </TabItem>

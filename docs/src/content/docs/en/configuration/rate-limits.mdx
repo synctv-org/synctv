@@ -11,9 +11,9 @@ These fields control long-lived and WebSocket-style connections.
 
 | Field | Default | Purpose |
 | --- | --- | --- |
-| `connection_limits.max_per_user` | `5` | Maximum concurrent connections per user |
-| `connection_limits.max_per_room` | `200` | Maximum concurrent connections per room |
-| `connection_limits.max_total` | `10000` | Maximum concurrent connections globally |
+| `connection_limits.max_per_user` | `20` | Maximum concurrent connections per user |
+| `connection_limits.max_per_room` | `2000` | Maximum concurrent connections per room |
+| `connection_limits.max_total` | `100000` | Maximum concurrent connections globally |
 | `connection_limits.idle_timeout_seconds` | `300` | Disconnect idle connections |
 | `connection_limits.max_duration_seconds` | `86400` | Maximum connection lifetime |
 | `connection_limits.ws_message_rate_limit_per_second` | `50` | Per-connection WebSocket message rate |
@@ -92,6 +92,8 @@ grpc_rate_limits:
   admin_window_seconds: 60
   read_max_requests: 100
   read_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
 ```
 
 | Category | Purpose |
@@ -102,6 +104,7 @@ grpc_rate_limits:
 | `write` | CreateRoom, UpdateRoom, JoinRoom, SendChat |
 | `admin` | Administrative RPCs |
 | `read` | GetRoom, ListRooms, GetUser, GetPlaylist |
+| `websocket` | MessageStream connection attempts |
 
 Email limits should stay strict because email endpoints can create real delivery cost and are easy to abuse.
 

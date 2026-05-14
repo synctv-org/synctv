@@ -322,22 +322,37 @@ impl ClientApiImpl {
         })
     }
 
-    pub async fn room_actor_for_authorization(
+    fn bearer_token_from_authorization(authorization: &str) -> Result<String, ApiError> {
+        JwtValidator::extract_bearer_token(authorization).map_err(|_| {
+            ApiError::Authentication(
+                synctv_common::messages::INVALID_AUTHORIZATION_HEADER.to_string(),
+            )
+        })
+    }
+
+    fn required_authorization(metadata: &RequestMetadata) -> Result<&str, ApiError> {
+        metadata.authorization.as_deref().ok_or_else(|| {
+            ApiError::Authentication(synctv_common::messages::AUTHENTICATION_REQUIRED.to_string())
+        })
+    }
+
+    fn is_guest_token(token: &str) -> bool {
+        synctv_core::service::JwtService::token_type_hint(token) == Some(TokenType::Guest)
+    }
+
+    async fn room_actor_for_bearer_token(
         &self,
-        authorization: &str,
+        token: &str,
         public_room_id: &str,
     ) -> Result<RoomActor, ApiError> {
-        let token = JwtValidator::extract_bearer_token(authorization).map_err(|_| {
-            ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
-        })?;
-        if synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest) {
+        if Self::is_guest_token(token) {
             return self
-                .validate_guest_room_access(&token, public_room_id)
+                .validate_guest_room_access(token, public_room_id)
                 .await
                 .map(RoomActor::Guest);
         }
 
-        let claims = self.jwt_validator.validate_token(&token).map_err(|_| {
+        let claims = self.jwt_validator.validate_token(token).map_err(|_| {
             ApiError::Authentication(synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string())
         })?;
         let authenticated = self
@@ -345,6 +360,16 @@ impl ClientApiImpl {
             .security_check_claims(&claims)
             .await?;
         self.room_actor_for_user(&authenticated.user_id, public_room_id)
+            .await
+    }
+
+    pub async fn room_actor_for_authorization(
+        &self,
+        authorization: &str,
+        public_room_id: &str,
+    ) -> Result<RoomActor, ApiError> {
+        let token = Self::bearer_token_from_authorization(authorization)?;
+        self.room_actor_for_bearer_token(&token, public_room_id)
             .await
     }
 
@@ -946,5 +971,113 @@ impl ClientApiImpl {
             ),
             Err(err) => Box::pin(async move { Err(err) }),
         }
+    }
+
+    pub fn execute_room_actor_endpoint<'a, T, E, F, Fut>(
+        client_api: Arc<Self>,
+        metadata: &'a RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(Arc<Self>, RoomActor) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        Box::pin(async move {
+            let authorization = Self::required_authorization(metadata)?;
+            let token = Self::bearer_token_from_authorization(authorization)?;
+
+            if Self::is_guest_token(&token) {
+                let executor = client_api.clone();
+                executor
+                    .execute_public_endpoint(metadata, category, move || {
+                        let client_api = client_api.clone();
+                        async move {
+                            let access = client_api
+                                .validate_guest_room_access(&token, &public_room_id)
+                                .await?;
+                            operation(client_api, RoomActor::Guest(access))
+                                .await
+                                .map_err(Into::into)
+                        }
+                    })
+                    .await
+            } else {
+                let executor = client_api.clone();
+                executor
+                    .execute_user_endpoint(metadata, category, move |authenticated| {
+                        let client_api = client_api.clone();
+                        async move {
+                            let actor = client_api
+                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                                .await?;
+                            operation(client_api, actor).await.map_err(Into::into)
+                        }
+                    })
+                    .await
+            }
+        })
+    }
+
+    pub fn execute_room_actor_endpoint_with_control<'a, T, E, F, Fut>(
+        client_api: Arc<Self>,
+        metadata: &'a RequestMetadata,
+        public_room_id: String,
+        category: EndpointRateLimitCategory,
+        operation: F,
+    ) -> BoxFuture<'a, Result<T, ApiError>>
+    where
+        T: Send + 'a,
+        E: Into<ApiError> + Send + 'a,
+        F: FnOnce(Arc<Self>, synctv_core::provider::ExecutionControl, RoomActor) -> Fut + Send + 'a,
+        Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
+    {
+        Box::pin(async move {
+            let authorization = Self::required_authorization(metadata)?;
+            let token = Self::bearer_token_from_authorization(authorization)?;
+
+            if Self::is_guest_token(&token) {
+                let executor = client_api.clone();
+                executor
+                    .execute_public_endpoint_with_control(
+                        metadata,
+                        category,
+                        move |request_control| {
+                            let client_api = client_api.clone();
+                            async move {
+                                let access = client_api
+                                    .validate_guest_room_access(&token, &public_room_id)
+                                    .await?;
+                                operation(client_api, request_control, RoomActor::Guest(access))
+                                    .await
+                                    .map_err(Into::into)
+                            }
+                        },
+                    )
+                    .await
+            } else {
+                let executor = client_api.clone();
+                executor
+                    .execute_user_endpoint_with_control(
+                        metadata,
+                        category,
+                        move |request_control, authenticated| {
+                            let client_api = client_api.clone();
+                            async move {
+                                let actor = client_api
+                                    .room_actor_for_user(&authenticated.user_id, &public_room_id)
+                                    .await?;
+                                operation(client_api, request_control, actor)
+                                    .await
+                                    .map_err(Into::into)
+                            }
+                        },
+                    )
+                    .await
+            }
+        })
     }
 }

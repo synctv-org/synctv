@@ -288,12 +288,12 @@ logging:
 
 cache:
   # Business L1/L2 cache capacities and TTLs.
-  l1_capacity: 500
+  l1_capacity: 5000
   l1_ttl_seconds: 300
   l2_ttl_seconds: 300
-  username_cache_capacity: 1000
+  username_cache_capacity: 10000
   username_cache_ttl_seconds: 3600
-  permission_cache_capacity: 1000
+  permission_cache_capacity: 20000
   permission_cache_ttl_seconds: 300
 
 proxy_slice_cache:
@@ -308,6 +308,10 @@ proxy_slice_cache:
 
 livestream:
   rtmp_port: 1935
+  # Public host returned in RTMP publish URLs. Set this in production to a
+  # client-reachable domain, LoadBalancer address, or node public IP.
+  # If empty, SyncTV uses only the local bind host fallback for local/single-node use.
+  # public_rtmp_host: "live.example.com"
   gop_cache_size: 2
   stream_timeout_seconds: 300
   # How often to check for idle streams (seconds)
@@ -394,11 +398,11 @@ password_complexity:
 
 connection_limits:
   # Maximum concurrent connections per user
-  max_per_user: 5
+  max_per_user: 20
   # Maximum concurrent connections per room
-  max_per_room: 200
+  max_per_room: 2000
   # Maximum total concurrent connections
-  max_total: 10000
+  max_total: 100000
   # Idle timeout in seconds (disconnect if no activity)
   idle_timeout_seconds: 300
   # Maximum connection duration in seconds (24 hours)
@@ -458,6 +462,8 @@ grpc_rate_limits:
   admin_window_seconds: 60
   read_max_requests: 100
   read_window_seconds: 60
+  websocket_max_requests: 10
+  websocket_window_seconds: 60
 
 # ============================================================================
 # Bootstrap Configuration
@@ -505,10 +511,10 @@ cluster:
   secret: ""
   # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
   # Critical events are never dropped; senders block when full.
-  critical_channel_capacity: 1000
+  critical_channel_capacity: 10000
   # Capacity for normal-priority Redis publish channel.
   # Normal events are dropped with a warning when full.
-  publish_channel_capacity: 10000
+  publish_channel_capacity: 100000
   # Discovery mode: "redis" (default), "static", or "k8s_dns" (requires
   # HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars).
   #
@@ -544,9 +550,9 @@ cluster:
   # Controls how many events are retained in each per-room stream for catch-up
   # after reconnection. In high-throughput scenarios, increase this to avoid
   # trimming events that disconnected nodes still need to catch up on.
-  # Default: 10000
+  # Default: 100000
   # Environment variable: SYNCTV_CLUSTER_STREAM_MAX_LENGTH
-  stream_max_length: 10000
+  stream_max_length: 100000
 
 # ============================================================================
 # Media Providers Configuration
@@ -625,9 +631,12 @@ webrtc:
   enable_builtin_stun: true
   stun_port: 3478
   stun_host: "0.0.0.0"
-  # External address for STUN reflexive candidates. In K8s/NAT, set to
-  # the pod IP or service IP (e.g., via SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR).
-  # If empty, falls back to advertise_host:stun_port.
+  # External address for STUN reflexive candidates. In K8s/NAT, set this to
+  # a client-reachable public IP:port or DNS name:port, such as a LoadBalancer
+  # IP, node public IP, or stun.example.com:3478. Do not use a Pod IP or
+  # ClusterIP Service IP; those are rejected as non-routable for public STUN.
+  # If empty, SyncTV tries advertise_host, STUN_EXTERNAL_IP, and cloud metadata;
+  # the built-in STUN server is skipped when no public address is found.
   # stun_external_addr: ""
   # Filter private/internal ICE candidates before sending them to clients.
   filter_private_ice_candidates: true

@@ -730,7 +730,7 @@ impl RoomService {
             ",
         )
         .bind(owner_id.as_i64())
-        .bind(excluding_room_id.map(|id| id.as_i64()))
+        .bind(excluding_room_id.map(RoomId::as_i64))
         .fetch_one(&mut **tx)
         .await?;
 

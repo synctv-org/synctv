@@ -60,9 +60,9 @@ Container and server deployments usually keep this default.
 
 Address advertised to clients for the STUN server.
 
-If empty, SyncTV tries `server.advertise_host:stun_port`.
+If empty, SyncTV tries `server.advertise_host:stun_port`, `STUN_EXTERNAL_IP`, and cloud metadata. The built-in STUN server starts only when a public routable address is found; otherwise SyncTV skips built-in STUN.
 
-Set it explicitly in NAT or Kubernetes environments:
+Set it explicitly in NAT or Kubernetes environments to a client-reachable public `ip:port` or DNS name, such as a LoadBalancer IP, node public IP, or STUN hostname. Do not use a Pod IP or ClusterIP Service IP.
 
 ```yaml
 webrtc:
@@ -113,7 +113,7 @@ If WebRTC connectivity fails, check:
 
 1. Clients can reach the SyncTV HTTP/gRPC API.
 2. UDP 3478 is reachable when built-in STUN is enabled.
-3. `stun_external_addr` is reachable by clients.
+3. `stun_external_addr` is reachable by clients and is not a Pod IP, ClusterIP, loopback, or private address unless you disable built-in STUN and rely on external ICE/TURN.
 4. Reverse proxies only handle HTTP and do not automatically expose UDP.
 5. TURN is configured for strict NAT environments.
 6. `filter_private_ice_candidates` matches your network model.

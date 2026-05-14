@@ -119,7 +119,7 @@ rtmp://your-domain:1935/live/<stream-key>
 
 作用：返回给推流客户端的公开 RTMP 主机名。
 
-什么时候需要设置：
+生产环境通常需要显式设置，尤其是：
 
 - 集群内部 `server.advertise_host` 是 Pod IP。
 - 真实用户需要通过公网域名或 LoadBalancer 推流。
@@ -131,7 +131,7 @@ livestream:
   public_rtmp_host: "live.example.com"
 ```
 
-如果为空，SyncTV 会尝试使用 `server.advertise_host`。
+如果为空，SyncTV 只会回退到本机绑定地址，适合本地开发或单机内网测试；不会使用 Pod IP 或集群内部 `server.advertise_host` 作为公开推流地址。
 
 ## `livestream.gop_cache_size`
 

@@ -12,7 +12,7 @@ use super::access::ProviderAccessService;
 use super::error::ProviderError;
 use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::ExecutionControl;
-use crate::models::{MediaId, RoomId, TypedId, UserId};
+use crate::models::{MediaId, RoomId, UserId};
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use crate::service::{CredentialEncryption, RoomService};
@@ -125,22 +125,7 @@ where
 {
     codec
         .decode::<T>(value)
-        .or_else(|_| parse_positive_id(value))
         .map_err(|error| ProviderError::InvalidConfig(format!("Invalid {error} in {context}")))
-}
-
-fn parse_positive_id<T>(value: &str) -> Result<T, String>
-where
-    T: TypedId,
-{
-    let parsed = value
-        .trim()
-        .parse::<T>()
-        .map_err(|error| format!("{}: {error}", T::TYPE_NAME))?;
-    if parsed.get() <= 0 {
-        return Err(format!("{}: expected a positive integer", T::TYPE_NAME));
-    }
-    Ok(parsed)
 }
 
 /// Abstract proxy request context (no axum/HTTP framework types).
@@ -326,6 +311,27 @@ mod tests {
         let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().version, "v1");
+    }
+
+    #[test]
+    fn test_proxy_ids_require_public_id_prefixes() {
+        let codec = PublicIdCodec::default_for_tests();
+
+        assert_eq!(
+            parse_proxy_room_id(&codec, "room_42", "proxy metadata").unwrap(),
+            RoomId::expect_positive(42)
+        );
+        assert_eq!(
+            parse_proxy_media_id(&codec, "med_99", "proxy metadata").unwrap(),
+            MediaId::expect_positive(99)
+        );
+        assert_eq!(
+            parse_proxy_user_id(&codec, "usr_7", "proxy metadata").unwrap(),
+            UserId::expect_positive(7)
+        );
+        assert!(parse_proxy_room_id(&codec, "42", "proxy metadata").is_err());
+        assert!(parse_proxy_media_id(&codec, "99", "proxy metadata").is_err());
+        assert!(parse_proxy_user_id(&codec, "7", "proxy metadata").is_err());
     }
 
     #[tokio::test]

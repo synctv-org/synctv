@@ -374,12 +374,12 @@ config:
 
   ## CacheConfig: business L1/L2 caches.
   cache:
-    l1Capacity: 500
+    l1Capacity: 5000
     l1TtlSeconds: 300
     l2TtlSeconds: 300
-    usernameCacheCapacity: 1000
+    usernameCacheCapacity: 10000
     usernameCacheTtlSeconds: 3600
-    permissionCacheCapacity: 1000
+    permissionCacheCapacity: 20000
     permissionCacheTtlSeconds: 300
 
   ## ProxySliceCacheConfig: media proxy Range-slice cache.
@@ -398,6 +398,10 @@ config:
   ## LivestreamConfig
   livestream:
     rtmpPort: 1935
+    ## Public host returned in RTMP publish URLs. Set this when streamers
+    ## connect through a public domain, LoadBalancer address, or node public IP.
+    ## If empty, SyncTV uses only the local bind host fallback and does not
+    ## reuse internal Pod IPs or server.advertise_host.
     publicRtmpHost: ""
     gopCacheSize: 2
     streamTimeoutSeconds: 300
@@ -429,8 +433,8 @@ config:
     ## publisher-node gRPC proxying; shared_file storage or OSS is recommended
     ## for production multi-replica HLS traffic.
     enabled: false
-    criticalChannelCapacity: 1000
-    publishChannelCapacity: 10000
+    criticalChannelCapacity: 10000
+    publishChannelCapacity: 100000
     ## Discovery mode: "redis" (default), "static", or "k8s_dns" (uses headless service DNS)
     ## The chart defaults to Redis discovery so config validation does not
     ## depend on pod-local DNS environment variables.
@@ -439,7 +443,7 @@ config:
     leaderElectionMode: "redis"
     peers: []
     catchupWindowSecs: 300
-    streamMaxLength: 10000
+    streamMaxLength: 100000
 
   ## WebRTCConfig
   webrtc:
@@ -448,15 +452,20 @@ config:
     enableBuiltinStun: true
     stunPort: 3478
     stunHost: "0.0.0.0"
+    ## Public client-reachable STUN address, e.g. "stun.example.com:3478"
+    ## or a LoadBalancer / node public IP. Do not use a Pod IP or ClusterIP
+    ## Service IP; the application rejects private addresses for public STUN.
+    ## When empty, startup tries advertise_host, STUN_EXTERNAL_IP, and cloud
+    ## metadata, and skips the built-in STUN server if no public address exists.
     stunExternalAddr: ""
     ## External ICE servers are configured dynamically via the settings API.
     filterPrivateIceCandidates: true
 
   ## ConnectionLimitsConfig
   connectionLimits:
-    maxPerUser: 5
-    maxPerRoom: 200
-    maxTotal: 10000
+    maxPerUser: 20
+    maxPerRoom: 2000
+    maxTotal: 100000
     idleTimeoutSeconds: 300
     maxDurationSeconds: 86400
     wsMessageRateLimitPerSecond: 50
@@ -498,6 +507,8 @@ config:
     adminWindowSeconds: 60
     readMaxRequests: 100
     readWindowSeconds: 60
+    websocketMaxRequests: 10
+    websocketWindowSeconds: 60
 
   ## BootstrapConfig
   bootstrap:

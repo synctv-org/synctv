@@ -259,9 +259,9 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 
 | Field | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
-| `connection_limits.max_per_user` | integer | `5` | Maximum connections per user |
-| `connection_limits.max_per_room` | integer | `200` | Maximum connections per room |
-| `connection_limits.max_total` | integer | `10000` | Maximum service-wide connections |
+| `connection_limits.max_per_user` | integer | `20` | Maximum connections per user |
+| `connection_limits.max_per_room` | integer | `2000` | Maximum connections per room |
+| `connection_limits.max_total` | integer | `100000` | Maximum service-wide connections |
 | `connection_limits.idle_timeout_seconds` | seconds | `300` | Idle connection timeout |
 | `connection_limits.max_duration_seconds` | seconds | `86400` | Maximum connection lifetime |
 | `connection_limits.ws_message_rate_limit_per_second` | per-second count | `50` | WebSocket message rate per connection |
@@ -272,13 +272,13 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `cluster.enabled` | boolean | `false` | Enable cluster mode |
 | `cluster.secret` | secret string | `""` | Authentication secret for internal cluster gRPC |
 | `cluster.secret_file` | file path or empty | `""` | File containing the internal cluster gRPC authentication secret |
-| `cluster.critical_channel_capacity` | integer | `1000` | High-priority cluster event queue capacity |
-| `cluster.publish_channel_capacity` | integer | `10000` | Normal cluster publish queue capacity |
+| `cluster.critical_channel_capacity` | integer | `10000` | High-priority cluster event queue capacity |
+| `cluster.publish_channel_capacity` | integer | `100000` | Normal cluster publish queue capacity |
 | `cluster.discovery_mode` | `redis`, `static`, or `k8s_dns` | `redis` | Node discovery mode |
 | `cluster.leader_election_mode` | `redis` or `k8s_lease` | `redis` | Leader election mode |
 | `cluster.peers` | string array | `[]` | Static peer addresses |
 | `cluster.catchup_window_secs` | seconds | `300` | Redis Stream catch-up replay window |
-| `cluster.stream_max_length` | integer | `10000` | Approximate Redis Stream maximum length |
+| `cluster.stream_max_length` | integer | `100000` | Approximate Redis Stream maximum length |
 
 ## `password_complexity`, `buffer_sizes`, and `cache`
 
@@ -294,12 +294,12 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `password_complexity.zxcvbn_min_score` | integer `0`-`4` | `3` | Minimum zxcvbn score when enabled |
 | `buffer_sizes.websocket_outbound` | integer | `256` | Per-connection WebSocket outbound queue size |
 | `buffer_sizes.audit_buffer` | integer | `10000` | Audit event buffer capacity |
-| `cache.l1_capacity` | integer | `500` | L1 in-memory cache capacity |
+| `cache.l1_capacity` | integer | `5000` | L1 in-memory cache capacity |
 | `cache.l1_ttl_seconds` | seconds | `300` | L1 in-memory cache TTL |
 | `cache.l2_ttl_seconds` | seconds | `300` | Redis L2 cache TTL |
-| `cache.username_cache_capacity` | integer | `1000` | Username cache capacity |
+| `cache.username_cache_capacity` | integer | `10000` | Username cache capacity |
 | `cache.username_cache_ttl_seconds` | seconds | `3600` | Username cache TTL |
-| `cache.permission_cache_capacity` | integer | `1000` | Permission cache capacity |
+| `cache.permission_cache_capacity` | integer | `20000` | Permission cache capacity |
 | `cache.permission_cache_ttl_seconds` | seconds | `300` | Permission cache TTL |
 | `proxy_slice_cache.enabled` | boolean | `true` | Enable proxy slice cache at startup |
 | `proxy_slice_cache.slice_size_bytes` | integer | `2097152` | Individual Range slice size |
@@ -355,3 +355,5 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `grpc_rate_limits.admin_window_seconds` | seconds | `60` | gRPC admin rate-limit window |
 | `grpc_rate_limits.read_max_requests` | integer | `100` | Maximum gRPC read requests per window |
 | `grpc_rate_limits.read_window_seconds` | seconds | `60` | gRPC read rate-limit window |
+| `grpc_rate_limits.websocket_max_requests` | integer | `10` | Maximum gRPC MessageStream connection attempts per window |
+| `grpc_rate_limits.websocket_window_seconds` | seconds | `60` | gRPC MessageStream connection-attempt rate-limit window |

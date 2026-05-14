@@ -1278,9 +1278,11 @@ pub struct LivestreamConfig {
     pub rtmp_port: u16,
     /// Publicly reachable RTMP host returned to publishers.
     ///
-    /// If empty, falls back to `server.advertise_host`. Use this when the
-    /// cluster advertise address is internal-only (pod IP / service DNS) but
-    /// publishers must connect via an external ingress or hostname.
+    /// Set this when publishers must connect through an external domain,
+    /// LoadBalancer, or node address. If empty, SyncTV falls back only to the
+    /// local bind host for single-node/local use; it intentionally does not
+    /// reuse `server.advertise_host`, which may be an internal Pod IP or
+    /// service DNS name used for cluster traffic.
     pub public_rtmp_host: String,
     pub gop_cache_size: u32,
     /// Idle timeout before auto-stopping a pull stream (seconds)
@@ -1442,9 +1444,11 @@ pub struct WebRTCConfig {
     /// STUN server bind host
     pub stun_host: String,
     /// STUN server external address for reflexive candidates.
-    /// In K8s/NAT environments, set this to the routable address
-    /// (e.g., pod IP or service IP). If empty, falls back to
-    /// `advertise_host:stun_port`.
+    /// In K8s/NAT environments, set this to a client-reachable public
+    /// `ip:port` or DNS name, such as a LoadBalancer IP, node public IP,
+    /// or STUN hostname. If empty, runtime bootstrap tries advertise_host,
+    /// STUN_EXTERNAL_IP, and cloud metadata, then skips built-in STUN when
+    /// no public address is found.
     pub stun_external_addr: String,
 
     /// Filter private/internal ICE candidates before sending to clients.
@@ -1917,16 +1921,12 @@ impl Config {
     /// Public RTMP host for publisher-facing URLs.
     #[must_use]
     pub fn public_rtmp_host(&self) -> String {
+        self.public_rtmp_host_without_internal_advertise_fallback()
+    }
+
+    fn public_rtmp_host_without_internal_advertise_fallback(&self) -> String {
         if !self.livestream.public_rtmp_host.is_empty() {
             return self.livestream.public_rtmp_host.clone();
-        }
-
-        if !self.server.advertise_host.is_empty() {
-            return self.server.advertise_host.clone();
-        }
-
-        if let Some(pod_ip) = process_env("POD_IP").filter(|value| !value.is_empty()) {
-            return pod_ip;
         }
 
         self.local_publish_host()
@@ -2909,6 +2909,14 @@ impl Config {
         env_override_parse(
             "SYNCTV_GRPC_RATE_LIMITS_READ_WINDOW_SECONDS",
             &mut self.grpc_rate_limits.read_window_seconds,
+        )?;
+        env_override_parse(
+            "SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS",
+            &mut self.grpc_rate_limits.websocket_max_requests,
+        )?;
+        env_override_parse(
+            "SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS",
+            &mut self.grpc_rate_limits.websocket_window_seconds,
         )?;
 
         Ok(())
@@ -4021,25 +4029,25 @@ impl Config {
         }
 
         // Validate STUN external address.
-        // In cluster/K8s/NAT environments, an explicit stun_external_addr is
-        // preferred, but runtime bootstrap also supports auto-detecting a
-        // usable external address from advertise_host / POD_IP / cloud
-        // metadata. Configuration validation should therefore not fail-closed
-        // just because the explicit field is empty.
+        // In cluster/K8s/NAT environments, an explicit public stun_external_addr
+        // is preferred, but runtime bootstrap can also try advertise_host,
+        // STUN_EXTERNAL_IP, and cloud metadata. Configuration validation should
+        // therefore not fail-closed just because the explicit field is empty.
         if self.webrtc.enable_builtin_stun && self.webrtc.stun_external_addr.is_empty() {
             if self.cluster_runtime_enabled() {
                 tracing::warn!(
                     "webrtc.enable_builtin_stun=true but stun_external_addr is not set in cluster mode. \
-                     Startup will attempt STUN external address auto-detection from advertise_host, POD_IP, \
-                     or cloud metadata. For deterministic production behavior, prefer setting \
-                     webrtc.stun_external_addr explicitly."
+                     Startup will attempt STUN external address auto-detection from advertise_host, \
+                     STUN_EXTERNAL_IP, or cloud metadata, and will skip the built-in STUN server \
+                     if no public address is found. For deterministic production behavior, set \
+                     webrtc.stun_external_addr to a client-reachable public ip:port or DNS name:port."
                 );
             } else {
                 tracing::warn!(
                     "webrtc.enable_builtin_stun=true but stun_external_addr is not set. \
-                         STUN server will advertise reflexive candidates using advertise_host. \
-                         This may not work correctly behind NAT or load balancers. \
-                         Set webrtc.stun_external_addr to the server's public IP:port."
+                     Startup will try advertise_host, STUN_EXTERNAL_IP, and cloud metadata, and \
+                     will skip the built-in STUN server if no public address is found. \
+                     Set webrtc.stun_external_addr to the server's public ip:port or DNS name:port."
                 );
             }
         }
@@ -4138,9 +4146,9 @@ pub struct ConnectionLimitsConfig {
 impl Default for ConnectionLimitsConfig {
     fn default() -> Self {
         Self {
-            max_per_user: 5,
-            max_per_room: 200,
-            max_total: 10000,
+            max_per_user: 20,
+            max_per_room: 2000,
+            max_total: 100_000,
             idle_timeout_seconds: 300,   // 5 minutes
             max_duration_seconds: 86400, // 24 hours
             ws_message_rate_limit_per_second: 50,
@@ -4273,13 +4281,13 @@ pub struct ClusterChannelConfig {
     /// Capacity for the high-priority critical event channel.
     /// Critical events (`KickPublisher`, `KickUser`, `PermissionChanged`) are never dropped;
     /// when this channel is full, senders block until space is available.
-    /// Default: 1000
+    /// Default: 10000
     pub critical_channel_capacity: usize,
 
     /// Capacity for the normal-priority Redis publish channel.
     /// Normal events are dropped with a warning when this channel is full
     /// (e.g., during a prolonged Redis outage).
-    /// Default: 10000
+    /// Default: 100000
     pub publish_channel_capacity: usize,
 
     /// Discovery mode for cluster node registration.
@@ -4318,7 +4326,7 @@ pub struct ClusterChannelConfig {
     /// Controls how many events are retained in each per-room stream for catch-up
     /// after reconnection. In high-throughput scenarios, increase this to avoid
     /// trimming events that disconnected nodes still need to catch up on.
-    /// Default: 10000
+    /// Default: 100000
     pub stream_max_length: usize,
 }
 
@@ -4327,13 +4335,13 @@ impl Default for ClusterChannelConfig {
         Self {
             enabled: false,
             secret: String::new(),
-            critical_channel_capacity: 1000,
-            publish_channel_capacity: 10_000,
+            critical_channel_capacity: 10_000,
+            publish_channel_capacity: 100_000,
             discovery_mode: ClusterDiscoveryMode::Redis,
             leader_election_mode: ClusterLeaderElectionMode::Redis,
             peers: Vec::new(),
             catchup_window_secs: 300,
-            stream_max_length: 10_000,
+            stream_max_length: 100_000,
         }
     }
 }
@@ -4413,12 +4421,12 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            l1_capacity: 500,
+            l1_capacity: 5000,
             l1_ttl_seconds: 300, // 5 minutes (was hardcoded as 5 min TTL)
             l2_ttl_seconds: 300, // 5 minutes
-            username_cache_capacity: 1000,
+            username_cache_capacity: 10_000,
             username_cache_ttl_seconds: 3600, // 1 hour
-            permission_cache_capacity: 1000,
+            permission_cache_capacity: 20_000,
             permission_cache_ttl_seconds: 300,
         }
     }
@@ -4576,6 +4584,10 @@ pub struct GrpcRateLimitConfig {
     /// Read endpoints (`GetRoom`, `ListRooms`, `GetUser`, `GetPlaylist`)
     pub read_max_requests: u32,
     pub read_window_seconds: u64,
+
+    /// Bidirectional real-time `MessageStream` connection attempts
+    pub websocket_max_requests: u32,
+    pub websocket_window_seconds: u64,
 }
 
 impl Default for GrpcRateLimitConfig {
@@ -4604,6 +4616,10 @@ impl Default for GrpcRateLimitConfig {
             // Read: 100 requests per 60 seconds
             read_max_requests: 100,
             read_window_seconds: 60,
+
+            // Real-time stream connections: 10 connection attempts per 60 seconds
+            websocket_max_requests: 10,
+            websocket_window_seconds: 60,
         }
     }
 }
@@ -4619,6 +4635,25 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn test_large_public_service_capacity_defaults() {
+        let connection_limits = ConnectionLimitsConfig::default();
+        assert_eq!(connection_limits.max_per_user, 20);
+        assert_eq!(connection_limits.max_per_room, 2000);
+        assert_eq!(connection_limits.max_total, 100_000);
+        assert_eq!(connection_limits.ws_message_rate_limit_per_second, 50);
+
+        let cluster = ClusterChannelConfig::default();
+        assert_eq!(cluster.critical_channel_capacity, 10_000);
+        assert_eq!(cluster.publish_channel_capacity, 100_000);
+        assert_eq!(cluster.stream_max_length, 100_000);
+
+        let cache = CacheConfig::default();
+        assert_eq!(cache.l1_capacity, 5000);
+        assert_eq!(cache.username_cache_capacity, 10_000);
+        assert_eq!(cache.permission_cache_capacity, 20_000);
     }
 
     #[test]
@@ -6268,6 +6303,18 @@ jwt:
     }
 
     #[test]
+    fn test_from_env_overrides_grpc_websocket_rate_limits() {
+        let config = Config::from_env_map(&env_map(&[
+            ("SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", "13"),
+            ("SYNCTV_GRPC_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", "17"),
+        ]))
+        .expect("gRPC websocket rate limit env overrides should parse");
+
+        assert_eq!(config.grpc_rate_limits.websocket_max_requests, 13);
+        assert_eq!(config.grpc_rate_limits.websocket_window_seconds, 17);
+    }
+
+    #[test]
     fn test_validate_database_url_is_mutually_exclusive_with_split_database_fields() {
         let mut config = valid_prod_config();
         config.database.url = "postgresql://user:pass@db.example.com:5432/synctv".to_string();
@@ -7028,12 +7075,26 @@ jwt:
     }
 
     #[test]
-    fn test_public_rtmp_host_prefers_explicit_advertise_host_when_no_public_override() {
+    fn test_public_rtmp_host_does_not_reuse_cluster_advertise_host() {
         let mut config = Config::default();
         config.server.host = "0.0.0.0".to_string();
         config.server.advertise_host = "10.0.0.12".to_string();
+        config.livestream.public_rtmp_host.clear();
 
-        assert_eq!(config.public_rtmp_host(), "10.0.0.12");
+        assert_eq!(config.public_rtmp_host(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_public_rtmp_host_does_not_reuse_pod_ip() {
+        let mut config = Config::default();
+        config.server.host = "0.0.0.0".to_string();
+        config.server.advertise_host.clear();
+        config.livestream.public_rtmp_host.clear();
+
+        assert_eq!(
+            config.public_rtmp_host_without_internal_advertise_fallback(),
+            "127.0.0.1"
+        );
     }
 
     #[test]

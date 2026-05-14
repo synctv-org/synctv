@@ -149,7 +149,7 @@ impl HttpFlvSession {
 
                         // Write cached frames
                         for frame in &cached_frames {
-                            self.write_flv_tag(frame.clone())?;
+                            self.write_flv_tag(frame)?;
                         }
                         cached_frames.clear();
                     }
@@ -160,7 +160,7 @@ impl HttpFlvSession {
                 // Write FLV tag. Slow-subscriber disconnects and closed
                 // response channels must terminate the session so the
                 // StreamHub subscription is released promptly.
-                self.write_flv_tag(data)?;
+                self.write_flv_tag(&data)?;
             } else {
                 // Channel closed - stream truly ended
                 info!("Stream channel closed");
@@ -170,8 +170,8 @@ impl HttpFlvSession {
         Ok(())
     }
 
-    fn write_flv_tag(&mut self, frame_data: FrameData) -> anyhow::Result<()> {
-        let (data, timestamp, tag_type) = match &frame_data {
+    fn write_flv_tag(&mut self, frame_data: &FrameData) -> anyhow::Result<()> {
+        let (data, timestamp, tag_type) = match frame_data {
             FrameData::Audio { timestamp, data } => (&data[..], *timestamp, 8), // AUDIO
             FrameData::Video { timestamp, data } => (&data[..], *timestamp, 9), // VIDEO
             FrameData::MetaData { timestamp, data } => {

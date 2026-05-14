@@ -35,6 +35,18 @@ fn regen_proto_enabled() -> bool {
         .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
+fn emit_proto_rerun_if_changed(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            emit_proto_rerun_if_changed(&entry?.path())?;
+        }
+    } else if path.extension().and_then(|ext| ext.to_str()) == Some("proto") {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+
+    Ok(())
+}
+
 fn sync_generated_files(
     source_root: &Path,
     destination_root: &Path,
@@ -117,6 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider_out_dir.display()
     );
     println!("cargo:rerun-if-env-changed=SYNCTV_REGEN_PROTO");
+    emit_proto_rerun_if_changed(Path::new("proto"))?;
 
     let main_proto_files = [
         "proto/client.proto",

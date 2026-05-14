@@ -447,13 +447,14 @@ fn current_process_id() -> u32 {
 }
 
 fn current_test_run_id() -> String {
-    std::env::var("NEXTEST_RUN_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map_or_else(
-            || format!("pid-{}", current_process_id()),
-            |value| sanitize_container_name(&value),
-        )
+    current_test_run_id_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
+}
+
+fn current_test_run_id_from(run_id: Option<&str>) -> String {
+    run_id.filter(|value| !value.trim().is_empty()).map_or_else(
+        || format!("pid-{}", current_process_id()),
+        sanitize_container_name,
+    )
 }
 
 fn startup_lock_name(run_id: &str) -> String {
@@ -820,11 +821,22 @@ fn quote_identifier(identifier: &str) -> String {
 }
 
 fn shared_container_name() -> String {
-    format!("synctv-pg-shared-{}", current_test_run_id())
+    shared_container_name_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
+}
+
+fn shared_container_name_from(run_id: Option<&str>) -> String {
+    format!("synctv-pg-shared-{}", current_test_run_id_from(run_id))
 }
 
 fn template_database_name() -> String {
-    let raw = format!("{TEMPLATE_DATABASE_PREFIX}_{}", current_test_run_id());
+    template_database_name_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
+}
+
+fn template_database_name_from(run_id: Option<&str>) -> String {
+    let raw = format!(
+        "{TEMPLATE_DATABASE_PREFIX}_{}",
+        current_test_run_id_from(run_id)
+    );
     truncate_database_identifier(&sanitize_database_component(&raw))
 }
 
@@ -1431,26 +1443,14 @@ mod tests {
 
     #[test]
     fn shared_container_name_uses_nextest_run_id_when_present() {
-        unsafe {
-            std::env::set_var("NEXTEST_RUN_ID", "Run.Id/42");
-        }
-        let name = shared_container_name();
-        unsafe {
-            std::env::remove_var("NEXTEST_RUN_ID");
-        }
+        let name = shared_container_name_from(Some("Run.Id/42"));
 
         assert_eq!(name, "synctv-pg-shared-run-id-42");
     }
 
     #[test]
     fn template_database_name_uses_nextest_run_id_when_present() {
-        unsafe {
-            std::env::set_var("NEXTEST_RUN_ID", "Run.Id/42");
-        }
-        let name = template_database_name();
-        unsafe {
-            std::env::remove_var("NEXTEST_RUN_ID");
-        }
+        let name = template_database_name_from(Some("Run.Id/42"));
 
         assert!(
             name.starts_with("synctv_template_run_id_42"),

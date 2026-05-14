@@ -1,3 +1,4 @@
+use prost_reflect::Kind;
 use synctv_proto::client::{
     AddMediaRequest, ApproveRoomJoinReviewRequest, CheckRoomRequest, CreateWebSocketTicketRequest,
     DeleteEntriesRequest, DeleteMediaRequest, DeleteNotificationRequest, DeletePlaylistRequest,
@@ -28,6 +29,26 @@ fn test_add_media_request_allows_room_root_without_playlist_id() {
     };
 
     assert!(request.playlist_id.is_none());
+}
+
+#[test]
+fn test_error_message_code_is_application_int32() {
+    let error_message = synctv_proto::DESCRIPTOR_POOL
+        .get_message_by_name("synctv.client.ErrorMessage")
+        .expect("ErrorMessage descriptor should exist");
+    let code = error_message
+        .get_field_by_name("code")
+        .expect("ErrorMessage.code field should exist");
+
+    assert_eq!(code.kind(), Kind::Int32);
+
+    let message = synctv_proto::client::ErrorMessage {
+        message: "internal failure".to_string(),
+        code: 9000,
+        detail: String::new(),
+    };
+
+    assert_eq!(message.code, 9000);
 }
 
 #[test]

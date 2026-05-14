@@ -32,7 +32,7 @@ pub struct CleanupConfig {
 impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(60),
+            interval: Duration::from_mins(1),
             retention: Duration::from_mins(3),
             max_segments_per_stream: 0,
         }

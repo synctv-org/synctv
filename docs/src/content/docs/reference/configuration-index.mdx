@@ -259,9 +259,9 @@ curl -fsS http://localhost:8080/health/ready
 
 | 字段 | 类型/可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `connection_limits.max_per_user` | 整数 | `5` | 每用户最大连接数 |
-| `connection_limits.max_per_room` | 整数 | `200` | 每房间最大连接数 |
-| `connection_limits.max_total` | 整数 | `10000` | 全服务最大连接数 |
+| `connection_limits.max_per_user` | 整数 | `20` | 每用户最大连接数 |
+| `connection_limits.max_per_room` | 整数 | `2000` | 每房间最大连接数 |
+| `connection_limits.max_total` | 整数 | `100000` | 全服务最大连接数 |
 | `connection_limits.idle_timeout_seconds` | 秒数 | `300` | 空闲连接超时 |
 | `connection_limits.max_duration_seconds` | 秒数 | `86400` | 单连接最大时长 |
 | `connection_limits.ws_message_rate_limit_per_second` | 次/秒 | `50` | 每连接 WebSocket 消息速率 |
@@ -272,13 +272,13 @@ curl -fsS http://localhost:8080/health/ready
 | `cluster.enabled` | 布尔值 | `false` | 是否启用集群模式 |
 | `cluster.secret` | secret 字符串 | `""` | 集群内部 gRPC 认证密钥 |
 | `cluster.secret_file` | 文件路径或空 | `""` | 读取集群内部 gRPC 认证密钥的文件 |
-| `cluster.critical_channel_capacity` | 整数 | `1000` | 高优先级集群事件队列容量 |
-| `cluster.publish_channel_capacity` | 整数 | `10000` | 普通集群发布队列容量 |
+| `cluster.critical_channel_capacity` | 整数 | `10000` | 高优先级集群事件队列容量 |
+| `cluster.publish_channel_capacity` | 整数 | `100000` | 普通集群发布队列容量 |
 | `cluster.discovery_mode` | `redis`、`static`、`k8s_dns` | `redis` | 节点发现模式 |
 | `cluster.leader_election_mode` | `redis` 或 `k8s_lease` | `redis` | leader election 模式 |
 | `cluster.peers` | 字符串数组 | `[]` | 静态 peer 地址 |
 | `cluster.catchup_window_secs` | 秒数 | `300` | Redis Stream catch-up 回放窗口 |
-| `cluster.stream_max_length` | 整数 | `10000` | Redis Stream 近似最大长度 |
+| `cluster.stream_max_length` | 整数 | `100000` | Redis Stream 近似最大长度 |
 
 ## `password_complexity`、`buffer_sizes`、`cache`
 
@@ -294,12 +294,12 @@ curl -fsS http://localhost:8080/health/ready
 | `password_complexity.zxcvbn_min_score` | 整数 `0`-`4` | `3` | 启用 zxcvbn 时的最低分数 |
 | `buffer_sizes.websocket_outbound` | 整数 | `256` | 每连接 WebSocket 出站队列 |
 | `buffer_sizes.audit_buffer` | 整数 | `10000` | 审计事件缓冲容量 |
-| `cache.l1_capacity` | 整数 | `500` | L1 内存缓存容量 |
+| `cache.l1_capacity` | 整数 | `5000` | L1 内存缓存容量 |
 | `cache.l1_ttl_seconds` | 秒数 | `300` | L1 内存缓存 TTL |
 | `cache.l2_ttl_seconds` | 秒数 | `300` | Redis L2 缓存 TTL |
-| `cache.username_cache_capacity` | 整数 | `1000` | 用户名缓存容量 |
+| `cache.username_cache_capacity` | 整数 | `10000` | 用户名缓存容量 |
 | `cache.username_cache_ttl_seconds` | 秒数 | `3600` | 用户名缓存 TTL |
-| `cache.permission_cache_capacity` | 整数 | `1000` | 权限缓存容量 |
+| `cache.permission_cache_capacity` | 整数 | `20000` | 权限缓存容量 |
 | `cache.permission_cache_ttl_seconds` | 秒数 | `300` | 权限缓存 TTL |
 | `proxy_slice_cache.enabled` | 布尔值 | `true` | 是否启用代理 slice cache |
 | `proxy_slice_cache.slice_size_bytes` | 整数 | `2097152` | 单个 Range 分片大小 |
@@ -355,3 +355,5 @@ curl -fsS http://localhost:8080/health/ready
 | `grpc_rate_limits.admin_window_seconds` | 秒数 | `60` | gRPC 管理接口限流窗口 |
 | `grpc_rate_limits.read_max_requests` | 整数 | `100` | gRPC 读接口窗口内最大请求数 |
 | `grpc_rate_limits.read_window_seconds` | 秒数 | `60` | gRPC 读接口限流窗口 |
+| `grpc_rate_limits.websocket_max_requests` | 整数 | `10` | gRPC MessageStream 建连窗口内最大请求数 |
+| `grpc_rate_limits.websocket_window_seconds` | 秒数 | `60` | gRPC MessageStream 建连限流窗口 |

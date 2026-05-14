@@ -119,6 +119,7 @@ pub fn create_test_token_blacklist_store_service() -> Arc<dyn TokenBlacklistStor
 
 /// Creates a `UserService` with in-memory test dependencies.
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
     let mut service = UserService::new(
         &pool,

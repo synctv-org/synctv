@@ -47,6 +47,14 @@ Ingress is enabled. Access the application at:
   - RTMP Ingest: port {{ .Values.config.livestream.rtmpPort }}
 {{- if .Values.config.webrtc.enableBuiltinStun }}
   - STUN (UDP):  port {{ .Values.config.webrtc.stunPort }}
+{{- if not .Values.config.webrtc.stunExternalAddr }}
+    Built-in STUN is enabled, but config.webrtc.stunExternalAddr is empty.
+    SyncTV will start the STUN server only if it can discover a public address
+    from advertise_host, STUN_EXTERNAL_IP, or cloud metadata. For production,
+    set config.webrtc.stunExternalAddr to a client-reachable public ip:port or
+    DNS name:port, such as a LoadBalancer address. Do not use a Pod IP or
+    ClusterIP Service IP.
+{{- end }}
 {{- end }}
 
 ## Connection info

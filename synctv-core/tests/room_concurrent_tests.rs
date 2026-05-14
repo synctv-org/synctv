@@ -547,7 +547,19 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
 
     // 10 concurrent updates to the same member
     let mut handles = Vec::with_capacity(10);
-    for i in 0..10 {
+    let permission_updates = [
+        PermissionBits::SEND_CHAT,
+        PermissionBits::ADD_MEDIA,
+        PermissionBits::DELETE_MEDIA_SELF,
+        PermissionBits::DELETE_MEDIA_ANY,
+        PermissionBits::EDIT_MEDIA_SELF,
+        PermissionBits::REORDER_PLAYLIST,
+        PermissionBits::CLEAR_PLAYLIST,
+        PermissionBits::START_LIVE,
+        PermissionBits::PLAY_CONTROL,
+        PermissionBits::CHANGE_CURRENT_MEDIA,
+    ];
+    for permission in permission_updates {
         let barrier_clone = barrier.clone();
         let member_service_clone = member_service.clone();
         let room_id_clone = room_id;
@@ -558,13 +570,7 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
 
             // Each task sets different permissions (using raw u64)
             member_service_clone
-                .set_member_permissions(
-                    room_id_clone,
-                    operator_id,
-                    target_id,
-                    1 << i, // added_permissions as u64
-                    0,
-                )
+                .set_member_permissions(room_id_clone, operator_id, target_id, permission, 0)
                 .await
         });
         handles.push(handle);
@@ -573,6 +579,7 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
     // Collect results
     let mut success_count = 0;
     let mut retry_exhausted = 0;
+    let mut unexpected_errors = Vec::new();
 
     for handle in handles {
         match handle.await.expect("Task panicked") {
@@ -580,9 +587,14 @@ async fn test_optimistic_lock_conflict_retry_on_permission_update() {
             Err(Error::Internal(msg)) if msg.contains("retry") || msg.contains("maximum") => {
                 retry_exhausted += 1;
             }
-            Err(e) => tracing::warn!("Unexpected error: {:?}", e),
+            Err(e) => unexpected_errors.push(e),
         }
     }
+
+    assert!(
+        unexpected_errors.is_empty(),
+        "Unexpected permission update errors: {unexpected_errors:?}"
+    );
 
     // With retry mechanism, most operations should succeed
     assert!(

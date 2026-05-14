@@ -464,8 +464,8 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
             }
             ProviderError::IoError(e) => Self::Internal(e.to_string()),
             ProviderError::JsonError(e) => Self::InvalidInput(format!("Invalid data format: {e}")),
-            ProviderError::EncryptionRequired(provider) => Self::Internal(format!(
-                "Credential encryption not configured for provider '{provider}'"
+            ProviderError::EncryptionRequired(provider) => Self::InvalidInput(format!(
+                "Credential encryption required for provider '{provider}'"
             )),
         }
     }
@@ -1403,6 +1403,23 @@ mod tests {
             api_err,
             ApiError::InvalidInput(ref msg) if msg == "Upstream provider rejected the request."
         ));
+        assert!(matches!(api_err.classify(), ErrorKind::InvalidArgument));
+        assert_eq!(api_err.code(), error_codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn test_api_error_from_provider_encryption_required_maps_to_invalid_input() {
+        let provider_err = synctv_core::provider::ProviderError::EncryptionRequired("bilibili");
+        let api_err = ApiError::from(provider_err);
+
+        assert!(
+            matches!(
+                api_err,
+                ApiError::InvalidInput(ref msg)
+                    if msg == "Credential encryption required for provider 'bilibili'"
+            ),
+            "credential encryption precondition failures must not be hidden as internal errors, got: {api_err:?}"
+        );
         assert!(matches!(api_err.classify(), ErrorKind::InvalidArgument));
         assert_eq!(api_err.code(), error_codes::INVALID_ARGUMENT);
     }

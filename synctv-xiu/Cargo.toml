@@ -13,6 +13,9 @@ tls-ring = ["synctv-common/tls-ring"]
 tls-webpki-roots = ["synctv-common/tls-webpki-roots"]
 tls-native-roots = ["synctv-common/tls-native-roots"]
 
+[lints]
+workspace = true
+
 [dependencies]
 synctv-common = { workspace = true, default-features = false }
 # Byte manipulation

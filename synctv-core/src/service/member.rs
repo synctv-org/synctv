@@ -509,6 +509,8 @@ impl MemberService {
 
     /// Maximum retry attempts for optimistic lock conflicts
     const MAX_RETRIES: u32 = 3;
+    /// Permission updates are common hotspot writes on the same membership row.
+    const PERMISSION_UPDATE_MAX_RETRIES: u32 = 8;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;
 
@@ -541,7 +543,7 @@ impl MemberService {
             .await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
+            Self::PERMISSION_UPDATE_MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Permission update failed after maximum retry attempts",
             || async {
@@ -956,7 +958,7 @@ impl MemberService {
             .await?;
 
         let updated_member = super::optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
+            Self::PERMISSION_UPDATE_MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Permission reset failed after maximum retry attempts",
             || async {

@@ -448,19 +448,31 @@ mod tests {
         use crate::service::proxy_signature::ProxyUrlClaims;
         use std::collections::HashMap;
 
+        let services = fake_proxy_services();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
                 metadata: HashMap::from([
-                    ("room_id".to_string(), json!("10")),
-                    ("media_id".to_string(), json!("100")),
+                    (
+                        "room_id".to_string(),
+                        json!(services
+                            .public_id_codec
+                            .encode_room_id(RoomId::expect_positive(10))
+                            .expect("room id should encode")),
+                    ),
+                    (
+                        "media_id".to_string(),
+                        json!(services
+                            .public_id_codec
+                            .encode_media_id(MediaId::expect_positive(100))
+                            .expect("media id should encode")),
+                    ),
                 ]),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
-        let services = fake_proxy_services();
         let claims = ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),
@@ -504,20 +516,32 @@ mod tests {
         use crate::provider::store::VersionedPlayback;
         use std::collections::HashMap;
 
+        let services = fake_proxy_services();
         let versioned = VersionedPlayback {
             version: "v1".to_string(),
             result: PlaybackResult {
                 playback_infos: HashMap::new(),
                 default_mode: "hls".to_string(),
                 metadata: HashMap::from([
-                    ("room_id".to_string(), json!("10")),
-                    ("media_id".to_string(), json!("100")),
+                    (
+                        "room_id".to_string(),
+                        json!(services
+                            .public_id_codec
+                            .encode_room_id(RoomId::expect_positive(10))
+                            .expect("room id should encode")),
+                    ),
+                    (
+                        "media_id".to_string(),
+                        json!(services
+                            .public_id_codec
+                            .encode_media_id(MediaId::expect_positive(100))
+                            .expect("media id should encode")),
+                    ),
                 ]),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };
 
-        let services = fake_proxy_services();
         let ctx = ProxyRequestContext {
             sub_path: "v1/stream",
             query_string: None,

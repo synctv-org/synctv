@@ -93,6 +93,8 @@ fn standalone_test_config() -> Config {
             admin_window_seconds: 1,
             read_max_requests: 5000,
             read_window_seconds: 1,
+            websocket_max_requests: 5000,
+            websocket_window_seconds: 1,
         },
         public_ids: PublicIdsConfig::default(),
         security: SecurityConfig {
@@ -195,6 +197,8 @@ fn cluster_test_config() -> Config {
             admin_window_seconds: 1,
             read_max_requests: 5000,
             read_window_seconds: 1,
+            websocket_max_requests: 5000,
+            websocket_window_seconds: 1,
         },
         public_ids: PublicIdsConfig::default(),
         security: SecurityConfig {

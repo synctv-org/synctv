@@ -102,8 +102,8 @@ openssl rand -hex 32
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `cluster.critical_channel_capacity` | `1000` | 踢人、权限变更等高优先级事件 |
-| `cluster.publish_channel_capacity` | `10000` | 普通 Redis publish 事件 |
+| `cluster.critical_channel_capacity` | `10000` | 踢人、权限变更等高优先级事件 |
+| `cluster.publish_channel_capacity` | `100000` | 普通 Redis publish 事件 |
 
 critical 事件满队列时会反压发送方；普通事件在极端拥塞时可能丢弃并记录 warning。
 
@@ -165,7 +165,7 @@ Helm chart 会在需要时渲染相关 RBAC。
 
 `cluster.catchup_window_secs` 默认值：`300`。节点加入或重连时，在这个窗口内回放 Redis Stream 事件。
 
-`cluster.stream_max_length` 默认值：`10000`。它控制 Redis Stream 近似保留长度。太小会让断线节点还没追上时事件已被裁剪；太大会占用更多 Redis 内存。
+`cluster.stream_max_length` 默认值：`100000`。它控制 Redis Stream 近似保留长度。太小会让断线节点还没追上时事件已被裁剪；太大会占用更多 Redis 内存。
 
 ## 多副本 HLS 模型
 

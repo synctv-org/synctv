@@ -71,9 +71,9 @@ webrtc:
 
 作用：告诉客户端 STUN server 的外部可达地址。
 
-如果留空，SyncTV 会尝试用 `server.advertise_host:stun_port`。
+如果留空，SyncTV 会尝试 `server.advertise_host:stun_port`、`STUN_EXTERNAL_IP` 和云厂商 metadata。只有找到公网可路由地址时才会启动内置 STUN；否则会跳过内置 STUN。
 
-NAT 或 Kubernetes 环境建议显式设置：
+NAT 或 Kubernetes 环境建议显式设置为客户端可访问的公网 `ip:port` 或域名，例如 LoadBalancer IP、节点公网 IP 或 STUN 域名。不要使用 Pod IP 或 ClusterIP Service IP。
 
 ```yaml
 webrtc:
@@ -135,6 +135,7 @@ webrtc.external_ice_servers
 1. 客户端是否能访问 SyncTV HTTP/gRPC API。
 2. UDP 3478 是否开放。
 3. `stun_external_addr` 是否是客户端可达地址。
+   这个地址不能是 Pod IP、ClusterIP、回环地址或私网地址，除非你完全使用外部 ICE/TURN 并关闭内置 STUN。
 4. 反向代理是否只代理了 HTTP，而没有开放 UDP。
 5. 如果客户端在严格 NAT 后面，是否配置了 TURN。
 6. `filter_private_ice_candidates` 是否符合你的网络环境。

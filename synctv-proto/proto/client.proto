@@ -2096,7 +2096,7 @@ message RoomSettingsChanged {
 
 message ErrorMessage {
     string message = 1;
-    synctv.common.ErrorCode code = 2; // Application-level error code for programmatic handling
+    int32 code = 2; // Application-level error code for programmatic handling
     string detail = 3; // Optional detailed/debug info (may be empty in production)
 }
 

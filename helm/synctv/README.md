@@ -1,13 +1,13 @@
 # SyncTV Helm Chart
 
-Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment and also provisions the PostgreSQL 18 and Redis 8 instances required by the application.
+Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment plus chart-managed PostgreSQL 18 and Redis 8 services for the default install profile. Redis is optional for single-replica application mode, but recommended for production and required when SyncTV cluster mode is enabled.
 
 ## Features
 
 - Single-process deployment for HTTP, gRPC, RTMP, STUN, and the management endpoint
 - Independent HTTP and gRPC Kubernetes Services, even though both target the same process port
 - Built-in PostgreSQL and Redis by default, with no extra dependency chart required
-- Optional KubeBlocks-backed database mode
+- Optional KubeBlocks-backed or external database modes
 - Built-in HPA, PDB, probes, anti-affinity, NetworkPolicy, and Ingress templates
 
 ## Prerequisites
@@ -20,12 +20,14 @@ Helm chart for deploying SyncTV. By default it installs one SyncTV Deployment an
 
 ## Database Modes
 
-Both `postgresql.mode` and `redis.mode` support these two modes:
+Both `postgresql.mode` and `redis.mode` support these modes:
 
 - `standard`
   The chart creates and manages PostgreSQL / Redis resources itself. This is the default mode.
 - `kubeblocks`
   The chart creates KubeBlocks `Cluster` resources and directly consumes the generated connection secrets.
+- `external`
+  The chart connects SyncTV to an existing PostgreSQL / Redis service and does not render the matching database resources.
 
 ## Quick Start
 
@@ -250,7 +252,7 @@ Ingress that routes to the gRPC Service and uses independent
 When using `existingSecret`, provide these keys with current names:
 
 - `SYNCTV_DATABASE_PASSWORD` unless PostgreSQL is in KubeBlocks mode
-- `SYNCTV_REDIS_PASSWORD` unless Redis is in KubeBlocks mode
+- `SYNCTV_REDIS_PASSWORD` when Redis uses standard mode; provide it in external mode only when the external Redis requires password authentication; do not provide it for KubeBlocks mode
 - `SYNCTV_JWT_SECRET`
 - `SYNCTV_CLUSTER_SECRET`
 - `SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY`

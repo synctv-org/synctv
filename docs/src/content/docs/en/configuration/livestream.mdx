@@ -113,14 +113,14 @@ Change the port if another RTMP service already uses 1935.
 
 `livestream.public_rtmp_host` default: empty.
 
-Set it when the address returned to streamers must be a public domain or LoadBalancer address instead of an internal Pod or node address:
+Set it in production when the address returned to streamers must be a public domain, LoadBalancer address, or node public address instead of a local bind address:
 
 ```yaml
 livestream:
   public_rtmp_host: "live.example.com"
 ```
 
-If empty, SyncTV tries to fall back to `server.advertise_host`.
+If empty, SyncTV falls back only to the local bind address, which is suitable for local development or single-node LAN testing. It does not use Pod IPs or the internal `server.advertise_host` as the public RTMP address.
 
 ## GOP Cache
 

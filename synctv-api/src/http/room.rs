@@ -10,7 +10,6 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use std::future::Future;
 use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
-use synctv_core::service::auth::{JwtValidator, TokenType};
 
 use super::validation::ProtoQuery;
 use super::{middleware::RequestMetadata, AppResult, AppState};
@@ -286,44 +285,16 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let authorization = request_meta.authorization.clone();
-        let token = authorization
-            .as_deref()
-            .map(JwtValidator::extract_bearer_token)
-            .transpose()
-            .map_err(|_| super::AppError::invalid_authorization_header())?
-            .ok_or_else(super::AppError::missing_authorization_header)?;
-        let is_guest_token =
-            synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
-        let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
-        if is_guest_token {
-            executor
-                .execute_public_endpoint(&request_meta, category, move || {
-                    let client_api = client_api.clone();
-                    async move {
-                        let access = client_api
-                            .validate_guest_room_access(&token, &public_room_id)
-                            .await?;
-                        operation(client_api, crate::impls::client::RoomActor::Guest(access)).await
-                    }
-                })
-                .await
-                .map_err(super::error::map_api_error)
-        } else {
-            executor
-                .execute_user_endpoint(&request_meta, category, move |authenticated| {
-                    let client_api = client_api.clone();
-                    async move {
-                        let actor = client_api
-                            .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                            .await?;
-                        operation(client_api, actor).await
-                    }
-                })
-                .await
-                .map_err(super::error::map_api_error)
-        }
+        crate::impls::ClientApiImpl::execute_room_actor_endpoint(
+            client_api,
+            &request_meta,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(super::error::map_api_error)
     }
     .boxed()
 }
@@ -348,57 +319,16 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let authorization = request_meta.authorization.clone();
-        let token = authorization
-            .as_deref()
-            .map(JwtValidator::extract_bearer_token)
-            .transpose()
-            .map_err(|_| super::AppError::invalid_authorization_header())?
-            .ok_or_else(super::AppError::missing_authorization_header)?;
-        let is_guest_token =
-            synctv_core::service::JwtService::token_type_hint(&token) == Some(TokenType::Guest);
-        let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
-        if is_guest_token {
-            executor
-                .execute_public_endpoint_with_control(
-                    &request_meta,
-                    category,
-                    move |request_control| {
-                        let client_api = client_api.clone();
-                        async move {
-                            let access = client_api
-                                .validate_guest_room_access(&token, &public_room_id)
-                                .await?;
-                            operation(
-                                client_api,
-                                request_control,
-                                crate::impls::client::RoomActor::Guest(access),
-                            )
-                            .await
-                        }
-                    },
-                )
-                .await
-                .map_err(super::error::map_api_error)
-        } else {
-            executor
-                .execute_user_endpoint_with_control(
-                    &request_meta,
-                    category,
-                    move |request_control, authenticated| {
-                        let client_api = client_api.clone();
-                        async move {
-                            let actor = client_api
-                                .room_actor_for_user(&authenticated.user_id, &public_room_id)
-                                .await?;
-                            operation(client_api, request_control, actor).await
-                        }
-                    },
-                )
-                .await
-                .map_err(super::error::map_api_error)
-        }
+        crate::impls::ClientApiImpl::execute_room_actor_endpoint_with_control(
+            client_api,
+            &request_meta,
+            public_room_id,
+            category,
+            operation,
+        )
+        .await
+        .map_err(super::error::map_api_error)
     }
     .boxed()
 }
